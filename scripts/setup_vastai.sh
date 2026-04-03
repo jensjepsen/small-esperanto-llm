@@ -7,6 +7,9 @@ CONFIG=${1:-small}
 echo "=== Esperanto LM setup for vast.ai ==="
 echo "Config: $CONFIG"
 
+# Install system dependencies
+apt-get update && apt-get install -y zstd
+
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
