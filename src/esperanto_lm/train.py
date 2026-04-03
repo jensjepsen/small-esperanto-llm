@@ -63,13 +63,19 @@ def main():
         action="store_true",
         help="Include Gutenberg books (must download first)",
     )
+    parser.add_argument(
+        "--push-to-hub",
+        type=str,
+        default=None,
+        help="Push final model to HF Hub (e.g. 'jensjepsen/esperanto-llm-small')",
+    )
     args = parser.parse_args()
 
     output_dir = args.output_dir or f"runs/{args.config}"
 
     console.print(f"[bold green]Loading config:[/] {args.config}")
     model_config = make_llama_config(args.config)
-    training_args = make_training_args(args.config, output_dir)
+    training_args = make_training_args(args.config, output_dir, hub_model_id=args.push_to_hub)
 
     console.print("[bold green]Loading tokenizer...")
     tokenizer = load_tokenizer()
@@ -123,6 +129,11 @@ def main():
     console.print("[bold green]Saving final model...")
     trainer.save_model(f"{output_dir}/final")
     tokenizer.save_pretrained(f"{output_dir}/final")
+
+    if args.push_to_hub:
+        console.print(f"[bold green]Pushing final model to HF Hub:[/] {args.push_to_hub}")
+        trainer.push_to_hub()
+
     console.print("[bold green]Done!")
 
 

@@ -32,7 +32,7 @@ def make_llama_config(config_name: str) -> LlamaConfig:
     )
 
 
-def make_training_args(config_name: str, output_dir: str) -> TrainingArguments:
+def make_training_args(config_name: str, output_dir: str, hub_model_id: str | None = None) -> TrainingArguments:
     cfg = load_yaml_config(config_name)
     t = cfg["training"]
 
@@ -70,4 +70,7 @@ def make_training_args(config_name: str, output_dir: str) -> TrainingArguments:
         dataloader_num_workers=t["dataloader_num_workers"],
         dataloader_pin_memory=t["dataloader_pin_memory"],
         optim=optim,
+        push_to_hub=hub_model_id is not None,
+        hub_model_id=hub_model_id,
+        hub_strategy="checkpoint",
     )
