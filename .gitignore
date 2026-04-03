@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data & outputs
+data/
+tokenizer/
+runs/
+results/
+wandb/
+
+# Local overrides
+uv.local.toml
+
+# IDE
+.idea/
+.vscode/
+*.swp
