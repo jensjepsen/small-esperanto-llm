@@ -64,6 +64,11 @@ def main():
         help="Include Gutenberg books (must download first)",
     )
     parser.add_argument(
+        "--use-mc4",
+        action="store_true",
+        help="Include mc4 web corpus (must download first)",
+    )
+    parser.add_argument(
         "--push-to-hub",
         type=str,
         default=None,
@@ -94,7 +99,7 @@ def main():
     console.print(f"[bold]Parameters:[/] {n_params:,}")
 
     console.print("[bold green]Loading and tokenizing dataset...")
-    dataset = load_combined_dataset(use_hplt=args.use_hplt, use_gutenberg=args.use_gutenberg)
+    dataset = load_combined_dataset(use_hplt=args.use_hplt, use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4)
     console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")
     console.print(f"[bold]Test examples:[/] {len(dataset['test']):,}")
     if args.min_article_length > 0:

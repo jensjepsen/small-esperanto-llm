@@ -11,6 +11,7 @@ from transformers import DataCollatorForLanguageModeling, PreTrainedTokenizerFas
 DATA_DIR = Path("data/eo_wiki")
 HPLT_DIR = Path("data/hplt")
 GUTENBERG_DIR = Path("data/gutenberg")
+MC4_DIR = Path("data/mc4/eo")
 TOKENIZER_DIR = Path("tokenizer")
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
@@ -65,14 +66,27 @@ def load_gutenberg_dataset(gutenberg_dir: Path = GUTENBERG_DIR) -> Dataset | Non
     return Dataset.from_dict({"text": texts})
 
 
+def load_mc4_dataset(mc4_dir: Path = MC4_DIR) -> Dataset | None:
+    """Load mc4 Esperanto dataset from disk."""
+    if not mc4_dir.exists():
+        return None
+    ds = load_from_disk(str(mc4_dir))
+    if "text" not in ds.column_names:
+        return None
+    ds = ds.select_columns(["text"])
+    return ds
+
+
 def load_combined_dataset(
     wiki_dir: Path = DATA_DIR,
     hplt_dir: Path = HPLT_DIR,
     gutenberg_dir: Path = GUTENBERG_DIR,
+    mc4_dir: Path = MC4_DIR,
     use_hplt: bool = False,
     use_gutenberg: bool = False,
+    use_mc4: bool = False,
 ) -> DatasetDict:
-    """Load Wikipedia and optionally HPLT/Gutenberg data, returning train/test splits."""
+    """Load Wikipedia and optionally HPLT/Gutenberg/mc4 data, returning train/test splits."""
     wiki = download_dataset(wiki_dir)
     extra_train = []
     extra_test = []
@@ -90,6 +104,13 @@ def load_combined_dataset(
             gutenberg_splits = gutenberg.train_test_split(test_size=0.05, seed=42)
             extra_train.append(gutenberg_splits["train"])
             extra_test.append(gutenberg_splits["test"])
+
+    if use_mc4:
+        mc4 = load_mc4_dataset(mc4_dir)
+        if mc4 is not None:
+            mc4_splits = mc4.train_test_split(test_size=0.05, seed=42)
+            extra_train.append(mc4_splits["train"])
+            extra_test.append(mc4_splits["test"])
 
     if extra_train:
         train = concatenate_datasets([wiki["train"]] + extra_train)

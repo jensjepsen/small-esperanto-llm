@@ -23,6 +23,7 @@ download-data = "scripts.download_data:main"
 generate = "scripts.generate:main"
 download-hplt = "scripts.download_hplt:main"
 download-gutenberg = "scripts.download_gutenberg:main"
+download-mc4 = "scripts.download_mc4:main"
 
 [tool.uv]
 dev-dependencies = [
