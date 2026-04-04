@@ -20,13 +20,43 @@ PLACE_PROPERTIES = {
     "havas parton", "plej alta punkto", "ĉefurbo", "oficialaj lingvoj",
 }
 
+CHEMICAL_PROPERTIES = {
+    "kemia formulo", "havas parton", "subaro de", "estas",
+    "en taksono",
+}
+
+FILM_PROPERTIES = {
+    "aktoroj", "ĝenro", "scenaristo", "devenlando", "estas",
+    "originala lingvo", "nomumita por", "distribuita de",
+    "roluloj",
+}
+
+LITERARY_PROPERTIES = {
+    "aŭtoro", "ĝenro", "lingvo", "roluloj", "estas",
+    "formo de kreema verko", "eldono",
+}
+
+TAXON_PROPERTIES = {
+    "taksonomia nomo", "supera taksono", "taksonomia rango", "estas",
+}
+
+ASTRONOMY_PROPERTIES = {
+    "malkovrinto aŭ inventinto", "klaso de asteroidoj",
+    "loko de astronomia malkovro", "estas", "konstelacio",
+    "supera astronomia korpo", "morfologia galaksia speco", "parto de",
+}
+
 GENERAL_PROPERTIES = {
     "estas", "parto de", "havas parton", "membro de", "lando",
     "lingvo uzata", "honorigo", "komuna limo kun",
     "troviĝas en administra unuo",
 }
 
-ALL_USEFUL_PROPERTIES = PERSON_PROPERTIES | PLACE_PROPERTIES | GENERAL_PROPERTIES
+ALL_USEFUL_PROPERTIES = (
+    PERSON_PROPERTIES | PLACE_PROPERTIES | GENERAL_PROPERTIES
+    | CHEMICAL_PROPERTIES | FILM_PROPERTIES | LITERARY_PROPERTIES
+    | TAXON_PROPERTIES | ASTRONOMY_PROPERTIES
+)
 
 # --- Entity type detection ---
 
@@ -36,10 +66,47 @@ PERSON_INDICATORS = {"homo", "persono", "sportisto", "politikisto", "aktoro",
 PLACE_INDICATORS = {"urbo", "komunumo", "lando", "insulo", "provinco",
                     "distrikto", "regiono", "vilaĝo", "lago", "rivero", "monto",
                     "ŝtato", "kontinento", "kantono"}
+CHEMICAL_INDICATORS = {"kemiaĵo", "kemia", "elemento", "acido", "salo"}
+FILM_INDICATORS = {"filmo", "dramo", "komedio", "dokumenta"}
+LITERARY_INDICATORS = {"verko", "romano", "libro", "novelo", "poemo", "fabelo"}
+TAXON_INDICATORS = {"taksono", "specio", "genro", "familio", "ordo", "klaso"}
+ASTRONOMY_INDICATORS = {"asteroido", "galaksio", "stelo", "planedo", "kometo"}
 FEMALE_INDICATORS = {"ino", "aktorino", "kantistino", "reĝino", "princino",
                      "sportistino", "verkistino", "dancistino"}
 
 TRIVIAL_INSTANCE_OF = {"homo", "human", "huamn", "persono"}
+
+# Abstract concept classes that shouldn't have geographic properties
+ABSTRACT_INDICATORS = {
+    "emocio", "humoro", "sento", "koncepto", "ideo", "teorio", "scienco",
+    "studo", "branĉo", "disciplino", "movado", "filozofio", "ideologio",
+    "religio", "kutimo", "tradicio", "principo", "valoro",
+}
+
+# Geographic properties that should be suppressed for abstract entities
+GEOGRAPHIC_PROPERTIES = {
+    "lando", "troviĝas en administra unuo", "komuna limo kun",
+    "ĉefurbo", "horzono", "loĝantaro", "ĝemelurbo",
+    "plej alta punkto", "poŝtkodo",
+}
+
+# Classes where "malkovrinto" should be rendered as "inventinto"
+INVENTION_INDICATORS = {
+    "invento", "aparato", "instrumento", "maŝino", "ilo", "programaro",
+    "teknologio", "protokolo", "algoritmo", "programlingvo", "retejo",
+}
+
+# Properties allowed per entity type (if set, only these are used)
+TYPE_PROPERTY_RESTRICTIONS: dict[str, set[str] | None] = {
+    "person": None,  # No restriction
+    "place": None,
+    "chemical": None,
+    "film": None,
+    "literary": None,
+    "taxon": None,
+    "astronomy": None,
+    "other": None,
+}
 
 # Properties where the continuation should use pronouns, not full names
 PRONOUN_PROPERTIES = {
@@ -86,6 +153,18 @@ OPENING_TEMPLATES = {
     ],
     "naskiĝloko": [
         Template("{subj} naskiĝis en {obj}.", needs_pronoun=False),
+    ],
+    "kemia formulo": [
+        Template("{subj} havas la kemian formulon {obj}.", needs_pronoun=False),
+    ],
+    "aŭtoro": [
+        Template("{subj} estas verkita de {obj}.", needs_pronoun=False),
+    ],
+    "taksonomia nomo": [
+        Template("{subj} estas science konata kiel {obj}.", needs_pronoun=False),
+    ],
+    "devenlando": [
+        Template("{subj} devenas el {obj}.", needs_pronoun=False),
     ],
 }
 
@@ -181,6 +260,81 @@ CONTINUATION_TEMPLATES = {
     "familia nomo": [
         Template("la familia nomo de {subj} estas {obj}."),
     ],
+    # Chemical
+    "kemia formulo": [
+        Template("la kemia formulo de {subj} estas {obj}."),
+        Template("{pron} havas la kemian formulon {obj}."),
+    ],
+    "subaro de": [
+        Template("{pron} estas subaro de {obj}."),
+        Template("{pron} apartenas al la grupo de {obj}."),
+    ],
+    "en taksono": [
+        Template("{pron} troviĝas en {obj}."),
+    ],
+    # Film
+    "aktoroj": [
+        Template("en {subj} rolas {obj}."),
+        Template("{obj} aktorludas en {subj}."),
+    ],
+    "ĝenro": [
+        Template("{pron} estas {obj} laŭ ĝenro."),
+        Template("la ĝenro de {subj} estas {obj}."),
+    ],
+    "scenaristo": [
+        Template("la scenaristo de {subj} estas {obj}."),
+        Template("{obj} verkis la scenaron de {subj}."),
+    ],
+    "devenlando": [
+        Template("{pron} devenas el {obj}."),
+    ],
+    "originala lingvo": [
+        Template("la originala lingvo de {subj} estas {obj}."),
+    ],
+    "distribuita de": [
+        Template("{pron} estas distribuita de {obj}."),
+    ],
+    "roluloj": [
+        Template("inter la roluloj de {subj} estas {obj}."),
+    ],
+    # Literary
+    "aŭtoro": [
+        Template("{pron} estas verkita de {obj}."),
+        Template("la aŭtoro de {subj} estas {obj}."),
+    ],
+    "formo de kreema verko": [
+        Template("{pron} estas {obj}."),
+    ],
+    # Taxon
+    "taksonomia nomo": [
+        Template("la scienca nomo de {subj} estas {obj}."),
+        Template("{pron} estas science konata kiel {obj}."),
+    ],
+    "supera taksono": [
+        Template("{pron} apartenas al la taksono {obj}."),
+        Template("la supera taksono de {subj} estas {obj}."),
+    ],
+    "taksonomia rango": [
+        Template("{pron} havas la taksonomian rangon {obj}."),
+    ],
+    # Astronomy
+    # malkovrinto aŭ inventinto — handled specially in generate_paragraph
+    # to choose between "malkovri" and "inventi" based on entity class
+    "klaso de asteroidoj": [
+        Template("{pron} apartenas al la asteroida klaso {obj}."),
+    ],
+    "loko de astronomia malkovro": [
+        Template("{pron} estis malkovrita en {obj}."),
+    ],
+    "konstelacio": [
+        Template("{pron} troviĝas en la konstelacio {obj}."),
+    ],
+    "supera astronomia korpo": [
+        Template("{pron} orbitas ĉirkaŭ {obj}."),
+    ],
+    "morfologia galaksia speco": [
+        Template("{pron} estas {obj} laŭ morfologia speco."),
+    ],
 }
 
 DEFAULT_CONTINUATION = [
@@ -226,6 +380,30 @@ PROPERTY_ORDER = {
     "havas parton": 62,
     "antaŭnomo": 70,
     "familia nomo": 71,
+    # Chemical
+    "kemia formulo": 5,
+    "subaro de": 15,
+    "en taksono": 16,
+    # Film
+    "aŭtoro": 5,
+    "scenaristo": 6,
+    "aktoroj": 10,
+    "roluloj": 11,
+    "ĝenro": 15,
+    "devenlando": 20,
+    "originala lingvo": 21,
+    "distribuita de": 30,
+    # Taxon
+    "taksonomia nomo": 5,
+    "taksonomia rango": 6,
+    "supera taksono": 10,
+    # Astronomy
+    "konstelacio": 10,
+    "klaso de asteroidoj": 15,
+    "morfologia galaksia speco": 16,
+    "supera astronomia korpo": 20,
+    "malkovrinto aŭ inventinto": 25,
+    "loko de astronomia malkovro": 26,
 }
 
 
@@ -237,11 +415,31 @@ def detect_entity_type(facts: list[dict]) -> str:
                 return "person"
             if any(ind in val for ind in PLACE_INDICATORS):
                 return "place"
+            if any(ind in val for ind in CHEMICAL_INDICATORS):
+                return "chemical"
+            if any(ind in val for ind in FILM_INDICATORS):
+                return "film"
+            if any(ind in val for ind in LITERARY_INDICATORS):
+                return "literary"
+            if any(ind in val for ind in TAXON_INDICATORS):
+                return "taxon"
+            if any(ind in val for ind in ASTRONOMY_INDICATORS):
+                return "astronomy"
     fact_props = {f["property"] for f in facts}
     if fact_props & {"naskiĝloko", "mortloko", "okupo", "ŝtataneco"}:
         return "person"
     if fact_props & {"komuna limo kun", "ĝemelurbo", "loĝantaro"}:
         return "place"
+    if fact_props & {"kemia formulo"}:
+        return "chemical"
+    if fact_props & {"taksonomia nomo", "supera taksono"}:
+        return "taxon"
+    if fact_props & {"aktoroj", "scenaristo"}:
+        return "film"
+    if fact_props & {"aŭtoro"}:
+        return "literary"
+    if fact_props & {"konstelacio", "klaso de asteroidoj"}:
+        return "astronomy"
     return "other"
 
 
@@ -297,10 +495,32 @@ def _strip_lingvo_suffix(value: str) -> str:
     return value
 
 
+def _is_abstract_entity(facts: list[dict]) -> bool:
+    """Check if entity is an abstract concept based on its classes."""
+    for fact in facts:
+        if fact["property"] == "estas":
+            val = fact["value"].lower()
+            if any(ind in val for ind in ABSTRACT_INDICATORS):
+                return True
+    return False
+
+
+def _is_invention(facts: list[dict]) -> bool:
+    """Check if entity is an invention (vs a discovery)."""
+    for fact in facts:
+        if fact["property"] == "estas":
+            val = fact["value"].lower()
+            if any(ind in val for ind in INVENTION_INDICATORS):
+                return True
+    return False
+
+
 def filter_facts(facts: list[dict], entity_label: str = "",
                  entity_type: str = "other") -> list[dict]:
     seen = {}
     entity_lower = entity_label.lower()
+    is_abstract = _is_abstract_entity(facts)
+
     for fact in facts:
         prop = fact["property"]
         if prop not in ALL_USEFUL_PROPERTIES:
@@ -314,6 +534,9 @@ def filter_facts(facts: list[dict], entity_label: str = "",
         if fact["value"].lower() == entity_lower:
             continue
         if _is_trivial(fact, entity_type):
+            continue
+        # Suppress geographic properties for abstract concepts
+        if is_abstract and prop in GEOGRAPHIC_PROPERTIES:
             continue
         # Clean up language names
         if prop == "lingvo uzata":
@@ -337,6 +560,24 @@ def render_sentence(template: Template, subj: str, obj: str,
 
 def _sort_facts(facts: list[dict]) -> list[dict]:
     return sorted(facts, key=lambda f: PROPERTY_ORDER.get(f["property"], 99))
+
+
+DISCOVER_TEMPLATES = [
+    Template("{pron} estis malkovrita de {obj}."),
+    Template("{obj} malkovris {subj}n."),
+]
+
+INVENT_TEMPLATES = [
+    Template("{pron} estis inventita de {obj}."),
+    Template("{obj} inventis {subj}n."),
+]
+
+
+def _get_discover_or_invent_templates(facts: list[dict]) -> list[Template]:
+    """Choose between 'malkovri' and 'inventi' based on entity class."""
+    if _is_invention(facts):
+        return INVENT_TEMPLATES
+    return DISCOVER_TEMPLATES
 
 
 def _pick_connector(used_connectors: set) -> str:
@@ -395,7 +636,10 @@ def generate_paragraph(entity_label: str, facts: list[dict],
 
     for i, fact in enumerate(selected_remaining):
         prop = fact["property"]
-        templates = CONTINUATION_TEMPLATES.get(prop, DEFAULT_CONTINUATION)
+        if prop == "malkovrinto aŭ inventinto":
+            templates = _get_discover_or_invent_templates(facts)
+        else:
+            templates = CONTINUATION_TEMPLATES.get(prop, DEFAULT_CONTINUATION)
         template = random.choice(templates)
 
         connector = _pick_connector(used_connectors)
