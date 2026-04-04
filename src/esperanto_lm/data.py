@@ -13,6 +13,7 @@ HPLT_DIR = Path("data/hplt")
 GUTENBERG_DIR = Path("data/gutenberg")
 MC4_DIR = Path("data/mc4/eo")
 FACTOIDS_PATH = Path("/mnt/data2/wikidata5m/eo_factoids/factoid_text.jsonl")
+SENTENCES_PATH = Path("data/epo_sentences.tsv")
 TOKENIZER_DIR = Path("tokenizer")
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
@@ -78,6 +79,21 @@ def load_mc4_dataset(mc4_dir: Path = MC4_DIR) -> Dataset | None:
     return ds
 
 
+def load_sentences_dataset(sentences_path: Path = SENTENCES_PATH) -> Dataset | None:
+    """Load Tatoeba-style TSV sentences."""
+    if not sentences_path.exists():
+        return None
+    texts = []
+    with open(sentences_path) as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 3:
+                text = parts[2].strip()
+                if text:
+                    texts.append(text)
+    return Dataset.from_dict({"text": texts})
+
+
 def load_factoids_dataset(factoids_path: Path = FACTOIDS_PATH) -> Dataset | None:
     """Load generated Wikidata factoid paragraphs."""
     if not factoids_path.exists():
@@ -99,11 +115,13 @@ def load_combined_dataset(
     gutenberg_dir: Path = GUTENBERG_DIR,
     mc4_dir: Path = MC4_DIR,
     factoids_path: Path = FACTOIDS_PATH,
+    sentences_path: Path = SENTENCES_PATH,
     use_wiki: bool = True,
     use_hplt: bool = False,
     use_gutenberg: bool = False,
     use_mc4: bool = False,
     use_factoids: bool = False,
+    use_sentences: bool = False,
 ) -> DatasetDict:
     """Load datasets based on flags, returning train/test splits."""
     base_train = []
@@ -144,6 +162,13 @@ def load_combined_dataset(
             factoid_splits = factoids.train_test_split(test_size=0.05, seed=42)
             extra_train.append(factoid_splits["train"])
             extra_test.append(factoid_splits["test"])
+
+    if use_sentences:
+        sentences = load_sentences_dataset(sentences_path)
+        if sentences is not None:
+            sentence_splits = sentences.train_test_split(test_size=0.05, seed=42)
+            extra_train.append(sentence_splits["train"])
+            extra_test.append(sentence_splits["test"])
 
     all_train = base_train + extra_train
     all_test = base_test + extra_test
