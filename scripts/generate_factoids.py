@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.progress import Progress
 
 from esperanto_lm.factoids import (
+    detect_entity_type,
     find_comparable_pairs,
     generate_comparison,
     generate_few_shot_lists,
@@ -32,6 +33,8 @@ def main():
                         help="Number of variants per comparison pair")
     parser.add_argument("--few-shot-lists", type=int, default=0,
                         help="Number of few-shot lists (0 = auto-match 25%% of single-entity count)")
+    parser.add_argument("--taxon-fraction", type=float, default=0.0,
+                        help="Fraction of taxonomy entities to keep (default: 0.0)")
     args = parser.parse_args()
 
     console.print(f"[bold green]Reading entities from {args.input}")
@@ -42,6 +45,17 @@ def main():
             entities.append(json.loads(line))
 
     console.print(f"[bold]Entities loaded:[/] {len(entities):,}")
+
+    # Downsample taxonomy entities
+    import random
+    random.seed(42)
+    before = len(entities)
+    entities = [
+        e for e in entities
+        if detect_entity_type(e["facts"]) != "taxon"
+        or random.random() < args.taxon_fraction
+    ]
+    console.print(f"[bold]After taxon downsampling ({args.taxon_fraction:.0%}):[/] {len(entities):,} (from {before:,})")
 
     single_count = 0
     comparison_count = 0

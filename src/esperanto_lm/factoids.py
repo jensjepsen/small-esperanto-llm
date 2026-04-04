@@ -76,6 +76,17 @@ FEMALE_INDICATORS = {"ino", "aktorino", "kantistino", "reĝino", "princino",
 
 TRIVIAL_INSTANCE_OF = {"homo", "human", "huamn", "persono"}
 
+# Entity classes to skip entirely — Wikimedia meta-pages, name entries, date entries
+SKIP_CLASSES = {
+    "vikimedia apartigilo", "vikimedia kategorio", "vikimedia ŝablono",
+    "wikimedia human name disambiguation page", "wikimedia topic category",
+    "taxonomy template", "wikimedia content project",
+    "familia nomo", "vira persona nomo", "virina persona nomo",
+    "affixed family name",
+    "events in a specific year or time period",
+    "kalendara monato", "tago de la semajno", "tago de la jaro",
+}
+
 # Abstract concept classes that shouldn't have geographic properties
 ABSTRACT_INDICATORS = {
     "emocio", "humoro", "sento", "koncepto", "ideo", "teorio", "scienco",
@@ -346,8 +357,7 @@ DEFAULT_CONTINUATION = [
 
 ADDITIVE_CONNECTORS = [
     "Krome, ", "Ankaŭ ", "Plue, ", "Cetere, ",
-    "Plie, ", "Menciindas ke ", "Notinde, ",
-    "Indas mencii ke ", "",
+    "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
 ]
 
 
@@ -596,8 +606,18 @@ def _pick_connector(used_connectors: set) -> str:
     return random.choice(available)
 
 
+def _should_skip_entity(facts: list[dict]) -> bool:
+    """Check if entity is a Wikimedia meta-page or other junk type."""
+    for fact in facts:
+        if fact["property"] == "estas" and fact["value"].lower() in SKIP_CLASSES:
+            return True
+    return False
+
+
 def generate_paragraph(entity_label: str, facts: list[dict],
-                       min_sentences: int = 3, max_sentences: int = 5) -> str | None:
+                       min_sentences: int = 2, max_sentences: int = 7) -> str | None:
+    if _should_skip_entity(facts):
+        return None
     entity_type = detect_entity_type(facts)
     useful_facts = filter_facts(facts, entity_label, entity_type)
     if len(useful_facts) < 2:
@@ -665,7 +685,16 @@ def generate_paragraph(entity_label: str, facts: list[dict],
         if not connector:
             sentence = _capitalize_first(sentence)
 
-        sentences.append(connector + sentence)
+        # Sometimes join with "kaj" instead of starting a new sentence
+        if (sentences
+                and not connector
+                and random.random() < 0.3
+                and not sentences[-1].endswith("kaj")):
+            # Remove trailing period from previous sentence and join with "kaj"
+            prev = sentences[-1].rstrip(".")
+            sentences[-1] = prev + ", kaj " + sentence[0].lower() + sentence[1:]
+        else:
+            sentences.append(connector + sentence)
 
     return " ".join(sentences)
 

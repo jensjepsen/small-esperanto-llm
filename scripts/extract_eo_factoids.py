@@ -9,11 +9,37 @@ from rich.progress import Progress
 
 console = Console()
 
-OUTPUT_DIR = Path("/mnt/data2/wikidata5m/eo_factoids")
+OUTPUT_DIR = Path("/mnt/data2/wikidata5m/eo_factoids_v2")
+
+
+def _parse_time(val: str) -> str | None:
+    """Parse '+1879-03-14T00:00:00Z' to '1879-03-14'."""
+    if not isinstance(val, str):
+        return None
+    val = val.lstrip("+")
+    if "T" in val:
+        val = val.split("T")[0]
+    if val.endswith("-00-00"):
+        val = val[:-6]
+    elif val.endswith("-00"):
+        val = val[:-3]
+    return val if val else None
+
+
+def _parse_quantity(dv: dict) -> str | None:
+    """Parse a quantity dict to a readable string."""
+    amount = dv.get("amount", "")
+    if isinstance(amount, str):
+        amount = amount.lstrip("+")
+    unit = dv.get("unit", "")
+    if unit and unit != "1":
+        return f"{amount} {unit}"
+    return str(amount) if amount else None
 
 
 def extract_eo_claims(claims: dict | str) -> list[dict]:
-    """Extract claims where both property and value have Esperanto labels."""
+    """Extract claims where property has Esperanto label.
+    Handles entity references, dates, and quantities."""
     if isinstance(claims, str):
         claims = json.loads(claims)
 
@@ -27,26 +53,39 @@ def extract_eo_claims(claims: dict | str) -> list[dict]:
 
             prop_eo = prop_labels["eo"]
             dv = ms.get("datavalue", "")
+            datatype = ms.get("datatype", "")
 
-            # Resolve object value
+            obj_eo = None
+            obj_id = None
+
             if isinstance(dv, dict):
+                # Entity reference — has labels
                 obj_labels = dv.get("labels", {})
-                if isinstance(obj_labels, dict):
+                if isinstance(obj_labels, dict) and obj_labels:
                     if "eo" in obj_labels:
                         obj_eo = obj_labels["eo"]
                     elif "en" in obj_labels:
                         obj_eo = obj_labels["en"]
-                    else:
-                        continue
-                elif isinstance(obj_labels, str):
+                    obj_id = dv.get("id")
+                elif isinstance(obj_labels, str) and obj_labels:
                     obj_eo = obj_labels
-                else:
-                    continue
-                obj_id = dv.get("id")
+                    obj_id = dv.get("id")
+
+                # Quantity value
+                if obj_eo is None and "amount" in dv:
+                    obj_eo = _parse_quantity(dv)
+
+                # Time value
+                if obj_eo is None and "time" in dv:
+                    obj_eo = _parse_time(dv.get("time", ""))
+
             elif isinstance(dv, str) and dv:
-                obj_eo = dv
-                obj_id = None
-            else:
+                if "T00:00:00" in dv:
+                    obj_eo = _parse_time(dv)
+                else:
+                    obj_eo = dv
+
+            if obj_eo is None:
                 continue
 
             results.append({
@@ -54,6 +93,7 @@ def extract_eo_claims(claims: dict | str) -> list[dict]:
                 "property_id": prop_id,
                 "value": obj_eo,
                 "value_id": obj_id,
+                "datatype": datatype,
             })
 
     return results
@@ -92,12 +132,22 @@ def main():
                 if not facts:
                     continue
 
+                # Extract Esperanto description if available
+                descriptions = ex.get("descriptions", {})
+                if isinstance(descriptions, str):
+                    descriptions = json.loads(descriptions)
+                eo_desc = None
+                if isinstance(descriptions, dict) and "eo" in descriptions:
+                    d = descriptions["eo"]
+                    eo_desc = d["value"] if isinstance(d, dict) else d
+
                 eo_entities += 1
                 total_facts += len(facts)
 
                 record = {
                     "id": ex["id"],
                     "label": eo_label,
+                    "description": eo_desc,
                     "facts": facts,
                 }
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
