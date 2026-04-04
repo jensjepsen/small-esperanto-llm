@@ -266,8 +266,8 @@ CONTINUATION_TEMPLATES = {
         Template("{pron} havas la kemian formulon {obj}."),
     ],
     "subaro de": [
-        Template("{pron} estas subaro de {obj}."),
-        Template("{pron} apartenas al la grupo de {obj}."),
+        Template("{pron} estas speco de {obj}."),
+        Template("{pron} estas klaso de {obj}."),
     ],
     "en taksono": [
         Template("{pron} troviĝas en {obj}."),
@@ -462,6 +462,7 @@ def _is_likely_english(text: str) -> bool:
 
 
 MAX_VALUE_LENGTH = 80  # Skip values longer than this (e.g. long award names)
+MIN_FACTS_FOR_VARIANTS = 5  # Entities with fewer facts only get 1 paragraph
 
 
 def _looks_broken(text: str) -> bool:
@@ -478,10 +479,16 @@ def _looks_broken(text: str) -> bool:
     return False
 
 
+MAX_CLASS_LABEL_WORDS = 5  # "estas" values longer than this are verbose descriptions
+
+
 def _is_trivial(fact: dict, entity_type: str) -> bool:
     if fact["property"] == "estas":
         val = fact["value"].lower()
         if entity_type == "person" and any(t in val for t in TRIVIAL_INSTANCE_OF):
+            return True
+        # Verbose Wikidata descriptions that don't work as class labels
+        if len(val.split()) > MAX_CLASS_LABEL_WORDS:
             return True
     return False
 
@@ -665,8 +672,14 @@ def generate_paragraph(entity_label: str, facts: list[dict],
 
 def generate_variants(entity_label: str, facts: list[dict],
                       n_variants: int = 3) -> list[str]:
+    entity_type = detect_entity_type(facts)
+    useful_count = len(filter_facts(facts, entity_label, entity_type))
+
+    # Sparse entities only get 1 paragraph to avoid near-identical variants
+    effective_variants = 1 if useful_count < MIN_FACTS_FOR_VARIANTS else n_variants
+
     results = []
-    for _ in range(n_variants):
+    for _ in range(effective_variants):
         paragraph = generate_paragraph(entity_label, facts)
         if paragraph:
             results.append(paragraph)
