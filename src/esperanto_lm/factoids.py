@@ -920,3 +920,121 @@ def generate_comparison(entity_a: dict, entity_b: dict,
         return None
 
     return " ".join(sentences)
+
+
+# --- Few-shot list generation ---
+
+# Templates for listing entities sharing a property value
+LIST_TEMPLATES = {
+    "ĉefurbo": [
+        "La ĉefurbo de {entity} estas {value}.",
+        "{entity} havas la ĉefurbon {value}.",
+    ],
+    "lando": [
+        "{entity} troviĝas en {value}.",
+        "{entity} situas en {value}.",
+    ],
+    "okupo": [
+        "{entity} estas {value}.",
+        "{entity} estas {value} laŭ profesio.",
+    ],
+    "ŝtataneco": [
+        "{entity} devenas el {value}.",
+        "{entity} estas ŝtatano de {value}.",
+    ],
+    "naskiĝloko": [
+        "{entity} naskiĝis en {value}.",
+    ],
+    "mortloko": [
+        "{entity} mortis en {value}.",
+    ],
+    "lingvo uzata": [
+        "En {entity} oni parolas la {value}n.",
+    ],
+    "estas": [
+        "{entity} estas {value}.",
+    ],
+    "taksonomia rango": [
+        "{entity} havas la taksonomian rangon {value}.",
+    ],
+    "supera taksono": [
+        "{entity} apartenas al la taksono {value}.",
+    ],
+    "komuna limo kun": [
+        "{entity} limas kun {value}.",
+    ],
+    "parto de": [
+        "{entity} estas parto de {value}.",
+    ],
+    "membro de": [
+        "{entity} estas membro de {value}.",
+    ],
+    "lernejo": [
+        "{entity} studis ĉe {value}.",
+    ],
+}
+
+
+def _build_entity_fact_index(
+    entities: list[dict],
+) -> dict[str, list[tuple[str, str]]]:
+    """Index (entity_label, value) pairs by property.
+
+    Returns: {property: [(entity_label, value), ...]}
+    """
+    index: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for entity in entities:
+        label = entity["label"]
+        entity_type = detect_entity_type(entity["facts"])
+        facts = filter_facts(entity["facts"], label, entity_type)
+        for fact in facts:
+            prop = fact["property"]
+            if prop not in LIST_TEMPLATES:
+                continue
+            val = fact["value"]
+            if _is_likely_english(val) or _looks_broken(val):
+                continue
+            index[prop].append((label, val))
+    return index
+
+
+def generate_few_shot_lists(
+    entities: list[dict],
+    min_list_length: int = 4,
+    max_list_length: int = 8,
+    n_lists: int = 5000,
+) -> list[str]:
+    """Generate few-shot style lists of different entities with different values
+    for the same property, teaching the model entity→value patterns."""
+    index = _build_entity_fact_index(entities)
+
+    # Only use properties with enough distinct entries
+    usable_props = [
+        (prop, pairs) for prop, pairs in index.items()
+        if len(pairs) >= min_list_length
+    ]
+
+    if not usable_props:
+        return []
+
+    results = []
+    for _ in range(n_lists):
+        prop, pairs = random.choice(usable_props)
+
+        k = min(random.randint(min_list_length, max_list_length), len(pairs))
+        selected = random.sample(pairs, k)
+
+        # Use the same template for all items to create a clear pattern
+        template = random.choice(LIST_TEMPLATES[prop])
+
+        lines = []
+        for label, value in selected:
+            line = template.format(
+                entity=_capitalize_first(label),
+                value=value,
+            )
+            lines.append(line)
+
+        results.append("\n".join(lines))
+
+    return results

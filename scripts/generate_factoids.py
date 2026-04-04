@@ -10,6 +10,7 @@ from rich.progress import Progress
 from esperanto_lm.factoids import (
     find_comparable_pairs,
     generate_comparison,
+    generate_few_shot_lists,
     generate_variants,
 )
 
@@ -29,6 +30,8 @@ def main():
                         help="Number of comparison pairs to sample")
     parser.add_argument("--comparison-variants", type=int, default=2,
                         help="Number of variants per comparison pair")
+    parser.add_argument("--few-shot-lists", type=int, default=5000,
+                        help="Number of few-shot lists to generate")
     args = parser.parse_args()
 
     console.print(f"[bold green]Reading entities from {args.input}")
@@ -87,10 +90,22 @@ def main():
 
                 progress.advance(task)
 
+        # --- Few-shot lists ---
+        console.print("[bold green]Generating few-shot lists...")
+        lists = generate_few_shot_lists(entities, n_lists=args.few_shot_lists)
+        list_count = 0
+        for text in lists:
+            record = {"text": text, "source": "wikidata_few_shot"}
+            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+            list_count += 1
+
+        console.print(f"[bold]Few-shot lists:[/] {list_count:,}")
+
     console.print()
     console.print(f"[bold]Single-entity paragraphs:[/] {single_count:,}")
     console.print(f"[bold]Comparison paragraphs:[/] {comparison_count:,}")
-    console.print(f"[bold]Total:[/] {single_count + comparison_count:,}")
+    console.print(f"[bold]Few-shot lists:[/] {list_count:,}")
+    console.print(f"[bold]Total:[/] {single_count + comparison_count + list_count:,}")
     console.print(f"[bold green]Saved to {args.output}")
 
 

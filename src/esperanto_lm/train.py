@@ -54,6 +54,11 @@ def main():
         help="Drop articles shorter than this many characters",
     )
     parser.add_argument(
+        "--no-wiki",
+        action="store_true",
+        help="Exclude Wikipedia data",
+    )
+    parser.add_argument(
         "--use-hplt",
         action="store_true",
         help="Include HPLT web corpus data (must download first)",
@@ -67,6 +72,11 @@ def main():
         "--use-mc4",
         action="store_true",
         help="Include mc4 web corpus (must download first)",
+    )
+    parser.add_argument(
+        "--use-factoids",
+        action="store_true",
+        help="Include Wikidata factoid paragraphs",
     )
     parser.add_argument(
         "--push-to-hub",
@@ -99,7 +109,7 @@ def main():
     console.print(f"[bold]Parameters:[/] {n_params:,}")
 
     console.print("[bold green]Loading and tokenizing dataset...")
-    dataset = load_combined_dataset(use_hplt=args.use_hplt, use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4)
+    dataset = load_combined_dataset(use_wiki=not args.no_wiki, use_hplt=args.use_hplt, use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4, use_factoids=args.use_factoids)
     console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")
     console.print(f"[bold]Test examples:[/] {len(dataset['test']):,}")
     if args.min_article_length > 0:

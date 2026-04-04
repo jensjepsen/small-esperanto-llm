@@ -12,6 +12,7 @@ DATA_DIR = Path("data/eo_wiki")
 HPLT_DIR = Path("data/hplt")
 GUTENBERG_DIR = Path("data/gutenberg")
 MC4_DIR = Path("data/mc4/eo")
+FACTOIDS_PATH = Path("/mnt/data2/wikidata5m/eo_factoids/factoid_text.jsonl")
 TOKENIZER_DIR = Path("tokenizer")
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
@@ -77,17 +78,42 @@ def load_mc4_dataset(mc4_dir: Path = MC4_DIR) -> Dataset | None:
     return ds
 
 
+def load_factoids_dataset(factoids_path: Path = FACTOIDS_PATH) -> Dataset | None:
+    """Load generated Wikidata factoid paragraphs."""
+    if not factoids_path.exists():
+        return None
+    # Read only the text field to avoid schema conflicts between
+    # single-entity (entity_id: str) and comparison (entity_ids: list) records
+    texts = []
+    with open(factoids_path) as f:
+        for line in f:
+            doc = json.loads(line)
+            if doc.get("text", "").strip():
+                texts.append(doc["text"])
+    return Dataset.from_dict({"text": texts})
+
+
 def load_combined_dataset(
     wiki_dir: Path = DATA_DIR,
     hplt_dir: Path = HPLT_DIR,
     gutenberg_dir: Path = GUTENBERG_DIR,
     mc4_dir: Path = MC4_DIR,
+    factoids_path: Path = FACTOIDS_PATH,
+    use_wiki: bool = True,
     use_hplt: bool = False,
     use_gutenberg: bool = False,
     use_mc4: bool = False,
+    use_factoids: bool = False,
 ) -> DatasetDict:
-    """Load Wikipedia and optionally HPLT/Gutenberg/mc4 data, returning train/test splits."""
-    wiki = download_dataset(wiki_dir)
+    """Load datasets based on flags, returning train/test splits."""
+    base_train = []
+    base_test = []
+
+    if use_wiki:
+        wiki = download_dataset(wiki_dir)
+        base_train.append(wiki["train"])
+        base_test.append(wiki["test"])
+
     extra_train = []
     extra_test = []
 
@@ -112,12 +138,23 @@ def load_combined_dataset(
             extra_train.append(mc4_splits["train"])
             extra_test.append(mc4_splits["test"])
 
-    if extra_train:
-        train = concatenate_datasets([wiki["train"]] + extra_train)
-        test = concatenate_datasets([wiki["test"]] + extra_test)
-        return DatasetDict({"train": train, "test": test})
+    if use_factoids:
+        factoids = load_factoids_dataset(factoids_path)
+        if factoids is not None:
+            factoid_splits = factoids.train_test_split(test_size=0.05, seed=42)
+            extra_train.append(factoid_splits["train"])
+            extra_test.append(factoid_splits["test"])
 
-    return wiki
+    all_train = base_train + extra_train
+    all_test = base_test + extra_test
+
+    if not all_train:
+        raise ValueError("No data sources selected")
+
+    return DatasetDict({
+        "train": concatenate_datasets(all_train) if len(all_train) > 1 else all_train[0],
+        "test": concatenate_datasets(all_test) if len(all_test) > 1 else all_test[0],
+    })
 
 
 def _corpus_iterator(dataset) -> Iterator[str]:
