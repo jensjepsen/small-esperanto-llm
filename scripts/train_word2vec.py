@@ -177,14 +177,31 @@ def cmd_train(args):
     console.print(f"[bold]Train examples:[/] {len(ds['train']):,}")
 
     console.print("[bold green]Tokenizing documents...")
-    total = args.max_docs if args.max_docs else len(ds["train"])
-    sentences = []
-    with Progress() as progress:
-        task = progress.add_task("Tokenizing...", total=total)
-        for s in token_sentences(ds["train"], tok, max_docs=args.max_docs,
-                                whole_words=args.whole_words, morphemes=args.morphemes):
-            sentences.append(s)
-            progress.advance(task)
+    subset = ds["train"]
+    if args.max_docs:
+        subset = subset.select(range(min(args.max_docs, len(subset))))
+
+    if args.morphemes:
+        # Use dataset.map for parallel morpheme decomposition
+        def morpheme_tokenize(examples):
+            return {"tokens": [decompose_text(t) for t in examples["text"]]}
+        tokenized = subset.map(morpheme_tokenize, batched=True, num_proc=4,
+                               remove_columns=subset.column_names)
+        sentences = tokenized["tokens"]
+    elif args.whole_words:
+        def word_tokenize(examples):
+            return {"tokens": [t.lower().split() for t in examples["text"]]}
+        tokenized = subset.map(word_tokenize, batched=True, num_proc=4,
+                               remove_columns=subset.column_names)
+        sentences = tokenized["tokens"]
+    else:
+        sentences = []
+        with Progress() as progress:
+            task = progress.add_task("Tokenizing...", total=len(subset))
+            for s in token_sentences(subset, tok):
+                sentences.append(s)
+                progress.advance(task)
+
     console.print(f"[bold]Documents tokenized:[/] {len(sentences):,}")
 
     console.print("[bold green]Training word2vec...")
