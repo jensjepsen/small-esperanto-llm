@@ -819,7 +819,7 @@ def find_comparable_pairs(entities: list[dict]) -> list[tuple[dict, dict, list[s
         if len(ents) < 2:
             continue
         # Sample pairs rather than doing all combinations
-        n_pairs = min(len(ents) * 3, 10000)
+        n_pairs = min(len(ents) * 5, 50000)
         for _ in range(n_pairs):
             a, b = random.sample(ents, 2)
 

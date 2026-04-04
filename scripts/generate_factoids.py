@@ -28,10 +28,10 @@ def main():
                         help="Number of paragraph variants per entity")
     parser.add_argument("--comparison-samples", type=int, default=10000,
                         help="Number of comparison pairs to sample")
-    parser.add_argument("--comparison-variants", type=int, default=2,
+    parser.add_argument("--comparison-variants", type=int, default=5,
                         help="Number of variants per comparison pair")
-    parser.add_argument("--few-shot-lists", type=int, default=5000,
-                        help="Number of few-shot lists to generate")
+    parser.add_argument("--few-shot-lists", type=int, default=0,
+                        help="Number of few-shot lists (0 = auto-match 25%% of single-entity count)")
     args = parser.parse_args()
 
     console.print(f"[bold green]Reading entities from {args.input}")
@@ -91,8 +91,9 @@ def main():
                 progress.advance(task)
 
         # --- Few-shot lists ---
-        console.print("[bold green]Generating few-shot lists...")
-        lists = generate_few_shot_lists(entities, n_lists=args.few_shot_lists)
+        n_few_shot = args.few_shot_lists if args.few_shot_lists > 0 else single_count // 2
+        console.print(f"[bold green]Generating {n_few_shot:,} few-shot lists...")
+        lists = generate_few_shot_lists(entities, n_lists=n_few_shot)
         list_count = 0
         for text in lists:
             record = {"text": text, "source": "wikidata_few_shot"}
