@@ -9,7 +9,7 @@ from gensim.models import Word2Vec
 from rich.console import Console
 from rich.progress import Progress
 
-from esperanto_lm.data import download_dataset, load_tokenizer
+from esperanto_lm.data import load_combined_dataset, load_tokenizer
 from esperanto_lm.morphology import classify_morpheme, decompose, decompose_text
 
 console = Console()
@@ -167,7 +167,14 @@ def cmd_train(args):
 
     console.print("[bold green]Loading tokenizer and dataset...")
     tok = load_tokenizer()
-    ds = download_dataset()
+    ds = load_combined_dataset(
+        use_hplt=args.use_hplt,
+        use_gutenberg=args.use_gutenberg,
+        use_mc4=args.use_mc4,
+        use_factoids=args.use_factoids,
+        use_sentences=args.use_sentences,
+    )
+    console.print(f"[bold]Train examples:[/] {len(ds['train']):,}")
 
     console.print("[bold green]Tokenizing documents...")
     total = args.max_docs if args.max_docs else len(ds["train"])
@@ -275,6 +282,11 @@ def main():
     train_parser.add_argument("--whole-words", action="store_true")
     train_parser.add_argument("--morphemes", action="store_true")
     train_parser.add_argument("--output", type=Path, default=DEFAULT_MODEL_PATH)
+    train_parser.add_argument("--use-hplt", action="store_true")
+    train_parser.add_argument("--use-gutenberg", action="store_true")
+    train_parser.add_argument("--use-mc4", action="store_true")
+    train_parser.add_argument("--use-factoids", action="store_true")
+    train_parser.add_argument("--use-sentences", action="store_true")
 
     # Query subcommand
     query_parser = subparsers.add_parser("query", help="Query a trained model")
