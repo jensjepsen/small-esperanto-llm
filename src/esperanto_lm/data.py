@@ -279,8 +279,9 @@ def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: 
     )
 
     def group_texts(examples):
-        # Concatenate all token IDs
-        concatenated = {k: sum(examples[k], []) for k in examples.keys()}
+        from itertools import chain
+        # Concatenate all token IDs (chain is O(n) vs sum which is O(n²))
+        concatenated = {k: list(chain.from_iterable(examples[k])) for k in examples.keys()}
         total_length = len(concatenated["input_ids"])
         # Drop the remainder that doesn't fill a full block
         total_length = (total_length // max_length) * max_length
