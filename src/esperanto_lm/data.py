@@ -267,11 +267,28 @@ def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: 
                        morpheme_preprocess: bool = True):
     """Tokenize dataset and pack into fixed-length blocks."""
 
-    def tokenize_fn(examples):
-        texts = examples["text"]
-        if morpheme_preprocess:
-            texts = [_morpheme_preprocess(t) for t in texts]
-        return tokenizer(texts, add_special_tokens=False)
+    if morpheme_preprocess:
+        # Pre-tokenize into morphemes, then look up IDs directly from vocab
+        # for known morphemes, falling back to tokenizer.encode for unknowns.
+        vocab = tokenizer.get_vocab()
+
+        def tokenize_fn(examples):
+            all_ids = []
+            for text in examples["text"]:
+                pre = _morpheme_preprocess(text)
+                ids = []
+                for m in pre.split():
+                    if m in vocab:
+                        ids.append(vocab[m])
+                    else:
+                        # Unknown morpheme — let BPE handle it
+                        ids.extend(tokenizer.encode(m, add_special_tokens=False))
+                all_ids.append(ids)
+            return {"input_ids": all_ids,
+                    "attention_mask": [[1] * len(ids) for ids in all_ids]}
+    else:
+        def tokenize_fn(examples):
+            return tokenizer(examples["text"], add_special_tokens=False)
 
     # Use num_proc=1 when morpheme preprocessing is enabled — the LRU cache
     # on decompose() is per-process, so a single process gets much better
