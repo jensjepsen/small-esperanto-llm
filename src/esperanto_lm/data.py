@@ -244,22 +244,36 @@ def filter_short_articles(dataset, min_length: int):
     return dataset.filter(lambda x: len(x["text"]) >= min_length, num_proc=4)
 
 
-def _morpheme_preprocess(text: str) -> str:
-    """Decompose text into space-separated morphemes for the morpheme tokenizer.
+def morpheme_tokenize(text: str) -> list[list[str]]:
+    """Decompose text into a list of words, each a list of morphemes.
 
-    Inserts <w> token at word boundaries so the model can reconstruct words.
+    Returns: [["mal", "bon", "a"], ["urb", "o"], ...]
+    Single source of truth for morpheme tokenization — used by both
+    training and inference.
     """
     import re
     from esperanto_lm.morphology import decompose
-    words = re.findall(r'[a-zA-ZĉĝĥĵŝŭĈĜĤĴŜŬ]+|[^\s]', text)
-    parts = []
-    for word in words:
-        if parts:
-            parts.append("<w>")
+    raw_words = re.findall(r'[a-zA-ZĉĝĥĵŝŭĈĜĤĴŜŬ]+|[^\s]', text)
+    result = []
+    for word in raw_words:
         if word[0].isalpha():
-            parts.extend(decompose(word))
+            result.append(decompose(word))
         else:
-            parts.append(word)
+            result.append([word])
+    return result
+
+
+def _morpheme_preprocess(text: str) -> str:
+    """Decompose text into space-separated morphemes with <w> boundaries.
+
+    Convenience wrapper around morpheme_tokenize for the generate script.
+    """
+    words = morpheme_tokenize(text)
+    parts = []
+    for i, morphemes in enumerate(words):
+        if i > 0:
+            parts.append("<w>")
+        parts.extend(morphemes)
     return " ".join(parts)
 
 
@@ -267,36 +281,16 @@ def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: 
                        morpheme_preprocess: bool = True):
     """Tokenize dataset and pack into fixed-length blocks."""
 
-    if morpheme_preprocess:
-        # Pre-tokenize into morphemes, then look up IDs directly from vocab
-        # for known morphemes, falling back to tokenizer.encode for unknowns.
-        vocab = tokenizer.get_vocab()
+    def tokenize_fn(examples):
+        texts = examples["text"]
+        if morpheme_preprocess:
+            texts = [_morpheme_preprocess(t) for t in texts]
+        return tokenizer(texts, add_special_tokens=False)
 
-        def tokenize_fn(examples):
-            all_ids = []
-            for text in examples["text"]:
-                pre = _morpheme_preprocess(text)
-                ids = []
-                for m in pre.split():
-                    if m in vocab:
-                        ids.append(vocab[m])
-                    else:
-                        # Unknown morpheme — let BPE handle it
-                        ids.extend(tokenizer.encode(m, add_special_tokens=False))
-                all_ids.append(ids)
-            return {"input_ids": all_ids,
-                    "attention_mask": [[1] * len(ids) for ids in all_ids]}
-    else:
-        def tokenize_fn(examples):
-            return tokenizer(examples["text"], add_special_tokens=False)
-
-    # Use num_proc=1 when morpheme preprocessing is enabled — the LRU cache
-    # on decompose() is per-process, so a single process gets much better
-    # cache hit rates (~4x faster than num_proc=4)
     tokenized = dataset.map(
         tokenize_fn,
         batched=True,
-        num_proc=1 if morpheme_preprocess else 4,
+        num_proc=4,
         remove_columns=dataset.column_names,
     )
 
