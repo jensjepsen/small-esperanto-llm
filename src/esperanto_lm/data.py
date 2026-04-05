@@ -244,11 +244,29 @@ def filter_short_articles(dataset, min_length: int):
     return dataset.filter(lambda x: len(x["text"]) >= min_length, num_proc=4)
 
 
-def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: int = MAX_LENGTH):
+def _morpheme_preprocess(text: str) -> str:
+    """Decompose text into space-separated morphemes for the morpheme tokenizer."""
+    import re
+    from esperanto_lm.morphology import decompose
+    words = re.findall(r'[a-zA-ZĉĝĥĵŝŭĈĜĤĴŜŬ]+|[^\s]', text)
+    morphemes = []
+    for word in words:
+        if word[0].isalpha():
+            morphemes.extend(decompose(word))
+        else:
+            morphemes.append(word)
+    return " ".join(morphemes)
+
+
+def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: int = MAX_LENGTH,
+                       morpheme_preprocess: bool = True):
     """Tokenize dataset and pack into fixed-length blocks."""
 
     def tokenize_fn(examples):
-        return tokenizer(examples["text"], add_special_tokens=False)
+        texts = examples["text"]
+        if morpheme_preprocess:
+            texts = [_morpheme_preprocess(t) for t in texts]
+        return tokenizer(texts, add_special_tokens=False)
 
     tokenized = dataset.map(
         tokenize_fn,

@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM
 
-from esperanto_lm.data import load_tokenizer
+from esperanto_lm.data import load_tokenizer, _morpheme_preprocess
 
 
 def main():
@@ -40,7 +40,8 @@ def main():
     model.to(device)
     model.eval()
 
-    inputs = tokenizer(args.prompt, return_tensors="pt").to(device)
+    prompt = _morpheme_preprocess(args.prompt)
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
     for i in range(args.num_samples):
         with torch.no_grad():
