@@ -20,27 +20,28 @@ from esperanto_lm.morphology import decompose
 
 console = Console()
 
-SPECIAL_TOKENS = ["<s>", "</s>", "<unk>", "<pad>"]
+SPECIAL_TOKENS = ["<s>", "</s>", "<unk>", "<pad>", "<w>"]
 
 
 def morpheme_iterator(dataset, max_docs: int = 0) -> Iterator[str]:
     """Yield text where each morpheme is a separate whitespace-delimited word.
 
-    A newline separates documents so BPE doesn't merge across documents.
+    <w> tokens are inserted between words to mark word boundaries.
     """
     for i, example in enumerate(dataset):
         if max_docs and i >= max_docs:
             break
         text = example["text"]
         words = re.findall(r'[a-zA-ZĉĝĥĵŝŭĈĜĤĴŜŬ]+|[^\s]', text)
-        morphemes = []
+        parts = []
         for word in words:
+            if parts:
+                parts.append("<w>")
             if word[0].isalpha():
-                morphemes.extend(decompose(word))
+                parts.extend(decompose(word))
             else:
-                morphemes.append(word)
-        # Each morpheme is a "word" for BPE — space separated
-        yield " ".join(morphemes)
+                parts.append(word)
+        yield " ".join(parts)
 
 
 EO_INITIAL_ALPHABET = list(

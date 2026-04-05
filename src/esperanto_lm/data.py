@@ -245,17 +245,22 @@ def filter_short_articles(dataset, min_length: int):
 
 
 def _morpheme_preprocess(text: str) -> str:
-    """Decompose text into space-separated morphemes for the morpheme tokenizer."""
+    """Decompose text into space-separated morphemes for the morpheme tokenizer.
+
+    Inserts <w> token at word boundaries so the model can reconstruct words.
+    """
     import re
     from esperanto_lm.morphology import decompose
     words = re.findall(r'[a-zA-ZĉĝĥĵŝŭĈĜĤĴŜŬ]+|[^\s]', text)
-    morphemes = []
+    parts = []
     for word in words:
+        if parts:
+            parts.append("<w>")
         if word[0].isalpha():
-            morphemes.extend(decompose(word))
+            parts.extend(decompose(word))
         else:
-            morphemes.append(word)
-    return " ".join(morphemes)
+            parts.append(word)
+    return " ".join(parts)
 
 
 def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: int = MAX_LENGTH,
