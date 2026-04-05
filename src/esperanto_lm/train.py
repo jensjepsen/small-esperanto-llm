@@ -1,6 +1,7 @@
 """Trainer setup and entry point."""
 
 import argparse
+from pathlib import Path
 
 from rich.console import Console
 from transformers import AutoModelForCausalLM, Trainer
@@ -46,6 +47,12 @@ def main():
         type=str,
         default=None,
         help="Load model weights from a directory (no optimizer state)",
+    )
+    parser.add_argument(
+        "--tokenizer",
+        type=str,
+        default="tokenizer_morpheme",
+        help="Path to tokenizer directory",
     )
     parser.add_argument(
         "--min-article-length",
@@ -97,8 +104,8 @@ def main():
     model_config = make_llama_config(args.config)
     training_args = make_training_args(args.config, output_dir, hub_model_id=args.push_to_hub)
 
-    console.print("[bold green]Loading tokenizer...")
-    tokenizer = load_tokenizer()
+    console.print(f"[bold green]Loading tokenizer from {args.tokenizer}...")
+    tokenizer = load_tokenizer(Path(args.tokenizer))
     model_config.vocab_size = len(tokenizer)
     model_config.pad_token_id = tokenizer.pad_token_id
     model_config.bos_token_id = tokenizer.bos_token_id

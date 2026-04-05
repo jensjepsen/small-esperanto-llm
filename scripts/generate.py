@@ -1,6 +1,7 @@
 """Generate text from a trained Esperanto LLaMA model."""
 
 import argparse
+from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM
@@ -28,9 +29,11 @@ def main():
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--repetition-penalty", type=float, default=1.1)
     parser.add_argument("--num-samples", type=int, default=1)
+    parser.add_argument("--tokenizer", type=str, default="tokenizer_morpheme",
+                        help="Path to tokenizer directory")
     args = parser.parse_args()
 
-    tokenizer = load_tokenizer()
+    tokenizer = load_tokenizer(Path(args.tokenizer))
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = AutoModelForCausalLM.from_pretrained(args.checkpoint)
