@@ -9,7 +9,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from esperanto_lm.data import download_dataset, train_tokenizer as train_legacy_tokenizer
+from esperanto_lm.data import download_dataset, load_combined_dataset, train_tokenizer as train_legacy_tokenizer
 
 console = Console()
 
@@ -23,10 +23,24 @@ def main():
                         help="Max documents to use (0 = all)")
     parser.add_argument("--output", type=Path, default=None,
                         help="Output directory (default: tokenizer_morpheme or tokenizer)")
+    parser.add_argument("--use-hplt", action="store_true")
+    parser.add_argument("--use-gutenberg", action="store_true")
+    parser.add_argument("--use-mc4", action="store_true")
+    parser.add_argument("--use-factoids", action="store_true")
+    parser.add_argument("--use-sentences", action="store_true")
     args = parser.parse_args()
 
     console.print("[bold green]Loading dataset...")
-    dataset = download_dataset()
+    any_extra = args.use_hplt or args.use_gutenberg or args.use_mc4 or args.use_factoids or args.use_sentences
+    if any_extra:
+        dataset = load_combined_dataset(
+            use_hplt=args.use_hplt, use_gutenberg=args.use_gutenberg,
+            use_mc4=args.use_mc4, use_factoids=args.use_factoids,
+            use_sentences=args.use_sentences,
+        )
+    else:
+        dataset = download_dataset()
+    console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")
 
     if args.legacy:
         output = args.output or Path("tokenizer")
