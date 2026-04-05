@@ -174,7 +174,7 @@ def _try_split_stem(stem: str, roots: frozenset[str], prefixes: frozenset[str],
     return _try_split_stem_cached(stem, roots, prefixes, suffixes)
 
 
-@lru_cache(maxsize=100_000)
+@lru_cache(maxsize=500_000)
 def _try_split_stem_cached(stem: str, roots: frozenset[str], prefixes: frozenset[str],
                            suffixes: frozenset[str]) -> tuple[str, ...] | None:
     if not stem:
@@ -214,7 +214,7 @@ def decompose(word: str) -> list[str]:
     return list(_decompose_cached(word))
 
 
-@lru_cache(maxsize=100_000)
+@lru_cache(maxsize=500_000)
 def _decompose_cached(word: str) -> tuple[str, ...]:
     """Decompose an Esperanto word into morphemes.
 
