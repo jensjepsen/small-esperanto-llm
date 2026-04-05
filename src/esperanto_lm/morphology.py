@@ -7,6 +7,7 @@ from the Akademia Vortaro / Universala Vortaro tradition.
 """
 
 import json
+from functools import lru_cache
 from pathlib import Path
 
 # --- Load official root dictionary ---
@@ -53,6 +54,21 @@ def get_prefixes() -> set[str]:
 def get_suffixes() -> set[str]:
     _load_vortaro()
     return _DICT_SUFFIXES
+
+
+@lru_cache(maxsize=1)
+def _get_frozen_roots() -> frozenset[str]:
+    return frozenset(get_roots())
+
+
+@lru_cache(maxsize=1)
+def _get_frozen_prefixes() -> frozenset[str]:
+    return frozenset(get_prefixes())
+
+
+@lru_cache(maxsize=1)
+def _get_frozen_suffixes() -> frozenset[str]:
+    return frozenset(get_suffixes())
 
 
 # --- Closed-class words that should not be decomposed ---
@@ -152,47 +168,54 @@ def decompose_tagged(word: str) -> list[tuple[str, str]]:
     return tagged
 
 
-def _try_split_stem(stem: str, roots: set[str], prefixes: set[str],
-                    suffixes: set[str]) -> list[str] | None:
-    """Try to split a stem into known roots, prefixes, and suffixes.
+def _try_split_stem(stem: str, roots: frozenset[str], prefixes: frozenset[str],
+                    suffixes: frozenset[str]) -> tuple[str, ...] | None:
+    """Try to split a stem into known roots, prefixes, and suffixes."""
+    return _try_split_stem_cached(stem, roots, prefixes, suffixes)
 
-    Returns a list of morphemes if successful, None if the stem
-    can't be fully decomposed into known parts.
-    """
+
+@lru_cache(maxsize=100_000)
+def _try_split_stem_cached(stem: str, roots: frozenset[str], prefixes: frozenset[str],
+                           suffixes: frozenset[str]) -> tuple[str, ...] | None:
     if not stem:
-        return []
+        return ()
 
     # Direct root match
     if stem in roots:
-        return [stem]
+        return (stem,)
 
     # Try prefix + remainder
     for prefix in sorted(prefixes, key=len, reverse=True):
         if stem.startswith(prefix) and len(stem) > len(prefix):
-            rest = _try_split_stem(stem[len(prefix):], roots, prefixes, suffixes)
+            rest = _try_split_stem_cached(stem[len(prefix):], roots, prefixes, suffixes)
             if rest is not None:
-                return [prefix] + rest
+                return (prefix,) + rest
 
     # Try remainder + suffix
     for suffix in sorted(suffixes, key=len, reverse=True):
         if stem.endswith(suffix) and len(stem) > len(suffix):
-            rest = _try_split_stem(stem[:-len(suffix)], roots, prefixes, suffixes)
+            rest = _try_split_stem_cached(stem[:-len(suffix)], roots, prefixes, suffixes)
             if rest is not None:
-                return rest + [suffix]
+                return rest + (suffix,)
 
     # Try splitting into two known roots (compound word)
     for i in range(MIN_ROOT_LENGTH, len(stem) - MIN_ROOT_LENGTH + 1):
         left = stem[:i]
         right = stem[i:]
         if left in roots:
-            rest = _try_split_stem(right, roots, prefixes, suffixes)
+            rest = _try_split_stem_cached(right, roots, prefixes, suffixes)
             if rest is not None:
-                return [left] + rest
+                return (left,) + rest
 
     return None
 
 
 def decompose(word: str) -> list[str]:
+    return list(_decompose_cached(word))
+
+
+@lru_cache(maxsize=100_000)
+def _decompose_cached(word: str) -> tuple[str, ...]:
     """Decompose an Esperanto word into morphemes.
 
     Uses the official root dictionary to validate splits.
@@ -209,11 +232,11 @@ def decompose(word: str) -> list[str]:
 
     # Don't decompose closed-class words
     if lower in DO_NOT_DECOMPOSE:
-        return [lower]
+        return (lower,)
 
-    roots = get_roots()
-    prefixes = get_prefixes()
-    suffixes = get_suffixes()
+    roots = _get_frozen_roots()
+    prefixes = _get_frozen_prefixes()
+    suffixes = _get_frozen_suffixes()
 
     # Strip grammatical endings right to left: first n (accusative),
     # then j (plural), then the base ending (o/a/e/i/u or verb form)
@@ -241,18 +264,18 @@ def decompose(word: str) -> list[str]:
     parts = _try_split_stem(stem, roots, prefixes, suffixes)
 
     if parts is not None:
-        result = parts
+        result = list(parts)
         if ending:
             result.append(ending)
         result.extend(reversed(trailing))
-        return result
+        return tuple(result)
 
     # Fallback: return as a single root (unknown word)
     result = [stem]
     if ending:
         result.append(ending)
     result.extend(reversed(trailing))
-    return result
+    return tuple(result)
 
 
 def decompose_text(text: str) -> list[str]:
