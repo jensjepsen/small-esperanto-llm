@@ -8,8 +8,6 @@ from transformers import AutoModelForCausalLM, Trainer
 
 from esperanto_lm.config import make_llama_config, make_training_args
 from esperanto_lm.data import (
-    download_dataset,
-    filter_short_articles,
     load_combined_dataset,
     load_tokenizer,
     make_data_collator,
@@ -121,15 +119,14 @@ def main():
     console.print(f"[bold]Parameters:[/] {n_params:,}")
 
     console.print("[bold green]Loading and tokenizing dataset...")
-    dataset = load_combined_dataset(use_wiki=not args.no_wiki, use_hplt=args.use_hplt, use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4, use_factoids=args.use_factoids, use_sentences=args.use_sentences)
+    dataset = load_combined_dataset(
+        use_wiki=not args.no_wiki, use_hplt=args.use_hplt,
+        use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4,
+        use_factoids=args.use_factoids, use_sentences=args.use_sentences,
+        min_article_length=args.min_article_length,
+    )
     console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")
     console.print(f"[bold]Test examples:[/] {len(dataset['test']):,}")
-    if args.min_article_length > 0:
-        before = len(dataset["train"])
-        dataset["train"] = filter_short_articles(dataset["train"], args.min_article_length)
-        dataset["test"] = filter_short_articles(dataset["test"], args.min_article_length)
-        after = len(dataset["train"])
-        console.print(f"[bold]Filtered articles:[/] {before:,} -> {after:,} (min {args.min_article_length} chars)")
     max_length = model_config.max_position_embeddings
     console.print(f"[bold]Chunk length:[/] {max_length}")
     train_dataset = tokenize_and_chunk(dataset["train"], tokenizer, max_length=max_length)

@@ -133,6 +133,7 @@ def load_combined_dataset(
     use_mc4: bool = False,
     use_factoids: bool = False,
     use_sentences: bool = False,
+    min_article_length: int = 0,
 ) -> DatasetDict:
     """Load datasets based on flags, returning train/test splits."""
     base_train = []
@@ -140,6 +141,11 @@ def load_combined_dataset(
 
     if use_wiki:
         wiki = download_dataset(wiki_dir)
+        if min_article_length > 0:
+            wiki = DatasetDict({
+                "train": filter_short_articles(wiki["train"], min_article_length),
+                "test": filter_short_articles(wiki["test"], min_article_length),
+            })
         base_train.append(wiki["train"])
         base_test.append(wiki["test"])
 
@@ -149,6 +155,8 @@ def load_combined_dataset(
     if use_hplt:
         hplt = load_hplt_dataset(hplt_dir)
         if hplt is not None:
+            if min_article_length > 0:
+                hplt = filter_short_articles(hplt, min_article_length)
             hplt_splits = hplt.train_test_split(test_size=0.05, seed=42)
             extra_train.append(hplt_splits["train"])
             extra_test.append(hplt_splits["test"])
@@ -163,10 +171,13 @@ def load_combined_dataset(
     if use_mc4:
         mc4 = load_mc4_dataset(mc4_dir)
         if mc4 is not None:
+            if min_article_length > 0:
+                mc4 = filter_short_articles(mc4, min_article_length)
             mc4_splits = mc4.train_test_split(test_size=0.05, seed=42)
             extra_train.append(mc4_splits["train"])
             extra_test.append(mc4_splits["test"])
 
+    # Factoids and sentences are NOT filtered — they're intentionally short
     if use_factoids:
         factoids = load_factoids_dataset(factoids_path)
         if factoids is not None:
