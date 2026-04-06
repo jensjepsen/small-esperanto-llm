@@ -25,7 +25,7 @@ def main():
         "--config",
         type=str,
         default="tiny",
-        choices=["tiny", "small", "medium"],
+        choices=["tiny", "small", "medium", "large"],
         help="Model config to use",
     )
     parser.add_argument(
