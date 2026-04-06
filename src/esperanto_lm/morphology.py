@@ -214,7 +214,7 @@ def decompose(word: str) -> list[str]:
     return list(_decompose_cached(word))
 
 
-@lru_cache(maxsize=100_000)
+@lru_cache(maxsize=1_000_000)
 def _decompose_cached(word: str) -> tuple[str, ...]:
     """Decompose an Esperanto word into morphemes.
 
