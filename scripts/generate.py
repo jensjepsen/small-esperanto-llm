@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM
 
-from esperanto_lm.data import load_tokenizer, _morpheme_preprocess
+from esperanto_lm.data import load_tokenizer
 
 
 def main():
@@ -40,7 +40,23 @@ def main():
     model.to(device)
     model.eval()
 
-    prompt = _morpheme_preprocess(args.prompt)
+    # Morpheme preprocess: decompose prompt into morphemes with <w> boundaries
+    import re
+    from esperanto_lm.morphology import decompose
+
+    words = re.findall(r'[a-zA-ZĉĝĥĵŝŭĈĜĤĴŜŬ]+|[^\s]', args.prompt)
+    parts = []
+    has_w_token = "<w>" in tokenizer.get_vocab()
+    for word in words:
+        if parts:
+            if has_w_token:
+                parts.append("<w>")
+        if word[0].isalpha():
+            parts.extend(decompose(word))
+        else:
+            parts.append(word)
+    prompt = " ".join(parts)
+
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
     for i in range(args.num_samples):
@@ -54,7 +70,31 @@ def main():
                 repetition_penalty=args.repetition_penalty,
                 do_sample=True,
             )
-        text = tokenizer.decode(output[0], skip_special_tokens=True)
+
+        # Decode: convert tokens back to text
+        gen_tokens = tokenizer.convert_ids_to_tokens(output[0])
+        # Filter special tokens
+        gen_tokens = [t for t in gen_tokens if t not in ("<s>", "</s>", "<pad>", "<unk>")]
+
+        if has_w_token:
+            # Join tokens, replace <w> with space
+            text = "".join(t if t != "<w>" else " " for t in gen_tokens)
+        else:
+            # No word boundary token — use heuristic spacing
+            # Insert space before morphemes that are known word-starters
+            # (particles, articles, prepositions, etc.)
+            from esperanto_lm.morphology import DO_NOT_DECOMPOSE, get_prefixes
+            word_starters = DO_NOT_DECOMPOSE | get_prefixes()
+            text_parts = []
+            for t in gen_tokens:
+                if t in (".", ",", ";", ":", "!", "?", ")", "]"):
+                    text_parts.append(t)
+                elif text_parts and t not in ("(", "["):
+                    text_parts.append(" " + t)
+                else:
+                    text_parts.append(t)
+            text = "".join(text_parts)
+
         if args.num_samples > 1:
             print(f"--- Sample {i + 1} ---")
         print(text)
