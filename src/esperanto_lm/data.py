@@ -15,6 +15,11 @@ MC4_DIR = Path("data/mc4/eo")
 FACTOIDS_PATH = Path("/mnt/data2/wikidata5m/eo_factoids/factoid_text.jsonl")
 SENTENCES_PATH = Path("data/epo_sentences.tsv")
 TOKENIZER_DIR = Path("tokenizer_morpheme")
+
+# HF Hub fallbacks
+HF_TOKENIZER = "jensjepsen/esperanto-morpheme-tokenizer"
+HF_FACTOIDS = "jensjepsen/esperanto-factoids"
+HF_SENTENCES = "jensjepsen/esperanto-sentences"
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
 SPECIAL_TOKENS = ["<s>", "</s>", "<unk>", "<pad>"]
@@ -94,8 +99,14 @@ def load_sentences_dataset(sentences_path: Path = SENTENCES_PATH) -> Dataset | N
     return Dataset.from_dict({"text": texts})
 
 
+FACTOIDS_PATH_LOCAL = Path("data/factoids/factoid_text.jsonl")
+
+
 def load_factoids_dataset(factoids_path: Path = FACTOIDS_PATH) -> Dataset | None:
     """Load generated Wikidata factoid paragraphs."""
+    if not factoids_path.exists():
+        # Try local download path
+        factoids_path = FACTOIDS_PATH_LOCAL
     if not factoids_path.exists():
         return None
     # Read only the text field to avoid schema conflicts between

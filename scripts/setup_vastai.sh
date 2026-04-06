@@ -1,10 +1,10 @@
 #!/bin/bash
-# Setup script for vast.ai instances
+# Setup script for cloud GPU instances (vast.ai, RunPod, etc.)
 # Usage: bash scripts/setup_vastai.sh [small|medium]
 set -e
 
 CONFIG=${1:-small}
-echo "=== Esperanto LM setup for vast.ai ==="
+echo "=== Esperanto LM setup ==="
 echo "Config: $CONFIG"
 
 # Install system dependencies
@@ -28,9 +28,9 @@ uv run download-data
 uv run download-hplt --min-score 7
 uv run download-gutenberg
 
-# Train tokenizer
-echo "=== Training tokenizer ==="
-uv run train-tokenizer
+# Download tokenizer and factoids from HF Hub
+echo "=== Downloading from HF Hub ==="
+uv run python scripts/download_from_hub.py --all
 
 # Print GPU info
 echo "=== GPU Info ==="
@@ -46,4 +46,4 @@ if torch.cuda.is_available():
 
 echo ""
 echo "=== Ready! Run with: ==="
-echo "uv run train --config $CONFIG --output-dir runs/$CONFIG --use-hplt --use-gutenberg --min-article-length 500"
+echo "uv run train --config $CONFIG --output-dir runs/$CONFIG --use-hplt --use-gutenberg --use-factoids --use-sentences --min-article-length 500"
