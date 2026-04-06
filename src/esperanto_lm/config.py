@@ -53,7 +53,7 @@ def make_training_args(config_name: str, output_dir: str, hub_model_id: str | No
         per_device_train_batch_size=t["per_device_train_batch_size"],
         per_device_eval_batch_size=t["per_device_eval_batch_size"],
         gradient_accumulation_steps=t["gradient_accumulation_steps"],
-        warmup_ratio=t["warmup_ratio"],
+        warmup_steps=t.get("warmup_steps", 1000),
         lr_scheduler_type=t["lr_scheduler_type"],
         learning_rate=t["learning_rate"],
         weight_decay=t["weight_decay"],

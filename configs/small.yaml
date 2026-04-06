@@ -13,7 +13,7 @@ training:
   per_device_train_batch_size: 32
   per_device_eval_batch_size: 32
   gradient_accumulation_steps: 4
-  warmup_ratio: 0.05
+  warmup_steps: 1000
   lr_scheduler_type: cosine
   learning_rate: 3.0e-4
   weight_decay: 0.1
