@@ -49,8 +49,8 @@ def main():
     parser = argparse.ArgumentParser(description="Fine-tune on SFT data")
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to pretrained model checkpoint")
-    parser.add_argument("--sft-data", type=Path, default=Path("data/sft/sft_factoid.jsonl"),
-                        help="Path to SFT training data")
+    parser.add_argument("--sft-data", type=str, default="jensjepsen/esperanto-sft-factoid",
+                        help="Path to local SFT JSONL or HF Hub dataset name")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory (default: <checkpoint>-sft)")
     parser.add_argument("--tokenizer", type=str, default="tokenizer_morpheme")
@@ -81,7 +81,15 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     console.print(f"[bold green]Loading SFT data from {args.sft_data}...")
-    conversations = load_sft_data(args.sft_data)
+    sft_path = Path(args.sft_data)
+    if sft_path.exists():
+        # Local JSONL file
+        conversations = load_sft_data(sft_path)
+    else:
+        # HF Hub dataset
+        from datasets import load_dataset as hf_load
+        ds = hf_load(args.sft_data, split="train")
+        conversations = [format_conversation(row["messages"]) for row in ds]
     console.print(f"[bold]Conversations loaded:[/] {len(conversations):,}")
 
     # Morpheme-preprocess and tokenize
