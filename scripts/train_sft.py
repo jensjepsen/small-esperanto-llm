@@ -153,12 +153,17 @@ def main():
         dataloader_num_workers=2,
     )
 
+    # Data collator that pads sequences to equal length
+    from transformers import DataCollatorForLanguageModeling
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
     console.print("[bold green]Starting SFT training...")
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=splits["train"],
         eval_dataset=splits["test"],
+        data_collator=data_collator,
     )
 
     trainer.train()
