@@ -44,14 +44,16 @@ def decode_tokens(tokenizer, token_ids):
 def main():
     parser = argparse.ArgumentParser(description="Chat with an SFT model")
     parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--tokenizer", type=str, default="tokenizer_morpheme")
+    parser.add_argument("--tokenizer", type=str, default=None,
+                        help="Tokenizer path (default: load from checkpoint)")
     parser.add_argument("--max-new-tokens", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--prompt", type=str, default=None,
                         help="Single prompt (non-interactive mode)")
     args = parser.parse_args()
 
-    tokenizer = load_tokenizer(Path(args.tokenizer))
+    tok_path = args.tokenizer or args.checkpoint
+    tokenizer = load_tokenizer(Path(tok_path))
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = AutoModelForCausalLM.from_pretrained(args.checkpoint)
