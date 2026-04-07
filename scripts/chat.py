@@ -8,10 +8,37 @@ import torch
 from transformers import AutoModelForCausalLM, PreTrainedTokenizerFast
 
 from esperanto_lm.data import load_tokenizer, _morpheme_preprocess
+from esperanto_lm.morphology import decompose
 
 USER_TOKEN = "<|user|>"
 ASSISTANT_TOKEN = "<|assistant|>"
 END_TOKEN = "<|end|>"
+
+SKIP_TOKENS = {"<s>", "</s>", "<pad>", "<unk>", USER_TOKEN, ASSISTANT_TOKEN, END_TOKEN}
+
+
+def decode_tokens(tokenizer, token_ids):
+    """Decode token IDs to text, handling <w> word boundaries.
+    Same logic as generate.py.
+    """
+    gen_tokens = tokenizer.convert_ids_to_tokens(token_ids)
+    gen_tokens = [t for t in gen_tokens if t not in SKIP_TOKENS]
+
+    has_w = "<w>" in tokenizer.get_vocab()
+    if has_w:
+        text = "".join(t if t != "<w>" else " " for t in gen_tokens)
+    else:
+        text_parts = []
+        for t in gen_tokens:
+            if t in (".", ",", ";", ":", "!", "?", ")", "]"):
+                text_parts.append(t)
+            elif text_parts and t not in ("(", "["):
+                text_parts.append(" " + t)
+            else:
+                text_parts.append(t)
+        text = "".join(text_parts)
+
+    return text.strip()
 
 
 def main():
@@ -31,8 +58,6 @@ def main():
     model.to(device)
     model.eval()
 
-    special_tokens = [USER_TOKEN, ASSISTANT_TOKEN, END_TOKEN]
-
     def encode_chat(messages: list[dict]) -> str:
         """Format messages and morpheme-preprocess the content."""
         parts = []
@@ -51,6 +76,8 @@ def main():
         prompt = encode_chat(messages)
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
+        end_id = tokenizer.convert_tokens_to_ids(END_TOKEN)
+
         with torch.no_grad():
             output = model.generate(
                 **inputs,
@@ -59,42 +86,23 @@ def main():
                 do_sample=True,
                 top_p=0.95,
                 repetition_penalty=1.1,
-                eos_token_id=tokenizer.convert_tokens_to_ids(END_TOKEN),
+                eos_token_id=end_id if end_id != tokenizer.unk_token_id else None,
             )
 
-        # Decode only the new tokens
-        new_tokens = output[0][inputs["input_ids"].shape[1]:]
+        # Get only new tokens
+        new_ids = output[0][inputs["input_ids"].shape[1]:].tolist()
 
-        # Stop at END_TOKEN
-        end_id = tokenizer.convert_tokens_to_ids(END_TOKEN)
-        trimmed = []
-        for tok_id in new_tokens.tolist():
-            if tok_id == end_id:
-                break
-            trimmed.append(tok_id)
+        # Trim at END_TOKEN
+        if end_id in new_ids:
+            new_ids = new_ids[:new_ids.index(end_id)]
 
-        # Use convert_ids_to_tokens for <w> handling
-        gen_tokens = tokenizer.convert_ids_to_tokens(trimmed)
-
-        # Filter out chat tokens
-        gen_tokens = [t for t in gen_tokens if t not in special_tokens]
-
-        # Join with <w> handling
-        has_w = "<w>" in tokenizer.get_vocab()
-        if has_w:
-            text = "".join(t if t != "<w>" else " " for t in gen_tokens)
-        else:
-            text = " ".join(gen_tokens)
-
-        return text.strip()
+        return decode_tokens(tokenizer, new_ids)
 
     if args.prompt:
-        # Single prompt mode
         messages = [{"role": "user", "content": args.prompt}]
         response = generate_response(messages)
         print(response)
     else:
-        # Interactive mode
         print("Esperanto SFT Chat (tajpu 'quit' por eliri)")
         print()
         messages = []
