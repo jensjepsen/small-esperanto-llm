@@ -64,21 +64,27 @@ def main():
 
         # Decode only the new tokens
         new_tokens = output[0][inputs["input_ids"].shape[1]:]
-        gen_tokens = tokenizer.convert_ids_to_tokens(new_tokens)
 
         # Stop at END_TOKEN
-        response_tokens = []
-        for t in gen_tokens:
-            if t == END_TOKEN:
+        end_id = tokenizer.convert_tokens_to_ids(END_TOKEN)
+        trimmed = []
+        for tok_id in new_tokens.tolist():
+            if tok_id == end_id:
                 break
-            response_tokens.append(t)
+            trimmed.append(tok_id)
+
+        # Use convert_ids_to_tokens for <w> handling
+        gen_tokens = tokenizer.convert_ids_to_tokens(trimmed)
+
+        # Filter out chat tokens
+        gen_tokens = [t for t in gen_tokens if t not in special_tokens]
 
         # Join with <w> handling
         has_w = "<w>" in tokenizer.get_vocab()
         if has_w:
-            text = "".join(t if t != "<w>" else " " for t in response_tokens)
+            text = "".join(t if t != "<w>" else " " for t in gen_tokens)
         else:
-            text = " ".join(response_tokens)
+            text = " ".join(gen_tokens)
 
         return text.strip()
 
