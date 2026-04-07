@@ -19,14 +19,18 @@ def main():
     parser.add_argument("--tokenizer", action="store_true", help="Push tokenizer")
     parser.add_argument("--factoids", action="store_true", help="Push factoids dataset")
     parser.add_argument("--sentences", action="store_true", help="Push sentences dataset")
+    parser.add_argument("--sft-factoid", action="store_true", help="Push SFT factoid dataset")
+    parser.add_argument("--sft-creative", action="store_true", help="Push SFT creative dataset")
     parser.add_argument("--all", action="store_true", help="Push everything")
     parser.add_argument("--tokenizer-path", type=Path, default=Path("tokenizer_morpheme"))
     parser.add_argument("--factoids-path", type=Path,
                         default=Path("/mnt/data2/wikidata5m/eo_factoids/factoid_text.jsonl"))
     parser.add_argument("--sentences-path", type=Path, default=Path("data/epo_sentences.tsv"))
+    parser.add_argument("--sft-factoid-path", type=Path, default=Path("data/sft/sft_factoid.jsonl"))
+    parser.add_argument("--sft-creative-path", type=Path, default=Path("data/sft/sft_creative.jsonl"))
     args = parser.parse_args()
 
-    if not (args.tokenizer or args.factoids or args.sentences or args.all):
+    if not (args.tokenizer or args.factoids or args.sentences or args.sft_factoid or args.sft_creative or args.all):
         parser.print_help()
         return
 
@@ -68,6 +72,28 @@ def main():
         ds = Dataset.from_dict({"text": texts})
         ds.push_to_hub(repo_id)
         console.print(f"[bold]Done! {len(texts):,} sentences → {repo_id}")
+
+    for flag, path_attr, hub_name in [
+        ("sft_factoid", "sft_factoid_path", "esperanto-sft-factoid"),
+        ("sft_creative", "sft_creative_path", "esperanto-sft-creative"),
+    ]:
+        if getattr(args, flag) or args.all:
+            path = getattr(args, path_attr)
+            repo_id = f"{args.org}/{hub_name}"
+            console.print(f"[bold green]Pushing SFT data from {path} to {repo_id}...")
+            data = []
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+            ds = Dataset.from_list(data)
+            ds.push_to_hub(repo_id)
+            console.print(f"[bold]Done! {len(data):,} conversations → {repo_id}")
 
 
 if __name__ == "__main__":

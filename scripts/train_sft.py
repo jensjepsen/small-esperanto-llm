@@ -49,8 +49,9 @@ def main():
     parser = argparse.ArgumentParser(description="Fine-tune on SFT data")
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to pretrained model checkpoint")
-    parser.add_argument("--sft-data", type=str, default="jensjepsen/esperanto-sft-factoid",
-                        help="Path to local SFT JSONL or HF Hub dataset name")
+    parser.add_argument("--sft-data", type=str, nargs="+",
+                        default=["jensjepsen/esperanto-sft-factoid", "jensjepsen/esperanto-sft-creative"],
+                        help="Paths to local SFT JSONL files or HF Hub dataset names")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory (default: <checkpoint>-sft)")
     parser.add_argument("--tokenizer", type=str, default="tokenizer_morpheme")
@@ -80,17 +81,18 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    console.print(f"[bold green]Loading SFT data from {args.sft_data}...")
-    sft_path = Path(args.sft_data)
-    if sft_path.exists():
-        # Local JSONL file
-        conversations = load_sft_data(sft_path)
-    else:
-        # HF Hub dataset
-        from datasets import load_dataset as hf_load
-        ds = hf_load(args.sft_data, split="train")
-        conversations = [format_conversation(row["messages"]) for row in ds]
-    console.print(f"[bold]Conversations loaded:[/] {len(conversations):,}")
+    conversations = []
+    for source in args.sft_data:
+        console.print(f"[bold green]Loading SFT data from {source}...")
+        sft_path = Path(source)
+        if sft_path.exists():
+            conversations.extend(load_sft_data(sft_path))
+        else:
+            from datasets import load_dataset as hf_load
+            ds = hf_load(source, split="train")
+            conversations.extend([format_conversation(row["messages"]) for row in ds])
+        console.print(f"[bold]  Loaded, total so far:[/] {len(conversations):,}")
+    console.print(f"[bold]Total conversations:[/] {len(conversations):,}")
 
     # Morpheme-preprocess and tokenize
     console.print("[bold green]Tokenizing conversations...")

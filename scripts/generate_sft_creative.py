@@ -207,7 +207,7 @@ def main():
     total_creative = 0
     total_continuation = 0
 
-    with open(args.output, "w") as out:
+    with open(args.output, "a") as out:
         with Progress() as progress:
             task = progress.add_task("Generating...", total=args.num_batches)
 
@@ -221,21 +221,24 @@ def main():
                         "assistant": "...",
                     })
 
-                try:
-                    pairs = generate_batch(client, prompts)
-                    for pair in pairs:
-                        out.write(json.dumps(pair, ensure_ascii=False) + "\n")
-                        total_creative += 1
+                for attempt in range(5):
+                    try:
+                        pairs = generate_batch(client, prompts)
+                        for pair in pairs:
+                            out.write(json.dumps(pair, ensure_ascii=False) + "\n")
+                            total_creative += 1
 
-                        cont = split_continuation(pair)
-                        if cont:
-                            out.write(json.dumps(cont, ensure_ascii=False) + "\n")
-                            total_continuation += 1
-                except Exception as e:
-                    console.print(f"[red]Batch {batch_idx} failed: {e}")
+                            cont = split_continuation(pair)
+                            if cont:
+                                out.write(json.dumps(cont, ensure_ascii=False) + "\n")
+                                total_continuation += 1
+                        break
+                    except Exception as e:
+                        wait = 2 ** attempt
+                        console.print(f"[red]Batch {batch_idx} attempt {attempt+1} failed: {e}. Retrying in {wait}s...")
+                        time.sleep(wait)
 
                 progress.advance(task)
-                time.sleep(0.5)
 
     console.print()
     console.print(f"[bold]Creative/explanation:[/] {total_creative:,}")
