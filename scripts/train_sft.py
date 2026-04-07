@@ -121,7 +121,6 @@ def main():
     dataset = Dataset.from_dict({
         "input_ids": [t["input_ids"] for t in tokenized],
         "attention_mask": [t["attention_mask"] for t in tokenized],
-        "labels": [t["input_ids"].copy() for t in tokenized],
     })
 
     splits = dataset.train_test_split(test_size=0.05, seed=42)
