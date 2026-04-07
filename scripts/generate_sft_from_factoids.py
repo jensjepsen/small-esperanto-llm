@@ -784,13 +784,13 @@ def main():
     parser = argparse.ArgumentParser(description="Generate SFT data from factoids")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--max-conversations", type=int, default=30000,
+    parser.add_argument("--max-conversations", type=int, default=100000,
                         help="Max conversations (1-5 turns each)")
-    parser.add_argument("--max-cross", type=int, default=5000,
+    parser.add_argument("--max-cross", type=int, default=20000,
                         help="Max cross-entity conversations")
-    parser.add_argument("--max-compare", type=int, default=5000,
+    parser.add_argument("--max-compare", type=int, default=20000,
                         help="Max comparison Q&A pairs")
-    parser.add_argument("--max-superlative", type=int, default=3000,
+    parser.add_argument("--max-superlative", type=int, default=10000,
                         help="Max superlative Q&A pairs")
     args = parser.parse_args()
 
@@ -799,15 +799,15 @@ def main():
 
     console.print(f"[bold green]Reading entities from {args.input}")
 
+    # Read all usable entities, then shuffle for unbiased sampling
     entities = []
     with open(args.input) as f:
         for line in f:
             entity = json.loads(line)
-            if not _should_skip(entity) and len(_usable_facts(entity)) >= 2:
+            if not _should_skip(entity) and len(_usable_facts(entity)) >= 1:
                 entities.append(entity)
-            if len(entities) >= 100000:
-                break
 
+    random.shuffle(entities)
     console.print(f"[bold]Usable entities:[/] {len(entities):,}")
 
     conv_count = 0
