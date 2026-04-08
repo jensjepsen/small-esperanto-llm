@@ -50,6 +50,8 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--prompt", type=str, default=None,
                         help="Single prompt (non-interactive mode)")
+    parser.add_argument("--passes", type=int, default=1,
+                        help="Number of passes per prompt (for stability testing)")
     args = parser.parse_args()
 
     tok_path = args.tokenizer or args.checkpoint
@@ -102,8 +104,13 @@ def main():
 
     if args.prompt:
         messages = [{"role": "user", "content": args.prompt}]
-        response = generate_response(messages)
-        print(response)
+        if args.passes > 1:
+            for i in range(args.passes):
+                response = generate_response(messages)
+                print(f"  {i+1}: {response}")
+        else:
+            response = generate_response(messages)
+            print(response)
     else:
         print("Esperanto SFT Chat (tajpu 'quit' por eliri)")
         print()
