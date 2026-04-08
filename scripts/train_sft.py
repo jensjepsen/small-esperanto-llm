@@ -62,7 +62,17 @@ def main():
     parser.add_argument("--max-length", type=int, default=512)
     args = parser.parse_args()
 
-    output_dir = args.output_dir or f"{args.checkpoint.rstrip('/')}-sft"
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        base = f"{args.checkpoint.rstrip('/')}-sft"
+        if not Path(base).exists():
+            output_dir = base
+        else:
+            n = 2
+            while Path(f"{base}-{n}").exists():
+                n += 1
+            output_dir = f"{base}-{n}"
 
     console.print(f"[bold green]Loading model from {args.checkpoint}...")
     model = AutoModelForCausalLM.from_pretrained(args.checkpoint)

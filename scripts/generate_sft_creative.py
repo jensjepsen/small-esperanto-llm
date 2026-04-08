@@ -86,9 +86,9 @@ HOWTO_PROMPTS = [
 ALL_PROMPTS = CREATIVE_PROMPTS + EXPLANATION_PROMPTS + OPINION_PROMPTS + HOWTO_PROMPTS
 
 
-def load_topics(factoids_path: Path, max_topics: int = 5000) -> list[str]:
+def load_topics(factoids_path: Path) -> set[str]:
     """Load diverse topic names from factoid entities."""
-    topics = []
+    topics = set()
     skip = {"taksono", "vikimedia apartigilo", "vikimedia kategorio",
             "familia nomo", "jaro", "taxonomy template",
             "wikimedia human name disambiguation page",
@@ -103,12 +103,9 @@ def load_topics(factoids_path: Path, max_topics: int = 5000) -> list[str]:
                 continue
             label = entity["label"]
             if len(label) > 3 and not label.startswith("Q"):
-                topics.append(label)
-            if len(topics) >= max_topics * 3:
-                break
+                topics.add(label)
 
-    random.shuffle(topics)
-    return topics[:max_topics]
+    return topics
 
 
 def generate_batch(client, prompts: list[dict]) -> list[dict]:
@@ -201,7 +198,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     console.print("[bold green]Loading topics from factoids...")
-    topics = load_topics(args.factoids)
+    topics = list(load_topics(args.factoids))
     console.print(f"[bold]Topics loaded:[/] {len(topics):,}")
 
     total_creative = 0
