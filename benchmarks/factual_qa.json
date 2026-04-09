@@ -181,7 +181,10 @@
   },
   {
     "question": "Kio estas la ĉefurbo de Ĉilio?",
-    "answer": "Santjago",
+    "answer": [
+      "Santjago",
+      "Santiago"
+    ],
     "category": "ĉefurbo"
   },
   {
@@ -864,5 +867,130 @@
     "question": "Kio estas la ĉefurbo de Filipinoj?",
     "answer": "Manilo",
     "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas 3 + 5?",
+    "answer": "8",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 12 + 7?",
+    "answer": "19",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 45 + 23?",
+    "answer": "68",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kiom estas 99 plus 1?",
+    "answer": "100",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Aldonu 15 kaj 28.",
+    "answer": "43",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 10 - 4?",
+    "answer": "6",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 50 - 17?",
+    "answer": "33",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kiom estas 100 minus 37?",
+    "answer": "63",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Subtrahu 8 de 20.",
+    "answer": "12",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 85 - 29?",
+    "answer": "56",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 6 * 7?",
+    "answer": "42",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 5 * 5?",
+    "answer": "25",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kiom estas 8 oble 9?",
+    "answer": "72",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Multipliku 12 per 4.",
+    "answer": "48",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 15 * 3?",
+    "answer": "45",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 20 / 4?",
+    "answer": "5",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 63 / 9?",
+    "answer": "7",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kiom estas 100 dividite per 5?",
+    "answer": "20",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Dividu 72 per 8.",
+    "answer": "9",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas 144 / 12?",
+    "answer": "12",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas tri + kvar?",
+    "answer": "7",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas dek du minus kvin?",
+    "answer": "7",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kiom estas ses oble ok?",
+    "answer": "48",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Kio estas dudek dividite per kvar?",
+    "answer": "5",
+    "category": "aritmetiko"
+  },
+  {
+    "question": "Aldonu naŭ kaj dek unu.",
+    "answer": "20",
+    "category": "aritmetiko"
   }
 ]

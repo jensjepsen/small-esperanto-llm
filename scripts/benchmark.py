@@ -53,12 +53,27 @@ def generate(model, tokenizer, prompt, device, max_new_tokens=60):
     return decode_tokens(tokenizer, new_ids)
 
 
-def check_answer(response: str, expected) -> bool:
+def check_answer(response: str, expected, category: str = "") -> bool:
     """Check if the expected answer appears in the response.
 
     expected can be a string or a list of acceptable answers.
+    For arithmetic, extracts the #### answer or matches word boundaries.
     """
     response = response.lower().strip(". ")
+
+    if category == "aritmetiko":
+        # Try #### extraction first
+        if "####" in response:
+            final = response.split("####")[-1].strip().rstrip(".")
+            if isinstance(expected, list):
+                return any(final == ans.lower().strip() for ans in expected)
+            return final == expected.lower().strip()
+        # Fall back to word-boundary match for bare numbers
+        import re
+        if isinstance(expected, list):
+            return any(re.search(r'\b' + re.escape(ans.lower().strip()) + r'\b', response) for ans in expected)
+        return bool(re.search(r'\b' + re.escape(expected.lower().strip()) + r'\b', response))
+
     if isinstance(expected, list):
         return any(ans.lower().strip() in response for ans in expected)
     return expected.lower().strip() in response
@@ -102,7 +117,7 @@ def main():
         for _ in range(args.passes):
             response = generate(model, tokenizer, question, device)
             responses.append(response)
-            if check_answer(response, expected):
+            if check_answer(response, expected, category):
                 hits += 1
 
         passed = hits > args.passes // 2
