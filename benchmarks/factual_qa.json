@@ -1,0 +1,868 @@
+[
+  {
+    "question": "Kio estas la ĉefurbo de Francio?",
+    "answer": "Parizo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Germanio?",
+    "answer": "Berlino",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Italio?",
+    "answer": "Romo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Hispanio?",
+    "answer": "Madrido",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Portugalio?",
+    "answer": "Lisbono",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Britio?",
+    "answer": "Londono",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Rusio?",
+    "answer": "Moskvo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Japanio?",
+    "answer": "Tokio",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Ĉinio?",
+    "answer": "Pekino",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Hindio?",
+    "answer": "Nov-Delio",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Egipto?",
+    "answer": "Kairo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Argentino?",
+    "answer": "Bonaero",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Meksiko?",
+    "answer": "Meksikurbo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Pollando?",
+    "answer": "Varsovio",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Svedio?",
+    "answer": "Stokholmo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Norvegio?",
+    "answer": "Oslo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Danio?",
+    "answer": "Kopenhago",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Finnlando?",
+    "answer": "Helsinko",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Grekio?",
+    "answer": "Ateno",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Aŭstrio?",
+    "answer": "Vieno",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Svislando?",
+    "answer": "Berno",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Nederlando?",
+    "answer": "Amsterdamo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Belgio?",
+    "answer": "Bruselo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Ĉeĥio?",
+    "answer": "Prago",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Hungario?",
+    "answer": "Budapeŝto",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Rumanujo?",
+    "answer": "Bukareŝto",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Irlando?",
+    "answer": "Dublino",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Kanado?",
+    "answer": "Otavo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Aŭstralio?",
+    "answer": "Kanbero",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Turkio?",
+    "answer": "Ankaro",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Brazilo?",
+    "answer": "Braziljo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Usono?",
+    "answer": "Vaŝingtono",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Sud-Afriko?",
+    "answer": "Pretorio",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Niĝerio?",
+    "answer": "Abuĝo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Kolombio?",
+    "answer": "Bogoto",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Peruo?",
+    "answer": "Limo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Ĉilio?",
+    "answer": "Santjago",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Kubo?",
+    "answer": "Havano",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Tajlando?",
+    "answer": "Bankoko",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Irano?",
+    "answer": "Teherano",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Koreo?",
+    "answer": "Seulo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kiu estas Albert Einstein?",
+    "answer": [
+      "fizikisto",
+      "sciencisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Wolfgang Amadeus Mozart?",
+    "answer": "komponisto",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Pablo Picasso?",
+    "answer": "pentristo",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas William Shakespeare?",
+    "answer": [
+      "dramaturgo",
+      "verkisto",
+      "poeto",
+      "aktoro"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Leonardo da Vinci?",
+    "answer": [
+      "pentristo",
+      "artisto",
+      "inventisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Galileo Galilej?",
+    "answer": [
+      "astronomo",
+      "fizikisto",
+      "sciencisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Aristotelo?",
+    "answer": "filozofo",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Ludwig van Beethoven?",
+    "answer": "komponisto",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Isaac Newton?",
+    "answer": [
+      "fizikisto",
+      "matematikisto",
+      "sciencisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Charles Darwin?",
+    "answer": [
+      "biologo",
+      "natursciencisto",
+      "zoologo",
+      "naturalisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Marie Curie?",
+    "answer": [
+      "fizikisto",
+      "kemiisto",
+      "sciencisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Nikola Tesla?",
+    "answer": [
+      "inventisto",
+      "inĝeniero",
+      "fizikisto",
+      "elektr"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Kleopatro?",
+    "answer": [
+      "reĝino",
+      "reganto",
+      "faraono",
+      "aristokrato"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Napoleono?",
+    "answer": [
+      "militestro",
+      "militisto",
+      "generalo",
+      "imperiestro"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Hipokrato?",
+    "answer": "kuracisto",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Platono?",
+    "answer": "filozofo",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Mikelanĝelo?",
+    "answer": [
+      "skulptisto",
+      "pentristo",
+      "artisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Johann Sebastian Bach?",
+    "answer": "komponisto",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Fjodor Dostojevskij?",
+    "answer": "verkisto",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Lev Tolstoj?",
+    "answer": "verkisto",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Sigmund Freud?",
+    "answer": [
+      "psikiatro",
+      "psikologo",
+      "kuracisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Frida Kahlo?",
+    "answer": [
+      "pentristo",
+      "artisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Rembrandt?",
+    "answer": "pentristo",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Kopernico?",
+    "answer": [
+      "astronomo",
+      "matematikisto",
+      "sciencisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Marco Polo?",
+    "answer": [
+      "esploristo",
+      "vojaĝisto",
+      "komercisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Ludoviko Zamenhof?",
+    "answer": [
+      "lingvisto",
+      "esperantisto",
+      "okulisto"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Homero?",
+    "answer": [
+      "poeto",
+      "verkisto",
+      "aŭtoro"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Sokrato?",
+    "answer": "filozofo",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Verdi?",
+    "answer": "komponisto",
+    "category": "profesio"
+  },
+  {
+    "question": "Kiu estas Florence Nightingale?",
+    "answer": [
+      "flegistino",
+      "kuracistino",
+      "infanistino"
+    ],
+    "category": "profesio"
+  },
+  {
+    "question": "En kiu lando troviĝas Parizo?",
+    "answer": "Francio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Tokio?",
+    "answer": "Japanio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Kairo?",
+    "answer": "Egipto",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Berlino?",
+    "answer": "Germanio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Romo?",
+    "answer": "Italio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Madrido?",
+    "answer": "Hispanio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Moskvo?",
+    "answer": "Rusio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Pekino?",
+    "answer": "Ĉinio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Londono?",
+    "answer": "Britio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Varsovio?",
+    "answer": "Pollando",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Lisbono?",
+    "answer": "Portugalio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Ateno?",
+    "answer": "Grekio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Vieno?",
+    "answer": "Aŭstrio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Prago?",
+    "answer": "Ĉeĥio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Budapeŝto?",
+    "answer": "Hungario",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Stokholmo?",
+    "answer": "Svedio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Kopenhago?",
+    "answer": "Danio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Havano?",
+    "answer": "Kubo",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Bonaero?",
+    "answer": "Argentino",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Bankoko?",
+    "answer": "Tajlando",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Seulo?",
+    "answer": "Koreo",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Dublino?",
+    "answer": "Irlando",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Oslo?",
+    "answer": "Norvegio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Bruselo?",
+    "answer": "Belgio",
+    "category": "lando"
+  },
+  {
+    "question": "En kiu lando troviĝas Helsinko?",
+    "answer": "Finnlando",
+    "category": "lando"
+  },
+  {
+    "question": "Kio estas Esperanto?",
+    "answer": "lingvo",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas futbalo?",
+    "answer": "sporto",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas Amazono?",
+    "answer": "rivero",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas Nilo?",
+    "answer": "rivero",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas gitaro?",
+    "answer": "muzika instrumento",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas piano?",
+    "answer": "muzika instrumento",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas violono?",
+    "answer": "muzika instrumento",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas Saharo?",
+    "answer": "dezerto",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas Everesto?",
+    "answer": "monto",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas Atlantiko?",
+    "answer": "oceano",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas Pacifiko?",
+    "answer": "oceano",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas teniso?",
+    "answer": "sporto",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas Jupitero?",
+    "answer": "planedo",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas Marso?",
+    "answer": "planedo",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas Venuso?",
+    "answer": "planedo",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas oksigeno?",
+    "answer": "kemia elemento",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas oro?",
+    "answer": "metalo",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas diamanto?",
+    "answer": "ŝtono",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas rozo?",
+    "answer": "floro",
+    "category": "estas"
+  },
+  {
+    "question": "Kio estas baleno?",
+    "answer": "mamulo",
+    "category": "estas"
+  },
+  {
+    "question": "El kiu lando devenas suŝio?",
+    "answer": "Japanio",
+    "category": "devenlando"
+  },
+  {
+    "question": "El kiu lando devenas pico?",
+    "answer": "Italio",
+    "category": "devenlando"
+  },
+  {
+    "question": "El kiu lando devenas teo?",
+    "answer": "Ĉinio",
+    "category": "devenlando"
+  },
+  {
+    "question": "El kiu lando devenas ĉokolado?",
+    "answer": "Meksiko",
+    "category": "devenlando"
+  },
+  {
+    "question": "El kiu lando devenas karateo?",
+    "answer": "Japanio",
+    "category": "devenlando"
+  },
+  {
+    "question": "El kiu lando devenas tangoo?",
+    "answer": "Argentino",
+    "category": "devenlando"
+  },
+  {
+    "question": "El kiu lando devenas flamenko?",
+    "answer": "Hispanio",
+    "category": "devenlando"
+  },
+  {
+    "question": "El kiu lando devenas vodko?",
+    "answer": "Rusio",
+    "category": "devenlando"
+  },
+  {
+    "question": "El kiu lando devenas samba?",
+    "answer": "Brazilo",
+    "category": "devenlando"
+  },
+  {
+    "question": "El kiu lando devenas kimonoo?",
+    "answer": "Japanio",
+    "category": "devenlando"
+  },
+  {
+    "question": "Kio estas la ĝenro de Hamleto?",
+    "answer": [
+      "tragedio",
+      "dramo",
+      "teatra"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "Kio estas la ĝenro de La Reĝo de la Ringoj?",
+    "answer": [
+      "fantasto",
+      "fantasta",
+      "fantazio"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "Kio estas la ĝenro de Ŝerloko Holmso?",
+    "answer": [
+      "krimromano",
+      "krimo",
+      "detektiv"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "Kio estas la ĝenro de Romeo kaj Julieta?",
+    "answer": [
+      "tragedio",
+      "dramo",
+      "teatra"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "Kio estas la ĝenro de Don Kiĥoto?",
+    "answer": [
+      "romano",
+      "aventur",
+      "satir"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "Kio estas la ĝenro de Frankenstein?",
+    "answer": [
+      "sciencfikcio",
+      "hororo",
+      "gotik"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "Kio estas la ĝenro de Drakulo?",
+    "answer": [
+      "hororo",
+      "gotik",
+      "terur"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "Kio estas la ĝenro de La Odiseado?",
+    "answer": [
+      "epopeo",
+      "epik",
+      "poemo"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "Kio estas la ĝenro de Mil kaj Unu Noktoj?",
+    "answer": [
+      "fabelaro",
+      "fabelo",
+      "rakontaro"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "Kio estas la ĝenro de La Dia Komedio?",
+    "answer": [
+      "epopeo",
+      "epik",
+      "poemo",
+      "komedio"
+    ],
+    "category": "ĝenro"
+  },
+  {
+    "question": "En kiu laborkampo laboris Galileo?",
+    "answer": "astronomio",
+    "category": "laborkampo"
+  },
+  {
+    "question": "En kiu laborkampo laboris Darwin?",
+    "answer": "biologio",
+    "category": "laborkampo"
+  },
+  {
+    "question": "En kiu laborkampo laboris Einstein?",
+    "answer": "fiziko",
+    "category": "laborkampo"
+  },
+  {
+    "question": "En kiu laborkampo laboris Freud?",
+    "answer": "psikologio",
+    "category": "laborkampo"
+  },
+  {
+    "question": "En kiu laborkampo laboris Newton?",
+    "answer": "fiziko",
+    "category": "laborkampo"
+  },
+  {
+    "question": "En kiu laborkampo laboris Mendelejev?",
+    "answer": "kemio",
+    "category": "laborkampo"
+  },
+  {
+    "question": "En kiu laborkampo laboris Pasteur?",
+    "answer": "mikrobiologio",
+    "category": "laborkampo"
+  },
+  {
+    "question": "En kiu laborkampo laboris Turing?",
+    "answer": "komputiko",
+    "category": "laborkampo"
+  },
+  {
+    "question": "En kiu laborkampo laboris Linneo?",
+    "answer": "botaniko",
+    "category": "laborkampo"
+  },
+  {
+    "question": "En kiu laborkampo laboris Eŭklido?",
+    "answer": "matematiko",
+    "category": "laborkampo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Ukrainio?",
+    "answer": "Kijivo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Kroatio?",
+    "answer": "Zagrebo",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Serbio?",
+    "answer": "Beogrado",
+    "category": "ĉefurbo"
+  },
+  {
+    "question": "Kio estas la ĉefurbo de Filipinoj?",
+    "answer": "Manilo",
+    "category": "ĉefurbo"
+  }
+]
