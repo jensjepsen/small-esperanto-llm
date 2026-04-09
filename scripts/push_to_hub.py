@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--sentences", action="store_true", help="Push sentences dataset")
     parser.add_argument("--sft-factoid", action="store_true", help="Push SFT factoid dataset")
     parser.add_argument("--sft-creative", action="store_true", help="Push SFT creative dataset")
+    parser.add_argument("--gsm8k", action="store_true", help="Push translated GSM8K dataset")
     parser.add_argument("--all", action="store_true", help="Push everything")
     parser.add_argument("--tokenizer-path", type=Path, default=Path("tokenizer_morpheme"))
     parser.add_argument("--factoids-path", type=Path,
@@ -28,9 +29,10 @@ def main():
     parser.add_argument("--sentences-path", type=Path, default=Path("data/epo_sentences.tsv"))
     parser.add_argument("--sft-factoid-path", type=Path, default=Path("data/sft/sft_factoid.jsonl"))
     parser.add_argument("--sft-creative-path", type=Path, default=Path("data/sft/sft_creative.jsonl"))
+    parser.add_argument("--gsm8k-dir", type=Path, default=Path("data/sft/gsm8k"))
     args = parser.parse_args()
 
-    if not (args.tokenizer or args.factoids or args.sentences or args.sft_factoid or args.sft_creative or args.all):
+    if not (args.tokenizer or args.factoids or args.sentences or args.sft_factoid or args.sft_creative or args.gsm8k or args.all):
         parser.print_help()
         return
 
@@ -94,6 +96,29 @@ def main():
             ds = Dataset.from_list(data)
             ds.push_to_hub(repo_id)
             console.print(f"[bold]Done! {len(data):,} conversations → {repo_id}")
+
+    if args.gsm8k or args.all:
+        from datasets import DatasetDict
+        repo_id = f"{args.org}/esperanto-gsm8k"
+        console.print(f"[bold green]Pushing GSM8K from {args.gsm8k_dir} to {repo_id}...")
+        splits = {}
+        for split in ["train", "test"]:
+            path = args.gsm8k_dir / f"{split}.jsonl"
+            data = []
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+            splits[split] = Dataset.from_list(data)
+            console.print(f"[bold]  {split}:[/] {len(data):,}")
+        ds = DatasetDict(splits)
+        ds.push_to_hub(repo_id)
+        console.print(f"[bold]Done! {repo_id}")
 
 
 if __name__ == "__main__":
