@@ -23,14 +23,20 @@ ASSISTANT_TOKEN = "<|assistant|>"
 END_TOKEN = "<|end|>"
 
 
+def _clean_gsm8k_markers(text: str) -> str:
+    """Strip <<calculation>> markers from GSM8K answers, keep #### final answer."""
+    return re.sub(r"<<[^>]*>>", "", text)
+
+
 def format_conversation(messages: list[dict]) -> str:
     """Format a conversation into a training string with role tokens."""
     parts = []
     for msg in messages:
+        content = _clean_gsm8k_markers(msg["content"])
         if msg["role"] == "user":
-            parts.append(f"{USER_TOKEN} {msg['content']}")
+            parts.append(f"{USER_TOKEN} {content}")
         elif msg["role"] == "assistant":
-            parts.append(f"{ASSISTANT_TOKEN} {msg['content']} {END_TOKEN}")
+            parts.append(f"{ASSISTANT_TOKEN} {content} {END_TOKEN}")
     return " ".join(parts)
 
 
