@@ -275,11 +275,13 @@ def morpheme_tokenize(text: str) -> list[list[str]]:
     """
     import re
     from esperanto_lm.morphology import decompose
-    raw_words = re.findall(r'[a-zA-ZĉĝĥĵŝŭĈĜĤĴŜŬ]+|[^\s]', text)
+    raw_words = re.findall(r'[a-zA-ZĉĝĥĵŝŭĈĜĤĴŜŬ]+|\d+|[^\s]', text)
     result = []
     for word in raw_words:
         if word[0].isalpha():
             result.append(decompose(word))
+        elif word[0].isdigit():
+            result.append(list(word))  # each digit as separate token, no <w>
         else:
             result.append([word])
     return result
