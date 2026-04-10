@@ -174,53 +174,67 @@ def format_answer(expr: str, steps: list[str], result: int) -> str:
     return f"{expr}: {step_str}. La respondo estas {result}. #### {result}"
 
 
+def apply_op(current: int, op: str, operand: int) -> tuple[str, list[str], int]:
+    """Apply a single operation to current value, return (expr, steps, result)."""
+    if op == "+":
+        return decompose_add(current, operand)
+    elif op == "-":
+        if current < operand:
+            current, operand = operand, current
+        return decompose_sub(current, operand)
+    elif op == "*":
+        return decompose_mul(current, operand)
+    elif op == "/":
+        return decompose_div(current, operand)
+    raise ValueError(f"Unknown op: {op}")
+
+
+def generate_chain(num_ops: int) -> tuple[str, str]:
+    """Generate a multi-operation chain with CoT.
+
+    Returns (question_expr, answer_with_cot).
+    """
+    current = random.randint(10, 999)
+    full_expr = str(current)
+    chain_steps = []
+
+    for _ in range(num_ops):
+        op = random.choice(["+", "-", "*", "/"])
+
+        if op in ("+", "-"):
+            operand = random.randint(10, min(current + 100, 9999))
+        elif op == "*":
+            operand = random.randint(2, 9)
+        else:  # division
+            divisors = [d for d in range(2, 10) if current >= d and current % d == 0]
+            if not divisors:
+                op = "+"
+                operand = random.randint(10, 999)
+            else:
+                operand = random.choice(divisors)
+
+        full_expr += f"{op}{operand}"
+        expr, steps, result = apply_op(current, op, operand)
+
+        step_str = ", ".join(steps)
+        chain_steps.append(f"{expr}: {step_str} → {result}")
+        current = result
+
+    answer = ". ".join(chain_steps) + f". La respondo estas {current}. #### {current}"
+    return full_expr, answer
+
+
 def generate_split(n_examples: int) -> list[dict]:
     pairs = []
 
-    for _ in range(n_examples // 4):
-        digits = random.randint(2, 5)
-        a = random.randint(10**(digits-1), 10**digits - 1)
-        b = random.randint(10**(digits-1), 10**digits - 1)
-        expr, steps, result = decompose_add(a, b)
-        q = random.choice(Q_TEMPLATES["add"]).format(expr=expr, a=a, b=b)
+    for _ in range(n_examples):
+        num_ops = random.randint(1, 5)
+        expr, answer = generate_chain(num_ops)
+        q = random.choice(Q_TEMPLATES[random.choice(list(Q_TEMPLATES))]).format(
+            expr=expr, a=expr, b="")
         pairs.append({"messages": [
             {"role": "user", "content": q},
-            {"role": "assistant", "content": format_answer(expr, steps, result)},
-        ]})
-
-    for _ in range(n_examples // 4):
-        digits = random.randint(2, 5)
-        a = random.randint(10**(digits-1), 10**digits - 1)
-        b = random.randint(10**(digits-1), 10**digits - 1)
-        if a < b: a, b = b, a
-        expr, steps, result = decompose_sub(a, b)
-        q = random.choice(Q_TEMPLATES["sub"]).format(expr=expr, a=a, b=b)
-        pairs.append({"messages": [
-            {"role": "user", "content": q},
-            {"role": "assistant", "content": format_answer(expr, steps, result)},
-        ]})
-
-    for _ in range(n_examples // 4):
-        digits = random.randint(2, 4)
-        a = random.randint(10**(digits-1), 10**digits - 1)
-        b = random.randint(2, 9)
-        expr, steps, result = decompose_mul(a, b)
-        q = random.choice(Q_TEMPLATES["mul"]).format(expr=expr, a=a, b=b)
-        pairs.append({"messages": [
-            {"role": "user", "content": q},
-            {"role": "assistant", "content": format_answer(expr, steps, result)},
-        ]})
-
-    for _ in range(n_examples // 4):
-        digits = random.randint(2, 4)
-        a_base = random.randint(10**(digits-1), 10**digits - 1)
-        b = random.randint(2, 9)
-        a = a_base * b  # ensure clean division
-        expr, steps, result = decompose_div(a, b)
-        q = random.choice(Q_TEMPLATES["div"]).format(expr=expr, a=a, b=b)
-        pairs.append({"messages": [
-            {"role": "user", "content": q},
-            {"role": "assistant", "content": format_answer(expr, steps, result)},
+            {"role": "assistant", "content": answer},
         ]})
 
     random.shuffle(pairs)
