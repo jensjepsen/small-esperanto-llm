@@ -260,12 +260,15 @@ OP_WORDS_THEN = {
           "poste dividu ĝin per {b}"],
 }
 
-PREFIXES = [
-    "",
+PREFIXES_QUESTION = [
     "Ĉu vi povus kalkuli: ",
-    "Bonvolu kalkuli: ",
     "Kion ni ricevas se ni ",
     "Kio estas la rezulto se ni ",
+]
+
+PREFIXES_IMPERATIVE = [
+    "",
+    "Bonvolu kalkuli: ",
     "Helpu min kalkuli: ",
 ]
 
@@ -280,11 +283,15 @@ def make_natural_question(ops_list: list[tuple[str, int, int]]) -> str:
             parts.append(random.choice(OP_WORDS_THEN[op]).format(b=b))
     body = ", ".join(parts)
 
-    prefix = random.choice(PREFIXES)
-    if prefix:
-        # lowercase first letter after prefix
+    if random.random() < 0.4:
+        prefix = random.choice(PREFIXES_QUESTION)
         body = body[0].lower() + body[1:]
-    return f"{prefix}{body}?"
+        return f"{prefix}{body}?"
+    else:
+        prefix = random.choice(PREFIXES_IMPERATIVE)
+        if prefix:
+            body = body[0].lower() + body[1:]
+        return f"{prefix}{body}."
 
 
 def generate_split(n_examples: int, max_tokens: int = 250) -> list[dict]:
