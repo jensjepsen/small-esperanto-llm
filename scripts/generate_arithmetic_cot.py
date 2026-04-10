@@ -207,7 +207,7 @@ def generate_chain(num_ops: int) -> tuple[str, str, str, int, int]:
     current = random.randint(10, 999)
     full_expr = str(current)
     chain_steps = []
-    first_op = first_a = first_b = None
+    ops_list = []
 
     for i in range(num_ops):
         op = random.choice(["+", "-", "*", "/"])
@@ -224,11 +224,7 @@ def generate_chain(num_ops: int) -> tuple[str, str, str, int, int]:
             else:
                 operand = random.choice(divisors)
 
-        if i == 0:
-            first_op = op
-            first_a = current
-            first_b = operand
-
+        ops_list.append((op, current, operand))
         full_expr += f"{op}{operand}"
         expr, steps, result = apply_op(current, op, operand)
 
@@ -237,10 +233,58 @@ def generate_chain(num_ops: int) -> tuple[str, str, str, int, int]:
         current = result
 
     answer = ". ".join(chain_steps) + f". La respondo estas {current}. #### {current}"
-    return full_expr, answer, first_op, first_a, first_b
+    return full_expr, answer, ops_list
 
 
 OP_TO_KEY = {"+": "add", "-": "sub", "*": "mul", "/": "div"}
+
+OP_WORDS_FIRST = {
+    "+": ["Aldonu {a} kaj {b}", "Komencu kun {a}, aldonu {b}", "Aldonu {b} al {a}",
+          "Komencu kun {a} kaj aldonu {b}"],
+    "-": ["Subtrahu {b} de {a}", "Komencu kun {a}, subtrahu {b}",
+          "Komencu kun {a} kaj forprenu {b}"],
+    "*": ["Multipliku {a} per {b}", "Komencu kun {a}, multipliku per {b}",
+          "Komencu kun {a} kaj multipliku ĝin per {b}"],
+    "/": ["Dividu {a} per {b}", "Komencu kun {a}, dividu per {b}",
+          "Komencu kun {a} kaj dividu ĝin per {b}"],
+}
+
+OP_WORDS_THEN = {
+    "+": ["poste aldonu {b}", "kaj aldonu {b}", "poste aldonu {b} al la rezulto",
+          "kaj aldonu {b}"],
+    "-": ["poste subtrahu {b}", "kaj subtrahu {b}", "poste forprenu {b}",
+          "kaj forprenu {b} de la rezulto"],
+    "*": ["poste multipliku per {b}", "kaj multipliku la rezulton per {b}",
+          "poste multipliku ĝin per {b}"],
+    "/": ["poste dividu per {b}", "kaj dividu la rezulton per {b}",
+          "poste dividu ĝin per {b}"],
+}
+
+PREFIXES = [
+    "",
+    "Ĉu vi povus kalkuli: ",
+    "Bonvolu kalkuli: ",
+    "Kion ni ricevas se ni ",
+    "Kio estas la rezulto se ni ",
+    "Helpu min kalkuli: ",
+]
+
+
+def make_natural_question(ops_list: list[tuple[str, int, int]]) -> str:
+    """Build a natural language question from operation list."""
+    parts = []
+    for i, (op, a, b) in enumerate(ops_list):
+        if i == 0:
+            parts.append(random.choice(OP_WORDS_FIRST[op]).format(a=a, b=b))
+        else:
+            parts.append(random.choice(OP_WORDS_THEN[op]).format(b=b))
+    body = ", ".join(parts)
+
+    prefix = random.choice(PREFIXES)
+    if prefix:
+        # lowercase first letter after prefix
+        body = body[0].lower() + body[1:]
+    return f"{prefix}{body}?"
 
 
 def generate_split(n_examples: int, max_tokens: int = 250) -> list[dict]:
@@ -248,14 +292,17 @@ def generate_split(n_examples: int, max_tokens: int = 250) -> list[dict]:
 
     while len(pairs) < n_examples:
         num_ops = random.randint(1, 5)
-        expr, answer, first_op, first_a, first_b = generate_chain(num_ops)
+        expr, answer, ops_list = generate_chain(num_ops)
 
         if num_ops == 1:
-            # Use op-specific templates for single-step
-            key = OP_TO_KEY.get(first_op, "add")
-            q = random.choice(Q_TEMPLATES[key]).format(
-                expr=expr, a=first_a, b=first_b)
+            op, a, b = ops_list[0]
+            key = OP_TO_KEY.get(op, "add")
+            q = random.choice(Q_TEMPLATES[key]).format(expr=expr, a=a, b=b)
+        elif random.random() < 0.5:
+            # Natural language form
+            q = make_natural_question(ops_list)
         else:
+            # Expression form
             q = random.choice(["Kalkulu {expr}.", "Kio estas {expr}?", "Kiom estas {expr}?"]).format(expr=expr)
 
         if len(q) + len(answer) > max_tokens:
