@@ -224,14 +224,17 @@ def generate_chain(num_ops: int) -> tuple[str, str]:
     return full_expr, answer
 
 
-def generate_split(n_examples: int) -> list[dict]:
+def generate_split(n_examples: int, max_tokens: int = 250) -> list[dict]:
     pairs = []
 
-    for _ in range(n_examples):
+    while len(pairs) < n_examples:
         num_ops = random.randint(1, 5)
         expr, answer = generate_chain(num_ops)
         q = random.choice(Q_TEMPLATES[random.choice(list(Q_TEMPLATES))]).format(
             expr=expr, a=expr, b="")
+        # ~1 char per token for digits/operators
+        if len(q) + len(answer) > max_tokens:
+            continue
         pairs.append({"messages": [
             {"role": "user", "content": q},
             {"role": "assistant", "content": answer},
