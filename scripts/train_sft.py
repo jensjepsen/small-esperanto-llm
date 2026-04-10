@@ -57,7 +57,7 @@ def main():
                         help="Path to pretrained model checkpoint")
     parser.add_argument("--sft-data", type=str, nargs="+",
                         default=["jensjepsen/esperanto-sft-factoid", "jensjepsen/esperanto-sft-creative",
-                                 "jensjepsen/esperanto-gsm8k"],
+                                 "jensjepsen/esperanto-gsm8k", "jensjepsen/esperanto-arithmetic-cot"],
                         help="Paths to local SFT JSONL files or HF Hub dataset names")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory (default: <checkpoint>-sft)")
