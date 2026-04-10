@@ -147,23 +147,33 @@ Q_TEMPLATES = {
         "Kalkulu {expr}.",
         "Kio estas {expr}?",
         "Kiom estas {expr}?",
+        "Aldonu {a} kaj {b}.",
+        "Kio estas {a} plus {b}?",
+        "Kiom estas {a} plus {b}?",
     ],
     "sub": [
         "Kalkulu {expr}.",
         "Kio estas {expr}?",
         "Kiom estas {expr}?",
+        "Subtrahu {b} de {a}.",
+        "Kio estas {a} minus {b}?",
+        "Kiom estas {a} minus {b}?",
     ],
     "mul": [
         "Kalkulu {expr}.",
         "Kio estas {expr}?",
         "Kiom estas {expr}?",
         "Multipliku {a} per {b}.",
+        "Kio estas {a} oble {b}?",
+        "Kiom estas {a} oble {b}?",
     ],
     "div": [
         "Kalkulu {expr}.",
         "Kio estas {expr}?",
         "Kiom estas {expr}?",
         "Dividu {a} per {b}.",
+        "Kio estas {a} dividite per {b}?",
+        "Kiom estas {a} dividite per {b}?",
     ],
 }
 
@@ -189,16 +199,17 @@ def apply_op(current: int, op: str, operand: int) -> tuple[str, list[str], int]:
     raise ValueError(f"Unknown op: {op}")
 
 
-def generate_chain(num_ops: int) -> tuple[str, str]:
+def generate_chain(num_ops: int) -> tuple[str, str, str, int, int]:
     """Generate a multi-operation chain with CoT.
 
-    Returns (question_expr, answer_with_cot).
+    Returns (question_expr, answer_with_cot, first_op, first_a, first_b).
     """
     current = random.randint(10, 999)
     full_expr = str(current)
     chain_steps = []
+    first_op = first_a = first_b = None
 
-    for _ in range(num_ops):
+    for i in range(num_ops):
         op = random.choice(["+", "-", "*", "/"])
 
         if op in ("+", "-"):
@@ -213,6 +224,11 @@ def generate_chain(num_ops: int) -> tuple[str, str]:
             else:
                 operand = random.choice(divisors)
 
+        if i == 0:
+            first_op = op
+            first_a = current
+            first_b = operand
+
         full_expr += f"{op}{operand}"
         expr, steps, result = apply_op(current, op, operand)
 
@@ -221,7 +237,10 @@ def generate_chain(num_ops: int) -> tuple[str, str]:
         current = result
 
     answer = ". ".join(chain_steps) + f". La respondo estas {current}. #### {current}"
-    return full_expr, answer
+    return full_expr, answer, first_op, first_a, first_b
+
+
+OP_TO_KEY = {"+": "add", "-": "sub", "*": "mul", "/": "div"}
 
 
 def generate_split(n_examples: int, max_tokens: int = 250) -> list[dict]:
@@ -229,10 +248,16 @@ def generate_split(n_examples: int, max_tokens: int = 250) -> list[dict]:
 
     while len(pairs) < n_examples:
         num_ops = random.randint(1, 5)
-        expr, answer = generate_chain(num_ops)
-        q = random.choice(Q_TEMPLATES[random.choice(list(Q_TEMPLATES))]).format(
-            expr=expr, a=expr, b="")
-        # ~1 char per token for digits/operators
+        expr, answer, first_op, first_a, first_b = generate_chain(num_ops)
+
+        if num_ops == 1:
+            # Use op-specific templates for single-step
+            key = OP_TO_KEY.get(first_op, "add")
+            q = random.choice(Q_TEMPLATES[key]).format(
+                expr=expr, a=first_a, b=first_b)
+        else:
+            q = random.choice(["Kalkulu {expr}.", "Kio estas {expr}?", "Kiom estas {expr}?"]).format(expr=expr)
+
         if len(q) + len(answer) > max_tokens:
             continue
         pairs.append({"messages": [
