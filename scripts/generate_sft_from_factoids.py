@@ -1650,132 +1650,6 @@ def generate_multi_entity(entities: list[dict], max_count: int = 10000) -> list[
     return pairs[:max_count]
 
 
-# --- Simple arithmetic pairs ---
-
-MATH_Q_TEMPLATES = {
-    "add": [
-        "Kio estas {a} + {b}?",
-        "Kiom estas {a} plus {b}?",
-        "Aldonu {a} kaj {b}.",
-        "Kalkulu {a} + {b}.",
-    ],
-    "sub": [
-        "Kio estas {a} - {b}?",
-        "Kiom estas {a} minus {b}?",
-        "Subtrahu {b} de {a}.",
-        "Kalkulu {a} - {b}.",
-    ],
-    "mul": [
-        "Kio estas {a} * {b}?",
-        "Kiom estas {a} oble {b}?",
-        "Multipliku {a} per {b}.",
-        "Kalkulu {a} × {b}.",
-    ],
-    "div": [
-        "Kio estas {a} / {b}?",
-        "Kiom estas {a} dividite per {b}?",
-        "Dividu {a} per {b}.",
-        "Kalkulu {a} ÷ {b}.",
-    ],
-}
-
-MATH_A_TEMPLATES = {
-    "add": [
-        "{a} + {b} = {r}. #### {r}",
-        "{a} plus {b} estas {r}. #### {r}",
-        "La sumo de {a} kaj {b} estas {r}. #### {r}",
-    ],
-    "sub": [
-        "{a} - {b} = {r}. #### {r}",
-        "{a} minus {b} estas {r}. #### {r}",
-        "La diferenco inter {a} kaj {b} estas {r}. #### {r}",
-    ],
-    "mul": [
-        "{a} * {b} = {r}. #### {r}",
-        "{a} oble {b} estas {r}. #### {r}",
-        "La produto de {a} kaj {b} estas {r}. #### {r}",
-    ],
-    "div": [
-        "{a} / {b} = {r}. #### {r}",
-        "{a} dividite per {b} estas {r}. #### {r}",
-        "La kvociento de {a} kaj {b} estas {r}. #### {r}",
-    ],
-}
-
-def _num_to_eo(n: int) -> str:
-    """Convert a number to its Esperanto word form."""
-    if n == 0:
-        return "nul"
-    ones = ["", "unu", "du", "tri", "kvar", "kvin", "ses", "sep", "ok", "naŭ"]
-    if n < 10:
-        return ones[n]
-    if n < 20:
-        return f"dek {ones[n - 10]}".strip()
-    if n < 100:
-        tens = n // 10
-        rest = n % 10
-        prefix = f"{ones[tens]}dek" if tens > 1 else "dek"
-        return f"{prefix} {ones[rest]}".strip()
-    if n < 1000:
-        hundreds = n // 100
-        rest = n % 100
-        prefix = f"{ones[hundreds]}cent" if hundreds > 1 else "cent"
-        if rest == 0:
-            return prefix
-        return f"{prefix} {_num_to_eo(rest)}"
-    if n < 1000000:
-        thousands = n // 1000
-        rest = n % 1000
-        prefix = f"{_num_to_eo(thousands)} mil" if thousands > 1 else "mil"
-        if rest == 0:
-            return prefix
-        return f"{prefix} {_num_to_eo(rest)}"
-    return str(n)
-
-
-def _maybe_word(n: int) -> str:
-    """Randomly return number as digit or Esperanto word."""
-    if random.random() < 0.3:
-        return _num_to_eo(n)
-    return str(n)
-
-
-def generate_math_pairs(max_count: int = 5000) -> list[dict]:
-    """Generate simple arithmetic Q&A pairs with random word/digit mixing."""
-    pairs = []
-
-    for _ in range(max_count):
-        op = random.choice(["add", "sub", "mul", "div"])
-        if op == "add":
-            a, b = random.randint(1, 100), random.randint(1, 100)
-            r = a + b
-        elif op == "sub":
-            a = random.randint(2, 100)
-            b = random.randint(1, a)
-            r = a - b
-        elif op == "mul":
-            a, b = random.randint(1, 20), random.randint(1, 20)
-            r = a * b
-        else:
-            b = random.randint(1, 20)
-            r = random.randint(1, 20)
-            a = b * r  # ensure clean division
-
-        # Question uses randomly word or digit
-        qa = _maybe_word(a)
-        qb = _maybe_word(b)
-        q = random.choice(MATH_Q_TEMPLATES[op]).format(a=qa, b=qb)
-        # Answer always uses digits
-        ans = random.choice(MATH_A_TEMPLATES[op]).format(a=a, b=b, r=r)
-        pairs.append({"messages": [
-            {"role": "user", "content": q},
-            {"role": "assistant", "content": ans},
-        ]})
-
-    random.shuffle(pairs)
-    return pairs[:max_count]
-
-
 def main():
     parser = argparse.ArgumentParser(description="Generate SFT data from factoids")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
@@ -1788,8 +1662,6 @@ def main():
                         help="Max superlative Q&A pairs")
     parser.add_argument("--max-multi-entity", type=int, default=10000,
                         help="Max multi-entity Q&A pairs")
-    parser.add_argument("--max-math", type=int, default=5000,
-                        help="Max simple arithmetic pairs")
     args = parser.parse_args()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -1855,21 +1727,12 @@ def main():
             out.write(json.dumps(pair, ensure_ascii=False) + "\n")
             multi_count += 1
 
-        # Simple arithmetic
-        console.print("[bold green]Generating arithmetic pairs...")
-        math_pairs = generate_math_pairs(max_count=args.max_math)
-        math_count = 0
-        for pair in math_pairs:
-            out.write(json.dumps(pair, ensure_ascii=False) + "\n")
-            math_count += 1
-
     console.print()
     console.print(f"[bold]Conversations:[/] {conv_count:,}")
     console.print(f"[bold]Cross-entity:[/] {cross_count:,}")
     console.print(f"[bold]Superlatives:[/] {superlative_count:,}")
     console.print(f"[bold]Multi-entity:[/] {multi_count:,}")
-    console.print(f"[bold]Arithmetic:[/] {math_count:,}")
-    total = conv_count + cross_count + superlative_count + multi_count + math_count
+    total = conv_count + cross_count + superlative_count + multi_count
     console.print(f"[bold]Total:[/] {total:,}")
     console.print(f"[bold green]Saved to {args.output}")
 
