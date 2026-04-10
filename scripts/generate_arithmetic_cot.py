@@ -6,6 +6,7 @@ conversation format for SFT training.
 
 import argparse
 import json
+import math
 import random
 from pathlib import Path
 
@@ -120,7 +121,8 @@ def decompose_sub(a: int, b: int) -> tuple[str, list[str], int]:
     return f"{a}-{b}", steps, result
 
 
-def decompose_mul(a: int, b: int) -> tuple[str, list[str], int]:
+def _mul_single(a: int, b: int) -> tuple[list[str], int]:
+    """Multiply multi-digit a by single-digit b, return (steps, result)."""
     da = [int(d) for d in str(a)][::-1]
 
     carry = 0
@@ -147,7 +149,42 @@ def decompose_mul(a: int, b: int) -> tuple[str, list[str], int]:
         result_digits.append(carry)
 
     result = int(''.join(str(d) for d in reversed(result_digits)))
-    return f"{a}*{b}", steps, result
+    return steps, result
+
+
+def decompose_mul(a: int, b: int) -> tuple[str, list[str], int]:
+    if b < 10:
+        steps, result = _mul_single(a, b)
+        return f"{a}*{b}", steps, result
+    if a < 10:
+        steps, result = _mul_single(b, a)
+        return f"{a}*{b}", steps, result
+
+    # Multi-digit × multi-digit: partial products
+    db = [int(d) for d in str(b)][::-1]
+    all_steps = []
+    partials = []
+
+    for i, digit in enumerate(db):
+        if digit == 0:
+            partials.append(0)
+            continue
+        steps, partial = _mul_single(a, digit)
+        shifted = partial * (10 ** i)
+        if i == 0:
+            steps.append(f"→ {partial}")
+        else:
+            steps.append(f"→ {partial}{'0' * i}")
+        all_steps.extend(steps)
+        partials.append(shifted)
+
+    # Sum partials
+    total = sum(partials)
+    if len(partials) > 1:
+        sum_expr = "+".join(str(p) for p in partials if p > 0)
+        all_steps.append(f"{sum_expr}={total}")
+
+    return f"{a}*{b}", all_steps, total
 
 
 def decompose_div(a: int, b: int) -> tuple[str, list[str], int]:
@@ -171,6 +208,33 @@ def decompose_div(a: int, b: int) -> tuple[str, list[str], int]:
 
     result = int(''.join(str(d) for d in result_digits))
     return f"{a}/{b}", steps, result
+
+
+PERCENT_Q_TEMPLATES = [
+    "Kio estas {p}% de {n}?",
+    "Kiom estas {p}% de {n}?",
+    "Kalkulu {p}% de {n}.",
+    "Kiom estas {p} procentoj de {n}?",
+    "Trovu {p}% de {n}.",
+]
+
+
+def generate_percent(p: int, n: int) -> tuple[str, str]:
+    """Generate a percentage calculation with CoT.
+
+    p% of n = p * n / 100
+    Returns (question, answer).
+    """
+    _, mul_steps, mul_result = decompose_mul(p, n)
+    result = mul_result // 100
+
+    mul_str = ", ".join(mul_steps)
+    answer = f"{p}% de {n}: {p}*{n}: {mul_str} → {mul_result}. {mul_result}/100={result}. La respondo estas {result}. #### {result}"
+
+    wp = _maybe_word(p)
+    wn = _maybe_word(n)
+    q = random.choice(PERCENT_Q_TEMPLATES).format(p=wp, n=wn)
+    return q, answer
 
 
 Q_TEMPLATES = {
@@ -246,7 +310,7 @@ def generate_chain(num_ops: int) -> tuple[str, str, str, int, int]:
         if op in ("+", "-"):
             operand = random.randint(10, min(current + 100, 9999))
         elif op == "*":
-            operand = random.randint(2, 9)
+            operand = random.randint(0, 99)
         else:  # division
             divisors = [d for d in range(2, 10) if current >= d and current % d == 0]
             if not divisors:
@@ -330,6 +394,22 @@ def generate_split(n_examples: int, max_tokens: int = 250) -> list[dict]:
     pairs = []
 
     while len(pairs) < n_examples:
+        # 10% chance of percentage question
+        if random.random() < 0.1:
+            # Pick nice percentages that divide evenly
+            p = random.choice([5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 80, 90])
+            n = random.randint(2, 200) * (100 // math.gcd(p, 100))
+            # Keep n reasonable
+            if n > 9999:
+                n = random.choice([100, 200, 300, 400, 500, 1000])
+            q, answer = generate_percent(p, n)
+            if len(q) + len(answer) <= max_tokens:
+                pairs.append({"messages": [
+                    {"role": "user", "content": q},
+                    {"role": "assistant", "content": answer},
+                ]})
+            continue
+
         num_ops = random.randint(1, 5)
         expr, answer, ops_list = generate_chain(num_ops)
 
