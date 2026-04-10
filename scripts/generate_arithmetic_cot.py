@@ -16,6 +16,37 @@ console = Console()
 DEFAULT_OUTPUT_DIR = Path("data/sft/arithmetic_cot")
 
 
+def _num_to_eo(n: int) -> str:
+    """Convert a number to its Esperanto word form."""
+    if n == 0:
+        return "nul"
+    ones = ["", "unu", "du", "tri", "kvar", "kvin", "ses", "sep", "ok", "naŭ"]
+    if n < 10:
+        return ones[n]
+    if n < 20:
+        return f"dek {ones[n - 10]}".strip()
+    if n < 100:
+        tens = n // 10
+        rest = n % 10
+        prefix = f"{ones[tens]}dek" if tens > 1 else "dek"
+        return f"{prefix} {ones[rest]}".strip()
+    if n < 1000:
+        hundreds = n // 100
+        rest = n % 100
+        prefix = f"{ones[hundreds]}cent" if hundreds > 1 else "cent"
+        if rest == 0:
+            return prefix
+        return f"{prefix} {_num_to_eo(rest)}"
+    return str(n)
+
+
+def _maybe_word(n: int) -> str:
+    """Randomly return number as digit or Esperanto word (for numbers < 1000)."""
+    if n < 1000 and random.random() < 0.2:
+        return _num_to_eo(n)
+    return str(n)
+
+
 def decompose_add(a: int, b: int) -> tuple[str, list[str], int]:
     da = [int(d) for d in str(a)][::-1]
     db = [int(d) for d in str(b)][::-1]
@@ -205,7 +236,7 @@ def generate_chain(num_ops: int) -> tuple[str, str, str, int, int]:
     Returns (question_expr, answer_with_cot, first_op, first_a, first_b).
     """
     current = random.randint(10, 999)
-    full_expr = str(current)
+    full_expr = _maybe_word(current)
     chain_steps = []
     ops_list = []
 
@@ -225,7 +256,7 @@ def generate_chain(num_ops: int) -> tuple[str, str, str, int, int]:
                 operand = random.choice(divisors)
 
         ops_list.append((op, current, operand))
-        full_expr += f"{op}{operand}"
+        full_expr += f"{op}{_maybe_word(operand)}"
         expr, steps, result = apply_op(current, op, operand)
 
         step_str = ", ".join(steps)
@@ -277,10 +308,11 @@ def make_natural_question(ops_list: list[tuple[str, int, int]]) -> str:
     """Build a natural language question from operation list."""
     parts = []
     for i, (op, a, b) in enumerate(ops_list):
+        wa, wb = _maybe_word(a), _maybe_word(b)
         if i == 0:
-            parts.append(random.choice(OP_WORDS_FIRST[op]).format(a=a, b=b))
+            parts.append(random.choice(OP_WORDS_FIRST[op]).format(a=wa, b=wb))
         else:
-            parts.append(random.choice(OP_WORDS_THEN[op]).format(b=b))
+            parts.append(random.choice(OP_WORDS_THEN[op]).format(b=wb))
     body = ", ".join(parts)
 
     if random.random() < 0.4:
@@ -304,7 +336,8 @@ def generate_split(n_examples: int, max_tokens: int = 250) -> list[dict]:
         if num_ops == 1:
             op, a, b = ops_list[0]
             key = OP_TO_KEY.get(op, "add")
-            q = random.choice(Q_TEMPLATES[key]).format(expr=expr, a=a, b=b)
+            q = random.choice(Q_TEMPLATES[key]).format(
+                expr=expr, a=_maybe_word(a), b=_maybe_word(b))
         elif random.random() < 0.5:
             # Natural language form
             q = make_natural_question(ops_list)
