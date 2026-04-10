@@ -119,6 +119,29 @@ def decompose_mul(a: int, b: int) -> tuple[str, list[str], int]:
     return f"{a}*{b}", steps, result
 
 
+def decompose_div(a: int, b: int) -> tuple[str, list[str], int]:
+    """Long division: a / b where b is single digit, a is multi-digit."""
+    da = [int(d) for d in str(a)]
+    steps = []
+    result_digits = []
+    remainder = 0
+
+    for i in range(len(da)):
+        current = remainder * 10 + da[i]
+        digit = current // b
+        remainder = current % b
+        step = f"{current}/{b}={digit}r{remainder}"
+        steps.append(step)
+        result_digits.append(digit)
+
+    # Strip leading zeros
+    while len(result_digits) > 1 and result_digits[0] == 0:
+        result_digits.pop(0)
+
+    result = int(''.join(str(d) for d in result_digits))
+    return f"{a}/{b}", steps, result
+
+
 Q_TEMPLATES = {
     "add": [
         "Kalkulu {expr}.",
@@ -136,6 +159,12 @@ Q_TEMPLATES = {
         "Kiom estas {expr}?",
         "Multipliku {a} per {b}.",
     ],
+    "div": [
+        "Kalkulu {expr}.",
+        "Kio estas {expr}?",
+        "Kiom estas {expr}?",
+        "Dividu {a} per {b}.",
+    ],
 }
 
 
@@ -148,7 +177,7 @@ def format_answer(expr: str, steps: list[str], result: int) -> str:
 def generate_split(n_examples: int) -> list[dict]:
     pairs = []
 
-    for _ in range(n_examples // 3):
+    for _ in range(n_examples // 4):
         digits = random.randint(2, 5)
         a = random.randint(10**(digits-1), 10**digits - 1)
         b = random.randint(10**(digits-1), 10**digits - 1)
@@ -159,7 +188,7 @@ def generate_split(n_examples: int) -> list[dict]:
             {"role": "assistant", "content": format_answer(expr, steps, result)},
         ]})
 
-    for _ in range(n_examples // 3):
+    for _ in range(n_examples // 4):
         digits = random.randint(2, 5)
         a = random.randint(10**(digits-1), 10**digits - 1)
         b = random.randint(10**(digits-1), 10**digits - 1)
@@ -171,12 +200,24 @@ def generate_split(n_examples: int) -> list[dict]:
             {"role": "assistant", "content": format_answer(expr, steps, result)},
         ]})
 
-    for _ in range(n_examples // 3):
+    for _ in range(n_examples // 4):
         digits = random.randint(2, 4)
         a = random.randint(10**(digits-1), 10**digits - 1)
         b = random.randint(2, 9)
         expr, steps, result = decompose_mul(a, b)
         q = random.choice(Q_TEMPLATES["mul"]).format(expr=expr, a=a, b=b)
+        pairs.append({"messages": [
+            {"role": "user", "content": q},
+            {"role": "assistant", "content": format_answer(expr, steps, result)},
+        ]})
+
+    for _ in range(n_examples // 4):
+        digits = random.randint(2, 4)
+        a_base = random.randint(10**(digits-1), 10**digits - 1)
+        b = random.randint(2, 9)
+        a = a_base * b  # ensure clean division
+        expr, steps, result = decompose_div(a, b)
+        q = random.choice(Q_TEMPLATES["div"]).format(expr=expr, a=a, b=b)
         pairs.append({"messages": [
             {"role": "user", "content": q},
             {"role": "assistant", "content": format_answer(expr, steps, result)},
