@@ -207,12 +207,16 @@ def decompose_mul(a: int, b: int) -> tuple[str, list[str], int]:
         all_steps.extend(steps)
         partials.append(shifted)
 
-    # Sum partials (only if there are 2+ non-zero partials)
+    # Sum partials with full decomposition (only if 2+ non-zero)
     total = sum(partials)
     nonzero = [p for p in partials if p > 0]
     if len(nonzero) > 1:
-        sum_expr = "+".join(str(p) for p in nonzero)
-        all_steps.append(f"{sum_expr}={total}")
+        running = nonzero[0]
+        for p in nonzero[1:]:
+            _, add_steps, running = decompose_add(running, p)
+            prev = running - p  # reconstruct for display
+            step_str = ", ".join(add_steps)
+            all_steps.append(f"{prev}+{p}: {step_str} → {running}")
 
     return f"{a}*{b}", all_steps, total
 
