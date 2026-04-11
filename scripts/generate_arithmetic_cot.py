@@ -52,20 +52,27 @@ def decompose_add(a: int, b: int) -> tuple[str, list[str], int]:
     da = [int(d) for d in str(a)][::-1]
     db = [int(d) for d in str(b)][::-1]
     n = max(len(da), len(db))
-    while len(da) < n: da.append(0)
-    while len(db) < n: db.append(0)
 
     carry = 0
     steps = []
     result_digits = []
 
     for i in range(n):
-        s = da[i] + db[i]
-        if carry:
-            step = f"{da[i]}+{db[i]}+{carry}={s + carry}"
-            s += carry
+        ai = da[i] if i < len(da) else None
+        bi = db[i] if i < len(db) else None
+
+        if ai is not None and bi is not None:
+            s = ai + bi + carry
+            if carry:
+                step = f"{ai}+{bi}+{carry}={s}"
+            else:
+                step = f"{ai}+{bi}={s}"
+        elif ai is not None:
+            s = ai + carry
+            step = f"{ai}+{carry}={s}" if carry else f"{ai}={s}"
         else:
-            step = f"{da[i]}+{db[i]}={s}"
+            s = bi + carry
+            step = f"{bi}+{carry}={s}" if carry else f"{bi}={s}"
 
         new_carry = s // 10
         digit = s % 10
@@ -77,6 +84,7 @@ def decompose_add(a: int, b: int) -> tuple[str, list[str], int]:
 
     if carry:
         result_digits.append(carry)
+        steps.append(f"c{carry}→{carry}")
 
     result = int(''.join(str(d) for d in reversed(result_digits)))
     return f"{a}+{b}", steps, result
@@ -88,31 +96,51 @@ def decompose_sub(a: int, b: int) -> tuple[str, list[str], int]:
     da = [int(d) for d in str(a)][::-1]
     db = [int(d) for d in str(b)][::-1]
     n = len(da)
-    while len(db) < n: db.append(0)
 
     borrow = 0
     steps = []
     result_digits = []
 
     for i in range(n):
-        top = da[i] - borrow
-        if top < db[i]:
-            diff = (top + 10) - db[i]
-            if borrow:
-                step = f"{da[i]}-{borrow}-{db[i]}+10={diff}b1"
-            else:
-                step = f"{da[i]}-{db[i]}+10={diff}b1"
-            borrow = 1
-        else:
-            diff = top - db[i]
-            if borrow:
-                step = f"{da[i]}-{borrow}-{db[i]}={diff}b0"
-            else:
-                step = f"{da[i]}-{db[i]}={diff}b0"
-            borrow = 0
+        ai = da[i]
+        bi = db[i] if i < len(db) else None
+        top = ai - borrow
 
+        if bi is not None:
+            if top < bi:
+                diff = (top + 10) - bi
+                if borrow:
+                    step = f"{ai}-{borrow}-{bi}+10={diff}"
+                else:
+                    step = f"{ai}-{bi}+10={diff}"
+                new_borrow = 1
+            else:
+                diff = top - bi
+                if borrow:
+                    step = f"{ai}-{borrow}-{bi}={diff}"
+                else:
+                    step = f"{ai}-{bi}={diff}"
+                new_borrow = 0
+        else:
+            # No more b digits - just propagate the borrow
+            if borrow:
+                if ai < borrow:
+                    diff = (ai + 10) - borrow
+                    step = f"{ai}-{borrow}+10={diff}"
+                    new_borrow = 1
+                else:
+                    diff = ai - borrow
+                    step = f"{ai}-{borrow}={diff}"
+                    new_borrow = 0
+            else:
+                diff = ai
+                step = f"{ai}={diff}"
+                new_borrow = 0
+
+        step += f"b{new_borrow}"
         result_digits.append(diff)
         steps.append(step)
+        borrow = new_borrow
 
     while len(result_digits) > 1 and result_digits[-1] == 0:
         result_digits.pop()
@@ -147,6 +175,7 @@ def _mul_single(a: int, b: int) -> tuple[list[str], int]:
 
     if carry:
         result_digits.append(carry)
+        steps.append(f"c{carry}→{carry}")
 
     result = int(''.join(str(d) for d in reversed(result_digits)))
     return steps, result
@@ -178,10 +207,11 @@ def decompose_mul(a: int, b: int) -> tuple[str, list[str], int]:
         all_steps.extend(steps)
         partials.append(shifted)
 
-    # Sum partials
+    # Sum partials (only if there are 2+ non-zero partials)
     total = sum(partials)
-    if len(partials) > 1:
-        sum_expr = "+".join(str(p) for p in partials if p > 0)
+    nonzero = [p for p in partials if p > 0]
+    if len(nonzero) > 1:
+        sum_expr = "+".join(str(p) for p in nonzero)
         all_steps.append(f"{sum_expr}={total}")
 
     return f"{a}*{b}", all_steps, total
@@ -198,7 +228,11 @@ def decompose_div(a: int, b: int) -> tuple[str, list[str], int]:
         current = remainder * 10 + da[i]
         digit = current // b
         remainder = current % b
-        step = f"{current}/{b}={digit}r{remainder}"
+        is_last = (i == len(da) - 1) and remainder == 0
+        if is_last:
+            step = f"{current}/{b}={digit}"
+        else:
+            step = f"{current}/{b}={digit}r{remainder}"
         steps.append(step)
         result_digits.append(digit)
 
