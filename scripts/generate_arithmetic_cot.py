@@ -477,7 +477,7 @@ def generate_split(n_examples: int, max_tokens: int = 250) -> list[dict]:
 def main():
     parser = argparse.ArgumentParser(description="Generate arithmetic CoT dataset")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--train-size", type=int, default=30000)
+    parser.add_argument("--train-size", type=int, default=60000)
     parser.add_argument("--test-size", type=int, default=1000)
     args = parser.parse_args()
 
