@@ -24,29 +24,8 @@ export PATH="$HOME/.local/bin:$PATH"
 sed -i '/\[\[tool\.uv\.index\]\]/,/^$/d' pyproject.toml
 sed -i '/\[tool\.uv\.sources\]/,/^$/d' pyproject.toml
 
-# Detect CUDA version and add matching PyTorch index
-CUDA_VERSION=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' || echo "")
-echo "Detected CUDA: ${CUDA_VERSION:-none}"
-
-if [ -n "$CUDA_VERSION" ]; then
-    CUDA_MAJOR=$(echo "$CUDA_VERSION" | cut -d. -f1)
-    CUDA_MINOR=$(echo "$CUDA_VERSION" | cut -d. -f2)
-    CU_TAG="cu${CUDA_MAJOR}${CUDA_MINOR}"
-
-    TORCH_INDEX="https://download.pytorch.org/whl/${CU_TAG}"
-    echo "Using PyTorch stable for ${CU_TAG}"
-
-    cat >> pyproject.toml << EOF
-
-[[tool.uv.index]]
-url = "${TORCH_INDEX}"
-name = "pytorch-${CU_TAG}"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-${CU_TAG}" }
-EOF
-fi
+# Let uv auto-detect CUDA version for PyTorch
+export UV_TORCH_BACKEND=auto
 
 # Delete lockfile to resolve fresh for this platform
 rm -f uv.lock

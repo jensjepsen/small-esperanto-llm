@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "torch>=2.3.0",
-    "nvidia-cusparselt-cu12; sys_platform == 'linux'",
     "transformers>=4.45.0",
     "datasets>=2.20.0",
     "tokenizers>=0.19.0",
