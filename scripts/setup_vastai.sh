@@ -24,8 +24,23 @@ export PATH="$HOME/.local/bin:$PATH"
 sed -i '/\[\[tool\.uv\.index\]\]/,/^$/d' pyproject.toml
 sed -i '/\[tool\.uv\.sources\]/,/^$/d' pyproject.toml
 
-# Let uv auto-detect CUDA version for PyTorch
-export UV_TORCH_BACKEND=auto
+# Detect CUDA version from driver and set torch backend
+CUDA_VERSION=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' || echo "")
+CUDA_MAJOR=$(echo "$CUDA_VERSION" | cut -d. -f1)
+echo "Detected CUDA driver: ${CUDA_VERSION:-none}"
+
+if [ "$CUDA_MAJOR" = "12" ]; then
+    # CUDA 12.x driver — use cu126 backend and pin torch<2.11 (which needs CUDA 13)
+    export UV_TORCH_BACKEND=cu126
+    sed -i 's/torch>=2.3.0/torch>=2.3.0,<2.11/' pyproject.toml
+    echo "Using UV_TORCH_BACKEND=cu126 with torch<2.11"
+elif [ "$CUDA_MAJOR" = "13" ]; then
+    export UV_TORCH_BACKEND=cu128
+    echo "Using UV_TORCH_BACKEND=cu128"
+else
+    export UV_TORCH_BACKEND=auto
+    echo "Using UV_TORCH_BACKEND=auto"
+fi
 
 # Delete lockfile to resolve fresh for this platform
 rm -f uv.lock
@@ -49,6 +64,7 @@ import torch
 print(f'CUDA available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
     print(f'Device: {torch.cuda.get_device_name(0)}')
+    print(f'CUDA version: {torch.version.cuda}')
     print(f'bf16 supported: {torch.cuda.is_bf16_supported()}')
     print(f'VRAM: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB')
 "
