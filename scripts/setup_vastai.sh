@@ -1,9 +1,9 @@
 #!/bin/bash
 # Setup script for cloud GPU instances (vast.ai, RunPod, etc.)
-# Usage: bash scripts/setup_vastai.sh [small|medium]
+# Usage: bash scripts/setup_vastai.sh [small|medium|large]
 set -e
 
-CONFIG=${1:-small}
+CONFIG=${1:-medium}
 echo "=== Esperanto LM setup ==="
 echo "Config: $CONFIG"
 
@@ -26,15 +26,16 @@ sed -i '/\[tool\.uv\.sources\]/,/^$/d' pyproject.toml
 uv python pin 3.11
 uv sync
 
-# Download data
-echo "=== Downloading data ==="
+# Download Wikipedia (always needed)
+echo "=== Downloading Wikipedia ==="
 uv run download-data
-uv run download-hplt --min-score 7
-uv run download-gutenberg
 
-# Download tokenizer and factoids from HF Hub
-echo "=== Downloading from HF Hub ==="
-uv run python scripts/download_from_hub.py --all
+# Download tokenizer from HF Hub
+echo "=== Downloading tokenizer from HF Hub ==="
+uv run python scripts/download_from_hub.py --tokenizer
+
+# All other data (HPLT, Gutenberg, factoids, sentences) is loaded
+# automatically from HF Hub during training when local files are missing.
 
 # Print GPU info
 echo "=== GPU Info ==="
@@ -49,5 +50,6 @@ if torch.cuda.is_available():
 "
 
 echo ""
-echo "=== Ready! Run with: ==="
-echo "uv run train --config $CONFIG --output-dir runs/$CONFIG --use-hplt --use-gutenberg --use-factoids --use-sentences --min-article-length 500"
+echo "=== Ready! ==="
+echo "Pretrain:  uv run train --config $CONFIG --output-dir runs/$CONFIG --min-article-length 500"
+echo "SFT:       uv run python scripts/train_sft.py --checkpoint runs/$CONFIG/checkpoint-XXXXX"
