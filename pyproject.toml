@@ -13,11 +13,13 @@ dependencies = [
     "trl>=0.9.0",
     "pyyaml>=6.0",
     "rich>=13.0",
-    "wandb>=0.17.0",
-    "gensim>=4.4.0",
-    "google-generativeai>=0.8.6",
-    "google-genai>=1.70.0",
 ]
+
+[project.optional-dependencies]
+wandb = ["wandb>=0.17.0"]
+gemini = ["google-generativeai>=0.8.6", "google-genai>=1.70.0"]
+w2v = ["gensim>=4.4.0"]
+all = ["wandb>=0.17.0", "google-generativeai>=0.8.6", "google-genai>=1.70.0", "gensim>=4.4.0"]
 
 [project.scripts]
 train = "esperanto_lm.train:main"
@@ -40,14 +42,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/esperanto_lm", "scripts"]
-
-[[tool.uv.index]]
-name = "pytorch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu121" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
