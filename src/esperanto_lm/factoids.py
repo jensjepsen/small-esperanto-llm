@@ -11,13 +11,16 @@ PERSON_PROPERTIES = {
     "okupo", "ŝtataneco", "naskiĝloko", "mortloko", "naskiĝdato",
     "mortdato", "edz(in)o", "infano", "patro", "patrino", "familia nomo",
     "antaŭnomo", "lingvo uzata", "honorigo", "membro de", "lernejo",
-    "partio", "religio",
+    "partio", "religio", "laborkampo", "sporto", "dunginto", "posteno",
+    "denaska lingvo", "frato aŭ fratino", "membro de sporta teamo",
 }
 
 PLACE_PROPERTIES = {
     "lando", "komuna limo kun", "troviĝas en administra unuo",
     "ĝemelurbo", "loĝantaro", "horzono", "lingvo uzata", "parto de",
     "havas parton", "plej alta punkto", "ĉefurbo", "oficialaj lingvoj",
+    "estro", "subdividoj", "nomita laŭ",
+    "ofico de la registarestro",
 }
 
 CHEMICAL_PROPERTIES = {
@@ -49,7 +52,8 @@ ASTRONOMY_PROPERTIES = {
 GENERAL_PROPERTIES = {
     "estas", "parto de", "havas parton", "membro de", "lando",
     "lingvo uzata", "honorigo", "komuna limo kun",
-    "troviĝas en administra unuo",
+    "troviĝas en administra unuo", "sekvulo", "antaŭulo",
+    "dato de fondo aŭ kreo", "devenlando", "nomita laŭ",
 }
 
 ALL_USEFUL_PROPERTIES = (
@@ -265,6 +269,60 @@ CONTINUATION_TEMPLATES = {
     "religio": [
         Template("{pron} praktikas la religion {obj}."),
     ],
+    "laborkampo": [
+        Template("{pron} laboras en la kampo de {obj}."),
+        Template("la laborkampo de {subj} estas {obj}."),
+    ],
+    "sporto": [
+        Template("{pron} praktikas {obj}n."),
+        Template("{pron} okupiĝas pri {obj}."),
+    ],
+    "membro de sporta teamo": [
+        Template("{pron} ludas por {obj}."),
+        Template("{pron} estas membro de {obj}."),
+    ],
+    "dunginto": [
+        Template("{pron} laboras por {obj}."),
+        Template("{pron} estas dungita de {obj}."),
+    ],
+    "posteno": [
+        Template("{pron} servis kiel {obj}."),
+        Template("{pron} havis la postenon {obj}."),
+    ],
+    "denaska lingvo": [
+        Template("la denaska lingvo de {subj} estas {obj}."),
+    ],
+    "frato aŭ fratino": [
+        Template("{obj} estas frato aŭ fratino de {subj}."),
+    ],
+    "estro": [
+        Template("la estro de {subj} estas {obj}."),
+        Template("{obj} gvidas {subj}n."),
+    ],
+    "subdividoj": [
+        Template("{obj} estas subdivido de {subj}."),
+    ],
+    "nomita laŭ": [
+        Template("{subj} estas nomita laŭ {obj}."),
+    ],
+    "ofico de la registarestro": [
+        Template("la registarestro de {subj} estas {obj}."),
+    ],
+    "sekvulo": [
+        Template("post {subj} venis {obj}."),
+        Template("la sekvulo de {subj} estas {obj}."),
+    ],
+    "antaŭulo": [
+        Template("antaŭ {subj} estis {obj}."),
+        Template("la antaŭulo de {subj} estas {obj}."),
+    ],
+    "dato de fondo aŭ kreo": [
+        Template("{subj} estis fondita en {obj}."),
+        Template("{subj} kreiĝis en {obj}."),
+    ],
+    "verko": [
+        Template("{pron} kreis la verkon {obj}."),
+    ],
     "antaŭnomo": [
         Template("la antaŭnomo de {subj} estas {obj}."),
     ],
@@ -380,7 +438,22 @@ PROPERTY_ORDER = {
     "patrino": 31,
     "edz(in)o": 32,
     "infano": 33,
+    "frato aŭ fratino": 34,
     "mortloko": 40,
+    "laborkampo": 23,
+    "sporto": 24,
+    "membro de sporta teamo": 25,
+    "dunginto": 26,
+    "posteno": 27,
+    "denaska lingvo": 28,
+    "estro": 14,
+    "subdividoj": 15,
+    "nomita laŭ": 16,
+    "ofico de la registarestro": 17,
+    "sekvulo": 80,
+    "antaŭulo": 81,
+    "dato de fondo aŭ kreo": 3,
+    "verko": 29,
     "lingvo uzata": 50,
     "loĝantaro": 51,
     "horzono": 52,
