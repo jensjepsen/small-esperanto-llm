@@ -36,6 +36,14 @@ dev-dependencies = [
     "pytest-cov>=5.0",
 ]
 
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu121"
+name = "pytorch-cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
