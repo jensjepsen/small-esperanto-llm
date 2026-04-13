@@ -23,6 +23,8 @@ def main():
     parser.add_argument("--sft-creative", action="store_true", help="Push SFT creative dataset")
     parser.add_argument("--gsm8k", action="store_true", help="Push translated GSM8K dataset")
     parser.add_argument("--arithmetic-cot", action="store_true", help="Push arithmetic CoT dataset")
+    parser.add_argument("--hplt", action="store_true", help="Push filtered HPLT Esperanto dataset")
+    parser.add_argument("--gutenberg", action="store_true", help="Push Gutenberg books dataset")
     parser.add_argument("--all", action="store_true", help="Push everything")
     parser.add_argument("--tokenizer-path", type=Path, default=Path("tokenizer_morpheme"))
     parser.add_argument("--factoids-path", type=Path,
@@ -34,7 +36,7 @@ def main():
     parser.add_argument("--arithmetic-cot-dir", type=Path, default=Path("data/sft/arithmetic_cot"))
     args = parser.parse_args()
 
-    if not (args.tokenizer or args.factoids or args.sentences or args.sft_factoid or args.sft_creative or args.gsm8k or args.arithmetic_cot or args.all):
+    if not (args.tokenizer or args.factoids or args.sentences or args.sft_factoid or args.sft_creative or args.gsm8k or args.arithmetic_cot or args.hplt or args.gutenberg or args.all):
         parser.print_help()
         return
 
@@ -144,6 +146,30 @@ def main():
         ds = DatasetDict(splits)
         ds.push_to_hub(repo_id)
         console.print(f"[bold]Done! {repo_id}")
+
+    if args.hplt or args.all:
+        from esperanto_lm.data import load_hplt_dataset
+        repo_id = f"{args.org}/esperanto-hplt"
+        console.print(f"[bold green]Loading and filtering HPLT Esperanto data...")
+        ds = load_hplt_dataset()
+        if ds is not None:
+            console.print(f"[bold]  Filtered rows:[/] {len(ds):,}")
+            ds.push_to_hub(repo_id)
+            console.print(f"[bold]Done! {repo_id}")
+        else:
+            console.print("[red]No HPLT data found in data/hplt/")
+
+    if args.gutenberg or args.all:
+        from esperanto_lm.data import load_gutenberg_dataset
+        repo_id = f"{args.org}/esperanto-gutenberg"
+        console.print(f"[bold green]Loading Gutenberg books...")
+        ds = load_gutenberg_dataset()
+        if ds is not None:
+            console.print(f"[bold]  Books:[/] {len(ds):,}")
+            ds.push_to_hub(repo_id)
+            console.print(f"[bold]Done! {repo_id}")
+        else:
+            console.print("[red]No Gutenberg data found in data/gutenberg/")
 
 
 if __name__ == "__main__":
