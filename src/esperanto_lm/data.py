@@ -12,14 +12,16 @@ DATA_DIR = Path("data/eo_wiki")
 HPLT_DIR = Path("data/hplt")
 GUTENBERG_DIR = Path("data/gutenberg")
 MC4_DIR = Path("data/mc4/eo")
-FACTOIDS_PATH = Path("/mnt/data2/wikidata5m/eo_factoids/factoid_text.jsonl")
+FACTOIDS_PATH = Path("/mnt/data2/wikidata5m/eo_factoids_v2/factoid_text.jsonl")
 SENTENCES_PATH = Path("data/epo_sentences.tsv")
 TOKENIZER_DIR = Path("tokenizer_morpheme")
 
-# HF Hub fallbacks
+# HF Hub datasets
 HF_TOKENIZER = "jensjepsen/esperanto-morpheme-tokenizer"
 HF_FACTOIDS = "jensjepsen/esperanto-factoids"
 HF_SENTENCES = "jensjepsen/esperanto-sentences"
+HF_HPLT = "jensjepsen/esperanto-hplt"
+HF_GUTENBERG = "jensjepsen/esperanto-gutenberg"
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
 SPECIAL_TOKENS = ["<s>", "</s>", "<unk>", "<pad>"]
@@ -39,38 +41,46 @@ def download_dataset(save_dir: Path = DATA_DIR) -> DatasetDict:
 
 
 def load_hplt_dataset(hplt_dir: Path = HPLT_DIR) -> Dataset | None:
-    """Load HPLT JSONL files into a Dataset."""
+    """Load HPLT Esperanto data from HF Hub or local JSONL files."""
+    # Try local first
     jsonl_files = sorted(hplt_dir.glob("*.jsonl"))
-    if not jsonl_files:
-        return None
+    if jsonl_files:
+        ds = load_dataset(
+            "json",
+            data_files=[str(f) for f in jsonl_files],
+            split="train",
+        )
+        ds = ds.filter(
+            lambda x: x.get("filter") != "discard" and bool(x.get("text", "").strip()),
+            num_proc=4,
+        )
+        ds = ds.select_columns(["text"])
+        return ds
 
-    ds = load_dataset(
-        "json",
-        data_files=[str(f) for f in jsonl_files],
-        split="train",
-    )
-    ds = ds.filter(
-        lambda x: x.get("filter") != "discard" and bool(x.get("text", "").strip()),
-        num_proc=4,
-    )
-    # Keep only the text column to save memory
-    ds = ds.select_columns(["text"])
-    return ds
+    # Fall back to HF Hub
+    try:
+        return load_dataset(HF_HPLT, split="train")
+    except Exception:
+        return None
 
 
 def load_gutenberg_dataset(gutenberg_dir: Path = GUTENBERG_DIR) -> Dataset | None:
-    """Load Gutenberg plain text files into a Dataset."""
+    """Load Gutenberg books from HF Hub or local text files."""
+    # Try local first
     txt_files = sorted(gutenberg_dir.glob("*.txt"))
-    if not txt_files:
+    if txt_files:
+        texts = []
+        for path in txt_files:
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                texts.append(text)
+        return Dataset.from_dict({"text": texts})
+
+    # Fall back to HF Hub
+    try:
+        return load_dataset(HF_GUTENBERG, split="train")
+    except Exception:
         return None
-
-    texts = []
-    for path in txt_files:
-        text = path.read_text(encoding="utf-8").strip()
-        if text:
-            texts.append(text)
-
-    return Dataset.from_dict({"text": texts})
 
 
 def load_mc4_dataset(mc4_dir: Path = MC4_DIR) -> Dataset | None:
@@ -85,9 +95,12 @@ def load_mc4_dataset(mc4_dir: Path = MC4_DIR) -> Dataset | None:
 
 
 def load_sentences_dataset(sentences_path: Path = SENTENCES_PATH) -> Dataset | None:
-    """Load Tatoeba-style TSV sentences."""
+    """Load Tatoeba-style TSV sentences from local or HF Hub."""
     if not sentences_path.exists():
-        return None
+        try:
+            return load_dataset(HF_SENTENCES, split="train")
+        except Exception:
+            return None
     texts = []
     with open(sentences_path) as f:
         for line in f:
@@ -103,21 +116,23 @@ FACTOIDS_PATH_LOCAL = Path("data/factoids/factoid_text.jsonl")
 
 
 def load_factoids_dataset(factoids_path: Path = FACTOIDS_PATH) -> Dataset | None:
-    """Load generated Wikidata factoid paragraphs."""
-    if not factoids_path.exists():
-        # Try local download path
-        factoids_path = FACTOIDS_PATH_LOCAL
-    if not factoids_path.exists():
+    """Load generated Wikidata factoid paragraphs from local or HF Hub."""
+    # Try local paths
+    for path in [factoids_path, FACTOIDS_PATH_LOCAL]:
+        if path.exists():
+            texts = []
+            with open(path) as f:
+                for line in f:
+                    doc = json.loads(line)
+                    if doc.get("text", "").strip():
+                        texts.append(doc["text"])
+            return Dataset.from_dict({"text": texts})
+
+    # Fall back to HF Hub
+    try:
+        return load_dataset(HF_FACTOIDS, split="train")
+    except Exception:
         return None
-    # Read only the text field to avoid schema conflicts between
-    # single-entity (entity_id: str) and comparison (entity_ids: list) records
-    texts = []
-    with open(factoids_path) as f:
-        for line in f:
-            doc = json.loads(line)
-            if doc.get("text", "").strip():
-                texts.append(doc["text"])
-    return Dataset.from_dict({"text": texts})
 
 
 def load_combined_dataset(
