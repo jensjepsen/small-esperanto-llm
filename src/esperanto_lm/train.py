@@ -65,28 +65,33 @@ def main():
     )
     parser.add_argument(
         "--use-hplt",
-        action="store_true",
-        help="Include HPLT web corpus data (must download first)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include HPLT web corpus data (default: on)",
     )
     parser.add_argument(
         "--use-gutenberg",
-        action="store_true",
-        help="Include Gutenberg books (must download first)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include Gutenberg books (default: on)",
     )
     parser.add_argument(
         "--use-mc4",
-        action="store_true",
-        help="Include mc4 web corpus (must download first)",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include mc4 web corpus",
     )
     parser.add_argument(
         "--use-factoids",
-        action="store_true",
-        help="Include Wikidata factoid paragraphs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include Wikidata factoid paragraphs (default: on)",
     )
     parser.add_argument(
         "--use-sentences",
-        action="store_true",
-        help="Include Tatoeba sentence corpus",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include Tatoeba sentence corpus (default: on)",
     )
     parser.add_argument(
         "--push-to-hub",
