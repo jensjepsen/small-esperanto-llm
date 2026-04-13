@@ -26,15 +26,11 @@ sed -i '/\[tool\.uv\.sources\]/,/^$/d' pyproject.toml
 uv python pin 3.11
 uv sync
 
-# Download Wikipedia (always needed)
-echo "=== Downloading Wikipedia ==="
-uv run download-data
-
 # Download tokenizer from HF Hub
 echo "=== Downloading tokenizer from HF Hub ==="
 uv run python scripts/download_from_hub.py --tokenizer
 
-# All other data (HPLT, Gutenberg, factoids, sentences) is loaded
+# All data (Wikipedia, HPLT, Gutenberg, factoids, sentences) is loaded
 # automatically from HF Hub during training when local files are missing.
 
 # Print GPU info
