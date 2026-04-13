@@ -20,9 +20,38 @@ apt-get update && apt-get install -y zstd
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
-# Remove local cu121 torch pin — cloud instances use default PyPI torch
+# Remove any existing torch index/source config
 sed -i '/\[\[tool\.uv\.index\]\]/,/^$/d' pyproject.toml
 sed -i '/\[tool\.uv\.sources\]/,/^$/d' pyproject.toml
+
+# Detect CUDA version and add matching PyTorch index
+CUDA_VERSION=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' || echo "")
+echo "Detected CUDA: ${CUDA_VERSION:-none}"
+
+if [ -n "$CUDA_VERSION" ]; then
+    CUDA_MAJOR=$(echo "$CUDA_VERSION" | cut -d. -f1)
+    CUDA_MINOR=$(echo "$CUDA_VERSION" | cut -d. -f2)
+    CU_TAG="cu${CUDA_MAJOR}${CUDA_MINOR}"
+
+    # Try nightly for newest GPUs (Blackwell/50xx), stable for others
+    if [ "$CUDA_MAJOR" -ge 13 ] || ([ "$CUDA_MAJOR" -eq 12 ] && [ "$CUDA_MINOR" -ge 8 ]); then
+        TORCH_INDEX="https://download.pytorch.org/whl/nightly/${CU_TAG}"
+        echo "Using PyTorch nightly for ${CU_TAG}"
+    else
+        TORCH_INDEX="https://download.pytorch.org/whl/${CU_TAG}"
+        echo "Using PyTorch stable for ${CU_TAG}"
+    fi
+
+    cat >> pyproject.toml << EOF
+
+[[tool.uv.index]]
+url = "${TORCH_INDEX}"
+name = "pytorch-${CU_TAG}"
+
+[tool.uv.sources]
+torch = { index = "pytorch-${CU_TAG}" }
+EOF
+fi
 
 # Pin python and sync deps
 uv python pin 3.11
@@ -49,5 +78,5 @@ if torch.cuda.is_available():
 
 echo ""
 echo "=== Ready! ==="
-echo "Pretrain:  uv run train --config $CONFIG --output-dir runs/$CONFIG --min-article-length 500"
-echo "SFT:       uv run python scripts/train_sft.py --checkpoint runs/$CONFIG/checkpoint-XXXXX"
+echo "Pretrain:  uv run train --config $CONFIG --output-dir /workspace/runs/$CONFIG --min-article-length 500"
+echo "SFT:       uv run python scripts/train_sft.py --checkpoint /workspace/runs/$CONFIG/checkpoint-XXXXX"
