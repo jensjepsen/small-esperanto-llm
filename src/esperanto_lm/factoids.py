@@ -89,7 +89,12 @@ SKIP_CLASSES = {
     "affixed family name",
     "events in a specific year or time period",
     "kalendara monato", "tago de la semajno", "tago de la jaro",
+    # Repetitive entity types that dominate the data
+    "asteroido", "galaksio", "stelo", "supernovao",
 }
+
+# Substring matches — skip entities whose "estas" value contains any of these
+SKIP_CLASS_SUBSTRINGS = {"komunumo", "komunumoparto"}
 
 # Abstract concept classes that shouldn't have geographic properties
 ABSTRACT_INDICATORS = {
@@ -704,8 +709,12 @@ def _pick_connector(used_connectors: set) -> str:
 def _should_skip_entity(facts: list[dict]) -> bool:
     """Check if entity is a Wikimedia meta-page or other junk type."""
     for fact in facts:
-        if fact["property"] == "estas" and fact["value"].lower() in SKIP_CLASSES:
-            return True
+        if fact["property"] == "estas":
+            val = fact["value"].lower()
+            if val in SKIP_CLASSES:
+                return True
+            if any(sub in val for sub in SKIP_CLASS_SUBSTRINGS):
+                return True
     return False
 
 
