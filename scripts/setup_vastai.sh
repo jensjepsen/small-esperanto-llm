@@ -33,20 +33,15 @@ if [ -n "$CUDA_VERSION" ]; then
     CUDA_MINOR=$(echo "$CUDA_VERSION" | cut -d. -f2)
     CU_TAG="cu${CUDA_MAJOR}${CUDA_MINOR}"
 
-    # Try nightly for newest GPUs (Blackwell/50xx), stable for others
-    if [ "$CUDA_MAJOR" -ge 13 ] || ([ "$CUDA_MAJOR" -eq 12 ] && [ "$CUDA_MINOR" -ge 8 ]); then
-        TORCH_INDEX="https://download.pytorch.org/whl/nightly/${CU_TAG}"
-        echo "Using PyTorch nightly for ${CU_TAG}"
-    else
-        TORCH_INDEX="https://download.pytorch.org/whl/${CU_TAG}"
-        echo "Using PyTorch stable for ${CU_TAG}"
-    fi
+    TORCH_INDEX="https://download.pytorch.org/whl/${CU_TAG}"
+    echo "Using PyTorch stable for ${CU_TAG}"
 
     cat >> pyproject.toml << EOF
 
 [[tool.uv.index]]
 url = "${TORCH_INDEX}"
 name = "pytorch-${CU_TAG}"
+explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-${CU_TAG}" }
@@ -58,7 +53,7 @@ rm -f uv.lock
 
 # Pin python and sync deps
 uv python pin 3.11
-uv sync --index-strategy unsafe-best-match
+uv sync
 
 # Download tokenizer from HF Hub
 echo "=== Downloading tokenizer from HF Hub ==="
