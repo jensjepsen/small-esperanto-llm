@@ -181,6 +181,28 @@ OPENING_TEMPLATES = {
     "devenlando": [
         Template("{subj} devenas el {obj}.", needs_pronoun=False),
     ],
+    "laborkampo": [
+        Template("{subj} laboras en la kampo de {obj}.", needs_pronoun=False),
+    ],
+    "sporto": [
+        Template("{subj} praktikas {obj}n.", needs_pronoun=False),
+    ],
+    "posteno": [
+        Template("{subj} servis kiel {obj}.", needs_pronoun=False),
+    ],
+    "dunginto": [
+        Template("{subj} laboras por {obj}.", needs_pronoun=False),
+    ],
+    "membro de sporta teamo": [
+        Template("{subj} ludas por {obj}.", needs_pronoun=False),
+    ],
+    "dato de fondo aŭ kreo": [
+        Template("{subj} estis fondita en {obj}.", needs_pronoun=False),
+        Template("{subj} kreiĝis en {obj}.", needs_pronoun=False),
+    ],
+    "nomita laŭ": [
+        Template("{subj} estas nomita laŭ {obj}.", needs_pronoun=False),
+    ],
 }
 
 CONTINUATION_TEMPLATES = {
