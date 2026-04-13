@@ -7,9 +7,10 @@ CONFIG=${1:-medium}
 echo "=== Esperanto LM setup ==="
 echo "Config: $CONFIG"
 
-# Use local SSD for uv caches (network volumes are slow)
+# Use local SSD for caches (network volumes are slow)
 export UV_CACHE_DIR=/tmp/uv-cache
 export UV_PYTHON_INSTALL_DIR=/tmp/uv-python
+export HF_HOME=/tmp/hf-cache
 
 # Install system dependencies
 apt-get update && apt-get install -y zstd
