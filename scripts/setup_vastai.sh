@@ -53,9 +53,12 @@ torch = { index = "pytorch-${CU_TAG}" }
 EOF
 fi
 
+# Delete lockfile to resolve fresh for this platform
+rm -f uv.lock
+
 # Pin python and sync deps
 uv python pin 3.11
-uv sync
+uv sync --index-strategy unsafe-best-match
 
 # Download tokenizer from HF Hub
 echo "=== Downloading tokenizer from HF Hub ==="
