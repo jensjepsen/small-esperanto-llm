@@ -26,7 +26,7 @@ def main():
     parser.add_argument("--all", action="store_true", help="Push everything")
     parser.add_argument("--tokenizer-path", type=Path, default=Path("tokenizer_morpheme"))
     parser.add_argument("--factoids-path", type=Path,
-                        default=Path("/mnt/data2/wikidata5m/eo_factoids/factoid_text.jsonl"))
+                        default=Path("/mnt/data2/wikidata5m/eo_factoids_v2/factoid_text.jsonl"))
     parser.add_argument("--sentences-path", type=Path, default=Path("data/epo_sentences.tsv"))
     parser.add_argument("--sft-factoid-path", type=Path, default=Path("data/sft/sft_factoid.jsonl"))
     parser.add_argument("--sft-creative-path", type=Path, default=Path("data/sft/sft_creative.jsonl"))

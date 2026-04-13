@@ -17,8 +17,8 @@ from esperanto_lm.factoids import (
 
 console = Console()
 
-DEFAULT_INPUT = Path("/mnt/data2/wikidata5m/eo_factoids/eo_factoids.jsonl")
-DEFAULT_OUTPUT = Path("/mnt/data2/wikidata5m/eo_factoids/factoid_text.jsonl")
+DEFAULT_INPUT = Path("/mnt/data2/wikidata5m/eo_factoids_v2/eo_factoids.jsonl")
+DEFAULT_OUTPUT = Path("/mnt/data2/wikidata5m/eo_factoids_v2/factoid_text.jsonl")
 
 
 def main():
