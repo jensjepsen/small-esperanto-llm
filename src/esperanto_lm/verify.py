@@ -49,7 +49,7 @@ PARTICIPLE_SUFFIXES = {"ant", "int", "ont", "at", "it", "ot"}
 DIRECTIONAL_PREPS = {
     "en", "sur", "sub", "super", "antaŭ", "post", "apud",
     "inter", "ekster", "ĉe", "tra", "trans", "malantaŭ",
-    "ĉirkaŭ", "ĝis", "preter", "ene",
+    "ĉirkaŭ", "ĝis", "preter", "ene", "kontraŭ",
 }
 # Non-directional prepositions — should never take accusative after them.
 NONDIR_PREPS = {
@@ -124,6 +124,7 @@ KNOWN_TRANSITIVE = {
     "konsistigi",  # "konsistigas grupon" — "make up"
     "rigardi",  # "rigardas ŝablonojn" — already in set? check
     "suriri",  # "suriri boaton" — to board/mount
+    "flugi",  # "flugis la komandan modulon" — literary transitive
 }
 
 # Time / measure roots whose accusative form is adverbial (not a real object).
@@ -136,6 +137,7 @@ ADVERBIAL_TIME_NOUNS = {
     "generaci", "ludperiod", "epoĥ", "erao", "era",
     "temp",  # "vivis longan tempon" — generic time
     "paŝ",  # "iras 5 paŝojn antaŭen" — adverbial distance/count
+    "mejl",  # "marŝis mejlojn" — adverbial distance
     "metr", "kilometr", "fut", "centimetr", "kilogram", "litr",
     "etaĝ",  # "tri etaĝojn alta" — measure of height
     "distanc",  # "moviĝas ajnan distancon" — measure of distance
@@ -488,7 +490,18 @@ def analyze_word(word: str, idx: int, char_span: tuple[int, int],
     if word[0].isupper():
         stem_test, end, num, _case = _strip_ending(lower)
         verbal_endings = ("as", "is", "os", "us", "u", "i", "e", "en")
+        # At sentence start a capitalized word with a verbal/adverbial ending
+        # is usually a normal common word ("Pripensu...", "Estas...", "Hejmen
+        # iru..."). But proper names sometimes end the same way ("Frisbee",
+        # "Tesla" — note `e`/`a`). Fall through to regular analysis only when
+        # the stem decomposes to a known Esperanto root; otherwise keep it
+        # classified as a proper noun.
+        fall_through = False
         if sentence_start and end in verbal_endings:
+            _, root_candidate, _ = _decompose_stem(stem_test)
+            if root_candidate and root_candidate in get_roots():
+                fall_through = True
+        if fall_through:
             pass  # fall through to regular analysis
         else:
             tok = Token(text=word, idx=idx, char_span=char_span, pos="N",
@@ -582,15 +595,22 @@ def tokenize(text: str) -> list[Token]:
         tok.is_sentence_start = is_start  # type: ignore
         tokens.append(tok)
 
-    # Precompute cumulative paren depth at every character.
+    # Precompute cumulative paren depth at every character. Also track paired
+    # quote state (double/curly quotes) so quoted phrases are treated like
+    # parentheticals for subject finding.
     paren_depth = [0] * (len(text) + 1)
     d = 0
+    in_dq = False  # in "..." or curly-quote pair
     for ci, ch in enumerate(text):
         if ch in "([{":
             d += 1
         elif ch in ")]}":
             d = max(0, d - 1)
-        paren_depth[ci + 1] = d
+        # Paired double-quote-like characters
+        if ch in '"“”':
+            in_dq = not in_dq
+        effective = d + (1 if in_dq else 0)
+        paren_depth[ci + 1] = effective
     # Mark tokens with positional attributes
     for i, tok in enumerate(tokens):
         start_c, end_c = tok.char_span
@@ -663,14 +683,31 @@ def extract_nps(tokens: list[Token]) -> list[NP]:
             if (prev.pos in ("A", "Det")
                 or is_correlative_det
                 or (prev.pos == "Closed" and prev.raw_lower.endswith(("a", "aj", "an", "ajn")))):
-                # An adj with mismatched case is absorbed only if no
-                # intensifier sits just before it — "pli rimarkebla mallongan
-                # tempon" should NOT absorb rimarkebla into tempon's NP.
+                # An adj with mismatched case is not a modifier of this head.
+                # Several shapes:
+                # - "pli rimarkebla mallongan tempon" — predicate adj +
+                #   adverbial acc (preceding intensifier signals predicate).
+                # - "substancon nomatan laktato" — `nomatan` is a participle
+                #   modifying an earlier noun; `laktato` is an appositive name
+                #   in nom. Participle signals the naming/apposition pattern.
                 if prev.pos == "A" and prev.case and tok.case \
                         and prev.case != tok.case:
-                    # Look one step further back for an intensifier.
                     if j - 1 >= 0 and tokens[j - 1].raw_lower in INTENSIFIERS:
                         break
+                    # Participle adj with case mismatch → appositive pattern.
+                    prev_is_participle = (
+                        (prev.suffixes and prev.suffixes[-1] in PARTICIPLE_SUFFIXES)
+                        or (prev.root and any(prev.root.endswith(p)
+                                                for p in PARTICIPLE_SUFFIXES))
+                    )
+                    if prev_is_participle:
+                        break
+                # Correlative-det must agree in case with head. "al neniu
+                # klarigon" — `neniu` (nom) isn't a modifier of `klarigon`
+                # (acc); they belong to different phrases.
+                if is_correlative_det and tok.case == "acc" \
+                        and not prev.raw_lower.endswith(("n", "jn")):
+                    break
                 start = j
                 if is_det:
                     saw_det = True
@@ -683,8 +720,8 @@ def extract_nps(tokens: list[Token]) -> list[NP]:
 
 # Subordinators that introduce clauses
 SUBORDINATORS = {
-    "ke", "kiel", "kiu", "kiun", "kies", "kio", "kion", "kiam",
-    "kie", "kien", "kial", "kiom", "kvankam", "kvazaŭ",
+    "ke", "kiel", "kiu", "kiuj", "kiun", "kiujn", "kies", "kio", "kion",
+    "kiam", "kie", "kien", "kial", "kiom", "kvankam", "kvazaŭ",
     "se", "ĉar", "dum", "ĝis", "antaŭ", "post", "ĉu",
 }
 # Coordinating conjunctions
@@ -721,8 +758,12 @@ def _compute_pp_inside(tokens: list[Token], nps: list[NP]) -> set[int]:
         j = i + 1
         while j < n:
             t = tokens[j]
-            # Stop at clause boundary
+            # Stop at clause/sentence boundary
             if t.has_comma_before and j > i + 1:
+                break
+            if getattr(t, "is_sentence_start", False):
+                break
+            if getattr(t, "has_hard_break_before", False):
                 break
             if t.pos in ("V", "INF"):
                 break
@@ -987,12 +1028,18 @@ def extract_clauses(tokens: list[Token], nps: list[NP]) -> list[Clause]:
             prev_subject_was_compound = False
 
         # Subject elision: if no subject and clause introduced by a coordinator
-        # (kaj/sed/aŭ/nek), inherit the previous clause's subject.
+        # (kaj/sed/aŭ/nek), inherit the previous clause's subject. But not if
+        # the clause itself has an INF that serves as its (implicit) subject —
+        # "X estas belaj kaj protekti ilin estas nobla" — second clause's
+        # subject is the infinitive clause `protekti ilin`, not elided from X.
         intro = intro_words.get(s)
         elided = False
-        if subj_tok is None and bi > 0 and prev_subject_token is not None:
-            # Was the boundary inserted by a coordinator? boundary position
-            # was tokens.idx + 1 of a coordinator token at idx s-1.
+        has_inf_subject = any(
+            t.pos == "INF" and (i_ := t.idx) < (verb.idx if verb else e)
+            for t in clause_tokens
+        )
+        if subj_tok is None and bi > 0 and prev_subject_token is not None \
+                and not has_inf_subject:
             if s - 1 >= 0 and tokens[s - 1].raw_lower in COORDINATORS:
                 subj_tok = prev_subject_token
                 elided = True
@@ -1035,9 +1082,19 @@ def extract_clauses(tokens: list[Token], nps: list[NP]) -> list[Clause]:
                     # Skip back past any preceding Det/A of that NP
                     while left_start > 0 and tokens[left_start - 1].pos in ("A", "Det"):
                         left_start -= 1
-                left_has_n = any(tokens[m].pos == "N" and tokens[m].idx not in pp_inside_global
-                                  for m in range(left_start, kk))
-                right_has_n = any(tokens[m].pos == "N" and tokens[m].idx not in pp_inside_global
+                # Subject pronouns (li/ŝi/ni/ili/tiu/ĉiu/etc) count as N for
+                # compound detection: "li kaj la mapo estis malaperintaj".
+                def _subject_like(m: int) -> bool:
+                    t = tokens[m]
+                    if t.pos == "N" and t.idx not in pp_inside_global:
+                        return True
+                    if t.raw_lower in SUBJECT_PRONOUNS \
+                            or t.raw_lower in CORRELATIVE_SUBJECTS_SG \
+                            or t.raw_lower in CORRELATIVE_SUBJECTS_PL:
+                        return True
+                    return False
+                left_has_n = any(_subject_like(m) for m in range(left_start, kk))
+                right_has_n = any(_subject_like(m)
                                    for m in range(kk + 1, min(e, verb.idx if verb else e)))
                 if left_has_n and right_has_n:
                     this_is_compound = True
@@ -1589,6 +1646,13 @@ class PrepositionCase:
                 continue
             for np in nps:
                 if np.start_idx == i + 1:
+                    # Skip if a sentence/hard break separates the Prep from
+                    # the NP ("de 1969. Tiun nokton" — nokton is a new
+                    # sentence, not governed by the prior `de`).
+                    first_tok = tokens[np.start_idx]
+                    if getattr(first_tok, "is_sentence_start", False) \
+                            or getattr(first_tok, "has_hard_break_before", False):
+                        break
                     # Skip proper nouns — foreign names with -en/-on endings
                     # often look like Esperanto accusatives but aren't inflected.
                     if getattr(np.head, "is_proper", False):
