@@ -181,7 +181,9 @@ SUFFIX_SIG: dict[str, tuple[set[str], str]] = {
     "ebl":  ({"V"},            "A"),
     "em":   ({"V", "N"},       "A"),
     "end":  ({"V"},            "A"),
-    "ad":   ({"V"},            None),  # -ad preserves verbal/noun
+    "ad":   ({"V", "N", "A", "Adv"}, None),  # -ad attaches broadly; strict
+    # check misfires on loanwords whose decomposition over-splits (e.g.
+    # "dominado" parsed as "dom+in+ad" even though `domin` is a root).
     "ant":  ({"V"},            "A"),   # participles
     "int":  ({"V"},            "A"),
     "ont":  ({"V"},            "A"),
@@ -596,11 +598,12 @@ def tokenize(text: str) -> list[Token]:
         tokens.append(tok)
 
     # Precompute cumulative paren depth at every character. Also track paired
-    # quote state (double/curly quotes) so quoted phrases are treated like
-    # parentheticals for subject finding.
+    # quote state (single/double/curly quotes) so quoted phrases are treated
+    # like parentheticals for subject finding.
     paren_depth = [0] * (len(text) + 1)
     d = 0
-    in_dq = False  # in "..." or curly-quote pair
+    in_dq = False  # inside "..." or curly double-quote pair
+    in_sq = False  # inside '...' or curly single-quote pair
     for ci, ch in enumerate(text):
         if ch in "([{":
             d += 1
@@ -609,7 +612,20 @@ def tokenize(text: str) -> list[Token]:
         # Paired double-quote-like characters
         if ch in '"“”':
             in_dq = not in_dq
-        effective = d + (1 if in_dq else 0)
+        # Paired single-quote-like characters — guard against apostrophes
+        # by requiring whitespace/bracket on one side.
+        if ch in "'‘’":
+            prev_ch = text[ci - 1] if ci > 0 else " "
+            next_ch = text[ci + 1] if ci + 1 < len(text) else " "
+            if in_sq:
+                # Closing: allow if surrounded by letter-then-space/punct
+                if not next_ch.isalpha() or next_ch in ".,;:!?":
+                    in_sq = False
+            else:
+                # Opening: require space/bracket before
+                if not prev_ch.isalpha():
+                    in_sq = True
+        effective = d + (1 if in_dq else 0) + (1 if in_sq else 0)
         paren_depth[ci + 1] = effective
     # Mark tokens with positional attributes
     for i, tok in enumerate(tokens):
@@ -1724,6 +1740,12 @@ class WrongEndings:
                 # adj with a purpose infinitive. The adv-form would change
                 # the meaning, so don't flag.
                 if tokens[i+1].pos == "INF":
+                    continue
+                # Skip if the adj is inside parens/quotes — it's a quoted
+                # mention of a term, not a predicate adj in running text.
+                # "terminoj kiel 'esence kompleta' estis uzataj" — 'kompleta'
+                # is inside quotes.
+                if getattr(tok, "is_in_parens", False):
                     continue
                 # FIX 1: comma-separated list ends with "kaj ADJ"
                 if i > 0 and (tokens[i-1].raw_lower == "kaj" or tok.has_comma_before):
