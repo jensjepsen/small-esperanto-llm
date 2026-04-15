@@ -14,7 +14,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress
 
-from esperanto_lm.factoids import detect_entity_type
+from esperanto_lm.factoids import detect_entity_type, _should_skip_entity, SKIP_CLASS_SUBSTRINGS
 
 console = Console()
 
@@ -32,6 +32,15 @@ QA_TEMPLATES = {
             "Kie estas la registaro de {entity}?",
             "Kiu estas la ĉefa urbo de {entity}?",
             "Diru al mi la ĉefurbon de {entity}.",
+            "Kapitalo de {entity}?",
+            "Kia urbo estas la centro de {entity}?",
+            "{entity} havas kiun ĉefurbon?",
+            "En kiu urbo sidas la registaro de {entity}?",
+            "Bonvolu nomi la ĉefurbon de {entity}.",
+            "Mi serĉas la ĉefurbon de {entity}.",
+            "Mi volas scii la kapitalon de {entity}.",
+            "Kiu estas la ĉefurbo, kiam ni parolas pri {entity}?",
+            "{entity} - kia ĉefurbo?",
         ],
         "initial_a": [
             "La ĉefurbo de {entity} estas {value}.",
@@ -42,6 +51,12 @@ QA_TEMPLATES = {
             "La registaro sidas en {value}.",
             "La ĉefa urbo de {entity} nomiĝas {value}.",
             "{value} funkcias kiel la ĉefurbo de {entity}.",
+            "{value} servas kiel la ĉefurbo.",
+            "Estas {value}.",
+            "La kapitalo: {value}.",
+            "Tio estus {value}.",
+            "Sendube {value}.",
+            "{entity} havas kiel ĉefurbon {value}.",
         ],
         "followup_q": [
             "Kio estas la ĉefurbo?",
@@ -98,6 +113,18 @@ QA_TEMPLATES = {
             "Kiel {entity} vivtenas sin?",
             "Kion {entity} faras profesie?",
             "Kia profesio estas tiu de {entity}?",
+            "Kiel {entity} laboras?",
+            "Kion faras {entity} por vivteni sin?",
+            "Diru al mi la profesion de {entity}.",
+            "{entity} - kia profesio?",
+            "Kia laboro estas tiu de {entity}?",
+            "Pri kio laboras {entity}?",
+            "Kiel oni nomas la profesion de {entity}?",
+            "Mi scivolas pri la kariero de {entity}.",
+            "Kia kariero havis {entity}?",
+            "Bonvolu diri al mi, kio estas {entity}.",
+            "Mi volas scii la profesion de {entity}.",
+            "Kio estas la metio de {entity}?",
         ],
         "initial_a": [
             "{entity} estas {value}.",
@@ -108,6 +135,12 @@ QA_TEMPLATES = {
             "{pron_cap} estas konata kiel {value}.",
             "La profesio de {entity} estas {value}.",
             "{entity} profesie estas {value}.",
+            "Kiel profesio: {value}.",
+            "{entity} servas kiel {value}.",
+            "{pron_cap} havas la profesion de {value}.",
+            "{value} estas lia/ŝia profesio.",
+            "{pron_cap} agas kiel {value}.",
+            "{entity} estas profesia {value}.",
         ],
         "followup_q": [
             "Kio estas {poss} profesio?",
@@ -227,9 +260,9 @@ QA_TEMPLATES = {
     },
     "lingvo uzata": {
         "initial_q": ["Kiun lingvon oni parolas en {entity}?", "Kiu lingvo estas uzata en {entity}?"],
-        "initial_a": ["En {entity} oni parolas la {value}n.", "La {value} estas uzata en {entity}.", "La {value}n."],
+        "initial_a": ["En {entity} oni parolas la {value_acc}.", "La {value} estas uzata en {entity}.", "La {value_acc}."],
         "followup_q": ["Kiun lingvon oni parolas tie?", "Kaj la lingvo?"],
-        "followup_a": ["Oni parolas la {value}n.", "La {value}.", "La {value}n."],
+        "followup_a": ["Oni parolas la {value_acc}.", "La {value}.", "La {value_acc}."],
     },
     "komuna limo kun": {
         "initial_q": ["Kun kiu lando limas {entity}?", "Kiuj estas la najbaroj de {entity}?"],
@@ -409,7 +442,7 @@ QA_TEMPLATES = {
             "Kiu sporto rilatas al {entity}?",
         ],
         "initial_a": [
-            "{entity} praktikas {value}n.",
+            "{entity} praktikas {value_acc}.",
             "La sporto de {entity} estas {value}.",
             "{value}.",
             "{pron_cap} okupiĝas pri {value}.",
@@ -434,12 +467,60 @@ QA_TEMPLATES = {
             "En kiu kampo laboras {entity}?",
             "Kio estas la laborkampo de {entity}?",
             "Pri kio okupiĝas {entity}?",
+            "En kiu fako aktivas {entity}?",
+            "Kia estas la specialaĵo de {entity}?",
+            "Pri kio {entity} faras esploron?",
+            "En kiu disciplino laboras {entity}?",
+            "Kio estas la fako de {entity}?",
+            "{entity} - en kiu kampo?",
+            "Diru al mi pri la laborkampo de {entity}.",
+            "En kiu scienco laboras {entity}?",
+            "Pri kio specialiĝas {entity}?",
+            "Sur kiu kampo agas {entity}?",
+            "Kia esploristo estas {entity}?",
+            "Mi serĉas la kampon de {entity}.",
+            "Pri kiu temo verkis {entity}?",
+            "En kiu fako estas konata {entity}?",
+            "Kiu estas la fako de {entity}?",
+            "Pri kiu disciplino estas {entity}?",
+            "Bonvolu diri pri la laborkampo de {entity}.",
+            "Mi volas scii la fakon de {entity}.",
+            "{entity} esploras pri kio?",
         ],
         "initial_a": [
             "{entity} laboras en la kampo de {value}.",
             "La laborkampo de {entity} estas {value}.",
             "{value}.",
             "{pron_cap} okupiĝas pri {value}.",
+            "{pron_cap} esploras pri {value}.",
+            "Lia/ŝia fako estas {value}.",
+            "Specialiĝas pri {value}.",
+            "Aktivas en {value}.",
+            "{entity} kontribuas al {value}.",
+            "{pron_cap} estas konata pro sia laboro en {value}.",
+            "La fako: {value}.",
+            "Disciplino: {value}.",
+            "Pri {value}.",
+            "{entity} dediĉis sian karieron al {value}.",
+            "{pron_cap} verkis pri {value}.",
+            "Lia/ŝia kontribuo estas en {value}.",
+        ],
+        "followup_q": [
+            "Kaj la kampo?",
+            "Pri kiu fako?",
+            "En kio specialiĝas?",
+            "Kio estas la disciplino?",
+            "Kaj la fako?",
+            "Kia esploristo?",
+            "En kiu scienco?",
+        ],
+        "followup_a": [
+            "{pron_cap} laboras en {value}.",
+            "{value}.",
+            "Specialiĝas pri {value}.",
+            "Pri {value}.",
+            "Lia/ŝia fako estas {value}.",
+            "{pron_cap} esploras pri {value}.",
         ],
     },
     "partio": {
@@ -476,7 +557,7 @@ QA_TEMPLATES = {
         ],
         "initial_a": [
             "La denaska lingvo de {entity} estas {value}.",
-            "{pron_cap} kreskis parolante {value}n.",
+            "{pron_cap} kreskis parolante {value_acc}.",
             "{value}.",
         ],
     },
@@ -487,7 +568,7 @@ QA_TEMPLATES = {
             "Al kiu kredo apartenas {entity}?",
         ],
         "initial_a": [
-            "{entity} sekvas {value}n.",
+            "{entity} sekvas {value_acc}.",
             "La religio de {entity} estas {value}.",
             "{pron_cap} apartenas al {value}.",
             "{value}.",
@@ -535,12 +616,46 @@ QA_TEMPLATES = {
             "Kia ĝenro estas {entity}?",
             "Al kiu ĝenro apartenas {entity}?",
             "Kio estas la ĝenro de {entity}?",
+            "Kiel oni klasifikus {entity}?",
+            "Al kia kategorio apartenas {entity}?",
+            "Kia verko estas {entity}?",
+            "Diru al mi la ĝenron de {entity}.",
+            "Kia stilo estas {entity}?",
+            "Kategorio de {entity}?",
+            "{entity} - kia ĝenro?",
+            "Klasifiku {entity}.",
+            "Kiu ĝenro plej taŭgas por {entity}?",
+            "Kiel mi nomus la stilon de {entity}?",
+            "Ĉu vi povas klasifiki {entity}?",
+            "Mi serĉas la ĝenron de {entity}.",
+            "Bonvolu identigi la ĝenron de {entity}.",
+            "Kia estas la stilo de {entity}?",
+            "Al kiu kategorio mi metu {entity}?",
+            "Helpu min klasifiki {entity}.",
+            "Kio karakterizas {entity}?",
+            "Kia tipo de verko estas {entity}?",
+            "Sub kiu ĝenro mi serĉu {entity}?",
+            "Mi volas scii: kia ĝenro estas {entity}?",
+            "Sciu, kio estas la ĝenro de {entity}?",
         ],
         "initial_a": [
             "{entity} estas {value}.",
             "La ĝenro de {entity} estas {value}.",
             "Temas pri {value}.",
             "{value}.",
+            "Klasifikas kiel {value}.",
+            "Apartenas al {value}.",
+            "Estas {value} laŭ ĝenro.",
+            "{entity} estas konsiderata {value}.",
+            "Mi dirus ke {entity} estas {value}.",
+            "La plej preciza priskribo: {value}.",
+            "Ĝi estas tipa {value}.",
+            "Mi metus ĝin sub {value}.",
+            "Sendube {value}.",
+            "Estas klare {value}.",
+            "{entity} apartenas al la ĝenro {value}.",
+            "Tio estas {value}.",
+            "Klasifikiĝas kiel {value}.",
         ],
     },
     "verko": {
@@ -550,7 +665,7 @@ QA_TEMPLATES = {
             "Kion {entity} verkis?",
         ],
         "initial_a": [
-            "{entity} kreis {value}n.",
+            "{entity} kreis {value_acc}.",
             "La verko de {entity} estas {value}.",
             "{value}.",
             "{entity} estas konata pro {value}.",
@@ -561,12 +676,47 @@ QA_TEMPLATES = {
             "El kiu lando devenas {entity}?",
             "Kie originis {entity}?",
             "Kio estas la devenlando de {entity}?",
+            "El kie venas {entity}?",
+            "Kiu lando estas la origino de {entity}?",
+            "Kia estas la patrolando de {entity}?",
+            "Kie estis kreita {entity}?",
+            "El kie estas {entity}?",
+            "{entity} - el kiu lando?",
+            "Kia estas la nacia origino de {entity}?",
+            "Diru al mi de kie venas {entity}.",
+            "Kie {entity} havas siajn radikojn?",
+            "Bonvolu nomi la devenlandon de {entity}.",
+            "{entity} havas kiun originon?",
+            "Kio estas la origina lando de {entity}?",
+            "Mi scivolas pri la deveno de {entity}.",
+            "El kiu kulturo venas {entity}?",
+            "Lando de origino por {entity}?",
+            "En kiu lando naskiĝis {entity}?",
+            "De kie originas {entity}?",
+            "Kiu lando estas asociita kun {entity}?",
+            "{entity} venas el kiu lando?",
+            "Mi volas scii la originon de {entity}.",
+            "Kia lando produktis {entity}?",
         ],
         "initial_a": [
             "{entity} devenas el {value}.",
             "La devenlando de {entity} estas {value}.",
             "El {value}.",
             "{entity} originis en {value}.",
+            "{entity} venas el {value}.",
+            "{value} estas la origino.",
+            "Estas {value}.",
+            "La origino estas {value}.",
+            "Patrolando: {value}.",
+            "Origine el {value}.",
+            "Naskiĝis en {value}.",
+            "Kreita en {value}.",
+            "Devena lando: {value}.",
+            "Originas el {value}.",
+            "Tradicie de {value}.",
+            "{entity} havas radikojn en {value}.",
+            "{value} estas la patrolando.",
+            "{entity} estas el {value}.",
         ],
     },
     "ofico de la registarestro": {
@@ -590,7 +740,7 @@ QA_TEMPLATES = {
         "initial_a": [
             "Unu subdivido de {entity} estas {value}.",
             "{value} estas parto de {entity}.",
-            "{entity} inkluzivas {value}n.",
+            "{entity} inkluzivas {value_acc}.",
             "{value}.",
         ],
     },
@@ -696,12 +846,12 @@ def _strip_lingvo(value: str) -> str:
 
 
 def _should_skip(entity: dict) -> bool:
+    """Skip year-pages plus anything the pretraining factoid generator skips
+    (SKIP_CLASSES + SKIP_CLASS_SUBSTRINGS, e.g. komunumo / komunumoparto / asteroido).
+    """
     if _YEAR_LABEL_RE.search(entity["label"]):
         return True
-    for fact in entity["facts"]:
-        if fact["property"] == "estas" and fact["value"].lower() in SKIP_CLASSES:
-            return True
-    return False
+    return _should_skip_entity(entity["facts"])
 
 
 def _usable_facts(entity: dict) -> list[dict]:
@@ -755,22 +905,59 @@ def generate_single_turn(entity: dict) -> list[dict]:
     return pairs
 
 
+def _accusativize(phrase: str) -> str:
+    """Convert a noun phrase to accusative by adding -n to every inflecting
+    word — both the head noun and any preceding adjectives/determiners.
+    "usona piedpilkado" → "usonan piedpilkadon", "franca lingvo" → "francan lingvon".
+    Words that don't inflect (la, prepositions, proper nouns, -e adverbs, -i
+    infinitives) are left alone.
+    """
+    result = []
+    for part in phrase.split(" "):
+        if not part:
+            result.append(part)
+            continue
+        # Already accusative
+        if part.endswith(("n",)):
+            result.append(part)
+            continue
+        # Noun/adjective endings that take -n
+        if part.endswith(("o", "a", "oj", "aj")):
+            result.append(part + "n")
+        else:
+            result.append(part)
+    return " ".join(result)
+
+
 def _format_template(template: str, entity: str, value: str, entity_type: str) -> str:
     """Format a template with entity, value, and correct pronouns."""
     pron = _pronoun(entity_type)
     poss = _pron_possessive(entity_type)
     return template.format(
-        entity=entity, value=value,
+        entity=entity, value=value, value_acc=_accusativize(value),
         pron=pron, pron_cap=pron[0].upper() + pron[1:],
         poss=poss, poss_cap=poss[0].upper() + poss[1:],
     )
 
 
 def generate_multi_turn(entity: dict, all_entities: list[dict],
-                        prop_usage: Counter, prop_cap: int) -> dict | None:
-    """Generate a multi-turn conversation about an entity."""
+                        prop_usage: Counter, prop_cap: int,
+                        value_usage: Counter | None = None, value_cap: int = 200) -> dict | None:
+    """Generate a multi-turn conversation about an entity.
+
+    value_usage / value_cap: per-(property, value) cap to prevent any single
+    answer (e.g. "usono" for devenlando, "pop-muziko" for ĝenro) from
+    dominating training data. Without this, the model learns the modal
+    answer prior so strongly it ignores per-entity knowledge.
+    """
     label = _capitalize(entity["label"])
-    facts = [f for f in _usable_facts(entity) if prop_usage.get(f["property"], 0) < prop_cap]
+    if value_usage is None:
+        value_usage = Counter()
+    facts = [
+        f for f in _usable_facts(entity)
+        if prop_usage.get(f["property"], 0) < prop_cap
+        and value_usage.get((f["property"], str(f["value"])), 0) < value_cap
+    ]
     if not facts:
         return None
 
@@ -799,6 +986,7 @@ def generate_multi_turn(entity: dict, all_entities: list[dict],
                 continue
 
         prop_usage[prop] += 1
+        value_usage[(prop, value)] += 1
         messages.append({"role": "user", "content": _format_template(q_tmpl, label, value, entity_type)})
         messages.append({"role": "assistant", "content": _format_template(a_tmpl, label, value, entity_type)})
 
@@ -1546,11 +1734,11 @@ MULTI_ENTITY_TEMPLATES = {
             "En kiu sporto partoprenas {a} kaj {b}?",
         ],
         "a_same": [
-            "Ambaŭ praktikas {va}n.",
+            "Ambaŭ praktikas {va_acc}.",
             "{a} kaj {b} ambaŭ okupiĝas pri {va}.",
         ],
         "a_diff": [
-            "{a} praktikas {va}n, dum {b} praktikas {vb}n.",
+            "{a} praktikas {va_acc}, dum {b} praktikas {vb_acc}.",
             "{a} okupiĝas pri {va}, kaj {b} pri {vb}.",
         ],
     },
@@ -1587,11 +1775,11 @@ MULTI_ENTITY_TEMPLATES = {
             "Kio estas la denaska lingvo de {a} kaj {b}?",
         ],
         "a_same": [
-            "Ambaŭ parolas {va}n.",
+            "Ambaŭ parolas {va_acc}.",
             "La denaska lingvo de ambaŭ estas {va}.",
         ],
         "a_diff": [
-            "{a} parolas {va}n, dum {b} parolas {vb}n.",
+            "{a} parolas {va_acc}, dum {b} parolas {vb_acc}.",
             "La denaska lingvo de {a} estas {va}, kaj tiu de {b} estas {vb}.",
         ],
     },
@@ -1633,10 +1821,12 @@ def generate_multi_entity(entities: list[dict], max_count: int = 10000) -> list[
 
             if a_val.lower() == b_val.lower():
                 answer = random.choice(config["a_same"]).format(
-                    a=a_label, b=b_label, va=a_val, vb=b_val)
+                    a=a_label, b=b_label, va=a_val, vb=b_val,
+                    va_acc=_accusativize(a_val), vb_acc=_accusativize(b_val))
             else:
                 answer = random.choice(config["a_diff"]).format(
-                    a=a_label, b=b_label, va=a_val, vb=b_val)
+                    a=a_label, b=b_label, va=a_val, vb=b_val,
+                    va_acc=_accusativize(a_val), vb_acc=_accusativize(b_val))
 
             pairs.append({
                 "messages": [
@@ -1686,7 +1876,12 @@ def main():
 
     # Cap per property to prevent any single property from dominating
     PROP_CAP = 20000
+    # Cap per (property, value) to prevent any single answer (e.g. "usono",
+    # "pop-muziko") from being so over-represented that the model defaults
+    # to it for everything.
+    VALUE_CAP = 500
     prop_usage: Counter = Counter()
+    value_usage: Counter = Counter()
 
     with open(args.output, "w") as out:
         # Conversations (1-5 turns, optionally with comparison follow-up)
@@ -1696,7 +1891,8 @@ def main():
             if conv_count >= args.max_conversations:
                 break
             conv = generate_multi_turn(entity, all_entities=entities,
-                                       prop_usage=prop_usage, prop_cap=PROP_CAP)
+                                       prop_usage=prop_usage, prop_cap=PROP_CAP,
+                                       value_usage=value_usage, value_cap=VALUE_CAP)
             if conv:
                 out.write(json.dumps(conv, ensure_ascii=False) + "\n")
                 conv_count += 1

@@ -91,10 +91,22 @@ SKIP_CLASSES = {
     "kalendara monato", "tago de la semajno", "tago de la jaro",
     # Repetitive entity types that dominate the data
     "asteroido", "galaksio", "stelo", "supernovao",
+    "taksono",   # ~35% of all entities — taxonomy/species enumerations
+    "jaro",      # year pages
 }
 
 # Substring matches — skip entities whose "estas" value contains any of these
-SKIP_CLASS_SUBSTRINGS = {"komunumo", "komunumoparto"}
+SKIP_CLASS_SUBSTRINGS = {
+    "komunumo", "komunumoparto",   # all komunumo en X variants
+    "municipo",                    # municipo en Ĉeĥio / de Brazilo, etc
+    "stacidomo",                   # fervoja stacidomo (1000s of small stations)
+    "metrostacio",
+    "naturschutzgebiet",           # German nature reserves (untranslated, enumerated)
+    "setlejo",                     # settlement-type enumerations
+    "kantono",                     # mostly French cantons; small risk for Swiss cantons
+    "vilaĝo",                      # both bare 'vilaĝo' and 'vilaĝo en X'
+    "olimpika nacia teamo",        # one entry per Olympics × country
+}
 
 # Abstract concept classes that shouldn't have geographic properties
 ABSTRACT_INDICATORS = {

@@ -16,10 +16,12 @@ _VORTARO_PATH = Path(__file__).resolve().parent.parent.parent / "resources" / "v
 _ROOTS: set[str] | None = None
 _DICT_PREFIXES: set[str] | None = None
 _DICT_SUFFIXES: set[str] | None = None
+_OTHER: set[str] | None = None
+_CORRELATIVES: set[str] | None = None
 
 
 def _load_vortaro():
-    global _ROOTS, _DICT_PREFIXES, _DICT_SUFFIXES
+    global _ROOTS, _DICT_PREFIXES, _DICT_SUFFIXES, _OTHER, _CORRELATIVES
     if _ROOTS is not None:
         return
 
@@ -27,6 +29,8 @@ def _load_vortaro():
         _ROOTS = set()
         _DICT_PREFIXES = set()
         _DICT_SUFFIXES = set()
+        _OTHER = set()
+        _CORRELATIVES = set()
         return
 
     with open(_VORTARO_PATH) as f:
@@ -39,6 +43,8 @@ def _load_vortaro():
 
     _DICT_PREFIXES = {p.lower() for p in d.get("prefiksoj", {})}
     _DICT_SUFFIXES = {s.lower() for s in d.get("sufiksoj", {})}
+    _OTHER = {w.lower() for w in d.get("other", {})}
+    _CORRELATIVES = {w.lower() for w in d.get("correlatives", {})}
 
 
 def get_roots() -> set[str]:
@@ -54,6 +60,19 @@ def get_prefixes() -> set[str]:
 def get_suffixes() -> set[str]:
     _load_vortaro()
     return _DICT_SUFFIXES
+
+
+def get_other_words() -> set[str]:
+    """Closed-class words from vortaro 'other' group: prepositions, adverbs,
+    particles, numerals, conjunctions."""
+    _load_vortaro()
+    return _OTHER
+
+
+def get_correlatives() -> set[str]:
+    """Esperanto correlative words (kio/kiu/tio/tiu/io/iu/ĉio/ĉiu/nenio/...)."""
+    _load_vortaro()
+    return _CORRELATIVES
 
 
 @lru_cache(maxsize=1)
