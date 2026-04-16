@@ -592,9 +592,14 @@ def tokenize(text: str) -> list[Token]:
         in_sent_window = m.start() in sent_starts or any(
             s <= m.start() < s + 3 for s in sent_starts
         )
-        # A period only starts a new sentence when followed by a capitalized
-        # word — otherwise it's an abbreviation ("Nr. 5 kaj", "Mr. Smith").
-        is_start = (i == 0) or (in_sent_window and m.group(0)[:1].isupper())
+        # Trust periods/!/? as sentence boundaries regardless of the next
+        # word's capitalization. Lowercased model output (no caps anywhere)
+        # would otherwise lose every sentence break, which collapses long
+        # generations into one giant clause and starves the parser of
+        # claim-extraction opportunities. Trade-off: abbreviations like
+        # "Nr." or "ekz." may falsely break a sentence — accepted because
+        # they're rare versus the systematic loss from the prior rule.
+        is_start = (i == 0) or in_sent_window
         tok = analyze_word(m.group(0), i, (m.start(), m.end()), sentence_start=is_start)
         tok.is_sentence_start = is_start  # type: ignore
         tokens.append(tok)
@@ -2122,10 +2127,27 @@ def extract_claims(text: str) -> list[Claim]:
     for ci, cl in enumerate(clauses):
         for t in cl.tokens:
             tok_clause[t.idx] = ci
+    # Pronouns can also be PP objects ("kun ŝi" / "al li" / "pri tio").
+    # Synthesize a 1-token NP wrapper when the token after a Prep is a pronoun.
+    PRONOUN_OBJECTS = (SUBJECT_PRONOUNS | CORRELATIVE_SUBJECTS_SG
+                        | CORRELATIVE_SUBJECTS_PL
+                        | {"min", "vin", "lin", "ŝin", "ĝin", "nin", "ilin",
+                           "onin", "sin", "kion", "kiun", "tion", "tiun",
+                           "ion", "iun", "nenion", "neniun"})
+    def _np_after(prep_idx: int) -> "NP | None":
+        np = next((p for p in nps if p.start_idx == prep_idx + 1), None)
+        if np is not None:
+            return np
+        # Synthetic pronoun NP
+        if prep_idx + 1 < len(tokens):
+            t = tokens[prep_idx + 1]
+            if t.raw_lower in PRONOUN_OBJECTS:
+                return NP(tokens=[t], head=t, start_idx=t.idx, end_idx=t.idx)
+        return None
     for i, tok in enumerate(tokens):
         if tok.pos != "Prep":
             continue
-        right_np = next((np for np in nps if np.start_idx == i + 1), None)
+        right_np = _np_after(i)
         if right_np is None:
             continue
         ci = tok_clause.get(i, -1)
