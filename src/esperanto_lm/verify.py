@@ -1972,17 +1972,15 @@ class Claim:
       - "verb-pp": verb + prep + NP — the action's location/manner/etc.
         ("manĝis en ĝardeno" → (manĝ, en, ĝarden))
 
-    `clause_idx` identifies which clause the claim came from. Claims from the
-    same clause with the same (subj, rel) are coordinated objects, not
-    contradictions ("ĉiuj havu rajton aliron" — both rajt and alir are
-    objects of the same `havu`).
+    `clause_idx` identifies which clause the claim came from, useful for
+    downstream grouping/analysis. -1 if not clause-scoped.
     """
     subj: str
     rel: str
     obj: str
     source: str
     span: tuple[int, int]   # char span in the original text
-    clause_idx: int = -1    # -1 for suffix claims, which aren't clause-bound
+    clause_idx: int = -1
     confidence: float = 1.0
 
 
@@ -2288,49 +2286,14 @@ def claim_entity_overlap(generated: str, reference: str) -> float:
     return len(ref & gen) / len(ref)
 
 
-def claim_contradictions(text: str) -> list[tuple[str, str, str, str]]:
-    """Return contradictions across different clauses.
-
-    A contradiction is two claims sharing (subj, rel) but with different
-    obj values, **and originating from different clauses**. Multiple
-    objects within one clause are coordinated/appositive ("ĉiuj havu
-    rajton aliron" = "all should have right and access") and not
-    contradictory.
-
-    Returns tuples (subj, rel, obj_a, obj_b).
-    """
-    # Map (subj, rel) → list of (clause_idx, obj). A pair of entries with
-    # different objs AND different clause_idx is a contradiction.
-    by_key: dict[tuple[str, str], list[tuple[int, str]]] = {}
-    for c in extract_claims(text):
-        subj = _normalize_x_system(c.subj)
-        rel = _normalize_x_system(c.rel)
-        obj = _normalize_x_system(c.obj)
-        by_key.setdefault((subj, rel), []).append((c.clause_idx, obj))
-
-    bad: list[tuple[str, str, str, str]] = []
-    for (subj, rel), entries in by_key.items():
-        # Group objs by clause; cross-clause objs are candidates for contradiction
-        clause_objs: dict[int, set[str]] = {}
-        for ci, obj in entries:
-            clause_objs.setdefault(ci, set()).add(obj)
-        # Compare distinct clauses pairwise
-        clauses_with_objs = [(ci, objs) for ci, objs in clause_objs.items() if ci >= 0]
-        for i in range(len(clauses_with_objs)):
-            for j in range(i + 1, len(clauses_with_objs)):
-                ci_a, objs_a = clauses_with_objs[i]
-                ci_b, objs_b = clauses_with_objs[j]
-                # If neither clause's objs are a subset of the other's,
-                # there's at least one mutually-exclusive obj.
-                only_a = objs_a - objs_b
-                only_b = objs_b - objs_a
-                if only_a and only_b:
-                    bad.append((subj, rel, sorted(only_a)[0], sorted(only_b)[0]))
-                    break
-            else:
-                continue
-            break
-    return bad
+# NOTE: A `claim_contradictions` function used to live here. It treated
+# any two (subj, rel, obj_a) and (subj, rel, obj_b) from different clauses
+# as a contradiction. That overshoots: most relations aren't functional
+# (one-valued). "X IS woman" + "X IS happy" are both true; "France has
+# Paris" + "France has Marseille" are both true. Only specific relations
+# (death-place, birth-place, etc.) are uniquely-valued and need
+# domain-specific knowledge to identify. Removed to avoid feeding GRPO
+# a noisy negative signal.
 
 
 # ---- Verifier pipeline ------------------------------------------------
