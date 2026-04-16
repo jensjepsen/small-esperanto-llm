@@ -1964,7 +1964,6 @@ class Claim:
       - "copula": S estas P (esti + predicate)
       - "transitive": S V-as O (subject + transitive verb + acc object)
       - "pp-relation": NP1 prep NP2 (noun phrase + preposition)
-      - "suffix": word inherently asserts a relation via its derivational suffix
 
     `clause_idx` identifies which clause the claim came from. Claims from the
     same clause with the same (subj, rel) are coordinated objects, not
@@ -2127,33 +2126,11 @@ def extract_claims(text: str) -> list[Claim]:
                     clause_idx=ci,
                 ))
 
-    # --- 4. Suffix-relation claims (productive morphology) ------------
-    # A word like "lernejestro" = "lernej" + "estr" + "o" contains two
-    # relational suffixes; emit one claim per suffix in the chain:
-    #   (lernejestr, leader-of, lernej)   -- from -estr-
-    #   (lernej,     place-for, lern)     -- from -ej-
-    for tok in tokens:
-        if tok.pos not in ("N", "A"):
-            continue
-        if getattr(tok, "is_proper", False):
-            continue
-        if not tok.suffixes or not tok.root:
-            continue
-        # Build progressively larger stems as we walk the suffix chain from
-        # innermost to outermost; emit a claim for each relational suffix.
-        inner = tok.root
-        for suf in tok.suffixes:
-            outer = inner + suf
-            if suf in SUFFIX_RELATIONS:
-                out.append(Claim(
-                    subj=outer,
-                    rel=SUFFIX_RELATIONS[suf],
-                    obj=inner,
-                    source="suffix",
-                    span=tok.char_span,
-                    confidence=0.9,
-                ))
-            inner = outer
+    # NOTE: suffix-relation claims (productive morphology, e.g. -ist =
+    # role-of) were previously emitted here but removed — they're
+    # tautological with the spelling and don't carry any signal beyond
+    # what stem comparison already gives. The SUFFIX_RELATIONS table is
+    # kept above for use by stem-aliased matching if needed.
 
     return out
 
@@ -2207,8 +2184,6 @@ def claim_entity_pairs(text: str) -> set[tuple[str, str]]:
     """
     pairs = set()
     for c in extract_claims(text):
-        if c.source == "suffix":
-            continue  # morphological, not informational
         a = _normalize_x_system(c.subj)
         b = _normalize_x_system(c.obj)
         if a != b:
