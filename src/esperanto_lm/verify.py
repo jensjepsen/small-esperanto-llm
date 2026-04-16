@@ -1974,13 +1974,29 @@ class Claim:
     confidence: float = 1.0
 
 
+def _tok_stem(tok: Token) -> str:
+    """Full stem (prefix + root + suffixes) of a token, lowercased.
+
+    Normalizes across case/number (strips grammatical ending) while
+    preserving lexical content — `ĉefurbo`/`ĉefurbon` → `ĉefurb`,
+    `lernejestroj` → `lernejestr`.
+    """
+    if tok.root:
+        stem = "".join(tok.prefixes) + tok.root + "".join(tok.suffixes)
+        if stem:
+            return stem
+    # Fallback: strip grammatical ending from raw_lower
+    lower = tok.raw_lower
+    stem, _, _, _ = _strip_ending(lower)
+    return stem if len(stem) >= 2 else lower
+
+
 def _np_text(np: NP) -> str:
-    """Canonical text form for an NP — lowercase surface form of the head."""
-    return np.head.raw_lower
+    return _tok_stem(np.head)
 
 
 def _tok_text(tok: Token) -> str:
-    return tok.raw_lower
+    return _tok_stem(tok)
 
 
 def extract_claims(text: str) -> list[Claim]:
@@ -2032,6 +2048,10 @@ def extract_claims(text: str) -> list[Claim]:
         ))
 
     # --- 2. Transitive claims (S V-as O-acc) --------------------------
+    # Emit a claim for every accusative NP that follows the verb, up to
+    # the next PP or clause boundary. Handles apposition like
+    # "Francio havas ĉefurbon Parizon" → both (francio, hav, ĉefurb)
+    # and (francio, hav, pariz).
     for cl in clauses:
         v = cl.verb
         if v is None or v.root == "est":
@@ -2039,22 +2059,22 @@ def extract_claims(text: str) -> list[Claim]:
         subj = cl.subject
         if subj is None:
             continue
-        obj_np = None
         for np in cl.nps:
             if np.start_idx <= v.idx:
                 continue
-            if np.case == "acc":
-                obj_np = np
+            if np.case != "acc":
+                continue
+            # Stop absorbing acc NPs once we've passed a Prep (which starts
+            # an adjunct PP, not the object set).
+            if any(tokens[k].pos == "Prep" for k in range(v.idx + 1, np.start_idx)):
                 break
-        if obj_np is None:
-            continue
-        out.append(Claim(
-            subj=_np_text(subj),
-            rel=v.root or v.raw_lower,
-            obj=_np_text(obj_np),
-            source="transitive",
-            span=(subj.head.char_span[0], obj_np.head.char_span[1]),
-        ))
+            out.append(Claim(
+                subj=_np_text(subj),
+                rel=v.root or v.raw_lower,
+                obj=_np_text(np),
+                source="transitive",
+                span=(subj.head.char_span[0], np.head.char_span[1]),
+            ))
 
     # --- 3. PP-relation claims (NP1 prep NP2) --------------------------
     # For every Prep, emit a relation. The left anchor is either:
@@ -2162,6 +2182,39 @@ def claim_overlap(generated: str, reference: str) -> float:
         elif r == "IS" and (o, r, s) in gen:
             matched += 1
     return matched / len(ref)
+
+
+def claim_entity_pairs(text: str) -> set[tuple[str, str]]:
+    """Return unordered (subj, obj) pairs from the text's claims.
+
+    Weaker but more permissive than `claim_tuples` — paraphrases with
+    different verb structure (e.g. "Parizo estas la ĉefurbo de Francio"
+    vs "Francio havas ĉefurbon Parizon") still share the same entity
+    pairs. Suitable as a paraphrase-tolerant QA reward.
+    """
+    pairs = set()
+    for c in extract_claims(text):
+        if c.source == "suffix":
+            continue  # morphological, not informational
+        a = _normalize_x_system(c.subj)
+        b = _normalize_x_system(c.obj)
+        if a != b:
+            pairs.add(tuple(sorted([a, b])))
+    return pairs
+
+
+def claim_entity_overlap(generated: str, reference: str) -> float:
+    """Paraphrase-tolerant QA reward.
+
+    Fraction of gold entity pairs (from claim subjects/objects) that
+    appear in the generation. Softer than `claim_overlap`, which also
+    requires the relation to match.
+    """
+    ref = claim_entity_pairs(reference)
+    gen = claim_entity_pairs(generated)
+    if not ref:
+        return 0.0
+    return len(ref & gen) / len(ref)
 
 
 def claim_contradictions(text: str) -> list[tuple[str, str, str, str]]:
