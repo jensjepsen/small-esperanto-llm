@@ -1935,6 +1935,259 @@ def _is_transitive_verb(tok: Token) -> bool | None:
     return None
 
 
+# ---- Claim extraction -------------------------------------------------
+
+# Derivational suffixes in Esperanto carry semantic relations. When a word
+# ends in one of these, the word itself is implicitly asserting a relation
+# to its base root — "komponisto" = (person, role-of, kompon).
+SUFFIX_RELATIONS: dict[str, str] = {
+    "ist":  "role-of",        # doer/practitioner
+    "ul":   "person-with",    # person with quality
+    "in":   "female-of",      # female counterpart
+    "id":   "offspring-of",   # child/descendant
+    "ej":   "place-for",      # place for activity
+    "il":   "tool-for",       # instrument
+    "ar":   "group-of",       # collection
+    "estr": "leader-of",      # head/chief
+    "ec":   "quality-of",     # abstract quality
+    "aĵ":   "thing-of",       # concrete instance
+    "an":   "member-of",      # member/inhabitant
+    "uj":   "container-of",   # container, country, or holder
+}
+
+
+@dataclass
+class Claim:
+    """A structural assertion extracted from the text.
+
+    `source` identifies which rule produced it:
+      - "copula": S estas P (esti + predicate)
+      - "transitive": S V-as O (subject + transitive verb + acc object)
+      - "pp-relation": NP1 prep NP2 (noun phrase + preposition)
+      - "suffix": word inherently asserts a relation via its derivational suffix
+    """
+    subj: str
+    rel: str
+    obj: str
+    source: str
+    span: tuple[int, int]   # char span in the original text
+    confidence: float = 1.0
+
+
+def _np_text(np: NP) -> str:
+    """Canonical text form for an NP — lowercase surface form of the head."""
+    return np.head.raw_lower
+
+
+def _tok_text(tok: Token) -> str:
+    return tok.raw_lower
+
+
+def extract_claims(text: str) -> list[Claim]:
+    """Extract structural claims from text using the verifier's parser output.
+
+    Returns a list of `Claim` objects — one per (copula, transitive verb,
+    PP-relation, derivational suffix) pattern the parser can identify.
+    All subject/object strings are lowercase surface forms.
+    """
+    tokens = tokenize(text)
+    nps = extract_nps(tokens)
+    clauses = extract_clauses(tokens, nps)
+    out: list[Claim] = []
+
+    # --- 1. Copula claims (S estas P) --------------------------------
+    for cl in clauses:
+        v = cl.verb
+        if v is None or v.root != "est" or v.suffixes:
+            continue
+        subj = cl.subject
+        if subj is None:
+            continue
+        # Find predicate, preferring a head NOUN over a pre-nominal adjective.
+        # "Beethoven estis fama komponisto" → predicate is komponisto, not fama.
+        pred_tok = None
+        first_adj = None
+        for k in range(v.idx + 1, cl.end_idx):
+            t = tokens[k]
+            if t.has_comma_before and k > v.idx + 1:
+                break
+            if t.pos == "A" and first_adj is None:
+                first_adj = t
+                continue
+            if t.pos == "N":
+                pred_tok = t
+                break
+            if t.pos in ("V", "INF", "Prep"):
+                break
+        if pred_tok is None:
+            pred_tok = first_adj
+        if pred_tok is None:
+            continue
+        out.append(Claim(
+            subj=_np_text(subj),
+            rel="IS",
+            obj=_tok_text(pred_tok),
+            source="copula",
+            span=(subj.head.char_span[0], pred_tok.char_span[1]),
+        ))
+
+    # --- 2. Transitive claims (S V-as O-acc) --------------------------
+    for cl in clauses:
+        v = cl.verb
+        if v is None or v.root == "est":
+            continue
+        subj = cl.subject
+        if subj is None:
+            continue
+        obj_np = None
+        for np in cl.nps:
+            if np.start_idx <= v.idx:
+                continue
+            if np.case == "acc":
+                obj_np = np
+                break
+        if obj_np is None:
+            continue
+        out.append(Claim(
+            subj=_np_text(subj),
+            rel=v.root or v.raw_lower,
+            obj=_np_text(obj_np),
+            source="transitive",
+            span=(subj.head.char_span[0], obj_np.head.char_span[1]),
+        ))
+
+    # --- 3. PP-relation claims (NP1 prep NP2) --------------------------
+    # For every Prep, emit a relation. The left anchor is either:
+    #   (a) the NP immediately preceding the Prep ("ĉefurbo de Francio")
+    #   (b) the subject of the verb that precedes the Prep ("Beethoven
+    #       mortis en Vieno") when no NP intervenes
+    pp_inside = _compute_pp_inside(tokens, nps)
+    for i, tok in enumerate(tokens):
+        if tok.pos != "Prep":
+            continue
+        right_np = next((np for np in nps if np.start_idx == i + 1), None)
+        if right_np is None:
+            continue
+        # (a) NP-anchor
+        left_np = next((np for np in nps if np.end_idx == i - 1), None)
+        if left_np is not None and left_np.head.idx not in pp_inside:
+            out.append(Claim(
+                subj=_np_text(left_np),
+                rel=tok.raw_lower,
+                obj=_np_text(right_np),
+                source="pp-relation",
+                span=(left_np.head.char_span[0], right_np.head.char_span[1]),
+            ))
+            continue
+        # (b) Verb-subject anchor: "Beethoven mortis en Vieno"
+        if i - 1 >= 0 and tokens[i - 1].pos == "V":
+            # Find the clause containing this verb; use its subject
+            v = tokens[i - 1]
+            cl = next((c for c in clauses if c.verb is v), None)
+            if cl is not None and cl.subject is not None:
+                out.append(Claim(
+                    subj=_np_text(cl.subject),
+                    rel=f"{v.root}+{tok.raw_lower}" if v.root else tok.raw_lower,
+                    obj=_np_text(right_np),
+                    source="pp-relation",
+                    span=(cl.subject.head.char_span[0], right_np.head.char_span[1]),
+                    confidence=0.8,
+                ))
+
+    # --- 4. Suffix-relation claims (productive morphology) ------------
+    # A word like "lernejestro" = "lernej" + "estr" + "o" contains two
+    # relational suffixes; emit one claim per suffix in the chain:
+    #   (lernejestr, leader-of, lernej)   -- from -estr-
+    #   (lernej,     place-for, lern)     -- from -ej-
+    for tok in tokens:
+        if tok.pos not in ("N", "A"):
+            continue
+        if getattr(tok, "is_proper", False):
+            continue
+        if not tok.suffixes or not tok.root:
+            continue
+        # Build progressively larger stems as we walk the suffix chain from
+        # innermost to outermost; emit a claim for each relational suffix.
+        inner = tok.root
+        for suf in tok.suffixes:
+            outer = inner + suf
+            if suf in SUFFIX_RELATIONS:
+                out.append(Claim(
+                    subj=outer,
+                    rel=SUFFIX_RELATIONS[suf],
+                    obj=inner,
+                    source="suffix",
+                    span=tok.char_span,
+                    confidence=0.9,
+                ))
+            inner = outer
+
+    return out
+
+
+def _normalize_x_system(s: str) -> str:
+    """Normalize Zamenhof x-system substitutions (cx/gx/hx/jx/sx/ux) to
+    ĉ/ĝ/ĥ/ĵ/ŝ/ŭ so that spelling variants canonicalize."""
+    return (s.replace("cx", "ĉ").replace("gx", "ĝ").replace("hx", "ĥ")
+             .replace("jx", "ĵ").replace("sx", "ŝ").replace("ux", "ŭ"))
+
+
+def claim_tuples(text: str) -> set[tuple[str, str, str]]:
+    """Return the set of (subj, rel, obj) tuples, with x-system normalized."""
+    out = set()
+    for c in extract_claims(text):
+        out.add((_normalize_x_system(c.subj),
+                 _normalize_x_system(c.rel),
+                 _normalize_x_system(c.obj)))
+    return out
+
+
+def claim_overlap(generated: str, reference: str) -> float:
+    """Fraction of reference claims that appear in the generation.
+
+    Treats the copula `IS` relation as bidirectional — "Parizo IS ĉefurbo"
+    and "ĉefurbo IS Parizo" are semantically equivalent.
+
+    Usable as a QA reward — ranges from 0.0 (no claim match) to 1.0
+    (every gold claim recovered).
+    """
+    ref = claim_tuples(reference)
+    gen = claim_tuples(generated)
+    if not ref:
+        return 0.0
+    matched = 0
+    for s, r, o in ref:
+        if (s, r, o) in gen:
+            matched += 1
+        elif r == "IS" and (o, r, s) in gen:
+            matched += 1
+    return matched / len(ref)
+
+
+def claim_contradictions(text: str) -> list[tuple[str, str, str, str]]:
+    """Return contradictions within a single text.
+
+    A contradiction is two claims sharing (subj, rel) but with different
+    obj values — e.g. "Beethoven naskiĝis en Bonn" + "Beethoven mort+en
+    Vieno" isn't contradictory (different relations), but "Beethoven IS
+    komponisto" + "Beethoven IS verkisto" would be flagged.
+
+    Returns tuples (subj, rel, obj_a, obj_b).
+    """
+    seen: dict[tuple[str, str], str] = {}
+    bad: list[tuple[str, str, str, str]] = []
+    for c in extract_claims(text):
+        subj = _normalize_x_system(c.subj)
+        rel = _normalize_x_system(c.rel)
+        obj = _normalize_x_system(c.obj)
+        key = (subj, rel)
+        if key in seen and seen[key] != obj:
+            bad.append((subj, rel, seen[key], obj))
+        else:
+            seen[key] = obj
+    return bad
+
+
 # ---- Verifier pipeline ------------------------------------------------
 
 class Verifier:
