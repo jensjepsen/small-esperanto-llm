@@ -2018,21 +2018,49 @@ def extract_claims(text: str) -> list[Claim]:
     clauses = extract_clauses(tokens, nps)
     out: list[Claim] = []
 
-    # --- 1. Copula claims (S estas P) --------------------------------
+    # --- 1. Copula and semi-copula claims (S V P) --------------------
+    # Pure `esti` produces an IS relation. Semi-copulas (fariĝi/iĝi/
+    # aspekti/ŝajni/resti) and reflexive predicate constructions
+    # (senti sin X, nomi sin X, kredi sin X) produce a relation named
+    # after the verb root.
+    SEMI_COPULAS = {"fariĝ", "iĝ", "aspekt", "ŝajn", "rest", "nomiĝ"}
+    REFLEXIVE_PRED_VERBS = {"sent", "nom", "kred", "trov", "konsider", "vid"}
     for ci, cl in enumerate(clauses):
         v = cl.verb
-        if v is None or v.root != "est" or v.suffixes:
+        if v is None:
             continue
         subj = cl.subject
         if subj is None:
             continue
+
+        # Determine the relation: pure esti → "IS"; otherwise the verb root.
+        rel = None
+        skip_first = v.idx + 1
+        if v.root == "est" and not v.suffixes:
+            rel = "IS"
+        elif v.root in SEMI_COPULAS or (v.root == "far" and "iĝ" in v.suffixes):
+            rel = v.root + ("+" + "".join(v.suffixes) if v.suffixes else "")
+        elif v.root in REFLEXIVE_PRED_VERBS:
+            # Need to see "sin" / "min" / "lin" / etc. between V and predicate
+            ACC_PRON = {"sin", "min", "vin", "lin", "ŝin", "ĝin", "nin", "ilin"}
+            k = v.idx + 1
+            while k < cl.end_idx and tokens[k].pos in ("Closed",) \
+                    and tokens[k].raw_lower not in ACC_PRON:
+                k += 1
+            if k < cl.end_idx and tokens[k].raw_lower in ACC_PRON:
+                rel = v.root
+                skip_first = k + 1
+            else:
+                continue
+        else:
+            continue
+
         # Find predicate, preferring a head NOUN over a pre-nominal adjective.
-        # "Beethoven estis fama komponisto" → predicate is komponisto, not fama.
         pred_tok = None
         first_adj = None
-        for k in range(v.idx + 1, cl.end_idx):
+        for k in range(skip_first, cl.end_idx):
             t = tokens[k]
-            if t.has_comma_before and k > v.idx + 1:
+            if t.has_comma_before and k > skip_first:
                 break
             if t.pos == "A" and first_adj is None:
                 first_adj = t
@@ -2048,7 +2076,7 @@ def extract_claims(text: str) -> list[Claim]:
             continue
         out.append(Claim(
             subj=_np_text(subj),
-            rel="IS",
+            rel=rel,
             obj=_tok_text(pred_tok),
             source="copula",
             span=(subj.head.char_span[0], pred_tok.char_span[1]),
