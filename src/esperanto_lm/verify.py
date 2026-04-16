@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, Protocol
 
 from lark import Lark, Transformer, v_args
@@ -27,6 +28,7 @@ from lark import Lark, Transformer, v_args
 from esperanto_lm.morphology import (
     get_roots, get_prefixes, get_suffixes,
     get_other_words, get_correlatives,
+    decompose as _morph_decompose, classify_morpheme,
 )
 
 
@@ -1964,3 +1966,144 @@ DEFAULT_CHECKS: list[Check] = [
     WrongEndings(),
     AffixCompat(),
 ]
+
+
+# ---- Optional lexicon check (for reward models, confabulation detection) ----
+
+_STEM_FREQ_PATH = Path(__file__).resolve().parent.parent.parent / "resources" / "stem_freq.json"
+_STEM_FREQ: dict[str, int] | None = None
+
+
+def _load_stem_freq() -> dict[str, int]:
+    global _STEM_FREQ
+    if _STEM_FREQ is not None:
+        return _STEM_FREQ
+    if _STEM_FREQ_PATH.exists():
+        import json
+        with open(_STEM_FREQ_PATH) as f:
+            _STEM_FREQ = json.load(f)
+    else:
+        _STEM_FREQ = {}
+    return _STEM_FREQ
+
+
+from functools import lru_cache as _lru_cache
+
+
+def _pieces_all_known(pieces: list[str]) -> bool:
+    roots = get_roots()
+    pres = get_prefixes()
+    sufs = get_suffixes()
+    for p in pieces:
+        if p in roots or p in pres or p in sufs:
+            continue
+        if classify_morpheme(p) in ("ending", "particle"):
+            continue
+        return False
+    return True
+
+
+# Graduated frequency thresholds by stem length. Short stems accumulate
+# false positives from morphological artifacts (e.g. "ti" is the stripped
+# pronoun stem with freq ~336k; "jd" is typo noise with freq ~170) so we
+# demand a high bar for them, but rare real compounds like `kvantumfizik`
+# can pass with single-digit freq.
+_FREQ_THRESHOLDS = {2: 10**9, 3: 1000}  # 2-char: never accept on freq alone
+
+
+@_lru_cache(maxsize=200_000)
+def is_known_stem(stem: str, freq_threshold: int = 3) -> bool:
+    """Return True if `stem` is a recognizable Esperanto word part.
+
+    Validity tiers:
+    1. Vortaro root (curated).
+    2. Corpus frequency ≥ length-graduated threshold.
+    3. Morphological decomposition into all-known pieces.
+    4. Recursive compound split (with optional `-o-` linker).
+    """
+    if len(stem) < 2:
+        return True
+    roots = get_roots()
+    if stem in roots:
+        return True
+    # Length-graduated frequency threshold.
+    thr = _FREQ_THRESHOLDS.get(len(stem), freq_threshold)
+    freq = _load_stem_freq().get(stem, 0)
+    if freq >= thr:
+        return True
+    pieces = _morph_decompose(stem)
+    if _pieces_all_known(pieces):
+        return True
+    # Recursive compound splits (with optional -o- linker). Require each
+    # piece to be at least 2 chars — single-letter fragments are never a
+    # valid compound member.
+    for i in range(2, len(stem) - 1):
+        left, right = stem[:i], stem[i:]
+        if len(left) < 2 or len(right) < 2:
+            continue
+        if is_known_stem(left, freq_threshold) and is_known_stem(right, freq_threshold):
+            return True
+        if left.endswith("o") and len(left) > 2:
+            l2 = left[:-1]
+            if len(l2) >= 2 and is_known_stem(l2, freq_threshold) \
+                    and is_known_stem(right, freq_threshold):
+                return True
+    return False
+
+
+class LexiconCheck:
+    """Flag words whose stem isn't recognizable as Esperanto.
+
+    Non-default check. Intended for reward-signal use (GRPO) or auditing
+    model generations for confabulated vocabulary.
+
+    Skips proper nouns, closed-class words, and very short stems. Uses a
+    three-tier validity signal: vortaro membership, corpus frequency, and
+    recursive compound splitting.
+    """
+    name = "lexicon"
+
+    def __init__(self, freq_threshold: int = 3):
+        self.freq_threshold = freq_threshold
+
+    def check(self, tokens, nps):
+        out = []
+        for tok in tokens:
+            if tok.pos not in ("N", "A", "V", "INF", "Adv"):
+                continue
+            if getattr(tok, "is_proper", False):
+                continue
+            stem = tok.root
+            if not stem or len(stem) < 3:
+                continue
+            if not is_known_stem(stem, self.freq_threshold):
+                out.append(Diagnostic(
+                    self.name, "warning",
+                    f"'{tok.text}' → stem '{stem}' not recognized as Esperanto "
+                    f"(not in vortaro, freq<{self.freq_threshold}, no compound split)",
+                    tok.idx))
+        return out
+
+
+def unknown_word_rate(text: str, freq_threshold: int = 3) -> float:
+    """Return the fraction of content words whose stem is unknown.
+
+    Convenient for reward signals — use `-unknown_word_rate(text)` as a
+    penalty term. Counts only N / A / V / INF / Adv tokens, excluding
+    proper nouns and stems shorter than 3 characters.
+    """
+    tokens = tokenize(text)
+    total = 0
+    unknown = 0
+    for tok in tokens:
+        if tok.pos not in ("N", "A", "V", "INF", "Adv"):
+            continue
+        if getattr(tok, "is_proper", False):
+            continue
+        stem = tok.root
+        if not stem or len(stem) < 3:
+            continue
+        total += 1
+        if not is_known_stem(stem, freq_threshold):
+            unknown += 1
+    return unknown / total if total else 0.0
