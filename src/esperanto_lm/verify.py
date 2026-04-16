@@ -1965,12 +1965,18 @@ class Claim:
       - "transitive": S V-as O (subject + transitive verb + acc object)
       - "pp-relation": NP1 prep NP2 (noun phrase + preposition)
       - "suffix": word inherently asserts a relation via its derivational suffix
+
+    `clause_idx` identifies which clause the claim came from. Claims from the
+    same clause with the same (subj, rel) are coordinated objects, not
+    contradictions ("ĉiuj havu rajton aliron" — both rajt and alir are
+    objects of the same `havu`).
     """
     subj: str
     rel: str
     obj: str
     source: str
     span: tuple[int, int]   # char span in the original text
+    clause_idx: int = -1    # -1 for suffix claims, which aren't clause-bound
     confidence: float = 1.0
 
 
@@ -2012,7 +2018,7 @@ def extract_claims(text: str) -> list[Claim]:
     out: list[Claim] = []
 
     # --- 1. Copula claims (S estas P) --------------------------------
-    for cl in clauses:
+    for ci, cl in enumerate(clauses):
         v = cl.verb
         if v is None or v.root != "est" or v.suffixes:
             continue
@@ -2045,6 +2051,7 @@ def extract_claims(text: str) -> list[Claim]:
             obj=_tok_text(pred_tok),
             source="copula",
             span=(subj.head.char_span[0], pred_tok.char_span[1]),
+            clause_idx=ci,
         ))
 
     # --- 2. Transitive claims (S V-as O-acc) --------------------------
@@ -2052,7 +2059,7 @@ def extract_claims(text: str) -> list[Claim]:
     # the next PP or clause boundary. Handles apposition like
     # "Francio havas ĉefurbon Parizon" → both (francio, hav, ĉefurb)
     # and (francio, hav, pariz).
-    for cl in clauses:
+    for ci, cl in enumerate(clauses):
         v = cl.verb
         if v is None or v.root == "est":
             continue
@@ -2064,8 +2071,6 @@ def extract_claims(text: str) -> list[Claim]:
                 continue
             if np.case != "acc":
                 continue
-            # Stop absorbing acc NPs once we've passed a Prep (which starts
-            # an adjunct PP, not the object set).
             if any(tokens[k].pos == "Prep" for k in range(v.idx + 1, np.start_idx)):
                 break
             out.append(Claim(
@@ -2074,6 +2079,7 @@ def extract_claims(text: str) -> list[Claim]:
                 obj=_np_text(np),
                 source="transitive",
                 span=(subj.head.char_span[0], np.head.char_span[1]),
+                clause_idx=ci,
             ))
 
     # --- 3. PP-relation claims (NP1 prep NP2) --------------------------
@@ -2082,12 +2088,18 @@ def extract_claims(text: str) -> list[Claim]:
     #   (b) the subject of the verb that precedes the Prep ("Beethoven
     #       mortis en Vieno") when no NP intervenes
     pp_inside = _compute_pp_inside(tokens, nps)
+    # Map token idx → containing clause index
+    tok_clause = {}
+    for ci, cl in enumerate(clauses):
+        for t in cl.tokens:
+            tok_clause[t.idx] = ci
     for i, tok in enumerate(tokens):
         if tok.pos != "Prep":
             continue
         right_np = next((np for np in nps if np.start_idx == i + 1), None)
         if right_np is None:
             continue
+        ci = tok_clause.get(i, -1)
         # (a) NP-anchor
         left_np = next((np for np in nps if np.end_idx == i - 1), None)
         if left_np is not None and left_np.head.idx not in pp_inside:
@@ -2097,11 +2109,11 @@ def extract_claims(text: str) -> list[Claim]:
                 obj=_np_text(right_np),
                 source="pp-relation",
                 span=(left_np.head.char_span[0], right_np.head.char_span[1]),
+                clause_idx=ci,
             ))
             continue
         # (b) Verb-subject anchor: "Beethoven mortis en Vieno"
         if i - 1 >= 0 and tokens[i - 1].pos == "V":
-            # Find the clause containing this verb; use its subject
             v = tokens[i - 1]
             cl = next((c for c in clauses if c.verb is v), None)
             if cl is not None and cl.subject is not None:
@@ -2112,6 +2124,7 @@ def extract_claims(text: str) -> list[Claim]:
                     source="pp-relation",
                     span=(cl.subject.head.char_span[0], right_np.head.char_span[1]),
                     confidence=0.8,
+                    clause_idx=ci,
                 ))
 
     # --- 4. Suffix-relation claims (productive morphology) ------------
@@ -2218,26 +2231,47 @@ def claim_entity_overlap(generated: str, reference: str) -> float:
 
 
 def claim_contradictions(text: str) -> list[tuple[str, str, str, str]]:
-    """Return contradictions within a single text.
+    """Return contradictions across different clauses.
 
     A contradiction is two claims sharing (subj, rel) but with different
-    obj values — e.g. "Beethoven naskiĝis en Bonn" + "Beethoven mort+en
-    Vieno" isn't contradictory (different relations), but "Beethoven IS
-    komponisto" + "Beethoven IS verkisto" would be flagged.
+    obj values, **and originating from different clauses**. Multiple
+    objects within one clause are coordinated/appositive ("ĉiuj havu
+    rajton aliron" = "all should have right and access") and not
+    contradictory.
 
     Returns tuples (subj, rel, obj_a, obj_b).
     """
-    seen: dict[tuple[str, str], str] = {}
-    bad: list[tuple[str, str, str, str]] = []
+    # Map (subj, rel) → list of (clause_idx, obj). A pair of entries with
+    # different objs AND different clause_idx is a contradiction.
+    by_key: dict[tuple[str, str], list[tuple[int, str]]] = {}
     for c in extract_claims(text):
         subj = _normalize_x_system(c.subj)
         rel = _normalize_x_system(c.rel)
         obj = _normalize_x_system(c.obj)
-        key = (subj, rel)
-        if key in seen and seen[key] != obj:
-            bad.append((subj, rel, seen[key], obj))
-        else:
-            seen[key] = obj
+        by_key.setdefault((subj, rel), []).append((c.clause_idx, obj))
+
+    bad: list[tuple[str, str, str, str]] = []
+    for (subj, rel), entries in by_key.items():
+        # Group objs by clause; cross-clause objs are candidates for contradiction
+        clause_objs: dict[int, set[str]] = {}
+        for ci, obj in entries:
+            clause_objs.setdefault(ci, set()).add(obj)
+        # Compare distinct clauses pairwise
+        clauses_with_objs = [(ci, objs) for ci, objs in clause_objs.items() if ci >= 0]
+        for i in range(len(clauses_with_objs)):
+            for j in range(i + 1, len(clauses_with_objs)):
+                ci_a, objs_a = clauses_with_objs[i]
+                ci_b, objs_b = clauses_with_objs[j]
+                # If neither clause's objs are a subset of the other's,
+                # there's at least one mutually-exclusive obj.
+                only_a = objs_a - objs_b
+                only_b = objs_b - objs_a
+                if only_a and only_b:
+                    bad.append((subj, rel, sorted(only_a)[0], sorted(only_b)[0]))
+                    break
+            else:
+                continue
+            break
     return bad
 
 
