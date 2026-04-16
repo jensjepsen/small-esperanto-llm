@@ -1964,6 +1964,8 @@ class Claim:
       - "copula": S estas P (esti + predicate)
       - "transitive": S V-as O (subject + transitive verb + acc object)
       - "pp-relation": NP1 prep NP2 (noun phrase + preposition)
+      - "verb-pp": verb + prep + NP — the action's location/manner/etc.
+        ("manĝis en ĝardeno" → (manĝ, en, ĝarden))
 
     `clause_idx` identifies which clause the claim came from. Claims from the
     same clause with the same (subj, rel) are coordinated objects, not
@@ -2099,7 +2101,10 @@ def extract_claims(text: str) -> list[Claim]:
         if right_np is None:
             continue
         ci = tok_clause.get(i, -1)
-        # (a) NP-anchor
+        cl = clauses[ci] if ci >= 0 else None
+        emitted_np_anchor = False
+
+        # (a) NP-anchor: "ĉefurbo de Francio" — left NP just before prep
         left_np = next((np for np in nps if np.end_idx == i - 1), None)
         if left_np is not None and left_np.head.idx not in pp_inside:
             out.append(Claim(
@@ -2110,21 +2115,49 @@ def extract_claims(text: str) -> list[Claim]:
                 span=(left_np.head.char_span[0], right_np.head.char_span[1]),
                 clause_idx=ci,
             ))
-            continue
-        # (b) Verb-subject anchor: "Beethoven mortis en Vieno"
-        if i - 1 >= 0 and tokens[i - 1].pos == "V":
+            emitted_np_anchor = True
+
+        # (b) Verb-subject anchor: "Beethoven mortis en Vieno" —
+        # only when no NP intervenes between verb and prep
+        if not emitted_np_anchor and i - 1 >= 0 and tokens[i - 1].pos == "V":
             v = tokens[i - 1]
-            cl = next((c for c in clauses if c.verb is v), None)
-            if cl is not None and cl.subject is not None:
+            sub_cl = next((c for c in clauses if c.verb is v), None)
+            if sub_cl is not None and sub_cl.subject is not None:
                 out.append(Claim(
-                    subj=_np_text(cl.subject),
+                    subj=_np_text(sub_cl.subject),
                     rel=f"{v.root}+{tok.raw_lower}" if v.root else tok.raw_lower,
                     obj=_np_text(right_np),
                     source="pp-relation",
-                    span=(cl.subject.head.char_span[0], right_np.head.char_span[1]),
+                    span=(sub_cl.subject.head.char_span[0], right_np.head.char_span[1]),
                     confidence=0.8,
                     clause_idx=ci,
                 ))
+
+        # (c) Verb-action adjunct: "manĝis ... en la ĝardeno"
+        #     → (manĝ, en, ĝarden) — where the action occurred / how / etc.
+        # Only emit for prepositions that typically modify verbs.
+        # Excluded: `de`/`da` (almost always noun-noun: possession / quantity).
+        VERB_MODIFYING_PREPS = {
+            "en", "sur", "sub", "super", "antaŭ", "post", "apud", "inter",
+            "ekster", "ĉe", "tra", "trans", "malantaŭ",
+            "al", "el", "ĝis", "preter",      # direction
+            "kun", "sen", "per", "pere",      # accompaniment / instrument
+            "por", "pro", "anstataŭ", "krom", # purpose / cause / etc.
+            "dum", "ĉirkaŭ",                  # time
+            "kontraŭ", "laŭ", "malgraŭ",      # opposition / manner
+            "pri",                            # topic ("paroli pri X")
+        }
+        if (cl is not None and cl.verb is not None and cl.verb.idx < i
+                and tok.raw_lower in VERB_MODIFYING_PREPS):
+            out.append(Claim(
+                subj=cl.verb.root or cl.verb.raw_lower,
+                rel=tok.raw_lower,
+                obj=_np_text(right_np),
+                source="verb-pp",
+                span=(cl.verb.char_span[0], right_np.head.char_span[1]),
+                clause_idx=ci,
+                confidence=0.85,
+            ))
 
     # NOTE: suffix-relation claims (productive morphology, e.g. -ist =
     # role-of) were previously emitted here but removed — they're
