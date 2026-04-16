@@ -2011,6 +2011,36 @@ def _pieces_all_known(pieces: list[str]) -> bool:
 _FREQ_THRESHOLDS = {2: 10**9, 3: 1000}  # 2-char: never accept on freq alone
 
 
+@_lru_cache(maxsize=50_000)
+def _is_known_no_freq(stem: str, freq_threshold: int) -> bool:
+    """Stricter validity: vortaro or compound decomposition only (no freq).
+
+    Used for hyphenated-part validation where we don't want a high corpus
+    frequency (e.g. from English-in-Wikipedia) to validate non-Esperanto
+    pieces.
+    """
+    if len(stem) < 2:
+        return True
+    roots = get_roots()
+    if stem in roots:
+        return True
+    pieces = _morph_decompose(stem)
+    if _pieces_all_known(pieces):
+        return True
+    for i in range(2, len(stem) - 1):
+        left, right = stem[:i], stem[i:]
+        if len(left) < 2 or len(right) < 2:
+            continue
+        if _is_known_no_freq(left, freq_threshold) and _is_known_no_freq(right, freq_threshold):
+            return True
+        if left.endswith("o") and len(left) > 2:
+            l2 = left[:-1]
+            if len(l2) >= 2 and _is_known_no_freq(l2, freq_threshold) \
+                    and _is_known_no_freq(right, freq_threshold):
+                return True
+    return False
+
+
 @_lru_cache(maxsize=200_000)
 def is_known_stem(stem: str, freq_threshold: int = 3) -> bool:
     """Return True if `stem` is a recognizable Esperanto word part.
@@ -2020,9 +2050,30 @@ def is_known_stem(stem: str, freq_threshold: int = 3) -> bool:
     2. Corpus frequency ≥ length-graduated threshold.
     3. Morphological decomposition into all-known pieces.
     4. Recursive compound split (with optional `-o-` linker).
+    5. Hyphenated compound: each piece is individually known. (Only the
+       last piece is a stem; earlier pieces retain their word endings,
+       so we try each piece both as-is and with one trailing vowel removed.)
     """
     if len(stem) < 2:
         return True
+    # Hyphenated compounds: "tako-ŝelo" → stem "tako-ŝel" → ["tako", "ŝel"].
+    # Each piece must be individually Esperanto — we require vortaro or
+    # compound-decomposition evidence (not freq-only), because English
+    # words picked up from our Wikipedia corpus could otherwise validate
+    # hyphenated English phrases like "arcade-style".
+    if "-" in stem:
+        parts = [p for p in stem.split("-") if p]
+        if len(parts) >= 2:
+            def _part_known(p: str) -> bool:
+                for candidate in (p, p[:-1] if len(p) >= 3 and p[-1] in "oaeuin" else None,
+                                  p[:-2] if len(p) >= 4 and p[-2:] in ("on", "an", "en", "un",
+                                                                         "oj", "aj") else None):
+                    if candidate is None:
+                        continue
+                    if _is_known_no_freq(candidate, freq_threshold):
+                        return True
+                return False
+            return all(_part_known(p) for p in parts)
     roots = get_roots()
     if stem in roots:
         return True
