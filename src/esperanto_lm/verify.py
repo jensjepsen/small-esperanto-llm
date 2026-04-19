@@ -2371,6 +2371,12 @@ def _pieces_all_known(pieces: list[str]) -> bool:
 # can pass with single-digit freq.
 _FREQ_THRESHOLDS = {2: 10**9, 3: 1000}  # 2-char: never accept on freq alone
 
+# Real Esperanto compounds top out around 3 roots ("dorm-ĉambr-o" = 2;
+# "kvantum-fizik-isto" = 2; "vapor-lokomotiv-konduktor" = 3). Concatenated
+# morpheme-salad reward-hacks the lexicon by chaining 5+ short known roots
+# into one giant "valid" word.
+_MAX_COMPOUND_ROOTS = 3
+
 
 @_lru_cache(maxsize=50_000)
 def _is_known_no_freq(stem: str, freq_threshold: int) -> bool:
@@ -2400,6 +2406,50 @@ def _is_known_no_freq(stem: str, freq_threshold: int) -> bool:
                     and _is_known_no_freq(right, freq_threshold):
                 return True
     return False
+
+
+@_lru_cache(maxsize=50_000)
+def min_root_pieces(stem: str, freq_threshold: int = 3) -> int:
+    """Smallest number of recognized atomic root-pieces the stem decomposes
+    into. 1 means it's a known root on its own (vortaro / freq / morphology).
+    Returns a large number (>10) if no decomposition is found — caller can
+    treat that as 'unbounded' / 'unknown'.
+
+    Used to flag suspicious morpheme-salad concatenations that pass
+    is_known_stem only via deep recursive splitting.
+    """
+    if len(stem) < 2:
+        return 1
+    roots = get_roots()
+    if stem in roots:
+        return 1
+    thr = _FREQ_THRESHOLDS.get(len(stem), freq_threshold)
+    if _load_stem_freq().get(stem, 0) >= thr:
+        return 1
+    pieces = _morph_decompose(stem)
+    if len(pieces) > 1 and _pieces_all_known(pieces):
+        # Count root-class pieces inside this morphology decomposition.
+        root_count = sum(1 for p in pieces if classify_morpheme(p) == "root")
+        if root_count >= 1:
+            return root_count
+        return 1
+    best = 99
+    for i in range(2, len(stem) - 1):
+        left, right = stem[:i], stem[i:]
+        if len(left) < 2 or len(right) < 2:
+            continue
+        if is_known_stem(left, freq_threshold) and is_known_stem(right, freq_threshold):
+            n = min_root_pieces(left, freq_threshold) + min_root_pieces(right, freq_threshold)
+            if n < best:
+                best = n
+        if left.endswith("o") and len(left) > 2:
+            l2 = left[:-1]
+            if len(l2) >= 2 and is_known_stem(l2, freq_threshold) \
+                    and is_known_stem(right, freq_threshold):
+                n = min_root_pieces(l2, freq_threshold) + min_root_pieces(right, freq_threshold)
+                if n < best:
+                    best = n
+    return best
 
 
 @_lru_cache(maxsize=200_000)
@@ -2481,7 +2531,9 @@ class LexiconCheck:
     def check(self, tokens, nps):
         out = []
         for tok in tokens:
-            if tok.pos not in ("N", "A", "V", "INF", "Adv"):
+            # "Unknown" POS covers missing-ending words — often foreign
+            # borrowings, but also the morpheme-salad reward-hack pattern.
+            if tok.pos not in ("N", "A", "V", "INF", "Adv", "Unknown"):
                 continue
             if getattr(tok, "is_proper", False):
                 continue
@@ -2493,6 +2545,16 @@ class LexiconCheck:
                     self.name, "warning",
                     f"'{tok.text}' → stem '{stem}' not recognized as Esperanto "
                     f"(not in vortaro, freq<{self.freq_threshold}, no compound split)",
+                    tok.idx))
+                continue
+            # Guard against morpheme-salad reward-hacks: "valid" words whose
+            # only validation path is chaining too many roots together.
+            roots_in = min_root_pieces(stem, self.freq_threshold)
+            if roots_in > _MAX_COMPOUND_ROOTS:
+                out.append(Diagnostic(
+                    self.name, "warning",
+                    f"'{tok.text}' → stem '{stem}' decomposes into {roots_in} "
+                    f"roots (max {_MAX_COMPOUND_ROOTS} for a plausible compound)",
                     tok.idx))
         return out
 

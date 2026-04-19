@@ -57,7 +57,11 @@ def main():
                         help="Path to pretrained model checkpoint")
     parser.add_argument("--sft-data", type=str, nargs="+",
                         default=["jensjepsen/esperanto-sft-factoid", "jensjepsen/esperanto-sft-creative",
-                                 "jensjepsen/esperanto-gsm8k", "jensjepsen/esperanto-arithmetic-cot"],
+                                 "jensjepsen/esperanto-gsm8k", "jensjepsen/esperanto-arithmetic-cot",
+                                 "jensjepsen/esperanto-sft-atomic-icl", "jensjepsen/esperanto-sft-atomic-qa",
+                                 "jensjepsen/esperanto-sft-wikidata-icl", "jensjepsen/esperanto-sft-morphology-icl",
+                                 "jensjepsen/esperanto-sft-quantity-reasoning",
+                                 "jensjepsen/esperanto-sft-dolly"],
                         help="Paths to local SFT JSONL files or HF Hub dataset names")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory (default: <checkpoint>-sft)")
@@ -67,6 +71,13 @@ def main():
     parser.add_argument("--gradient-accumulation", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--wandb-project", default="jepsen/espllm",
+                        help="`entity/project` for Weights & Biases. "
+                             "Pass empty string to disable wandb logging.")
+    parser.add_argument("--wandb-run-name", default=None,
+                        help="Optional run name (default: auto from output-dir).")
+    parser.add_argument("--wandb-tags", nargs="*", default=None,
+                        help="Optional tags for the wandb run.")
     args = parser.parse_args()
 
     if args.output_dir:
@@ -80,6 +91,33 @@ def main():
             while Path(f"{base}-{n}").exists():
                 n += 1
             output_dir = f"{base}-{n}"
+
+    if args.wandb_project:
+        import os
+        import wandb
+        if "/" in args.wandb_project:
+            entity, project = args.wandb_project.split("/", 1)
+        else:
+            entity, project = None, args.wandb_project
+        os.environ.setdefault("WANDB_PROJECT", project)
+        if entity:
+            os.environ.setdefault("WANDB_ENTITY", entity)
+        wandb.init(
+            entity=entity,
+            project=project,
+            name=args.wandb_run_name or Path(output_dir).name,
+            tags=args.wandb_tags,
+            config={
+                "task": "sft",
+                "checkpoint": args.checkpoint,
+                "sft_data": args.sft_data,
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "gradient_accumulation": args.gradient_accumulation,
+                "learning_rate": args.learning_rate,
+                "max_length": args.max_length,
+            },
+        )
 
     console.print(f"[bold green]Loading model from {args.checkpoint}...")
     model = AutoModelForCausalLM.from_pretrained(args.checkpoint)
@@ -168,7 +206,7 @@ def main():
         save_steps=500,
         save_total_limit=3,
         logging_steps=50,
-        report_to="none",
+        report_to="wandb" if args.wandb_project else "none",
         dataloader_num_workers=2,
     )
 
