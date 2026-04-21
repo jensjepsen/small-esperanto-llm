@@ -21,13 +21,15 @@ dependencies = [
 wandb = ["wandb>=0.17.0"]
 gemini = ["google-generativeai>=0.8.6", "google-genai>=1.70.0"]
 w2v = ["gensim>=4.4.0"]
-all = ["wandb>=0.17.0", "google-generativeai>=0.8.6", "google-genai>=1.70.0", "gensim>=4.4.0"]
+eval = ["sentence-transformers>=3.0.0"]
+all = ["wandb>=0.17.0", "google-generativeai>=0.8.6", "google-genai>=1.70.0", "gensim>=4.4.0", "sentence-transformers>=3.0.0"]
 
 [project.scripts]
 train = "esperanto_lm.train:main"
 train-tokenizer = "scripts.train_tokenizer:main"
 download-data = "scripts.download_data:main"
 generate = "scripts.generate:main"
+evaluate-coherence = "scripts.evaluate_coherence:main"
 download-hplt = "scripts.download_hplt:main"
 download-gutenberg = "scripts.download_gutenberg:main"
 download-mc4 = "scripts.download_mc4:main"
