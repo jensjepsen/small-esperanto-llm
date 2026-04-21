@@ -9,7 +9,8 @@ from tokenizers import ByteLevelBPETokenizer, Tokenizer
 from transformers import DataCollatorForLanguageModeling, PreTrainedTokenizerFast
 
 DATA_DIR = Path("data/eo_wiki")
-HPLT_DIR = Path("data/hplt")
+HPLT_DIR = Path("data/hplt_filtered")
+HPLT_DIR_RAW = Path("data/hplt")
 GUTENBERG_DIR = Path("data/gutenberg")
 MC4_DIR = Path("data/mc4/eo")
 FACTOIDS_PATH = Path("/mnt/data2/wikidata5m/eo_factoids_v2/factoid_text.jsonl")
@@ -20,7 +21,8 @@ TOKENIZER_DIR = Path("tokenizer_morpheme")
 HF_TOKENIZER = "jensjepsen/esperanto-morpheme-tokenizer"
 HF_FACTOIDS = "jensjepsen/esperanto-factoids"
 HF_SENTENCES = "jensjepsen/esperanto-sentences"
-HF_HPLT = "jensjepsen/esperanto-hplt"
+HF_HPLT = "jensjepsen/esperanto-hplt-filtered"
+HF_HPLT_RAW = "jensjepsen/esperanto-hplt"
 HF_GUTENBERG = "jensjepsen/esperanto-gutenberg"
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
@@ -41,7 +43,12 @@ def download_dataset(save_dir: Path = DATA_DIR) -> DatasetDict:
 
 
 def load_hplt_dataset(hplt_dir: Path = HPLT_DIR) -> Dataset | None:
-    """Load HPLT Esperanto data from HF Hub or local JSONL files."""
+    """Load HPLT Esperanto data from local JSONL or HF Hub.
+
+    Defaults to the verifier-filtered corpus (`data/hplt_filtered/` locally,
+    `jensjepsen/esperanto-hplt-filtered` on the Hub). Pass `hplt_dir=HPLT_DIR_RAW`
+    to use the unfiltered corpus instead.
+    """
     # Try local first
     jsonl_files = sorted(hplt_dir.glob("*.jsonl"))
     if jsonl_files:
@@ -50,6 +57,8 @@ def load_hplt_dataset(hplt_dir: Path = HPLT_DIR) -> Dataset | None:
             data_files=[str(f) for f in jsonl_files],
             split="train",
         )
+        # Raw HPLT dumps carry a "filter=discard" flag on junk docs; filtered
+        # dumps don't have that field. The guard is a no-op on filtered data.
         ds = ds.filter(
             lambda x: x.get("filter") != "discard" and bool(x.get("text", "").strip()),
             num_proc=4,
@@ -57,9 +66,11 @@ def load_hplt_dataset(hplt_dir: Path = HPLT_DIR) -> Dataset | None:
         ds = ds.select_columns(["text"])
         return ds
 
-    # Fall back to HF Hub
+    # Fall back to HF Hub — pick the repo matching the local dir's name
+    # (filtered vs raw), defaulting to filtered.
+    repo = HF_HPLT_RAW if hplt_dir == HPLT_DIR_RAW else HF_HPLT
     try:
-        return load_dataset(HF_HPLT, split="train")
+        return load_dataset(repo, split="train")
     except Exception:
         return None
 

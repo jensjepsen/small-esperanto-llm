@@ -51,7 +51,10 @@ END_TOKEN = "<|end|>"
 # we saw in late-collapse runs).
 W = {"overlap": 0.5, "entity": 0.3, "presence": 0.2,
      "parseable": 0.2, "math": 1.0,
-     "unk": 0.20, "grammar": 0.10, "repetition": 0.30, "foreign": 0.5}
+     "unk": 0.20, "grammar": 0.10, "repetition": 0.30, "foreign": 0.5,
+     "length": 0.30}
+LENGTH_GRACE = 50         # words before length penalty kicks in
+LENGTH_FULL_PENALTY = 150  # words at which penalty saturates to 1.0
 MAX_GRAM = 8
 REPETITION_NGRAM = 3
 
@@ -134,15 +137,22 @@ def repetition_rate(text: str, n: int = REPETITION_NGRAM) -> float:
     return 1.0 - len(set(grams)) / len(grams)
 
 
-def parseable_rate(text: str) -> float:
-    """Fraction of period-delimited sentences that yield at least one
-    extracted claim. Rewards well-formed predicate structure; penalises
-    morpheme-salad and noun-phrase fragments that don't parse."""
+def parseable_rate(text: str, verifier=None) -> float:
+    """Fraction of period-delimited sentences that are well-formed: extract
+    at least one claim AND have zero verifier diagnostics (NPAgreement,
+    PredicateAdjAgreement, MissingAccusative, WrongEndings, lexicon, etc).
+    A pure structure check would let "Hundoj manĝas pomo." (wrong case)
+    pass; coupling with the verifier makes "well-formed" actually mean
+    well-formed. If verifier is None, falls back to claim-only check."""
     sents = [s.strip() for s in re.split(r"[.!?]", text) if s.strip()]
     if not sents:
         return 0.0
-    parsed = sum(1 for s in sents if extract_claims(s))
-    return parsed / len(sents)
+    if verifier is None:
+        clean = sum(1 for s in sents if extract_claims(s))
+    else:
+        clean = sum(1 for s in sents
+                    if extract_claims(s) and not verifier.verify(s))
+    return clean / len(sents)
 
 
 _MATH_HASH_PATTERN = re.compile(r"####\s*(-?\d+(?:[.,]\d+)?)")
@@ -195,6 +205,17 @@ def math_close(generation: str, gold: str | None) -> float:
     return _math.exp(-min(rel_err, 10.0))
 
 
+def length_excess(text: str) -> float:
+    """0..1 length penalty. Free below LENGTH_GRACE words; linear ramp to 1.0
+    at LENGTH_FULL_PENALTY words. Discourages unbounded chain-of-thought
+    rambling and the parseable-reward farming pattern (each extra sentence
+    adds parseable bonus regardless of math correctness)."""
+    n = len(text.split())
+    if n <= LENGTH_GRACE:
+        return 0.0
+    return min(1.0, (n - LENGTH_GRACE) / (LENGTH_FULL_PENALTY - LENGTH_GRACE))
+
+
 def foreign_char_rate(text: str) -> float:
     """Fraction of words containing any non-Esperanto alphabetic char.
     Word-level (not char-level) so a single foreign rune in a token
@@ -241,7 +262,7 @@ def make_reward_components(max_gram=MAX_GRAM):
                 for t, a, q in zip(_texts(completions), gas, q_texts)]
 
     def reward_parseable(prompts, completions, **_):
-        return [parseable_rate(t) for t in _texts(completions)]
+        return [parseable_rate(t, verifier) for t in _texts(completions)]
 
     def reward_unk(prompts, completions, **_):
         return [unknown_word_rate(t, freq_threshold=3) for t in _texts(completions)]
@@ -256,6 +277,9 @@ def make_reward_components(max_gram=MAX_GRAM):
     def reward_foreign(prompts, completions, **_):
         return [foreign_char_rate(t) for t in _texts(completions)]
 
+    def reward_length(prompts, completions, **_):
+        return [length_excess(t) for t in _texts(completions)]
+
     def reward_math(prompts, completions, gold=None, **_):
         n = len(completions)
         refs = gold if gold is not None else [None] * n
@@ -263,10 +287,12 @@ def make_reward_components(max_gram=MAX_GRAM):
 
     funcs = [reward_overlap, reward_entity, reward_presence, reward_parseable,
              reward_math,
-             reward_unk, reward_grammar, reward_repetition, reward_foreign]
+             reward_unk, reward_grammar, reward_repetition, reward_foreign,
+             reward_length]
     weights = [W["overlap"], W["entity"], W["presence"], W["parseable"],
                W["math"],
-               -W["unk"], -W["grammar"], -W["repetition"], -W["foreign"]]
+               -W["unk"], -W["grammar"], -W["repetition"], -W["foreign"],
+               -W["length"]]
     return funcs, weights
 
 
@@ -322,18 +348,20 @@ def _iter_messages(source: str, max_n: int = 0):
 
 
 def load_chat_dataset(sources: list[str], has_w: bool, prompt_style: str,
-                      max_examples: int = 0):
+                      max_examples: int = 0, presence_target: str = "assistant"):
     """SFT-format conversations: each row has `messages: [{role, content}, ...]`.
 
     Each `source` is either a local JSONL path or an HF Hub dataset id (same
     convention as scripts/train_sft.py). First user/assistant turn becomes
-    (prompt, gold). Assistant text is used as both the structural gold
-    (claim_overlap matches it directly) and gold_answers (presence picks up
-    content stems).
+    (prompt, gold). Assistant text is the structural gold (claim_overlap
+    matches it directly).
 
-    Factoid gold is typically a full sentence (overlap/entity fire);
-    atomic-QA gold is often a single word or adjective (only presence
-    fires) — mixing them keeps all reward terms live.
+    `presence_target` controls what `gold_answers` contains:
+      "assistant"    — full assistant text (default; presence rewards any
+                       gold content stem in the generation).
+      "math-answer"  — just the `#### N` numeric value (use for GSM8K-style
+                       math gold; prevents the model from gaming presence
+                       by sprinkling gold-vocab words around).
     """
     rows = []
     per_source_cap = max_examples // len(sources) if max_examples else 0
@@ -341,10 +369,17 @@ def load_chat_dataset(sources: list[str], has_w: bool, prompt_style: str,
         for msgs in _iter_messages(source, per_source_cap):
             user = next(m["content"] for m in msgs if m["role"] == "user")
             assistant = next(m["content"] for m in msgs if m["role"] == "assistant")
+            if presence_target == "math-answer":
+                # Restrict presence to just the `#### N` value so the model
+                # can't game it by sprinkling gold-vocab words around.
+                num = extract_math_answer(assistant)
+                gold_answers = [str(int(num) if num == int(num) else num)] if num is not None else []
+            else:
+                gold_answers = [assistant.strip()]
             rows.append({
                 "prompt": format_prompt(user.strip(), has_w, prompt_style),
                 "gold": assistant.strip(),
-                "gold_answers": [assistant.strip()],
+                "gold_answers": gold_answers,
             })
     return Dataset.from_list(rows)
 
@@ -366,6 +401,12 @@ def main():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--prompt-style", choices=["chat", "continuation"],
                         default="continuation")
+    parser.add_argument("--presence-target", choices=["assistant", "math-answer"],
+                        default="assistant",
+                        help="What presence reward scores against. 'assistant' "
+                             "(default): all gold content stems. 'math-answer': "
+                             "just the `#### N` numeric value — use for GSM8K to "
+                             "stop the model from gaming presence with gold-vocab.")
     parser.add_argument("--num-generations", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument("--max-prompt-len", type=int, default=128)
@@ -443,28 +484,35 @@ def main():
         return _orig_batch_decode(ids, **kw)
     tokenizer.batch_decode = _keep_specials
 
-    # If the tokenizer has `<|end|>` (chat-format SFT models), use it as
-    # eos. TRL builds GenerationConfig from `processing_class.eos_token_id`,
-    # so this is the only patch point that reliably propagates: TRL ignores
-    # `model.generation_config.eos_token_id` and a post-init patch on
-    # `trainer.generation_config` gets refreshed at train start. Replacing
-    # the tokenizer's eos token here makes TRL build the config correctly
-    # from step 1.
+    # If the tokenizer has chat tokens (chat-format SFT models), use them
+    # as eos. TRL builds GenerationConfig from `processing_class.eos_token_id`,
+    # which is a single int derived from `tokenizer.eos_token`. We set the
+    # primary eos to `<|end|>` (the SFT termination token); `<|user|>` is
+    # added as an extra stop to catch the model spawning a fake follow-up
+    # turn for parseable-reward farming. `<|assistant|>` is intentionally
+    # NOT added — it sits at the answer boundary in SFT data, and adding
+    # it can cause length-1 completions and unstable gradients.
+    chat_stops = []
     end_id = tokenizer.convert_tokens_to_ids(END_TOKEN)
     if end_id is not None and end_id != tokenizer.unk_token_id:
         original_eos = tokenizer.eos_token
         tokenizer.eos_token = END_TOKEN
+        chat_stops.append(end_id)
         print(f"tokenizer.eos_token: {original_eos!r} → {END_TOKEN!r} "
               f"(id={end_id})", flush=True)
+    user_id = tokenizer.convert_tokens_to_ids(USER_TOKEN)
+    if user_id is not None and user_id != tokenizer.unk_token_id:
+        chat_stops.append(user_id)
 
     # Load fp32 master weights — AMP (fp16=True below) handles cast.
     model = AutoModelForCausalLM.from_pretrained(args.checkpoint)
 
     dataset = load_chat_dataset(args.dataset, has_w, args.prompt_style,
-                                args.max_examples)
+                                args.max_examples,
+                                presence_target=args.presence_target)
     srcs = ", ".join(args.dataset)
     print(f"Dataset: {len(dataset)} prompts from [{srcs}] "
-          f"(style={args.prompt_style})", flush=True)
+          f"(style={args.prompt_style}, presence={args.presence_target})", flush=True)
 
     reward_funcs, reward_weights = make_reward_components()
 
@@ -495,6 +543,16 @@ def main():
         train_dataset=dataset,
         processing_class=tokenizer,
     )
+    # Replace the trainer's GenerationConfig with one that stops on any of
+    # the chat tokens — primary `<|end|>` plus `<|user|>`/`<|assistant|>`.
+    # The latter two catch the model trying to spawn a fake multi-turn
+    # chain mid-completion (a parseable-reward exploit we saw at step 60).
+    if len(chat_stops) > 1:
+        from transformers import GenerationConfig
+        gc = trainer.generation_config
+        cfg = gc.to_dict()
+        cfg["eos_token_id"] = chat_stops
+        trainer.generation_config = GenerationConfig(**cfg)
     print(f"trainer.generation_config.eos_token_id = "
           f"{trainer.generation_config.eos_token_id}", flush=True)
     trainer.train(resume_from_checkpoint=args.resume)

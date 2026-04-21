@@ -2420,6 +2420,26 @@ def min_root_pieces(stem: str, freq_threshold: int = 3) -> int:
     """
     if len(stem) < 2:
         return 1
+    # Hyphenated compounds: split on '-' first, sum per-part root counts.
+    # Without this, long hyphenated forms like "pezoperdo-celojn" get 99
+    # from the binary splitter even though they're valid EO compounds.
+    if "-" in stem:
+        parts = [p for p in stem.split("-") if p]
+        if len(parts) >= 2:
+            total = 0
+            for p in parts:
+                # Strip one trailing vowel-ending (word-form → stem-form)
+                for candidate in (p, p[:-1] if len(p) >= 3 and p[-1] in "oaeui" else None,
+                                  p[:-2] if len(p) >= 4 and p[-2:] in ("on","an","en","un","oj","aj") else None):
+                    if candidate is None:
+                        continue
+                    n = min_root_pieces(candidate, freq_threshold)
+                    if n < 50:
+                        total += n
+                        break
+                else:
+                    return 99  # an unrecognized part → salad
+            return total
     roots = get_roots()
     if stem in roots:
         return 1
@@ -2522,11 +2542,20 @@ class LexiconCheck:
     Skips proper nouns, closed-class words, and very short stems. Uses a
     three-tier validity signal: vortaro membership, corpus frequency, and
     recursive compound splitting.
+
+    Args:
+        freq_threshold: minimum corpus frequency to accept a stem.
+        extra_known: optional iterable of additional stems to treat as
+            known (loanwords, domain terms, brand names). The global
+            vortaro stays unchanged — caller-specific whitelists let
+            different audits use different acceptance levels (strict
+            for pretrain filtering, lenient for SFT data scoring).
     """
     name = "lexicon"
 
-    def __init__(self, freq_threshold: int = 3):
+    def __init__(self, freq_threshold: int = 3, extra_known=None):
         self.freq_threshold = freq_threshold
+        self.extra_known = frozenset(extra_known) if extra_known else frozenset()
 
     def check(self, tokens, nps):
         out = []
@@ -2539,6 +2568,8 @@ class LexiconCheck:
                 continue
             stem = tok.root
             if not stem or len(stem) < 3:
+                continue
+            if stem in self.extra_known:
                 continue
             if not is_known_stem(stem, self.freq_threshold):
                 out.append(Diagnostic(

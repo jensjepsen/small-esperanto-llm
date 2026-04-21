@@ -40,11 +40,13 @@ def format_conversation(messages: list[dict]) -> str:
     return " ".join(parts)
 
 
-def load_sft_data(path: Path) -> list[str]:
+def load_sft_data(path: Path, max_examples: int = 0) -> list[str]:
     """Load SFT conversations and format them as training strings."""
     conversations = []
     with open(path) as f:
-        for line in f:
+        for i, line in enumerate(f):
+            if max_examples and i >= max_examples:
+                break
             data = json.loads(line)
             text = format_conversation(data["messages"])
             conversations.append(text)
@@ -71,6 +73,16 @@ def main():
     parser.add_argument("--gradient-accumulation", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--max-examples", type=int, default=0,
+                        help="Cap total examples (split evenly across sources). "
+                             "0 = no cap. Useful for cold-start runs where you "
+                             "want format-learning without memorization.")
+    parser.add_argument("--save-steps", type=int, default=500)
+    parser.add_argument("--save-total-limit", type=int, default=3)
+    parser.add_argument("--completion-only-loss", action="store_true",
+                        help="Mask loss on the user-prompt tokens; only train "
+                             "on the assistant response. Important when the "
+                             "prompt template is highly repetitive (e.g. NLI).")
     parser.add_argument("--wandb-project", default="jepsen/espllm",
                         help="`entity/project` for Weights & Biases. "
                              "Pass empty string to disable wandb logging.")
@@ -136,15 +148,19 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    per_source_cap = (args.max_examples // len(args.sft_data)
+                      if args.max_examples else 0)
     conversations = []
     for source in args.sft_data:
         console.print(f"[bold green]Loading SFT data from {source}...")
         sft_path = Path(source)
         if sft_path.exists():
-            conversations.extend(load_sft_data(sft_path))
+            conversations.extend(load_sft_data(sft_path, per_source_cap))
         else:
             from datasets import load_dataset as hf_load
             ds = hf_load(source, split="train")
+            if per_source_cap:
+                ds = ds.select(range(min(per_source_cap, len(ds))))
             conversations.extend([format_conversation(row["messages"]) for row in ds])
         console.print(f"[bold]  Loaded, total so far:[/] {len(conversations):,}")
     console.print(f"[bold]Total conversations:[/] {len(conversations):,}")
@@ -203,16 +219,49 @@ def main():
         eval_strategy="steps",
         eval_steps=500,
         save_strategy="steps",
-        save_steps=500,
-        save_total_limit=3,
+        save_steps=args.save_steps,
+        save_total_limit=args.save_total_limit,
         logging_steps=50,
         report_to="wandb" if args.wandb_project else "none",
         dataloader_num_workers=2,
     )
 
-    # Data collator that pads sequences to equal length
+    # Data collator that pads sequences to equal length.
+    # With --completion-only-loss the loss is masked for everything up to
+    # and including the <|assistant|> token, so gradient only flows through
+    # the response. Necessary for NLI-style fine-tunes where the user-turn
+    # template is so repetitive that whole-sequence loss drowns out the
+    # label signal.
     from transformers import DataCollatorForLanguageModeling
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    import torch as _torch
+
+    base_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
+    if args.completion_only_loss:
+        assistant_id = tokenizer.convert_tokens_to_ids(ASSISTANT_TOKEN)
+        if assistant_id is None or assistant_id == tokenizer.unk_token_id:
+            raise RuntimeError(
+                f"--completion-only-loss requires {ASSISTANT_TOKEN!r} in the "
+                f"tokenizer vocab; got id={assistant_id}"
+            )
+        console.print(f"[bold]Masking loss before/including token "
+                      f"{ASSISTANT_TOKEN!r} (id={assistant_id})[/]")
+
+        def data_collator(features):
+            batch = base_collator(features)
+            for i, ids in enumerate(batch["input_ids"]):
+                hits = (ids == assistant_id).nonzero(as_tuple=True)[0]
+                if len(hits) > 0:
+                    cutoff = hits[0].item() + 1
+                    batch["labels"][i, :cutoff] = -100
+                else:
+                    # No assistant token found — mask whole sequence to avoid
+                    # training on malformed rows rather than default back to
+                    # full-sequence loss.
+                    batch["labels"][i, :] = -100
+            return batch
+    else:
+        data_collator = base_collator
 
     console.print("[bold green]Starting SFT training...")
     trainer = Trainer(

@@ -211,18 +211,25 @@
     "question": "Kiu estas Albert Einstein?",
     "answer": [
       "fizikisto",
-      "sciencisto"
+      "sciencisto",
+      "teori-fizikisto"
     ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Wolfgang Amadeus Mozart?",
-    "answer": "komponisto",
+    "answer": [
+      "komponisto",
+      "muzikisto"
+    ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Pablo Picasso?",
-    "answer": "pentristo",
+    "answer": [
+      "pentristo",
+      "artisto"
+    ],
     "category": "profesio"
   },
   {
@@ -231,7 +238,10 @@
       "dramaturgo",
       "verkisto",
       "poeto",
-      "aktoro"
+      "aktoro",
+      "aŭtoro",
+      "romanisto",
+      "literaturisto"
     ],
     "category": "profesio"
   },
@@ -240,7 +250,8 @@
     "answer": [
       "pentristo",
       "artisto",
-      "inventisto"
+      "inventisto",
+      "inĝeniero"
     ],
     "category": "profesio"
   },
@@ -249,18 +260,27 @@
     "answer": [
       "astronomo",
       "fizikisto",
-      "sciencisto"
+      "sciencisto",
+      "astrofizikisto",
+      "teori-fizikisto"
     ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Aristotelo?",
-    "answer": "filozofo",
+    "answer": [
+      "filozofo",
+      "logikisto",
+      "pensulo"
+    ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Ludwig van Beethoven?",
-    "answer": "komponisto",
+    "answer": [
+      "komponisto",
+      "muzikisto"
+    ],
     "category": "profesio"
   },
   {
@@ -268,7 +288,10 @@
     "answer": [
       "fizikisto",
       "matematikisto",
-      "sciencisto"
+      "sciencisto",
+      "teori-fizikisto",
+      "geometristo",
+      "algebristo"
     ],
     "category": "profesio"
   },
@@ -278,7 +301,8 @@
       "biologo",
       "natursciencisto",
       "zoologo",
-      "naturalisto"
+      "naturalisto",
+      "sciencisto"
     ],
     "category": "profesio"
   },
@@ -287,7 +311,8 @@
     "answer": [
       "fizikisto",
       "kemiisto",
-      "sciencisto"
+      "sciencisto",
+      "teori-fizikisto"
     ],
     "category": "profesio"
   },
@@ -297,7 +322,9 @@
       "inventisto",
       "inĝeniero",
       "fizikisto",
-      "elektr"
+      "elektr",
+      "teori-fizikisto",
+      "sciencisto"
     ],
     "category": "profesio"
   },
@@ -307,7 +334,8 @@
       "reĝino",
       "reganto",
       "faraono",
-      "aristokrato"
+      "aristokrato",
+      "monarko"
     ],
     "category": "profesio"
   },
@@ -317,18 +345,26 @@
       "militestro",
       "militisto",
       "generalo",
-      "imperiestro"
+      "imperiestro",
+      "reganto"
     ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Hipokrato?",
-    "answer": "kuracisto",
+    "answer": [
+      "kuracisto",
+      "medicinisto"
+    ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Platono?",
-    "answer": "filozofo",
+    "answer": [
+      "filozofo",
+      "logikisto",
+      "pensulo"
+    ],
     "category": "profesio"
   },
   {
@@ -342,17 +378,30 @@
   },
   {
     "question": "Kiu estas Johann Sebastian Bach?",
-    "answer": "komponisto",
+    "answer": [
+      "komponisto",
+      "muzikisto"
+    ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Fjodor Dostojevskij?",
-    "answer": "verkisto",
+    "answer": [
+      "verkisto",
+      "aŭtoro",
+      "romanisto",
+      "literaturisto"
+    ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Lev Tolstoj?",
-    "answer": "verkisto",
+    "answer": [
+      "verkisto",
+      "aŭtoro",
+      "romanisto",
+      "literaturisto"
+    ],
     "category": "profesio"
   },
   {
@@ -360,7 +409,9 @@
     "answer": [
       "psikiatro",
       "psikologo",
-      "kuracisto"
+      "kuracisto",
+      "psikoanalizisto",
+      "medicinisto"
     ],
     "category": "profesio"
   },
@@ -374,7 +425,10 @@
   },
   {
     "question": "Kiu estas Rembrandt?",
-    "answer": "pentristo",
+    "answer": [
+      "pentristo",
+      "artisto"
+    ],
     "category": "profesio"
   },
   {
@@ -382,7 +436,10 @@
     "answer": [
       "astronomo",
       "matematikisto",
-      "sciencisto"
+      "sciencisto",
+      "astrofizikisto",
+      "geometristo",
+      "algebristo"
     ],
     "category": "profesio"
   },
@@ -391,7 +448,9 @@
     "answer": [
       "esploristo",
       "vojaĝisto",
-      "komercisto"
+      "komercisto",
+      "vojaĝanto",
+      "aventuristo"
     ],
     "category": "profesio"
   },
@@ -400,7 +459,8 @@
     "answer": [
       "lingvisto",
       "esperantisto",
-      "okulisto"
+      "okulisto",
+      "filologo"
     ],
     "category": "profesio"
   },
@@ -409,18 +469,27 @@
     "answer": [
       "poeto",
       "verkisto",
-      "aŭtoro"
+      "aŭtoro",
+      "romanisto",
+      "literaturisto"
     ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Sokrato?",
-    "answer": "filozofo",
+    "answer": [
+      "filozofo",
+      "logikisto",
+      "pensulo"
+    ],
     "category": "profesio"
   },
   {
     "question": "Kiu estas Verdi?",
-    "answer": "komponisto",
+    "answer": [
+      "komponisto",
+      "muzikisto"
+    ],
     "category": "profesio"
   },
   {
@@ -428,7 +497,8 @@
     "answer": [
       "flegistino",
       "kuracistino",
-      "infanistino"
+      "infanistino",
+      "flegisto"
     ],
     "category": "profesio"
   },
@@ -712,7 +782,8 @@
     "answer": [
       "tragedio",
       "dramo",
-      "teatra"
+      "teatra",
+      "ŝekspira"
     ],
     "category": "ĝenro"
   },
@@ -730,7 +801,10 @@
     "answer": [
       "krimromano",
       "krimo",
-      "detektiv"
+      "detektiv",
+      "detektiva",
+      "misterio",
+      "suspensa"
     ],
     "category": "ĝenro"
   },
@@ -739,7 +813,8 @@
     "answer": [
       "tragedio",
       "dramo",
-      "teatra"
+      "teatra",
+      "ŝekspira"
     ],
     "category": "ĝenro"
   },
@@ -757,7 +832,12 @@
     "answer": [
       "sciencfikcio",
       "hororo",
-      "gotik"
+      "gotik",
+      "sf",
+      "futura",
+      "gotika",
+      "terura",
+      "vampira"
     ],
     "category": "ĝenro"
   },
@@ -766,7 +846,10 @@
     "answer": [
       "hororo",
       "gotik",
-      "terur"
+      "terur",
+      "gotika",
+      "terura",
+      "vampira"
     ],
     "category": "ĝenro"
   },
@@ -775,7 +858,9 @@
     "answer": [
       "epopeo",
       "epik",
-      "poemo"
+      "poemo",
+      "epiko",
+      "poezio"
     ],
     "category": "ĝenro"
   },
@@ -784,7 +869,8 @@
     "answer": [
       "fabelaro",
       "fabelo",
-      "rakontaro"
+      "rakontaro",
+      "fabela"
     ],
     "category": "ĝenro"
   },
@@ -794,58 +880,116 @@
       "epopeo",
       "epik",
       "poemo",
-      "komedio"
+      "komedio",
+      "epiko",
+      "poezio"
     ],
     "category": "ĝenro"
   },
   {
     "question": "En kiu laborkampo laboris Galileo?",
-    "answer": "astronomio",
+    "answer": [
+      "astronomio",
+      "astrofiziko",
+      "fiziko",
+      "matematiko"
+    ],
     "category": "laborkampo"
   },
   {
     "question": "En kiu laborkampo laboris Darwin?",
-    "answer": "biologio",
+    "answer": [
+      "biologio",
+      "evoluismo",
+      "naturhistorio",
+      "natursciencoj",
+      "zoologio"
+    ],
     "category": "laborkampo"
   },
   {
     "question": "En kiu laborkampo laboris Einstein?",
-    "answer": "fiziko",
+    "answer": [
+      "fiziko",
+      "mekaniko",
+      "optiko",
+      "relativeco",
+      "matematiko",
+      "natursciencoj"
+    ],
     "category": "laborkampo"
   },
   {
     "question": "En kiu laborkampo laboris Freud?",
-    "answer": "psikologio",
+    "answer": [
+      "psikologio",
+      "psikoanalizo",
+      "psikiatrio",
+      "neŭroscienco"
+    ],
     "category": "laborkampo"
   },
   {
     "question": "En kiu laborkampo laboris Newton?",
-    "answer": "fiziko",
+    "answer": [
+      "fiziko",
+      "mekaniko",
+      "optiko",
+      "relativeco",
+      "matematiko",
+      "natursciencoj"
+    ],
     "category": "laborkampo"
   },
   {
     "question": "En kiu laborkampo laboris Mendelejev?",
-    "answer": "kemio",
+    "answer": [
+      "kemio",
+      "biokemio"
+    ],
     "category": "laborkampo"
   },
   {
     "question": "En kiu laborkampo laboris Pasteur?",
-    "answer": "mikrobiologio",
+    "answer": [
+      "mikrobiologio",
+      "bakteriologio",
+      "medicino",
+      "biologio"
+    ],
     "category": "laborkampo"
   },
   {
     "question": "En kiu laborkampo laboris Turing?",
-    "answer": "komputiko",
+    "answer": [
+      "komputiko",
+      "matematiko",
+      "informadiko",
+      "komputoscienco",
+      "logiko"
+    ],
     "category": "laborkampo"
   },
   {
     "question": "En kiu laborkampo laboris Linneo?",
-    "answer": "botaniko",
+    "answer": [
+      "botaniko",
+      "sistematiko",
+      "taksonomio",
+      "naturhistorio",
+      "biologio"
+    ],
     "category": "laborkampo"
   },
   {
     "question": "En kiu laborkampo laboris Eŭklido?",
-    "answer": "matematiko",
+    "answer": [
+      "matematiko",
+      "geometrio",
+      "algebro",
+      "aritmetiko",
+      "logiko"
+    ],
     "category": "laborkampo"
   },
   {
