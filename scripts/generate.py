@@ -57,7 +57,7 @@ def main():
             parts.append(word)
     prompt = " ".join(parts)
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    inputs = tokenizer(prompt, return_tensors="pt", return_token_type_ids=False).to(device)
 
     for i in range(args.num_samples):
         with torch.no_grad():

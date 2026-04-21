@@ -31,7 +31,7 @@ from datasets import Dataset
 from esperanto_lm.data import load_tokenizer
 from esperanto_lm.morphology import decompose
 from esperanto_lm.verify import (
-    Verifier, LexiconCheck, DEFAULT_CHECKS,
+    Verifier, LexiconCheck, DEFAULT_CHECKS, TautologyCheck,
     unknown_word_rate, claim_overlap, claim_entity_overlap,
     tokenize, extract_claims,
 )
@@ -51,11 +51,13 @@ END_TOKEN = "<|end|>"
 # we saw in late-collapse runs).
 W = {"overlap": 0.5, "entity": 0.3, "presence": 0.2,
      "parseable": 0.2, "math": 1.0,
+     "coh_prompt": 0.25, "coh_inter": 0.25,
      "unk": 0.20, "grammar": 0.10, "repetition": 0.30, "foreign": 0.5,
-     "length": 0.30}
+     "length": 0.30, "tautology": 0.15}
 LENGTH_GRACE = 50         # words before length penalty kicks in
 LENGTH_FULL_PENALTY = 150  # words at which penalty saturates to 1.0
 MAX_GRAM = 8
+MAX_TAUT = 3              # tautology count at which the penalty saturates to 1
 REPETITION_NGRAM = 3
 
 # Esperanto alphabet (case-insensitive). Anything outside this set in an
@@ -230,6 +232,92 @@ def foreign_char_rate(text: str) -> float:
     return bad / len(words)
 
 
+# LaBSE coherence signals. `prompt_sent_min` is the worst cosine between
+# prompt and any output sentence (drift). `inter_sent_min` is the worst
+# pairwise cosine across output sentences (internal consistency). Both
+# are bounded ~[-1, 1]; higher = more coherent. GRPO normalizes within
+# each group so raw cosines are used directly — no rescaling needed.
+_LABSE = None
+_SENT_SPLIT_LABSE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _get_labse():
+    global _LABSE
+    if _LABSE is None:
+        from sentence_transformers import SentenceTransformer
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        _LABSE = SentenceTransformer("sentence-transformers/LaBSE", device=dev)
+        _LABSE.eval()
+    return _LABSE
+
+
+def _coherence_scores(prompts: list[str], completions: list[str]) -> list[dict]:
+    """Per-completion coherence scores, one LaBSE pass for the whole batch.
+    Returns prompt_sent (cosine of the FIRST output sentence to the prompt —
+    start-of-output anchoring) and inter_sent (mean pairwise cosine across
+    output sentences — sustained thread). NaN when the relevant count is too
+    low (0 sents → both NaN; 1 sent → inter NaN).
+
+    Dict keys retain `_min` suffix for backcompat with the callers below;
+    see block comment in the loop for rationale.
+    """
+    import numpy as np
+    labse = _get_labse()
+    sent_lists = [
+        [s.strip() for s in _SENT_SPLIT_LABSE.split(c.strip()) if s.strip()]
+        for c in completions
+    ]
+    flat_sents = [s for sl in sent_lists for s in sl]
+    spans, i = [], 0
+    for sl in sent_lists:
+        spans.append((i, i + len(sl)))
+        i += len(sl)
+    embs = labse.encode(
+        list(prompts) + flat_sents,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+    )
+    p_embs = embs[:len(prompts)]
+    s_embs = embs[len(prompts):]
+    out = []
+    for p_emb, (a, b) in zip(p_embs, spans):
+        if a == b:
+            out.append({"prompt_sent_min": float("nan"),
+                        "inter_sent_min":  float("nan")})
+            continue
+        ss = s_embs[a:b]
+        # prompt_sent: score ONLY the first sentence's cosine to the prompt.
+        # Anchoring is a start-of-output job; later sentences should hang
+        # off sentence 1 (that's inter_sent's domain), not keep pinging the
+        # prompt. Mean-to-prompt rewards pull the whole output into the
+        # prompt's embedding cluster, which over-fit past gold by step 230.
+        psm = float(ss[0] @ p_emb)
+        # inter_sent: `mean` rather than `min`. min concentrates pressure on
+        # the single worst pair and rewards homogeneous/paraphrasic outputs.
+        # mean rewards overall thread while leaving room for narrative
+        # variation (setup → complication → resolution). GRPO's group
+        # normalization handles outlier drift without a floor.
+        if len(ss) >= 2:
+            sim = ss @ ss.T
+            iu, ju = np.triu_indices(len(ss), k=1)
+            ism = float(sim[iu, ju].mean())
+        else:
+            ism = float("nan")
+        out.append({"prompt_sent_min": psm, "inter_sent_min": ism})
+    return out
+
+
+def _fill_nan_with_mean(values: list[float]) -> list[float]:
+    # NaN would propagate through group_mean/group_std and blow up the
+    # advantage for the whole group. Replace with the batch mean so the
+    # ill-defined completion lands at neutral advantage for this component.
+    import math
+    defined = [v for v in values if not math.isnan(v)]
+    fill = sum(defined) / len(defined) if defined else 0.0
+    return [fill if math.isnan(v) else v for v in values]
+
+
 def make_reward_components(max_gram=MAX_GRAM):
     """Return `(reward_funcs, reward_weights)` for GRPOTrainer.
 
@@ -238,6 +326,27 @@ def make_reward_components(max_gram=MAX_GRAM):
     `rewards/<fn_name>` so the breakdown shows up in the step logs.
     """
     verifier = Verifier(DEFAULT_CHECKS + [LexiconCheck(freq_threshold=3)])
+    # Separate verifier so tautology pressure is weighted independently of
+    # general grammar (different failure class — semantically-empty repetition
+    # rather than morphological error).
+    tautology_verifier = Verifier([TautologyCheck()])
+
+    # Eager-load LaBSE so import/VRAM issues surface before training starts.
+    _get_labse()
+    # Per-step cache so the two coherence rewards share one encoding pass.
+    # TRL calls every reward func on the same `completions` list object;
+    # identity keys let the second caller hit the cache from the first.
+    _coh_cache: dict = {}
+
+    def _coh_for(prompts, completions):
+        k = id(completions)
+        if k not in _coh_cache:
+            _coh_cache.clear()
+            _coh_cache[k] = _coherence_scores(
+                [demorph(p) for p in prompts],
+                [demorph(c) for c in completions],
+            )
+        return _coh_cache[k]
 
     def _texts(completions):
         return [demorph(c) for c in completions]
@@ -264,11 +373,23 @@ def make_reward_components(max_gram=MAX_GRAM):
     def reward_parseable(prompts, completions, **_):
         return [parseable_rate(t, verifier) for t in _texts(completions)]
 
+    def reward_prompt_sent(prompts, completions, **_):
+        scores = _coh_for(prompts, completions)
+        return _fill_nan_with_mean([s["prompt_sent_min"] for s in scores])
+
+    def reward_inter_sent(prompts, completions, **_):
+        scores = _coh_for(prompts, completions)
+        return _fill_nan_with_mean([s["inter_sent_min"] for s in scores])
+
     def reward_unk(prompts, completions, **_):
         return [unknown_word_rate(t, freq_threshold=3) for t in _texts(completions)]
 
     def reward_grammar(prompts, completions, **_):
         return [min(1.0, len(verifier.verify(t)) / max_gram)
+                for t in _texts(completions)]
+
+    def reward_tautology(prompts, completions, **_):
+        return [min(1.0, len(tautology_verifier.verify(t)) / MAX_TAUT)
                 for t in _texts(completions)]
 
     def reward_repetition(prompts, completions, **_):
@@ -287,12 +408,14 @@ def make_reward_components(max_gram=MAX_GRAM):
 
     funcs = [reward_overlap, reward_entity, reward_presence, reward_parseable,
              reward_math,
+             reward_prompt_sent, reward_inter_sent,
              reward_unk, reward_grammar, reward_repetition, reward_foreign,
-             reward_length]
+             reward_length, reward_tautology]
     weights = [W["overlap"], W["entity"], W["presence"], W["parseable"],
                W["math"],
+               W["coh_prompt"], W["coh_inter"],
                -W["unk"], -W["grammar"], -W["repetition"], -W["foreign"],
-               -W["length"]]
+               -W["length"], -W["tautology"]]
     return funcs, weights
 
 

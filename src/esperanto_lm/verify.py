@@ -93,6 +93,11 @@ CLOSED_CLASS: set[str] = {
 # in analyze_word; everything else stays generic 'Closed'.
 CLOSED_CLASS.update(get_correlatives())
 CLOSED_CLASS.update(get_other_words())
+# vortaro has 'pli'/'plej' but not their negated forms. Without the
+# override, 'malpli' (ends in -i) tokenizes as POS=INF and 'malplej'
+# as POS=Unknown, breaking claim extraction on comparison constructions
+# like "estus malpli ĉarma".
+CLOSED_CLASS.update({"malpli", "malplej"})
 # All correlative inflected forms (kio/kion, tia/tian/tiaj/tiajn, etc.)
 _CORR_BASES = get_correlatives()
 for base in _CORR_BASES:
@@ -750,6 +755,13 @@ SUBORDINATORS = {
 # Coordinating conjunctions
 COORDINATORS = {"kaj", "sed", "aŭ", "nek"}
 
+# Equative connectors. Dual role: when followed by a verb-less NP they're
+# clause-internal ("laboras kiel pentristino", "estis kiel libro", "pli X
+# ol Y"). When followed by a clause with its own finite verb they're real
+# subordinators ("montras, kiel X povas Y"). extract_clauses disambiguates
+# by looking ahead — no verb before the next boundary → don't split.
+EQUATIVES = {"kiel", "kvazaŭ", "ol"}
+
 # Subject pronouns (nominative). 'min/vin/...' (acc) excluded — never a subject.
 SUBJECT_PRONOUNS = {"mi", "vi", "li", "ŝi", "ĝi", "ni", "ili", "oni", "si"}
 
@@ -1007,6 +1019,23 @@ def extract_clauses(tokens: list[Token], nps: list[NP]) -> list[Clause]:
                 )
                 if not left_has_verb:
                     continue
+            # Equatives (kiel/kvazaŭ/ol) only split when followed by a clause
+            # with its own finite verb. Otherwise they're connecting a noun
+            # phrase: "estis kiel libro", "laboras kiel pentristino", "pli
+            # X ol Y" — keep the predicate/PP reachable for claim extraction.
+            if is_sub and tok.raw_lower in EQUATIVES:
+                has_verb_ahead = False
+                for k in range(i + 1, len(tokens)):
+                    t2 = tokens[k]
+                    if t2.has_comma_before or \
+                            getattr(t2, "has_hard_break_before", False) or \
+                            getattr(t2, "is_sentence_start", False):
+                        break
+                    if t2.pos == "V":
+                        has_verb_ahead = True
+                        break
+                if not has_verb_ahead:
+                    continue
             boundaries.append(i + 1 if is_coord else i)
             last_boundary_start = i + 1 if is_coord else i
             if is_sub:
@@ -1122,6 +1151,40 @@ def extract_clauses(tokens: list[Token], nps: list[NP]) -> list[Clause]:
                 if left_has_n and right_has_n:
                     this_is_compound = True
                     break
+
+        # Imperative subject synthesis: Esperanto drops the implicit "vi"
+        # with imperative verbs ("Ne forgesu aŭskulti..." = "[vi] ne
+        # forgesu..."). Without this, extract_claims bails on cl.subject=None
+        # and the sentence silently becomes unparseable. Only when there's
+        # genuinely no subject NP and the verb is imperative.
+        if subj_tok is None and verb is not None and verb.mood == "imp":
+            subj_tok = Token(
+                text="vi", idx=verb.idx, char_span=verb.char_span,
+                pos="Closed", case="nom", raw_lower="vi",
+            )
+
+        # Appositive elision: main verb with no subject in its own clause,
+        # preceded by a chain of verb-less clauses (comma-bracketed
+        # appositions like ", konata kiel X,"). Walk back across the chain
+        # to find the subject from the HEAD clause, not the apposition —
+        # "Maria, la plej bona kuracisto, laboras" should inherit Maria,
+        # not kuracisto. Keep the latest candidate as we walk, so the
+        # earliest-in-text clause wins. Same-sentence only.
+        if subj_tok is None and verb is not None and bi > 0 \
+                and s not in sentence_starts:
+            candidate: Token | None = None
+            j = bi - 1
+            while j >= 0:
+                cl_j = clauses[j]
+                if cl_j.verb is not None:
+                    break  # chain broken by a finite verb
+                if cl_j.subject is not None:
+                    candidate = cl_j.subject.head  # keep walking; earlier wins
+                if cl_j.start_idx in sentence_starts:
+                    break  # don't cross sentence boundary
+                j -= 1
+            if candidate is not None:
+                subj_tok = candidate
 
         # Wrap subject token in a virtual NP so callers always see an NP-shaped
         # subject. If subject is a noun NP head, find the matching NP; else
@@ -2213,6 +2276,31 @@ def extract_claims(text: str) -> list[Claim]:
     # what stem comparison already gives. The SUFFIX_RELATIONS table is
     # kept above for use by stem-aliased matching if needed.
 
+    # Intransitive fallback: any clause with subj+verb that produced no
+    # claim above gets a (subj, verb, ∅) claim. Covers bare intransitives
+    # ("Li mortis", "La birdoj kantas"), imperative-only predicates ("Vi
+    # venu morgaŭ"), and intransitive+kiel+NP that PP-relation missed.
+    # Without this, these sentences silently vanish from parseable-rate
+    # and bias the reward toward complex/transitive constructions.
+    # Empty obj — claim_entity_pairs skips these so QA-reward entity
+    # overlap isn't polluted by blank second arguments.
+    claimed = {c.clause_idx for c in out}
+    for ci, cl in enumerate(clauses):
+        if ci in claimed:
+            continue
+        if cl.verb is None or cl.subject is None:
+            continue
+        v = cl.verb
+        out.append(Claim(
+            subj=_np_text(cl.subject),
+            rel=v.root or v.raw_lower,
+            obj="",
+            source="intransitive",
+            span=(cl.subject.head.char_span[0], v.char_span[1]),
+            clause_idx=ci,
+            confidence=0.7,
+        ))
+
     return out
 
 
@@ -2265,6 +2353,8 @@ def claim_entity_pairs(text: str) -> set[tuple[str, str]]:
     """
     pairs = set()
     for c in extract_claims(text):
+        if not c.obj:  # intransitive fallback has empty obj — no pair to form
+            continue
         a = _normalize_x_system(c.subj)
         b = _normalize_x_system(c.obj)
         if a != b:
@@ -2294,6 +2384,44 @@ def claim_entity_overlap(generated: str, reference: str) -> float:
 # (death-place, birth-place, etc.) are uniquely-valued and need
 # domain-specific knowledge to identify. Removed to avoid feeding GRPO
 # a noisy negative signal.
+
+
+class TautologyCheck:
+    """Flags structurally-tautological phrases where the same content stem
+    appears on both sides of a tight syntactic frame — grammatical but
+    semantically empty. Catches patterns observed in GRPO output when the
+    coherence reward pushes toward surface repetition:
+      - `X de|da X`   — "la buŝo de lia buŝo" (the mouth of his mouth)
+      - `X kaj|aŭ X`  — "la domo kaj la domo" (the house and the house)
+    NOT in DEFAULT_CHECKS — consumed by a dedicated reward so tautology
+    pressure can be tuned independently of general grammar diagnostics.
+    """
+    name = "tautology"
+
+    def check(self, tokens, nps):
+        out = []
+        np_end: dict[int, NP] = {np.end_idx: np for np in nps}
+        np_start: dict[int, NP] = {np.start_idx: np for np in nps}
+        for i, tok in enumerate(tokens):
+            if tok.raw_lower not in ("de", "da", "kaj", "aŭ"):
+                continue
+            left = np_end.get(i - 1)
+            right = np_start.get(i + 1)
+            if left is None or right is None:
+                continue
+            lr = left.head.root
+            rr = right.head.root
+            if not lr or not rr or lr != rr:
+                continue
+            out.append(Diagnostic(
+                check="tautology",
+                level="warning",
+                message=(f"tautological '{left.head.raw_lower} {tok.raw_lower} "
+                         f"{right.head.raw_lower}': same stem {lr!r} both sides"),
+                token_idx=tok.idx,
+                span=(left.head.char_span[0], right.head.char_span[1]),
+            ))
+        return out
 
 
 # ---- Verifier pipeline ------------------------------------------------

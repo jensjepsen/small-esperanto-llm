@@ -103,7 +103,7 @@ def sample_continuations(model, tokenizer, device, prompt: str, *,
                          repetition_penalty: float) -> list[str]:
     """Sample n independent continuations for a prompt."""
     prompt_pp = _morpheme_preprocess(prompt)
-    inputs = tokenizer(prompt_pp, return_tensors="pt").to(device)
+    inputs = tokenizer(prompt_pp, return_tensors="pt", return_token_type_ids=False).to(device)
     n_prompt = inputs["input_ids"].shape[1]
     outputs: list[str] = []
     for _ in range(n):
