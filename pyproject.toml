@@ -15,6 +15,7 @@ dependencies = [
     "rich>=13.0",
     "lark>=1.1",
     "wandb>=0.26.0",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
