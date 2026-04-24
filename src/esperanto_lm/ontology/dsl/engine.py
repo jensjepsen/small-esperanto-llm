@@ -316,7 +316,12 @@ def _run_causal_phase(
             ctx = MatchContext(
                 trace=trace, lexicon=lexicon, derived=derived,
                 focus_event=ev)
-            for bindings in enumerate_bindings(r.when, r.given, ctx):
+            # Materialize bindings before applying effects — effects
+            # can mutate `trace.entities`/`trace.relations` (e.g.
+            # create_entity, add_relation), which would crash the
+            # still-running enumeration generator with "dictionary
+            # changed size during iteration".
+            for bindings in list(enumerate_bindings(r.when, r.given, ctx)):
                 key = (r.name, ev.id, frozenset(bindings.items()))
                 if key in fired_bindings:
                     continue

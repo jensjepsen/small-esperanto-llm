@@ -44,3 +44,6 @@
 {"lemma": "papago", "entity_type": "animal", "properties": {}}
 {"lemma": "vitropecetoj", "entity_type": "inanimate", "properties": {"hazard": ["sharp"], "fragility": ["sturdy"], "state_of_matter": ["solid"]}}
 {"lemma": "flako", "entity_type": "substance", "properties": {"hazard": ["slippery"], "state_of_matter": ["liquid"], "presence": ["present"]}}
+{"lemma": "pluvo", "entity_type": "natural_object", "properties": {"state_of_matter": ["liquid"]}}
+{"lemma": "mantelo", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["fabric"]}}
+{"lemma": "ombrelo", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["fabric"]}}

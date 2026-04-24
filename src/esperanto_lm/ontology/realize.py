@@ -236,6 +236,16 @@ def render_event(
     elif "theme" in role_names and event.roles.get("theme"):
         subject_id = event.roles["theme"]
         subject_role_name = "theme"
+    elif "location" in role_names and event.roles.get("location"):
+        # Weather-style verbs (pluvi, neĝi) have only a location and no
+        # logical subject — Esperanto renders impersonally with the
+        # location fronted: "En la parko pluvas."
+        loc = trace.entity(event.roles["location"])
+        if loc is None:
+            return None
+        loc_form = name_for(loc, mentioned, **name_kw)
+        mentioned.add(loc.id)
+        return f"En {loc_form} {inflect(event.action, tense)}."
     else:
         return None
 

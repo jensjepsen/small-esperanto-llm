@@ -23,3 +23,4 @@
 {"lemma": "kapti", "transitivity": "transitive", "aspect": "achievement", "roles": [{"name": "agent", "type": "animate", "properties": {}}, {"name": "theme", "type": "physical", "properties": {}}], "effects": [], "derives_instrument": false}
 {"lemma": "kuri", "transitivity": "intransitive", "aspect": "activity", "roles": [{"name": "agent", "type": "animate", "properties": {}}], "effects": [], "derives_instrument": false}
 {"lemma": "veturi", "transitivity": "intransitive", "aspect": "activity", "roles": [{"name": "agent", "type": "animate", "properties": {}}, {"name": "destination", "type": "location", "properties": {}}, {"name": "instrument", "type": "artifact", "properties": {}}], "effects": [], "derives_instrument": false}
+{"lemma": "pluvi", "transitivity": "intransitive", "aspect": "activity", "roles": [{"name": "location", "type": "location", "properties": {}}], "effects": [], "derives_instrument": false}

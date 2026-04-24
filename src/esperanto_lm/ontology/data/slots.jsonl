@@ -17,3 +17,4 @@
 {"name": "transforms_on_spill", "vocabulary": null, "applies_to": ["inanimate"], "scalar": true}
 {"name": "flammability", "vocabulary": ["flammable", "inflammable"], "applies_to": ["inanimate"], "scalar": true}
 {"name": "made_of", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
+{"name": "wetness", "vocabulary": ["dry", "wet"], "applies_to": ["physical"], "scalar": true}

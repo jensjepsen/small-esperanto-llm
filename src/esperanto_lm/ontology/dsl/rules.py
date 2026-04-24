@@ -235,6 +235,56 @@ kapti_takes_possession_from_owner = rule(
 )
 
 
+# ---------- causal: doni_transfers_ownership ----------------------------
+#
+# `doni` (give) is preni's mirror: the agent relinquishes `havi` and
+# the recipient receives. Same relation-swap shape. Requires the
+# agent to currently own the theme (you can't give what you don't
+# have).
+
+doni_transfers_ownership = rule(
+    when=event("doni",
+               agent=bind(DA := var("A")),
+               theme=bind(DT := var("T")),
+               recipient=bind(DR := var("R"))),
+    given=[
+        rel("havi", owner=DA, theme=DT),
+    ],
+    then=[
+        remove_relation("havi", DA, DT),
+        add_relation("havi", DR, DT),
+    ],
+    name="doni_transfers_ownership",
+)
+
+
+# ---------- causal: meti_places_theme -----------------------------------
+#
+# `meti` (put) places the theme into/onto a location. The preposition
+# depends on the location's type: things go `en` rooms and `sur`
+# artifacts (tables, shelves). Two rules with mutually-exclusive type
+# guards keep the logic declarative — either the location is a
+# `type="location"` match or it isn't.
+
+meti_places_in_location = rule(
+    when=event("meti",
+               agent=bind(MPA := var("A")),
+               theme=bind(MPT := var("T")),
+               location=entity(type="location") & bind(MPL := var("L"))),
+    then=add_relation("en", MPT, MPL),
+    name="meti_places_in_location",
+)
+
+meti_places_on_surface = rule(
+    when=event("meti",
+               agent=bind(MSA := var("A")),
+               theme=bind(MST := var("T")),
+               location=~entity(type="location") & bind(MSL := var("L"))),
+    then=add_relation("sur", MST, MSL),
+    name="meti_places_on_surface",
+)
+
+
 # ---------- causal: iri_moves_agent -------------------------------------
 #
 # `iri` (go) moves the agent from wherever they currently `en`-reside
@@ -304,6 +354,42 @@ fire_spreads_to_adjacent_flammables = rule(
 )
 
 
+# ---------- causal: rain rules ------------------------------------------
+#
+# `pluvi` is a weather event keyed by location. It wets everything in
+# the rained-on location (property change) AND spawns a flako puddle
+# so the existing slip machinery has something to trigger on. Two
+# rules on the same `when` — one per cascade branch — keep each
+# effect self-contained.
+
+rain_wets_contents = rule(
+    when=event("pluvi", location=bind(RL := var("L"))),
+    given=[
+        rel("en", contained=bind(RX := var("X")), container=RL),
+        # Anyone carrying an umbrella stays dry. `has_suffix` matches
+        # the concept's lemma so this is a single concept-level guard
+        # rather than a whole new slot.
+        ~rel("havi", owner=RX, theme=entity(has_suffix="ombrelo")),
+    ],
+    then=emit("_wet", theme=RX).changing(RX, "wetness", "wet"),
+    name="rain_wets_contents",
+)
+
+rain_creates_puddle = rule(
+    when=event("pluvi", location=bind(RPL := var("L"))),
+    given=[
+        # Outdoor places only — indoor rain would need a roof leak.
+        entity(indoor_outdoor="outdoor") & bind(RPL),
+    ],
+    then=[
+        create_entity(concept="flako", as_var=(RPF := var("F")), from_=RPL),
+        emit("aperi", theme=RPF),
+        add_relation("en", RPF, RPL),
+    ],
+    name="rain_creates_puddle",
+)
+
+
 # ---------- causal: person_slips_on_wet (Phase 3, updated) -------------
 #
 # Wet surfaces cause slips; sharp shards do not (stepping on broken
@@ -334,6 +420,32 @@ person_slips_on_wet = rule(
     ],
     then=emit("fali", theme=PWH),
     name="person_slips_on_wet",
+)
+
+
+# ---------- causal: person_slips_on_rain --------------------------------
+#
+# Sibling of person_slips_on_wet for the rain path. The puddle was
+# created by pluvi (not fali/rompiĝi), so the cause's "theme" walk
+# doesn't apply — pluvi carries its location directly. Persons en
+# that location slip on the puddle.
+
+person_slips_on_rain = rule(
+    when=event("aperi",
+               theme=entity(hazard="slippery") & bind(HR := var("H"))),
+    given=[
+        caused_by("pluvi", location=bind(LR := var("L"))),
+        # Only wet persons slip — the umbrella-protected ones stay dry
+        # per rain_wets_contents, so this guard filters them out
+        # automatically.
+        rel("en",
+            contained=(entity(type="person", wetness="wet")
+                       & bind(PR := var("P"))),
+            container=LR),
+        ~past_event("fali", theme=PR),
+    ],
+    then=emit("fali", theme=PR),
+    name="person_slips_on_rain",
 )
 
 
@@ -463,9 +575,15 @@ DEFAULT_DSL_RULES: list[Rule] = [
     container_falls_contents_fall,
     broken_container_releases_contents,
     person_slips_on_wet,
+    person_slips_on_rain,
+    rain_wets_contents,
+    rain_creates_puddle,
     carried_thing_falls_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
     preni_transfers_ownership,
+    doni_transfers_ownership,
+    meti_places_in_location,
+    meti_places_on_surface,
     iri_moves_agent,
     veturi_moves_agent,
     ĵeti_releases_possession,
