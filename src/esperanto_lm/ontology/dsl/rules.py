@@ -192,7 +192,7 @@ preni_transfers_ownership = rule(
 fire_spreads_to_adjacent_flammables = rule(
     when=event("bruli", theme=bind(B := var("B"))),
     given=[
-        closure({"en", "sur"}, from_=B,
+        closure({"en", "sur", "apud"}, from_=B,
                 to_=(~entity(type="location")
                      & entity(flammability="flammable")
                      & bind(N := var("N"))),
