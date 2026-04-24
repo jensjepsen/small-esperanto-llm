@@ -166,38 +166,52 @@ def _attribute_relation_changes(
     if not added and not removed:
         return {}
 
+    # Actions whose semantics already communicate ownership transfer
+    # (doni X al Y implies Y now has X; kapti implies the agent now
+    # has the theme; ĵeti implies the agent no longer does).
+    # Narrating "Maria ne plu havas la libron" after "Maria donas la
+    # libron al Petro" is redundant — the realizer suppresses both
+    # sides of the transfer for these verbs.
+    TRANSFER_VERBS = {"doni", "preni", "ĵeti", "kapti"}
+    MOVEMENT_VERBS = {"iri", "veturi"}
+    PLACEMENT_VERBS = {"meti"}
+    candidate_actions = TRANSFER_VERBS | MOVEMENT_VERBS | PLACEMENT_VERBS
+
     out: dict[str, list[Message]] = {}
     unattributed_adds = set(added)
     unattributed_removes = set(removed)
 
     for ev in trace.events:
-        # Candidate actions for ownership changes.
-        if ev.action in {"doni", "preni", "ĵeti", "kapti", "iri", "veturi",
-                         "meti"}:
-            ev_referents = {v for v in ev.roles.values()
-                            if isinstance(v, str)}
-            claims_rem: list = []
-            claims_add: list = []
-            for (rel, args) in list(unattributed_removes):
-                if set(args) & ev_referents:
-                    claims_rem.append((rel, args))
-            for (rel, args) in list(unattributed_adds):
-                if set(args) & ev_referents:
-                    claims_add.append((rel, args))
-            for (rel, args) in claims_rem:
-                unattributed_removes.discard((rel, args))
+        if ev.action not in candidate_actions:
+            continue
+        ev_referents = {v for v in ev.roles.values()
+                        if isinstance(v, str)}
+        claims_rem: list = []
+        claims_add: list = []
+        for (rel, args) in list(unattributed_removes):
+            if set(args) & ev_referents:
+                claims_rem.append((rel, args))
+        for (rel, args) in list(unattributed_adds):
+            if set(args) & ev_referents:
+                claims_add.append((rel, args))
+
+        narrate_ownership = ev.action not in TRANSFER_VERBS
+        for (rel, args) in claims_rem:
+            unattributed_removes.discard((rel, args))
+            if rel == "havi" and not narrate_ownership:
+                continue
+            out.setdefault(ev.id, []).append(
+                RelationRemovedMessage(
+                    relation=rel, args=args, cause_event_id=ev.id))
+        for (rel, args) in claims_add:
+            unattributed_adds.discard((rel, args))
+            # Additions only narrated for havi (location adds are
+            # implied by `al` in the move verb) AND only when the
+            # triggering verb doesn't already say "X now has Y".
+            if rel == "havi" and narrate_ownership:
                 out.setdefault(ev.id, []).append(
-                    RelationRemovedMessage(
+                    RelationAddedMessage(
                         relation=rel, args=args, cause_event_id=ev.id))
-            for (rel, args) in claims_add:
-                unattributed_adds.discard((rel, args))
-                # RelationAddedMessage is only emitted for havi — the
-                # location-changing verbs already narrate destination
-                # via `al`, making addition narration redundant.
-                if rel == "havi":
-                    out.setdefault(ev.id, []).append(
-                        RelationAddedMessage(
-                            relation=rel, args=args, cause_event_id=ev.id))
     return out
 
 
@@ -260,20 +274,21 @@ def _use_instrument_skip_set(
 def aggregate_same_subject(
     messages: list[Message], lexicon: Lexicon,
 ) -> list[Message]:
-    """Combine adjacent messages that share a grammatical subject
-    and fall on the same causal chain into a `CoordinatedMessage`.
+    """Combine adjacent EventMessages that share a grammatical subject
+    into a `CoordinatedMessage`.
 
-    Example: 'Petro falas. Petro rompiĝas la glason.' (same subject)
-    on the same cause-chain collapses to 'Petro falas kaj rompas la
-    glason.'
+    The causal-link requirement has been dropped — adjacent same-
+    subject events coordinate naturally in prose even without a
+    direct cause relation: "La hundo kuras kaj kaptas la pilkon"
+    reads better than two sentences regardless of whether the run
+    causes the catch.
 
-    Scope for this iteration:
+    Scope:
       - Only combines EventMessage with EventMessage.
       - Subjects must be identical (resolved from the verb's role
         structure — agent if transitive, theme if intransitive).
-      - Second message must have cause_event_id pointing to an event
-        in the first's chain (including the first message's event).
-      - A run of ≥2 such messages becomes one CoordinatedMessage.
+      - Subject must be resolvable (impersonals like `pluvi` never
+        aggregate — nothing to share between them).
 
     State-change messages (RelationRemoved, DestructionMessage etc.)
     are intentionally not aggregated yet — they're rendered as follow-
@@ -293,18 +308,15 @@ def aggregate_same_subject(
 
         run: list[EventMessage] = [m]
         base_subject = _event_subject(m.event, lexicon)
+        if base_subject is None:
+            out.append(m)
+            i += 1
+            continue
+
         j = i + 1
         while j < len(messages) and isinstance(messages[j], EventMessage):
             nxt: EventMessage = messages[j]
             if _event_subject(nxt.event, lexicon) != base_subject:
-                break
-            if base_subject is None:
-                break
-            # Causal link: the next event must be caused by something
-            # in the growing run (transitively). Conservative: require
-            # direct causation by one of the run's events.
-            run_ids = {r.event.id for r in run}
-            if not any(cid in run_ids for cid in nxt.event.caused_by):
                 break
             run.append(nxt)
             j += 1

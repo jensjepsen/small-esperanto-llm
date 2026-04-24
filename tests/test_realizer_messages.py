@@ -102,9 +102,10 @@ def test_single_event_not_wrapped_as_coordinated(lex):
 
 # ==================== relation-change narration ====================
 
-def test_doni_narrates_previous_owner_lost(lex):
-    """After Maria gives the book to Petro, we want a sentence saying
-    she no longer has it."""
+def test_doni_suppresses_redundant_ownership_narration(lex):
+    """`doni X al Y` already conveys the transfer — don't add
+    "Maria ne plu havas la libron. Nun Petro havas la libron." The
+    planner suppresses both sides for transfer verbs."""
     t = Trace()
     t.add_entity("persono", lex, entity_id="maria")
     t.add_entity("persono", lex, entity_id="petro")
@@ -117,11 +118,12 @@ def test_doni_narrates_previous_owner_lost(lex):
 
     messages = plan_messages(t, lex, setup_relations=setup)
     removed = [m for m in messages if isinstance(m, RelationRemovedMessage)]
-    assert any(m.relation == "havi" and m.args == ("maria", "libro")
-               for m in removed), [type(m).__name__ for m in messages]
+    assert not removed, "transfer verbs shouldn't emit ownership-loss"
 
     prose = realize_trace(t, lex, setup_relations=setup)
-    assert "ne plu hav" in prose, prose
+    assert "ne plu" not in prose, prose
+    # Main event still renders; tense depends on rng defaulting.
+    assert "donis" in prose or "donas" in prose
 
 
 def test_iri_does_not_narrate_en_removal(lex):
