@@ -272,6 +272,14 @@ def render_event(
             parts.append(f"{prep} {name_for(loc, mentioned, **name_kw)}")
             mentioned.add(loc.id)
 
+    if event.roles.get("destination"):
+        dest = trace.entity(event.roles["destination"])
+        if dest is not None:
+            # Movement verbs (iri, veni) use `al` for the goal,
+            # regardless of whether the goal is a location or an object.
+            parts.append(f"al {name_for(dest, mentioned, **name_kw)}")
+            mentioned.add(dest.id)
+
     return " ".join(parts) + "."
 
 

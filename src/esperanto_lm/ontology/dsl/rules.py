@@ -181,6 +181,29 @@ preni_transfers_ownership = rule(
 )
 
 
+# ---------- causal: iri_moves_agent -------------------------------------
+#
+# `iri` (go) moves the agent from wherever they currently `en`-reside
+# to the named destination. Mirrors `preni`'s structure — swap one
+# relation for another. Requires a current location; if the agent
+# isn't `en` anywhere, the rule doesn't fire (a sibling rule could
+# handle that case if needed).
+
+iri_moves_agent = rule(
+    when=event("iri",
+               agent=bind(IA := var("A")),
+               destination=bind(ID := var("D"))),
+    given=[
+        rel("en", contained=IA, container=bind(IO := var("O"))),
+    ],
+    then=[
+        remove_relation("en", IA, IO),
+        add_relation("en", IA, ID),
+    ],
+    name="iri_moves_agent",
+)
+
+
 # ---------- causal: fire_spreads_to_adjacent_flammables (Phase 3) -------
 #
 # Closure with max_steps=1 yields immediate neighbors only — the
@@ -366,6 +389,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     carried_thing_falls_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
     preni_transfers_ownership,
+    iri_moves_agent,
     # Previously factory-produced; now plain values after Phase 2.
     broken_fragile_creates_shards,
     wet_liquid_container_tips,
