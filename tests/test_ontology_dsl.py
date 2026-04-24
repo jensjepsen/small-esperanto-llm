@@ -106,11 +106,14 @@ def _build_lex() -> Lexicon:
     }
     relations = {
         "en": Relation(name="en", arity=2,
-                       arg_types=["physical", "physical"]),
+                       arg_types=["physical", "physical"],
+                       arg_names=["contained", "container"]),
         "sur": Relation(name="sur", arity=2,
-                        arg_types=["physical", "physical"]),
+                        arg_types=["physical", "physical"],
+                        arg_names=["contained", "container"]),
         "havi": Relation(name="havi", arity=2,
-                         arg_types=["animate", "physical"]),
+                         arg_types=["animate", "physical"],
+                         arg_names=["owner", "theme"]),
     }
     return Lexicon(
         types=types, slots=slots, concepts=concepts,

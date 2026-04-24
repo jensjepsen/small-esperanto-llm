@@ -228,38 +228,23 @@ class RelPattern(Pattern):
         return out
 
     def search(self, ctx, bindings):
-        # Relation arg names come from the declared Relation schema.
+        # Arg names come straight from the Relation schema — the
+        # lexicon is the single source of truth.
         rel_def = ctx.lexicon.relations.get(self.relation)
         if rel_def is None:
             return
-        arg_names = _relation_arg_names(rel_def, self.relation)
         for r in ctx.trace.relations:
             if r.relation != self.relation:
                 continue
-            if len(r.args) != len(arg_names):
+            if len(r.args) != len(rel_def.arg_names):
                 continue
-            # Apply each arg pattern in turn.
             yield from _apply_args(
-                self.arg_patterns, arg_names, r.args, ctx, bindings)
+                self.arg_patterns, rel_def.arg_names, r.args, ctx, bindings)
 
     def apply_to_value(self, value, ctx, bindings):
         # Rel is a relational existence check — no inherent "value"
         # position. Treat as search with whatever bindings are in scope.
         yield from self.search(ctx, bindings)
-
-
-def _relation_arg_names(rel_def, name: str) -> list[str]:
-    """Positional arg names for a relation. Uses the Relation schema's
-    `arg_types`-derived role names when available, with canonical
-    fallbacks for the built-in relations."""
-    # Canonical fallbacks — the schema stores arg_types but not arg
-    # names, so we hard-code the standard names.
-    canonical = {
-        "en":   ["contained", "container"],
-        "sur":  ["contained", "container"],
-        "havi": ["owner", "theme"],
-    }
-    return canonical.get(name, [f"arg{i}" for i in range(len(rel_def.arg_types))])
 
 
 def _apply_args(arg_patterns, arg_names, arg_values, ctx, bindings):

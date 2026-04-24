@@ -49,8 +49,10 @@ def _write_lexicon(tmp: Path, *, containment: list[dict] | None = None,
         concepts.extend(extra_concepts)
     relations = [
         {"name": "en", "arity": 2, "arg_types": ["physical", "physical"],
+         "arg_names": ["contained", "container"],
          "inverse": None, "symmetric": False},
         {"name": "sur", "arity": 2, "arg_types": ["physical", "physical"],
+         "arg_names": ["contained", "container"],
          "inverse": None, "symmetric": False},
     ]
     (tmp / "types.json").write_text(json.dumps(types))

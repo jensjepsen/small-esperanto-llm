@@ -58,10 +58,17 @@ class Quality(_Frozen):
 
 
 class Relation(_Frozen):
-    """Preposition / relational-verb schema. Instances live in traces."""
+    """Preposition / relational-verb schema. Instances live in traces.
+
+    `arg_names` labels each positional argument ("contained"/"container"
+    for `en`/`sur`, "owner"/"theme" for `havi`, etc.) so rule-DSL sites
+    can write `rel("en", container=X, contained=Y)` instead of relying
+    on positional order. Length must equal `arity`.
+    """
     name: str
     arity: int
     arg_types: list[str]
+    arg_names: list[str]
     inverse: Optional[str] = None
     symmetric: bool = False
 

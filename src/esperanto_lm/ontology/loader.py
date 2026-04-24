@@ -254,6 +254,14 @@ def load_lexicon(
             raise ValueError(
                 f"relation {r.name!r}: arity={r.arity} but "
                 f"arg_types has {len(r.arg_types)} entries")
+        if len(r.arg_names) != r.arity:
+            raise ValueError(
+                f"relation {r.name!r}: arity={r.arity} but "
+                f"arg_names has {len(r.arg_names)} entries")
+        if len(set(r.arg_names)) != len(r.arg_names):
+            raise ValueError(
+                f"relation {r.name!r}: arg_names must be unique, "
+                f"got {r.arg_names}")
         for t in r.arg_types:
             if not spine.known(t):
                 raise ValueError(
