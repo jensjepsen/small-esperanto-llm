@@ -93,7 +93,7 @@ def _attribute_rule(event, trace) -> str:
                 theme = trace.entities.get(event.roles.get("theme", ""))
                 if theme is not None and theme.entity_type != "person":
                     return "container_falls_contents_fall"
-                return "carried_fragile_falls_when_carrier_falls"
+                return "carried_thing_falls_when_carrier_falls"
             if cause.action == "rompiĝi":
                 return "broken_container_releases_contents"
         return "fali:unknown"

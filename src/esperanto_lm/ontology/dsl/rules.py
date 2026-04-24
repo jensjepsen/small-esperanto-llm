@@ -122,24 +122,22 @@ broken_container_releases_contents = rule(
 )
 
 
-# ---------- causal: carried_fragile_falls_when_carrier_falls (Phase 3) --
+# ---------- causal: carried_thing_falls_when_carrier_falls (Phase 3) ----
 #
-# When a person falls and they `havi` an intact fragile thing, the
-# fragile thing falls too. `entity(integrity="intact")` excludes
-# already-broken items.
+# When a person falls, everything they `havi` also falls. Fragility
+# isn't checked here — a dropped book hits the floor too. Breakage
+# is a separate consequence: `fragile_falls_breaks` fires on the
+# resulting fali if the carried thing happens to be fragile.
 
-carried_fragile_falls_when_carrier_falls = rule(
+carried_thing_falls_when_carrier_falls = rule(
     when=event("fali",
                theme=entity(type="person") & bind(P := var("P"))),
     given=[
-        rel("havi",
-            owner=P,
-            theme=entity(fragility="fragile", integrity="intact")
-                  & bind(F := var("F"))),
+        rel("havi", owner=P, theme=bind(F := var("F"))),
         ~past_event("fali", theme=F),
     ],
     then=emit("fali", theme=F),
-    name="carried_fragile_falls_when_carrier_falls",
+    name="carried_thing_falls_when_carrier_falls",
 )
 
 
@@ -298,7 +296,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     container_falls_contents_fall,
     broken_container_releases_contents,
     person_slips_on_wet,
-    carried_fragile_falls_when_carrier_falls,
+    carried_thing_falls_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
     # Previously factory-produced; now plain values after Phase 2.
     broken_fragile_creates_shards,

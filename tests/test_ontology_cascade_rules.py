@@ -4,7 +4,7 @@ Rules exercised:
   broken_fragile_creates_shards  — rompiĝi(glaso) → aperi(vitropecetoj)
   wet_liquid_container_tips      — fali(akvo)     → aperi(flako)
   person_walks_on_hazard_falls   — aperi(hazard)  → fali(person)
-  carried_fragile_falls_when_carrier_falls
+  carried_thing_falls_when_carrier_falls
                                  — fali(person)   → fali(carried fragile)
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ from esperanto_lm.ontology.dsl.rules import (
     DEFAULT_DSL_DERIVATIONS,
     DEFAULT_DSL_RULES,
     broken_fragile_creates_shards,
-    carried_fragile_falls_when_carrier_falls,
+    carried_thing_falls_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
     make_use_instrument_rules,
     person_slips_on_wet,
@@ -164,7 +164,7 @@ def test_person_in_different_location_does_not_slip(lex):
     assert not petro_falls
 
 
-# ---- carried_fragile_falls_when_carrier_falls ----------------------------
+# ---- carried_thing_falls_when_carrier_falls ----------------------------
 
 def test_carrier_falls_then_carried_fragile_falls(lex):
     t = Trace()
@@ -174,23 +174,51 @@ def test_carrier_falls_then_carried_fragile_falls(lex):
     # Hand-craft a fali on petro (normally this would come from a hazard).
     t.events.append(make_event("fali", roles={"theme": "petro"}))
 
-    run_dsl(t, [carried_fragile_falls_when_carrier_falls], [], lex)
+    run_dsl(t, [carried_thing_falls_when_carrier_falls], [], lex)
 
     botelo_falls = [e for e in t.events
                     if e.action == "fali" and e.roles.get("theme") == "botelo"]
     assert len(botelo_falls) == 1
 
 
-def test_carrier_falls_sturdy_object_does_not_fall(lex):
+def test_carrier_falls_sturdy_object_also_falls_but_does_not_break(lex):
+    """Sturdy carried things drop when the carrier falls — they just
+    don't break afterwards. The drop and the break are separate
+    rules; composing `carried_thing_falls_when_carrier_falls` and
+    `fragile_falls_breaks` produces the right outcome for both
+    fragile and sturdy carried items."""
     t = Trace()
     t.add_entity("persono", lex, entity_id="petro")
-    t.add_entity("libro", lex, entity_id="libro")   # sturdy
+    t.add_entity("libro", lex, entity_id="libro")       # sturdy
     t.assert_relation("havi", ("petro", "libro"), lex)
     t.events.append(make_event("fali", roles={"theme": "petro"}))
-    run_dsl(t, [carried_fragile_falls_when_carrier_falls], [], lex)
+    run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
+
     libro_falls = [e for e in t.events
                    if e.action == "fali" and e.roles.get("theme") == "libro"]
-    assert not libro_falls
+    assert libro_falls, "sturdy libro should still fall when dropped"
+    libro_breaks = [e for e in t.events
+                    if e.action == "rompiĝi" and e.roles.get("theme") == "libro"]
+    assert not libro_breaks, "sturdy libro should not break from a fall"
+
+
+def test_carrier_falls_fragile_carried_thing_falls_and_breaks(lex):
+    """Composition: fragile bottle drops AND breaks when its carrier
+    falls. Uses the full ruleset so `fragile_falls_breaks` runs on
+    the synthesized fali."""
+    t = Trace()
+    t.add_entity("persono", lex, entity_id="petro")
+    t.add_entity("botelo", lex, entity_id="botelo")
+    t.assert_relation("havi", ("petro", "botelo"), lex)
+    t.events.append(make_event("fali", roles={"theme": "petro"}))
+    run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
+
+    botelo_falls = [e for e in t.events
+                    if e.action == "fali" and e.roles.get("theme") == "botelo"]
+    assert botelo_falls
+    botelo_breaks = [e for e in t.events
+                     if e.action == "rompiĝi" and e.roles.get("theme") == "botelo"]
+    assert botelo_breaks, "fragile botelo should break after dropping"
 
 
 # ---- end-to-end depth ----------------------------------------------------
