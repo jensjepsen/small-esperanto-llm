@@ -73,6 +73,10 @@ RELATION_TEMPLATES = {
         lambda a, b_acc, t: f"{a} hav{t} {b_acc}.",
         lambda a, b_acc, t: f"{a} ten{t} {b_acc}.",
     ],
+    "apud": [
+        lambda a, b, t: f"{a} est{t} apud {b}.",
+        lambda a, b, t: f"Apud {b} est{t} {a}.",
+    ],
 }
 
 CONNECTIVES = ["Tial", "Sekve", "Pro tio", ""]   # "" = juxtaposition
@@ -200,7 +204,7 @@ def render_relation(
         b_form = to_accusative(name_for(b, mentioned, **name_kw))
         template = _pick(rng, RELATION_TEMPLATES["havi"])
         sent = template(a_form, b_form, tense)
-    elif rel.relation in ("en", "sur"):
+    elif rel.relation in ("en", "sur", "apud"):
         b_form = name_for(b, mentioned, **name_kw)
         template = _pick(rng, RELATION_TEMPLATES[rel.relation])
         sent = template(a_form, b_form, tense)
