@@ -11,9 +11,9 @@ from __future__ import annotations
 from ..loader import Lexicon
 from .engine import Rule
 from . import (
-    add_relation, bind, caused_by, closure, create_entity, derive, emit,
-    entity, event, has_concept_field, past_event, property, rel,
-    remove_relation, rule, var,
+    add_relation, bind, caused_by, closure, create_entity, derive,
+    destroy_entity, emit, entity, event, has_concept_field, past_event,
+    property, rel, remove_relation, rule, var,
 )
 
 
@@ -40,6 +40,20 @@ hungry_eats_sated = rule(
                agent=entity(hunger="hungry") & bind(A := var("A"))),
     then=emit("satiĝi", theme=A).changing(A, "hunger", "sated"),
     name="hungry_eats_sated",
+)
+
+
+# ---------- causal: manĝi_destroys_theme --------------------------------
+#
+# Eating destroys the food. The intrinsic effect on manĝi already
+# records presence=consumed in property_changes; this rule closes the
+# loop at the lifecycle level by marking the theme as destroyed from
+# that event onward. `entities_at(t)` stops returning the eaten thing.
+
+manĝi_destroys_theme = rule(
+    when=event("manĝi", theme=bind(TE := var("T"))),
+    then=destroy_entity(TE),
+    name="manĝi_destroys_theme",
 )
 
 
@@ -241,10 +255,36 @@ flammability_from_material = derive(
 )
 
 
+# ---------- derivation chain: animals → meat → edible -------------------
+#
+# "All animals are made of meat." "Things made of meat are edible."
+# Two derivations that chain within a single cycle of the engine's
+# derivation phase (fixed point). An entity of type=animal thus gains
+# edibility=edible transitively — the manĝi role constraint
+# `theme: edibility=edible` then matches animal themes naturally,
+# via the effective_property read that sees the derived layer.
+
+animal_is_made_of_meat = derive(
+    when=entity(type="animal") & bind(T_a := var("T")),
+    implies=property(T_a, "made_of", "meat"),
+    name="animal_is_made_of_meat",
+)
+
+meat_is_edible = derive(
+    when=entity(made_of="meat") & bind(T_m := var("T")),
+    implies=property(T_m, "edibility", "edible"),
+    name="meat_is_edible",
+)
+
+
 # Convenience bundle: every derivation the library ships with.
 # Callers assemble explicitly (as they do for rules) — no hidden
 # auto-registration. Pass to `run_dsl(..., derivations=...)`.
-DEFAULT_DSL_DERIVATIONS = [flammability_from_material]
+DEFAULT_DSL_DERIVATIONS = [
+    flammability_from_material,
+    animal_is_made_of_meat,
+    meat_is_edible,
+]
 
 
 # ---------- factory: use_instrument (Phase 4) ---------------------------
@@ -319,6 +359,7 @@ def make_use_instrument_rules(lex: Lexicon) -> list[Rule]:
 DEFAULT_DSL_RULES: list[Rule] = [
     fragile_falls_breaks,
     hungry_eats_sated,
+    manĝi_destroys_theme,
     container_falls_contents_fall,
     broken_container_releases_contents,
     person_slips_on_wet,

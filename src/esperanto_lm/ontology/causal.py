@@ -270,8 +270,14 @@ class Trace:
         Walks events[0..t-1] backward; returns the value from the most
         recent `property_changes[(entity_id, prop)]` entry. If no event
         in that range changed the property, falls back to the entity's
-        `initial_properties[prop]`. Returns None if the entity doesn't
-        exist at t or the property was never set.
+        scene-init `properties[prop]`.
+
+        Liveness semantics: if the entity wasn't yet created at t
+        (`created_at_event >= t`), returns None — it didn't exist then.
+        `destroyed_at_event` is intentionally NOT checked: history
+        outlives the thing. Asking "what was the mouse's state after
+        the cat ate it?" returns the last recorded values (e.g.
+        presence=consumed); use `entities_at(t)` for liveness queries.
 
         Naive O(t) per call. Acceptable for traces under ~20 events;
         cache as a sorted (position, value) list per (entity_id, prop)
@@ -281,8 +287,6 @@ class Trace:
         if ent is None:
             return None
         if ent.created_at_event is not None and ent.created_at_event >= t:
-            return None
-        if ent.destroyed_at_event is not None and ent.destroyed_at_event < t:
             return None
 
         key = (entity_id, prop)

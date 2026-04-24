@@ -29,7 +29,8 @@ from typing import Any, Iterator
 from ..causal import EntityInstance, Event, Trace, make_event
 from ..loader import Lexicon
 from .effects import (
-    AddRelation, Change, CreateEntity, Effect, Emit, RemoveRelation,
+    AddRelation, Change, CreateEntity, DestroyEntity, Effect, Emit,
+    RemoveRelation,
 )
 from .implications import Implication, PropertyImplication
 from .patterns import (
@@ -375,6 +376,13 @@ def _apply_effects(
             )
             trace.entities[eid] = ent
             b[eff.as_var] = eid
+            changed = True
+        elif isinstance(eff, DestroyEntity):
+            target = resolve(eff.target, b)
+            ent = trace.entities.get(target)
+            if ent is None or ent.destroyed_at_event is not None:
+                continue
+            ent.destroyed_at_event = len(trace.events) - 1
             changed = True
         elif isinstance(eff, Change):
             target = resolve(eff.entity, b)

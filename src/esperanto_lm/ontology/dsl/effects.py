@@ -109,6 +109,30 @@ def create_entity(
     return CreateEntity(concept, as_var, entity_id, from_)
 
 
+# ------------------------- destroy_entity --------------------------
+
+@dataclass
+class DestroyEntity(Effect):
+    """Mark an entity as no longer existing from this event onward.
+    Sets `destroyed_at_event` on the EntityInstance; `Trace.entities_at(t)`
+    stops returning it for `t > destroyed_at_event`. The entity stays
+    in `trace.entities` for historical lookups (so the realizer can
+    still read its concept/name), but downstream rules that check
+    presence or iterate `entities_at` see it as gone."""
+    target: Var | str
+
+    def reads(self) -> set[Var]:
+        return {self.target} if isinstance(self.target, Var) else set()
+
+
+def destroy_entity(target: Var | str) -> DestroyEntity:
+    """Mark the bound entity as destroyed at the current trace position.
+
+        destroy_entity(T)
+    """
+    return DestroyEntity(target)
+
+
 # ---------------------------- change -------------------------------
 
 @dataclass

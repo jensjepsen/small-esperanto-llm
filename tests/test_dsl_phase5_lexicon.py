@@ -145,10 +145,8 @@ def test_asserted_flammability_still_wins_over_derived(lex):
 
 # ---- derivation IS registered in DEFAULT_DSL_DERIVATIONS ----------------
 
-def test_flammability_derivation_is_the_one_canonical_source():
-    """`flammability_from_material` is the single derivation the library
-    ships for this pattern — no hidden duplicates in the loader or
-    elsewhere."""
+def test_flammability_derivation_is_registered():
+    """`flammability_from_material` is the canonical source for this
+    pattern — no hidden duplicates in the loader or elsewhere. Other
+    derivations ride alongside it in DEFAULT_DSL_DERIVATIONS."""
     assert flammability_from_material in DEFAULT_DSL_DERIVATIONS
-    # And it's currently the only default derivation.
-    assert len(DEFAULT_DSL_DERIVATIONS) == 1

@@ -26,8 +26,10 @@ rules on pending events, and repeats until a cycle produces no
 changes.
 """
 from .effects import (
-    AddRelation, Change, CreateEntity, Effect, Emit, RemoveRelation,
-    add_relation, change, create_entity, emit, remove_relation,
+    AddRelation, Change, CreateEntity, DestroyEntity, Effect, Emit,
+    RemoveRelation,
+    add_relation, change, create_entity, destroy_entity, emit,
+    remove_relation,
 )
 from .engine import (
     Derivation, Rule, collect_rules, derive, rule, run_dsl,
@@ -53,8 +55,10 @@ __all__ = [
     "bind", "caused_by", "closure", "entity", "event", "has_concept_field",
     "past_event", "rel", "var",
     # effects
-    "AddRelation", "Change", "CreateEntity", "Effect", "Emit", "RemoveRelation",
-    "add_relation", "change", "create_entity", "emit", "remove_relation",
+    "AddRelation", "Change", "CreateEntity", "DestroyEntity", "Effect",
+    "Emit", "RemoveRelation",
+    "add_relation", "change", "create_entity", "destroy_entity", "emit",
+    "remove_relation",
     # implications
     "Implication", "PropertyImplication", "property",
     # engine
