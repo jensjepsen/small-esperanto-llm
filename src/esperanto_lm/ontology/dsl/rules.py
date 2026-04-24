@@ -166,20 +166,23 @@ fire_spreads_to_adjacent_flammables = rule(
 )
 
 
-# ---------- causal: person_walks_on_hazard_falls (Phase 3) --------------
+# ---------- causal: person_slips_on_wet (Phase 3, updated) -------------
 #
-# A hazard appears (aperi event with the hazard slot set on the
-# theme). The hazard's location comes from the cause's theme — the
-# entity that broke or fell to produce the hazard. From there, walk
-# the en/sur containment chain until a location-typed entity is
-# reached, then drop everyone in that location.
+# Wet surfaces cause slips; sharp shards do not (stepping on broken
+# glass would cut you, but that's a different event we don't model).
+# Filter on `hazard="slippery"` specifically — the aperi event has to
+# bring a slippery thing into existence (a flako is the canonical
+# example). The hazard's location is inferred from the cause's theme —
+# the entity that fell or broke to produce the puddle.
 
-person_walks_on_hazard_falls = rule(
+person_slips_on_wet = rule(
     when=event("aperi",
-               theme=entity(hazard=...) & bind(H := var("H"))),
+               theme=entity(hazard="slippery") & bind(H := var("H"))),
     given=[
         # The cause's theme is the origin entity (the thing that
-        # broke/fell). Match either trigger event shape.
+        # fell to produce the puddle). `fali` is the expected shape;
+        # `rompiĝi` is included for symmetry in case a future
+        # rule produces a slippery thing from a break.
         caused_by("rompiĝi", theme=bind(O := var("O")))
         | caused_by("fali", theme=O),
         # Walk the containment chain to the surrounding location.
@@ -192,7 +195,7 @@ person_walks_on_hazard_falls = rule(
         ~past_event("fali", theme=PWH),
     ],
     then=emit("fali", theme=PWH),
-    name="person_walks_on_hazard_falls",
+    name="person_slips_on_wet",
 )
 
 
@@ -294,7 +297,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     hungry_eats_sated,
     container_falls_contents_fall,
     broken_container_releases_contents,
-    person_walks_on_hazard_falls,
+    person_slips_on_wet,
     carried_fragile_falls_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
     # Previously factory-produced; now plain values after Phase 2.

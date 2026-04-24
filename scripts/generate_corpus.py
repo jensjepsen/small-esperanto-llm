@@ -88,7 +88,7 @@ def _attribute_rule(event, trace) -> str:
             if cause is None:
                 continue
             if cause.action == "aperi":
-                return "person_walks_on_hazard_falls"
+                return "person_slips_on_wet"
             if cause.action == "fali":
                 theme = trace.entities.get(event.roles.get("theme", ""))
                 if theme is not None and theme.entity_type != "person":

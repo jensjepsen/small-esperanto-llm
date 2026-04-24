@@ -27,7 +27,7 @@ from esperanto_lm.ontology.dsl.rules import (
     carried_fragile_falls_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
     make_use_instrument_rules,
-    person_walks_on_hazard_falls,
+    person_slips_on_wet,
     wet_liquid_container_tips,
 )
 
@@ -94,15 +94,41 @@ def test_fallen_pano_does_not_spawn_puddle(lex):
     assert not any(e.action == "aperi" for e in t.events)
 
 
-# ---- person_walks_on_hazard_falls ----------------------------------------
+# ---- person_slips_on_wet -------------------------------------------------
 
-def test_person_in_same_location_as_hazard_falls(lex):
-    """Full chain: glass falls → breaks → shards → person (in kitchen)
-    falls."""
+def test_person_in_same_location_slips_on_puddle(lex):
+    """Full chain: glass (with water) falls → breaks → water falls →
+    puddle appears → person (in kitchen) slips. Sharp shards appear
+    too but do NOT cause a slip — only slippery (wet) things do."""
     t = Trace()
     t.add_entity("persono", lex, entity_id="petro")
     t.add_entity("kuirejo", lex, entity_id="kuirejo")
     t.add_entity("glaso", lex, entity_id="glaso")
+    t.add_entity("akvo", lex, entity_id="akvo")
+    t.assert_relation("en", ("petro", "kuirejo"), lex)
+    t.assert_relation("en", ("glaso", "kuirejo"), lex)
+    t.assert_relation("en", ("akvo", "glaso"), lex)
+    t.events.append(make_event("fali", roles={"theme": "glaso"}))
+
+    run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
+
+    petro_falls = [e for e in t.events
+                   if e.action == "fali" and e.roles.get("theme") == "petro"]
+    assert len(petro_falls) == 1
+    # The fall is caused by the puddle-appearance aperi, not the shards.
+    by_id = {e.id: e for e in t.events}
+    cause = by_id[petro_falls[0].caused_by[0]]
+    assert cause.action == "aperi"
+    assert cause.roles["theme"].startswith("flako_"), (
+        f"expected puddle-caused slip, got cause={cause.roles}")
+
+
+def test_shards_alone_do_not_cause_slip(lex):
+    """A dry glass breaking creates shards but no puddle; nobody slips."""
+    t = Trace()
+    t.add_entity("persono", lex, entity_id="petro")
+    t.add_entity("kuirejo", lex, entity_id="kuirejo")
+    t.add_entity("glaso", lex, entity_id="glaso")  # no water inside
     t.assert_relation("en", ("petro", "kuirejo"), lex)
     t.assert_relation("en", ("glaso", "kuirejo"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
@@ -111,21 +137,24 @@ def test_person_in_same_location_as_hazard_falls(lex):
 
     petro_falls = [e for e in t.events
                    if e.action == "fali" and e.roles.get("theme") == "petro"]
-    assert len(petro_falls) == 1
-    # The fall is caused by an aperi event (the hazard appearance).
-    by_id = {e.id: e for e in t.events}
-    causes = [by_id[c].action for c in petro_falls[0].caused_by]
-    assert "aperi" in causes
+    assert not petro_falls, (
+        "petro should not fall from dry shards — only wet surfaces slip")
+    # But shards did appear.
+    aperi_themes = {e.roles.get("theme") for e in t.events if e.action == "aperi"}
+    assert any(s.startswith("vitropecetoj_") for s in aperi_themes)
 
 
-def test_person_in_different_location_does_not_fall(lex):
+def test_person_in_different_location_does_not_slip(lex):
+    """Person in another room doesn't slip on a remote puddle."""
     t = Trace()
     t.add_entity("persono", lex, entity_id="petro")
     t.add_entity("kuirejo", lex, entity_id="kuirejo")
     t.add_entity("salono", lex, entity_id="salono")
     t.add_entity("glaso", lex, entity_id="glaso")
+    t.add_entity("akvo", lex, entity_id="akvo")
     t.assert_relation("en", ("petro", "salono"), lex)
     t.assert_relation("en", ("glaso", "kuirejo"), lex)
+    t.assert_relation("en", ("akvo", "glaso"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
     run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
@@ -167,18 +196,24 @@ def test_carrier_falls_sturdy_object_does_not_fall(lex):
 # ---- end-to-end depth ----------------------------------------------------
 
 def test_deep_cascade_reaches_depth_3(lex):
-    """Canonical deep cascade:
-      fali(glaso)              depth 0
-      → rompiĝi(glaso)         depth 1
-      → aperi(vitropecetoj)    depth 2
-      → fali(petro)            depth 3
+    """Canonical deep cascade via the wet-slip path. Depths are edge
+    counts from the seed:
+      fali(glaso)              depth 0  (seed)
+      → fali(akvo)             depth 1  (container_falls_contents_fall)
+      → aperi(flako)           depth 2  (wet_liquid_container_tips)
+      → fali(petro)            depth 3  (person_slips_on_wet)
+    The glaso→rompiĝi→aperi(shards) branch runs in parallel at depth
+    ≤2 but the shards path doesn't extend the chain (shards don't
+    cause slips under the new semantics).
     """
     t = Trace()
     t.add_entity("persono", lex, entity_id="petro")
     t.add_entity("kuirejo", lex, entity_id="kuirejo")
     t.add_entity("glaso", lex, entity_id="glaso")
+    t.add_entity("akvo", lex, entity_id="akvo")
     t.assert_relation("en", ("petro", "kuirejo"), lex)
     t.assert_relation("en", ("glaso", "kuirejo"), lex)
+    t.assert_relation("en", ("akvo", "glaso"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
     run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
@@ -290,30 +325,33 @@ def test_fire_reaches_depth_3_via_nested_containment(lex):
     assert max(depth(ev) for ev in t.events) >= 3
 
 
-def test_deep_cascade_with_carried_fragile_reaches_depth_4(lex):
-    """Longest chain: person carries a fragile bottle, glass on the floor
-    breaks, person slips on shards, drops bottle.
+def test_deep_cascade_with_carried_fragile_reaches_depth_5(lex):
+    """Longest chain: a wet glass falls and shatters, puddle forms,
+    person slips on the puddle, drops their bottle, which breaks.
       fali(glaso)            depth 0
       → rompiĝi(glaso)       depth 1
-      → aperi(shards)        depth 2
-      → fali(petro)          depth 3
-      → fali(botelo)         depth 4
-      → rompiĝi(botelo)      depth 5
-      → aperi(shards_2)      depth 6
+      → fali(akvo)           depth 2
+      → aperi(flako)         depth 3
+      → fali(petro)          depth 4
+      → fali(botelo)         depth 5
+      → rompiĝi(botelo)      depth 6
+      → aperi(shards_botelo) depth 7
     """
     t = Trace()
     t.add_entity("persono", lex, entity_id="petro")
     t.add_entity("kuirejo", lex, entity_id="kuirejo")
     t.add_entity("glaso", lex, entity_id="glaso")
+    t.add_entity("akvo", lex, entity_id="akvo")
     t.add_entity("botelo", lex, entity_id="botelo")
     t.assert_relation("en", ("petro", "kuirejo"), lex)
     t.assert_relation("en", ("glaso", "kuirejo"), lex)
+    t.assert_relation("en", ("akvo", "glaso"), lex)
     t.assert_relation("havi", ("petro", "botelo"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
     run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
 
-    # petro fell and dropped botelo.
+    # petro slipped and dropped botelo.
     actions_by_theme = [(e.action, e.roles.get("theme")) for e in t.events]
     assert ("fali", "petro") in actions_by_theme
     assert ("fali", "botelo") in actions_by_theme
@@ -332,4 +370,4 @@ def test_deep_cascade_with_carried_fragile_reaches_depth_4(lex):
         return memo[ev.id]
 
     max_depth = max(depth(ev) for ev in t.events)
-    assert max_depth >= 4, f"expected depth ≥4, got {max_depth}"
+    assert max_depth >= 5, f"expected depth ≥5, got {max_depth}"
