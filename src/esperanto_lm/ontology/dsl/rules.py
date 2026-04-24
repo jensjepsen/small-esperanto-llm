@@ -181,6 +181,60 @@ preni_transfers_ownership = rule(
 )
 
 
+# ---------- causal: ĵeti_releases_possession ----------------------------
+#
+# Throwing an object relinquishes possession — the thrower no longer
+# `havi`s the thrown thing. If nobody catches it, that's where the
+# state settles (the ball is unpossessed). Pairs with
+# `kapti_takes_possession` below, which runs when someone grabs it
+# out of the air.
+
+ĵeti_releases_possession = rule(
+    when=event("ĵeti",
+               agent=bind(JA := var("A")),
+               theme=bind(JT := var("T"))),
+    given=[
+        rel("havi", owner=JA, theme=JT),
+    ],
+    then=remove_relation("havi", JA, JT),
+    name="ĵeti_releases_possession",
+)
+
+
+# ---------- causal: kapti_takes_possession ------------------------------
+#
+# Catching is acquisition. Same shape as preni_transfers_ownership,
+# but no prior owner is required — the thing may be mid-flight (no
+# `havi` for it after a throw). Structurally split into two rules so
+# each case is independent: transfer from prior owner, or grant to
+# catcher when no one holds it.
+
+kapti_takes_possession_from_nobody = rule(
+    when=event("kapti",
+               agent=bind(KA := var("A")),
+               theme=bind(KT := var("T"))),
+    given=[
+        ~rel("havi", owner=bind(var("_any")), theme=KT),
+    ],
+    then=add_relation("havi", KA, KT),
+    name="kapti_takes_possession_from_nobody",
+)
+
+kapti_takes_possession_from_owner = rule(
+    when=event("kapti",
+               agent=bind(KA2 := var("A")),
+               theme=bind(KT2 := var("T"))),
+    given=[
+        rel("havi", owner=bind(KM := var("M")), theme=KT2),
+    ],
+    then=[
+        remove_relation("havi", KM, KT2),
+        add_relation("havi", KA2, KT2),
+    ],
+    name="kapti_takes_possession_from_owner",
+)
+
+
 # ---------- causal: iri_moves_agent -------------------------------------
 #
 # `iri` (go) moves the agent from wherever they currently `en`-reside
@@ -390,6 +444,9 @@ DEFAULT_DSL_RULES: list[Rule] = [
     fire_spreads_to_adjacent_flammables,
     preni_transfers_ownership,
     iri_moves_agent,
+    ĵeti_releases_possession,
+    kapti_takes_possession_from_nobody,
+    kapti_takes_possession_from_owner,
     # Previously factory-produced; now plain values after Phase 2.
     broken_fragile_creates_shards,
     wet_liquid_container_tips,
