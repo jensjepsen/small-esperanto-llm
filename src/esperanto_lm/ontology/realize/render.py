@@ -200,15 +200,22 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
 
 
 def _render_event(m: EventMessage, ctx: _Ctx) -> Optional[str]:
-    return _render_event_phrase(m.event, ctx, drop_subject=False)
+    return _render_event_phrase(
+        m.event, ctx, drop_subject=False,
+        source_entity_id=m.source_entity_id)
 
 
 def _render_event_phrase(
     ev: Event, ctx: _Ctx, *, drop_subject: bool,
+    drop_theme: bool = False,
+    source_entity_id: Optional[str] = None,
 ) -> Optional[str]:
-    """Render one event. When `drop_subject=True`, emit only the verb
-    phrase (no subject) — used by CoordinatedMessage for children
-    past the first."""
+    """Render one event. `drop_subject=True` omits the subject (used
+    by CoordinatedMessage for non-leading children). `drop_theme=True`
+    omits the direct object (used when a later coordinated child
+    carries the same theme and will render it). `source_entity_id`
+    appends "de <source>" after the theme — acquisition verbs use
+    this to name the previous owner without a separate clause."""
     action = ctx.lexicon.actions.get(ev.action)
     if action is None:
         return None
@@ -247,11 +254,16 @@ def _render_event_phrase(
         ctx.mentioned.add(subject.id)
     parts.append(inflect(ev.action, ctx.tense))
 
-    if subject_role_name == "agent" and ev.roles.get("theme"):
+    if subject_role_name == "agent" and ev.roles.get("theme") and not drop_theme:
         theme = ctx.trace.entity(ev.roles["theme"])
         if theme is not None:
             parts.append(to_accusative(ctx.name_for(theme)))
             ctx.mentioned.add(theme.id)
+            if source_entity_id is not None:
+                source_ent = ctx.trace.entities.get(source_entity_id)
+                if source_ent is not None:
+                    parts.append(f"de {ctx.name_for(source_ent)}")
+                    ctx.mentioned.add(source_ent.id)
 
     if ev.roles.get("instrument"):
         instr = ctx.trace.entity(ev.roles["instrument"])
@@ -352,29 +364,66 @@ def _render_coordinated(
     m: CoordinatedMessage, ctx: _Ctx,
 ) -> Optional[str]:
     """Children share a subject. Render first child fully, then each
-    subsequent as a bare verb phrase joined with 'kaj'."""
+    subsequent as a bare verb phrase joined with 'kaj'.
+
+    Object elision: when a run of consecutive children share the same
+    theme, the theme renders only on the last of that run. "Ŝi kuiras
+    la panon kaj manĝas la panon" → "Ŝi kuiras kaj manĝas la panon".
+    Applies per-run so mixed-theme sequences like kuiras(pano) +
+    manĝas(pano) + satiĝas(None) still read naturally — the first
+    two share elision, the third stands on its own.
+    """
     if not m.children:
         return None
+    # Compute the elide-run: which children's themes are suppressed?
+    elide_flags = _compute_theme_elision(m.children)
+
     first = m.children[0]
     if not isinstance(first, EventMessage):
-        # Only coordinating events in this slice.
         return None
-    first_sent = _render_event_phrase(first.event, ctx, drop_subject=False)
+    first_sent = _render_event_phrase(
+        first.event, ctx, drop_subject=False,
+        drop_theme=elide_flags[0])
     if first_sent is None:
         return None
     first_body = first_sent.rstrip(".")
     rest_bodies: list[str] = []
-    for child in m.children[1:]:
+    for idx, child in enumerate(m.children[1:], start=1):
         if not isinstance(child, EventMessage):
             continue
         phrase = _render_event_phrase(
-            child.event, ctx, drop_subject=True)
+            child.event, ctx, drop_subject=True,
+            drop_theme=elide_flags[idx])
         if phrase is None:
             continue
         rest_bodies.append(phrase)
     if not rest_bodies:
         return first_body + "."
     return first_body + " kaj " + " kaj ".join(rest_bodies) + "."
+
+
+def _compute_theme_elision(children) -> list[bool]:
+    """For each child, True if its theme should be suppressed on
+    rendering (subsumed into a later child's theme). Only elides
+    within a run of consecutive children that share the *same*
+    theme entity id.
+    """
+    themes: list[Optional[str]] = []
+    for c in children:
+        if isinstance(c, EventMessage):
+            themes.append(c.event.roles.get("theme"))
+        else:
+            themes.append(None)
+    flags = [False] * len(children)
+    for i in range(len(children)):
+        theme = themes[i]
+        if theme is None:
+            continue
+        # Is there a later consecutive sibling with the same theme?
+        # If yes, elide this one.
+        if i + 1 < len(children) and themes[i + 1] == theme:
+            flags[i] = True
+    return flags
 
 
 # =================== connectives + capitalization ==================

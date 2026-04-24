@@ -168,6 +168,73 @@ def test_manĝi_narrates_destruction(lex):
     assert "malaperis" in prose, prose
 
 
+# ==================== object elision ====================
+
+def test_coordinated_children_share_theme_elide(lex):
+    """Two cooks-and-eats on la pano: theme renders once, not twice.
+    'Ŝi kuiras kaj manĝas la panon.'"""
+    t = Trace()
+    t.add_entity("persono", lex, entity_id="maria")
+    t.add_entity("pano",    lex, entity_id="pano")
+    t.assert_relation("havi", ("maria", "pano"), lex)
+    t.entities["maria"].set_property("hunger", "hungry")
+    roles = {"agent": "maria", "theme": "pano"}
+    t.events.append(make_event(
+        "kuiri", roles=roles,
+        property_changes=effect_changes("kuiri", roles, lex)))
+    t.events.append(make_event(
+        "manĝi", roles=roles,
+        property_changes=effect_changes("manĝi", roles, lex)))
+    run_dsl(t, _rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
+
+    prose = realize_trace(t, lex)
+    # Both verbs render, but "la panon" only once in the coordinated
+    # phrase (initial havi setup also mentions panon).
+    coord_part = prose.split(".")[2] if len(prose.split(".")) > 2 else ""
+    # A looser check: in the whole prose, "la panon" appears exactly once.
+    # (initial setup is "panon" bare, the coordination is "la panon".)
+    assert prose.count("la panon") == 1, prose
+    assert "kuir" in prose and "manĝ" in prose
+
+
+# ==================== source narration ====================
+
+def test_preni_from_owner_narrates_de_source(lex):
+    """Klara prenas la libron → the libro was Maria's → 'de Maria'."""
+    t = Trace()
+    t.add_entity("persono", lex, entity_id="klara")
+    t.add_entity("persono", lex, entity_id="maria")
+    t.add_entity("libro",   lex, entity_id="libro")
+    t.assert_relation("havi", ("maria", "libro"), lex)
+    t.events.append(make_event(
+        "preni", roles={"agent": "klara", "theme": "libro"}))
+    setup = t.snapshot_relations()
+    run_dsl(t, _rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
+
+    prose = realize_trace(t, lex, setup_relations=setup)
+    assert "de Maria" in prose or "de ŝi" in prose, prose
+
+
+def test_kapti_from_nobody_has_no_source(lex):
+    """If no one owns the theme when the catch happens, no 'de X'.
+    ĵeti removes ownership first, so a subsequent kapti catches an
+    ownerless ball."""
+    t = Trace()
+    t.add_entity("persono", lex, entity_id="petro")
+    t.add_entity("hundo",   lex, entity_id="hundo")
+    t.add_entity("pilko",   lex, entity_id="pilko")
+    t.assert_relation("havi", ("petro", "pilko"), lex)
+    t.events.append(make_event(
+        "ĵeti",  roles={"agent": "petro", "theme": "pilko"}))
+    t.events.append(make_event(
+        "kapti", roles={"agent": "hundo", "theme": "pilko"}))
+    setup = t.snapshot_relations()
+    run_dsl(t, _rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
+
+    prose = realize_trace(t, lex, setup_relations=setup)
+    assert " de " not in prose, prose
+
+
 # ==================== subordination ====================
 
 def test_cascade_creation_subordinates_with_el_kio(lex):

@@ -62,22 +62,19 @@ def plan_messages(
     for rel in relations_for_setup:
         messages.append(RelationMessage(relation=rel))
 
-    # 3. Relation changes between setup and final — only computed when
-    # the caller provided a snapshot. Index by plausible causing event
-    # so each change lands after the right event in the output.
-    rel_changes_by_event = _attribute_relation_changes(
+    # 3. Relation changes between setup and final + source annotations
+    # for acquisition verbs. Both computed from the same diff pass.
+    rel_changes_by_event, source_by_event = _attribute_relation_changes(
         trace, setup_relations)
 
     # 4. Events, with per-event trailers.
     for ev in trace.events:
         if ev.id in skip_uzi_ids:
             continue
-        # Events synthesized by relation-only rules (bare preni/meti/doni
-        # with a synthetic "_wet" action etc.) don't render — see the
-        # renderer's dispatch. But their relation effects still narrate.
         messages.append(EventMessage(
             event=ev,
-            cause_event_id=(ev.caused_by[0] if ev.caused_by else None)))
+            cause_event_id=(ev.caused_by[0] if ev.caused_by else None),
+            source_entity_id=source_by_event.get(ev.id)))
 
         # Appearance lines for entities created by this event.
         for created in ev.creates:
@@ -141,15 +138,22 @@ def _synthetic_grounding_targets(
 def _attribute_relation_changes(
     trace: Trace,
     setup_relations: Optional[list[RelationAssertion]],
-) -> dict[str, list[Message]]:
+) -> tuple[dict[str, list[Message]], dict[str, str]]:
     """Diff setup vs final `trace.relations` and attribute each add/
-    remove to a plausible event. Returns `{event_id: [messages]}`.
+    remove to a plausible event.
+
+    Returns `(change_messages, source_for_event)`:
+      change_messages[event_id] — RelationRemoved/Added messages to
+        emit after the event's sentence.
+      source_for_event[event_id] — for acquisition verbs (preni,
+        kapti) whose rule consumed a havi-removal from some entity
+        other than the agent, the previous owner's id. Renders as
+        "de <source>" after the theme.
 
     Heuristic: walk events forward; a removal of `havi(A, X)` pairs
     with the first event whose action is one of the 'ownership-moving'
-    verbs (doni, preni, ĵeti, kapti) and whose roles reference A or X.
-    Similarly `en(A, L1)` removal pairs with the first iri/veturi
-    event for A.
+    verbs and whose roles reference A or X. Similarly `en(A, L1)`
+    removal pairs with the first iri/veturi event for A.
 
     This is a deliberately shallow heuristic — tight enough for the
     current rule set, loose enough that future rules may need their
@@ -157,14 +161,14 @@ def _attribute_relation_changes(
     per-event relation-delta tracking in the engine itself.
     """
     if setup_relations is None:
-        return {}
+        return {}, {}
 
     setup_set = {(r.relation, tuple(r.args)) for r in setup_relations}
     final_set = {(r.relation, tuple(r.args)) for r in trace.relations}
     added = final_set - setup_set
     removed = setup_set - final_set
     if not added and not removed:
-        return {}
+        return {}, {}
 
     # Actions whose semantics already communicate ownership transfer
     # (doni X al Y implies Y now has X; kapti implies the agent now
@@ -172,12 +176,17 @@ def _attribute_relation_changes(
     # Narrating "Maria ne plu havas la libron" after "Maria donas la
     # libron al Petro" is redundant — the realizer suppresses both
     # sides of the transfer for these verbs.
+    # Transfer verbs already convey ownership change in the verb
+    # itself. Acquisition verbs (a subset) can optionally narrate
+    # the previous owner as "de <owner>" on the event itself.
     TRANSFER_VERBS = {"doni", "preni", "ĵeti", "kapti"}
+    ACQUISITION_VERBS = {"preni", "kapti"}
     MOVEMENT_VERBS = {"iri", "veturi"}
     PLACEMENT_VERBS = {"meti"}
     candidate_actions = TRANSFER_VERBS | MOVEMENT_VERBS | PLACEMENT_VERBS
 
     out: dict[str, list[Message]] = {}
+    source_for_event: dict[str, str] = {}
     unattributed_adds = set(added)
     unattributed_removes = set(removed)
 
@@ -196,6 +205,18 @@ def _attribute_relation_changes(
                 claims_add.append((rel, args))
 
         narrate_ownership = ev.action not in TRANSFER_VERBS
+        # Acquisition verbs: if we consumed a havi-removal whose
+        # owner differs from the event's agent, that owner is the
+        # "source" to narrate via "de <source>" on the event itself.
+        if ev.action in ACQUISITION_VERBS:
+            agent = ev.roles.get("agent")
+            theme = ev.roles.get("theme")
+            for (rel, args) in claims_rem:
+                if (rel == "havi" and len(args) == 2
+                        and args[1] == theme and args[0] != agent):
+                    source_for_event[ev.id] = args[0]
+                    break
+
         for (rel, args) in claims_rem:
             unattributed_removes.discard((rel, args))
             if rel == "havi" and not narrate_ownership:
@@ -205,14 +226,11 @@ def _attribute_relation_changes(
                     relation=rel, args=args, cause_event_id=ev.id))
         for (rel, args) in claims_add:
             unattributed_adds.discard((rel, args))
-            # Additions only narrated for havi (location adds are
-            # implied by `al` in the move verb) AND only when the
-            # triggering verb doesn't already say "X now has Y".
             if rel == "havi" and narrate_ownership:
                 out.setdefault(ev.id, []).append(
                     RelationAddedMessage(
                         relation=rel, args=args, cause_event_id=ev.id))
-    return out
+    return out, source_for_event
 
 
 # ----------------- helpers: destruction narration -------------------

@@ -64,8 +64,17 @@ class RelationMessage(Message):
 class EventMessage(Message):
     """An event's sentence. The renderer picks subject/object shape
     from the action's role structure — agent-first for transitives,
-    theme-first for intransitives, location-fronted for impersonals."""
+    theme-first for intransitives, location-fronted for impersonals.
+
+    `source_entity_id` (optional): for acquisition verbs (preni,
+    kapti) whose rule consumed a havi-removal from some entity M
+    other than the event's agent. Rendered as "de <M>" after the
+    theme — "Klara prenas la libron de Maria" — so the previous
+    owner is narrated even though we suppress the separate
+    "Maria ne plu havas" line.
+    """
     event: Event
+    source_entity_id: Optional[str] = None
 
 
 @dataclass(kw_only=True)
