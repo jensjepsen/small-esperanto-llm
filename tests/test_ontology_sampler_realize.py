@@ -485,10 +485,19 @@ def test_realize_no_pronoun_when_two_same_gender_persons(lex):
 
 
 def test_realize_variation_uses_alternate_connectives(lex):
-    """Across many seeds, multiple connective variants should appear."""
+    """Across many seeds, multiple connective variants should appear.
+    Need a scene where events span multiple subjects so aggregation and
+    subordination don't collapse the whole chain into one sentence —
+    otherwise no connectives surface."""
     t = Trace()
-    glaso = t.add_entity("glaso", lex, entity_id="glaso")
-    t.add_event(make_event("fali", roles={"theme": glaso.id}))
+    t.add_entity("kuirejo", lex, entity_id="kuirejo")
+    t.add_entity("glaso", lex, entity_id="glaso")
+    t.add_entity("akvo", lex, entity_id="akvo")
+    t.add_entity("persono", lex, entity_id="petro")
+    t.assert_relation("en", ("petro", "kuirejo"), lex)
+    t.assert_relation("en", ("glaso", "kuirejo"), lex)
+    t.assert_relation("en", ("akvo", "glaso"), lex)
+    t.add_event(make_event("fali", roles={"theme": "glaso"}))
     run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
             DEFAULT_DSL_DERIVATIONS, lex)
 
@@ -499,8 +508,6 @@ def test_realize_variation_uses_alternate_connectives(lex):
         for c in ("Tial", "Sekve", "Pro tio"):
             if c in prose:
                 seen_connectives.add(c)
-    # Across 40 seeds we expect at least 2 of the 3 named connectives
-    # (the 4th option is empty juxtaposition).
     assert len(seen_connectives) >= 2, \
         f"only saw connectives: {seen_connectives}"
 

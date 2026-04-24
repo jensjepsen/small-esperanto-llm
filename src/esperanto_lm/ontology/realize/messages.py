@@ -118,3 +118,23 @@ class CoordinatedMessage(Message):
     the full sentence planner.
     """
     children: list[Message] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
+class SubordinatedMessage(Message):
+    """`main, conjunction subordinate.` — one sentence with the
+    subordinate clause tacked on after a comma.
+
+    Produced by the subordination transform. Currently only generated
+    with `conjunction="el kio"` (Esperanto's result subordinator —
+    "from which"), combining a cascade event with the appearance it
+    triggered: "La glaso rompiĝis, el kio aperis vitropecetoj."
+
+    Future conjunctions the same render path handles: "post kiam"
+    (temporal), "ĉar" (causal), "tiel ke" (result-degree). Each is a
+    separate transform that produces a SubordinatedMessage — the
+    renderer doesn't care which transform built it.
+    """
+    main: Message
+    subordinate: Message
+    conjunction: str

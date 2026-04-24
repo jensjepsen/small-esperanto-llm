@@ -21,7 +21,8 @@ from esperanto_lm.ontology.dsl.rules import (
 )
 from esperanto_lm.ontology.realize import (
     CoordinatedMessage, DestructionMessage, EventMessage,
-    RelationRemovedMessage, aggregate_same_subject, plan_messages,
+    RelationRemovedMessage, SubordinatedMessage,
+    aggregate_same_subject, plan_messages, subordinate_creations,
 )
 
 
@@ -163,6 +164,49 @@ def test_manĝi_narrates_destruction(lex):
 
     prose = realize_trace(t, lex)
     assert "malaperis" in prose, prose
+
+
+# ==================== subordination ====================
+
+def test_cascade_creation_subordinates_with_el_kio(lex):
+    """rompiĝi → aperi becomes one sentence with 'el kio'.
+    'La glaso falis kaj rompiĝis, el kio aperis vitropecetoj.'"""
+    t = Trace()
+    t.add_entity("glaso", lex, entity_id="glaso")
+    t.events.append(make_event("fali", roles={"theme": "glaso"}))
+    run_dsl(t, _rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
+
+    messages = plan_messages(t, lex)
+    messages = aggregate_same_subject(messages, lex)
+    messages = subordinate_creations(messages)
+
+    subs = [m for m in messages if isinstance(m, SubordinatedMessage)]
+    assert len(subs) == 1, [type(m).__name__ for m in messages]
+    assert subs[0].conjunction == "el kio"
+
+    prose = realize_trace(t, lex)
+    assert "el kio" in prose, prose
+    assert "vitropecetoj" in prose
+    # The main and subordinate share one sentence, not two.
+    assert prose.count("aperis") == 1 or prose.count("aperas") == 1
+
+
+def test_appearance_without_matching_cause_does_not_subordinate(lex):
+    """If an appearance's cause isn't the immediately preceding
+    message's contained event, don't subordinate — leave as separate
+    sentences."""
+    # Pretend aperi is manually seeded (not cascade-produced).
+    t = Trace()
+    t.add_entity("glaso", lex, entity_id="glaso")
+    t.events.append(make_event("fali", roles={"theme": "glaso"}))
+    # Free-floating appearance with no cause event.
+    t.events.append(make_event("aperi", roles={"theme": "glaso"}))
+    # Don't run DSL — just test the planner on hand-crafted events.
+
+    messages = subordinate_creations(
+        aggregate_same_subject(plan_messages(t, lex), lex))
+    subs = [m for m in messages if isinstance(m, SubordinatedMessage)]
+    assert subs == []
 
 
 def test_destruction_attached_to_eating_event(lex):

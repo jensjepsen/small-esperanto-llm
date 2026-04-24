@@ -29,8 +29,13 @@ from .messages import (
     RelationMessage,
     RelationRemovedMessage,
     SceneGroundingMessage,
+    SubordinatedMessage,
 )
-from .plan import aggregate_same_subject, plan_messages
+from .plan import (
+    aggregate_same_subject,
+    plan_messages,
+    subordinate_creations,
+)
 from .render import (
     PRONOUN_OF_NAME, PRONOUN_RATE, RELATION_TEMPLATES, TENSES,
     inflect, past_tense, render_messages, to_accusative,
@@ -65,6 +70,7 @@ def realize_trace(
         scene_location_id=scene_location_id,
         setup_relations=setup_relations)
     messages = aggregate_same_subject(messages, lexicon)
+    messages = subordinate_creations(messages)
     return render_messages(
         messages, trace, lexicon,
         scene_location_id=scene_location_id, rng=rng, tense=tense)
@@ -77,9 +83,10 @@ __all__ = [
     "Message",
     "SceneGroundingMessage", "RelationMessage", "EventMessage",
     "AppearanceMessage", "RelationRemovedMessage", "RelationAddedMessage",
-    "DestructionMessage", "CoordinatedMessage",
+    "DestructionMessage", "CoordinatedMessage", "SubordinatedMessage",
     # pipeline stages (for library consumers customizing a stage)
-    "plan_messages", "aggregate_same_subject", "render_messages",
+    "plan_messages", "aggregate_same_subject", "subordinate_creations",
+    "render_messages",
     # morphology helpers re-exported for the test suite's convenience
     "inflect", "past_tense", "to_accusative",
     "RELATION_TEMPLATES", "PRONOUN_OF_NAME", "PRONOUN_RATE", "TENSES",

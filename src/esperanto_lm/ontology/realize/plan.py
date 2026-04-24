@@ -28,6 +28,7 @@ from .messages import (
     RelationMessage,
     RelationRemovedMessage,
     SceneGroundingMessage,
+    SubordinatedMessage,
 )
 
 
@@ -333,3 +334,71 @@ def _event_subject(ev: Event, lexicon: Lexicon) -> Optional[str]:
     if "theme" in role_names and ev.roles.get("theme"):
         return ev.roles["theme"]
     return None
+
+
+def subordinate_creations(messages: list[Message]) -> list[Message]:
+    """Fuse cascade event → aperi-event pairs into a "el kio" clause.
+
+    Pattern: an EventMessage or CoordinatedMessage whose contained
+    events include the cause of the *immediately following* `aperi`
+    EventMessage (or an AppearanceMessage). The follow-on collapses
+    into a subordinate clause on the cascade event:
+
+        "La glaso falis kaj rompiĝis. Vitropecetoj aperis."
+        →  "La glaso falis kaj rompiĝis, el kio aperis vitropecetoj."
+
+    Runs after aggregation — so coordinated chains get the
+    subordinated clause too. Conservative: only single-appearance
+    subordination; a cascade producing two appearances keeps one
+    subordinated and the other standalone.
+    """
+    if not messages:
+        return messages
+    out: list[Message] = []
+    i = 0
+    while i < len(messages):
+        m = messages[i]
+        if isinstance(m, (EventMessage, CoordinatedMessage)):
+            nxt = messages[i + 1] if i + 1 < len(messages) else None
+            follow_cause = _appearance_cause(nxt)
+            if (follow_cause is not None
+                    and follow_cause in _contained_event_ids(m)):
+                out.append(SubordinatedMessage(
+                    main=m,
+                    subordinate=nxt,                 # type: ignore[arg-type]
+                    conjunction="el kio",
+                    cause_event_id=m.cause_event_id,
+                ))
+                i += 2
+                continue
+        out.append(m)
+        i += 1
+    return out
+
+
+def _appearance_cause(m: Optional[Message]) -> Optional[str]:
+    """If `m` represents an appearance (either an AppearanceMessage or
+    an EventMessage whose verb is `aperi`), return the id of its
+    causing event — otherwise None. Both shapes can occur depending
+    on whether the rule attached the new entity via `Event.creates`
+    or emitted a standalone aperi event."""
+    if isinstance(m, AppearanceMessage):
+        return m.cause_event_id
+    if isinstance(m, EventMessage) and m.event.action == "aperi":
+        return m.event.caused_by[0] if m.event.caused_by else None
+    return None
+
+
+def _contained_event_ids(m: Message) -> set[str]:
+    """Event ids that this message renders. Used to decide whether a
+    follow-on message whose `cause_event_id` names one of them should
+    subordinate into it."""
+    if isinstance(m, EventMessage):
+        return {m.event.id}
+    if isinstance(m, CoordinatedMessage):
+        ids: set[str] = set()
+        for c in m.children:
+            if isinstance(c, EventMessage):
+                ids.add(c.event.id)
+        return ids
+    return set()

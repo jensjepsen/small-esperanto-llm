@@ -23,6 +23,7 @@ from .messages import (
     RelationMessage,
     RelationRemovedMessage,
     SceneGroundingMessage,
+    SubordinatedMessage,
 )
 
 
@@ -405,6 +406,48 @@ def _format_with_connective(
 
 # =================== dispatch ==================
 
+def _render_subordinated(
+    m: SubordinatedMessage, ctx: _Ctx,
+) -> Optional[str]:
+    """`<main>, <conjunction> <subordinate>.` One sentence, comma-
+    joined. Subordinate clause drops its final period and starts
+    lowercase since it's no longer at sentence boundary."""
+    main_sent = _render_message(m.main, ctx)
+    if main_sent is None:
+        return None
+    sub_sent = _render_message(m.subordinate, ctx)
+    if sub_sent is None:
+        return main_sent
+    main_body = main_sent.rstrip(".")
+    sub_body = sub_sent.rstrip(".")
+    sub_body = sub_body[0].lower() + sub_body[1:] if sub_body else sub_body
+    return f"{main_body}, {m.conjunction} {sub_body}."
+
+
+def _render_message(m: Message, ctx: _Ctx) -> Optional[str]:
+    """Central dispatch — used by SubordinatedMessage's recursive
+    render as well as the top-level pipeline."""
+    render_fn = _DISPATCH.get(type(m))
+    if render_fn is None:
+        return None
+    return render_fn(m, ctx)
+
+
+def _collect_rendered_event_ids(m: Message, out: set[str]) -> None:
+    """Walk a message tree and add every contained EventMessage's
+    event id to `out`. Used by the top-level loop so a follow-on
+    message whose cause is nested inside a CoordinatedMessage or
+    SubordinatedMessage still triggers a connective."""
+    if isinstance(m, EventMessage):
+        out.add(m.event.id)
+    elif isinstance(m, CoordinatedMessage):
+        for c in m.children:
+            _collect_rendered_event_ids(c, out)
+    elif isinstance(m, SubordinatedMessage):
+        _collect_rendered_event_ids(m.main, out)
+        _collect_rendered_event_ids(m.subordinate, out)
+
+
 _DISPATCH = {
     SceneGroundingMessage: _render_scene_grounding,
     RelationMessage: _render_relation,
@@ -414,6 +457,7 @@ _DISPATCH = {
     RelationAddedMessage: _render_relation_added,
     DestructionMessage: _render_destruction,
     CoordinatedMessage: _render_coordinated,
+    SubordinatedMessage: _render_subordinated,
 }
 
 
@@ -441,12 +485,7 @@ def render_messages(
             and msg.cause_event_id in ctx.rendered_event_ids)
         raw.append((sent, has_cause))
         # Track rendered events for connective causation lookups.
-        if isinstance(msg, EventMessage):
-            ctx.rendered_event_ids.add(msg.event.id)
-        elif isinstance(msg, CoordinatedMessage):
-            for child in msg.children:
-                if isinstance(child, EventMessage):
-                    ctx.rendered_event_ids.add(child.event.id)
+        _collect_rendered_event_ids(msg, ctx.rendered_event_ids)
 
     out = [
         _format_with_connective(s, caused, is_first=(i == 0), rng=rng)
