@@ -32,12 +32,12 @@ from esperanto_lm.ontology.dsl.rules import (
 )
 
 
-DATA_DIR = Path("data/ontology")
+
 
 
 @pytest.fixture
 def lex():
-    return load_lexicon(DATA_DIR)
+    return load_lexicon()
 
 
 def _all_rules(lex):

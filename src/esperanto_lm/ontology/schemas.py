@@ -1,9 +1,8 @@
 """Pydantic schemas for the Esperanto lexical-semantic ontology.
 
-Five primitives:
+Primitives:
   PropertySlot  — owns vocabulary + which entity types it applies to.
   Concept       — noun sense: entity type + property bundle.
-  Quality       — adjective sense: names a slot + value (applies_to derived).
   Relation      — preposition / relational verb schema.
   Action        — verb sense: roles + effects.
   Affix         — typed operator (e.g. -il-) used at lexicon-load time.
@@ -47,14 +46,6 @@ class Concept(_Frozen):
     # Provenance for derived concepts: which lemma(s) + affix(es) produced
     # this. Empty for authored concepts.
     derived_from: Optional[dict[str, str]] = None
-
-
-class Quality(_Frozen):
-    """Adjective sense. `applies_to` is *derived* from the slot's domain;
-    not stored on the quality itself."""
-    lemma: str
-    slot: str
-    value: str
 
 
 class Relation(_Frozen):

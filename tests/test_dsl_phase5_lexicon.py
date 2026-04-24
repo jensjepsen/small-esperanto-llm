@@ -33,12 +33,12 @@ from esperanto_lm.ontology.dsl.unifier import DerivedState
 from esperanto_lm.ontology.dsl.engine import _run_derivations_to_fixed_point
 
 
-DATA_DIR = Path("data/ontology")
+
 
 
 @pytest.fixture
 def lex():
-    return load_lexicon(DATA_DIR)
+    return load_lexicon()
 
 
 # Concepts that used to carry flammability=flammable directly on disk

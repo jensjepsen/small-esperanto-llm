@@ -1,0 +1,74 @@
+{"container_pattern": {"entity_type": "location"}, "contained": "pordo", "relation": "en"}
+{"container_pattern": {"entity_type": "location"}, "contained": "purigilo", "relation": "en"}
+{"container_pattern": {"contains": "pordo"}, "contained": "ŝlosilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "muro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "fenestro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "tablo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "seĝo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "libro", "relation": "en"}
+{"container_pattern": {"entity_type": "location"}, "contained": "animal", "relation": "en"}
+{"container": "kuirejo", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
+{"container": "manĝejo", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
+{"container": "salono", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
+{"container": "tablo", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "sur"}
+{"container": "tablo", "contained": "glaso", "relation": "sur"}
+{"container": "tablo", "contained": "botelo", "relation": "sur"}
+{"container": "tablo", "contained": "korbo", "relation": "sur"}
+{"container": "tablo", "contained": "libro", "relation": "sur"}
+{"container": "breto", "contained": "tranĉilo", "relation": "sur"}
+{"container": "breto", "contained": "purigilo", "relation": "sur"}
+{"container": "breto", "contained": "najlilo", "relation": "sur"}
+{"container": "breto", "contained": "ligno", "relation": "sur"}
+{"container": "breto", "contained": "najlo", "relation": "sur"}
+{"container": "breto", "contained": "libro", "relation": "sur"}
+{"container": "sofo", "contained": "libro", "relation": "sur"}
+{"container": "sofo", "contained": "korbo", "relation": "sur"}
+{"container": "glaso", "contained_pattern": {"property": {"state_of_matter": "liquid"}}, "relation": "en"}
+{"container": "botelo", "contained_pattern": {"property": {"state_of_matter": "liquid"}}, "relation": "en"}
+{"container": "korbo", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
+{"container": "kuirejo", "contained": "tranĉilo", "relation": "en"}
+{"container": "kuirejo", "contained": "glaso", "relation": "en"}
+{"container": "kuirejo", "contained": "botelo", "relation": "en"}
+{"container": "kuirejo", "contained": "korbo", "relation": "en"}
+{"container": "laborejo", "contained": "tranĉilo", "relation": "en"}
+{"container": "laborejo", "contained": "najlilo", "relation": "en"}
+{"container": "laborejo", "contained": "ligno", "relation": "en"}
+{"container": "laborejo", "contained": "najlo", "relation": "en"}
+{"container": "laborejo", "contained": "breto", "relation": "en"}
+{"container": "ĝardeno", "contained": "floro", "relation": "en"}
+{"container": "ĝardeno", "contained": "arbo", "relation": "en"}
+{"container": "ĝardeno", "contained": "semo", "relation": "en"}
+{"container": "ĝardeno", "contained": "akvo", "relation": "en"}
+{"container": "manĝejo", "contained": "glaso", "relation": "en"}
+{"container": "manĝejo", "contained": "botelo", "relation": "en"}
+{"container": "manĝejo", "contained": "korbo", "relation": "en"}
+{"container": "salono", "contained": "sofo", "relation": "en"}
+{"container": "salono", "contained": "korbo", "relation": "en"}
+{"container": "salono", "contained": "glaso", "relation": "en"}
+{"container": "salono", "contained": "botelo", "relation": "en"}
+{"container": "oficejo", "contained": "tranĉilo", "relation": "en"}
+{"container": "oficejo", "contained": "korbo", "relation": "en"}
+{"container": "oficejo", "contained": "glaso", "relation": "en"}
+{"container": "oficejo", "contained": "breto", "relation": "en"}
+{"container": "oficejo", "contained": "papero", "relation": "en"}
+{"container": "salono", "contained": "papero", "relation": "en"}
+{"container": "tablo", "contained": "papero", "relation": "sur"}
+{"container": "breto", "contained": "papero", "relation": "sur"}
+{"container": "biblioteko", "contained": "breto", "relation": "en"}
+{"container": "biblioteko", "contained": "libro", "relation": "en"}
+{"container": "biblioteko", "contained": "tablo", "relation": "en"}
+{"container": "biblioteko", "contained": "seĝo", "relation": "en"}
+{"container": "lernejo", "contained": "libro", "relation": "en"}
+{"container": "lernejo", "contained": "papero", "relation": "en"}
+{"container": "lernejo", "contained": "tablo", "relation": "en"}
+{"container": "lernejo", "contained": "seĝo", "relation": "en"}
+{"container": "hospitalo", "contained": "tablo", "relation": "en"}
+{"container": "hospitalo", "contained": "seĝo", "relation": "en"}
+{"container": "restoracio", "contained": "tablo", "relation": "en"}
+{"container": "restoracio", "contained": "seĝo", "relation": "en"}
+{"container": "restoracio", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
+{"container": "vendejo", "contained": "breto", "relation": "en"}
+{"container": "vendejo", "contained": "korbo", "relation": "en"}
+{"container": "parko", "contained": "arbo", "relation": "en"}
+{"container": "parko", "contained": "floro", "relation": "en"}
+{"container": "parko", "contained": "seĝo", "relation": "en"}

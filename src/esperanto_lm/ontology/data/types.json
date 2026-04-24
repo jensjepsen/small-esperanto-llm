@@ -1,0 +1,14 @@
+{
+  "physical": null,
+  "animate": "physical",
+  "inanimate": "physical",
+  "location": "physical",
+  "person": "animate",
+  "animal": "animate",
+  "artifact": "inanimate",
+  "natural_object": "inanimate",
+  "substance": "inanimate",
+  "abstract": null,
+  "event": "abstract",
+  "information": "abstract"
+}

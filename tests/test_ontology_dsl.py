@@ -117,7 +117,7 @@ def _build_lex() -> Lexicon:
     }
     return Lexicon(
         types=types, slots=slots, concepts=concepts,
-        qualities={}, relations=relations, actions=actions, affixes={})
+        relations=relations, actions=actions, affixes={})
 
 
 @pytest.fixture

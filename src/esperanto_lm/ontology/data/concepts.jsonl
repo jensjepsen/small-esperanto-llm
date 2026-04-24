@@ -1,0 +1,46 @@
+{"lemma": "persono", "entity_type": "person", "properties": {}}
+{"lemma": "kuirejo", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "laborejo", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "manĝejo", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "ĝardeno", "entity_type": "location", "properties": {"indoor_outdoor": ["outdoor"]}}
+{"lemma": "salono", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "oficejo", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "biblioteko", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "hospitalo", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "lernejo", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "restoracio", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "vendejo", "entity_type": "location", "properties": {"indoor_outdoor": ["indoor"]}}
+{"lemma": "parko", "entity_type": "location", "properties": {"indoor_outdoor": ["outdoor"]}}
+{"lemma": "pano", "entity_type": "substance", "properties": {"edibility": ["edible"], "integrity": ["intact"], "presence": ["present"], "state_of_matter": ["solid"]}}
+{"lemma": "pomo", "entity_type": "substance", "properties": {"edibility": ["edible"], "integrity": ["intact"], "presence": ["present"], "state_of_matter": ["solid"]}}
+{"lemma": "ovo", "entity_type": "substance", "properties": {"edibility": ["edible"], "integrity": ["intact"], "presence": ["present"], "fragility": ["fragile"], "state_of_matter": ["solid"]}}
+{"lemma": "akvo", "entity_type": "substance", "properties": {"edibility": ["edible"], "presence": ["present"], "state_of_matter": ["liquid"], "transforms_on_spill": ["flako"]}}
+{"lemma": "lakto", "entity_type": "substance", "properties": {"edibility": ["edible"], "presence": ["present"], "state_of_matter": ["liquid"], "transforms_on_spill": ["flako"]}}
+{"lemma": "tablo", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["wood"]}}
+{"lemma": "seĝo", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["wood"]}}
+{"lemma": "breto", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["wood"]}}
+{"lemma": "pordo", "entity_type": "artifact", "properties": {"lock_state": ["locked"], "openness": ["closed"], "state_of_matter": ["solid"]}}
+{"lemma": "fenestro", "entity_type": "artifact", "properties": {"openness": ["closed"], "fragility": ["fragile"], "integrity": ["intact"], "state_of_matter": ["solid"], "transforms_on_break": ["vitropecetoj"]}}
+{"lemma": "muro", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"]}}
+{"lemma": "glaso", "entity_type": "artifact", "properties": {"fragility": ["fragile"], "integrity": ["intact"], "presence": ["present"], "openness": ["open"], "state_of_matter": ["solid"], "transforms_on_break": ["vitropecetoj"]}}
+{"lemma": "botelo", "entity_type": "artifact", "properties": {"fragility": ["fragile"], "integrity": ["intact"], "openness": ["closed"], "state_of_matter": ["solid"], "transforms_on_break": ["vitropecetoj"]}}
+{"lemma": "korbo", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "openness": ["open"], "state_of_matter": ["solid"], "made_of": ["wicker"]}}
+{"lemma": "floro", "entity_type": "substance", "properties": {"water_state": ["thirsty"], "presence": ["present"], "state_of_matter": ["solid"]}}
+{"lemma": "arbo", "entity_type": "substance", "properties": {"presence": ["present"], "state_of_matter": ["solid"], "made_of": ["wood"]}}
+{"lemma": "semo", "entity_type": "substance", "properties": {"water_state": ["thirsty"], "presence": ["present"], "state_of_matter": ["solid"]}}
+{"lemma": "ligno", "entity_type": "substance", "properties": {"fragility": ["sturdy"], "attachment": ["loose"], "state_of_matter": ["solid"], "made_of": ["wood"]}}
+{"lemma": "najlo", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"]}}
+{"lemma": "sofo", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["fabric"]}}
+{"lemma": "libro", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["paper"]}}
+{"lemma": "papero", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["paper"]}}
+{"lemma": "pilko", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["rubber"]}}
+{"lemma": "aŭto", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["metal"]}}
+{"lemma": "biciklo", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["metal"]}}
+{"lemma": "trajno", "entity_type": "artifact", "properties": {"fragility": ["sturdy"], "state_of_matter": ["solid"], "made_of": ["metal"]}}
+{"lemma": "kato", "entity_type": "animal", "properties": {}}
+{"lemma": "hundo", "entity_type": "animal", "properties": {}}
+{"lemma": "birdo", "entity_type": "animal", "properties": {}}
+{"lemma": "muso", "entity_type": "animal", "properties": {}}
+{"lemma": "papago", "entity_type": "animal", "properties": {}}
+{"lemma": "vitropecetoj", "entity_type": "inanimate", "properties": {"hazard": ["sharp"], "fragility": ["sturdy"], "state_of_matter": ["solid"]}}
+{"lemma": "flako", "entity_type": "substance", "properties": {"hazard": ["slippery"], "state_of_matter": ["liquid"], "presence": ["present"]}}

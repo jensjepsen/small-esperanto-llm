@@ -25,7 +25,6 @@ from .schemas import (
     ContainmentPattern,
     Effect,
     PropertySlot,
-    Quality,
     Relation,
 )
 from .types import TypeSpine
@@ -43,14 +42,10 @@ class Lexicon:
     types: TypeSpine
     slots: dict[str, PropertySlot]
     concepts: dict[str, Concept]
-    qualities: dict[str, Quality]
     relations: dict[str, Relation]
     actions: dict[str, Action]
     affixes: dict[str, Affix]                   # keyed by form (e.g. "il")
     containment: list[ContainmentFact] = field(default_factory=list)
-
-    # Convenience: derived from `qualities` + `slots`.
-    quality_applies_to: dict[str, list[str]] = field(default_factory=dict)
 
     # ---------- read helpers ----------
     def concept(self, lemma: str) -> Concept:
@@ -191,7 +186,12 @@ def _apply_derivations(
 
 # --------------------------- top-level load ---------------------------
 
-DATA_DIR = Path("data/ontology")
+# Default data lives next to this module — `ontology/data/`. Keeps the
+# lexicon under version control, lets `load_lexicon()` work with no
+# argument from anywhere (not just a CWD with a `data/` symlink), and
+# makes the package installable without an external data drop. Pass an
+# explicit `data_dir` to override (e.g., for experiments or tests).
+DATA_DIR = Path(__file__).parent / "data"
 
 
 def load_lexicon(
@@ -227,23 +227,6 @@ def load_lexicon(
             entity_type=c.entity_type, slots=slots, spine=spine,
         )
         concepts[c.lemma] = c
-
-    qualities: dict[str, Quality] = {}
-    quality_applies_to: dict[str, list[str]] = {}
-    for d in _read_jsonl(data_dir / "qualities.jsonl"):
-        q = Quality(**d)
-        if q.lemma in qualities:
-            raise ValueError(f"duplicate quality {q.lemma!r}")
-        if q.slot not in slots:
-            raise ValueError(
-                f"quality {q.lemma!r}: references unknown slot {q.slot!r}")
-        slot = slots[q.slot]
-        if slot.vocabulary is not None and q.value not in slot.vocabulary:
-            raise ValueError(
-                f"quality {q.lemma!r}: value {q.value!r} not in slot "
-                f"{q.slot!r} vocabulary {slot.vocabulary}")
-        qualities[q.lemma] = q
-        quality_applies_to[q.lemma] = list(slot.applies_to)
 
     relations: dict[str, Relation] = {}
     for d in _read_jsonl(data_dir / "relations.jsonl"):
@@ -359,10 +342,9 @@ def load_lexicon(
             containment.append(fact)
 
     return Lexicon(
-        types=spine, slots=slots, concepts=concepts, qualities=qualities,
+        types=spine, slots=slots, concepts=concepts,
         relations=relations, actions=actions, affixes=affixes,
         containment=containment,
-        quality_applies_to=quality_applies_to,
     )
 
 

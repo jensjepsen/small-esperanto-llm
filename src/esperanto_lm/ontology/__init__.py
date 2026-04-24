@@ -44,7 +44,6 @@ from .schemas import (
     ContainmentPattern,
     Effect,
     PropertySlot,
-    Quality,
     Relation,
     RoleSpec,
 )
@@ -53,7 +52,7 @@ from .types import TypeSpine
 __all__ = [
     # schemas
     "Action", "Affix", "Concept", "ContainmentFact", "ContainmentPattern",
-    "Effect", "PropertySlot", "Quality", "Relation", "RoleSpec",
+    "Effect", "PropertySlot", "Relation", "RoleSpec",
     # loader
     "FUNCTIONAL_SIGNATURE", "Lexicon", "load_lexicon",
     "resolve_signature", "signature_effects",

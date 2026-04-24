@@ -22,12 +22,12 @@ from esperanto_lm.ontology.dsl.rules import (
 from esperanto_lm.ontology.realize import past_tense, to_accusative
 
 
-DATA_DIR = Path("data/ontology")
+
 
 
 @pytest.fixture
 def lex():
-    return load_lexicon(DATA_DIR)
+    return load_lexicon()
 
 
 # ---- realize.py morphology helpers ---------------------------------------

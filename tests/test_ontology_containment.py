@@ -58,7 +58,7 @@ def _write_lexicon(tmp: Path, *, containment: list[dict] | None = None,
     (tmp / "types.json").write_text(json.dumps(types))
     for name, payload in [
         ("slots", slots), ("concepts", concepts), ("relations", relations),
-        ("qualities", []), ("actions", []), ("affixes", []),
+        ("actions", []), ("affixes", []),
     ]:
         with open(tmp / f"{name}.jsonl", "w") as f:
             for entry in payload:

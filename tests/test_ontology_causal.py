@@ -22,13 +22,13 @@ def _run(t, lex):
         t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex), [], lex)
 
 
-DATA_DIR = Path("data/ontology")
+
 
 
 
 @pytest.fixture
 def lex():
-    return load_lexicon(DATA_DIR)
+    return load_lexicon()
 
 
 def _kitchen_trace(lex):

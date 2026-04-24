@@ -1,0 +1,19 @@
+{"name": "fragility", "vocabulary": ["fragile", "sturdy"], "applies_to": ["inanimate"], "scalar": true}
+{"name": "integrity", "vocabulary": ["intact", "severed", "broken"], "applies_to": ["physical"], "scalar": true}
+{"name": "temperature", "vocabulary": ["cold", "warm", "hot"], "applies_to": ["physical"], "scalar": true}
+{"name": "lock_state", "vocabulary": ["locked", "unlocked"], "applies_to": ["artifact"], "scalar": true}
+{"name": "edibility", "vocabulary": ["edible", "inedible"], "applies_to": ["physical"], "scalar": true}
+{"name": "functional_signature", "vocabulary": null, "applies_to": ["artifact"], "scalar": true}
+{"name": "hunger", "vocabulary": ["hungry", "sated"], "applies_to": ["animate"], "scalar": true}
+{"name": "presence", "vocabulary": ["present", "consumed"], "applies_to": ["physical"], "scalar": true}
+{"name": "openness", "vocabulary": ["open", "closed"], "applies_to": ["artifact"], "scalar": true}
+{"name": "water_state", "vocabulary": ["thirsty", "watered"], "applies_to": ["physical"], "scalar": true}
+{"name": "cleanliness", "vocabulary": ["dirty", "clean"], "applies_to": ["physical"], "scalar": true}
+{"name": "indoor_outdoor", "vocabulary": ["indoor", "outdoor"], "applies_to": ["location"], "scalar": true}
+{"name": "attachment", "vocabulary": ["loose", "fastened"], "applies_to": ["physical"], "scalar": true}
+{"name": "state_of_matter", "vocabulary": ["solid", "liquid", "gas"], "applies_to": ["inanimate"], "scalar": true}
+{"name": "hazard", "vocabulary": ["sharp", "slippery"], "applies_to": ["inanimate"], "scalar": true}
+{"name": "transforms_on_break", "vocabulary": null, "applies_to": ["inanimate"], "scalar": true}
+{"name": "transforms_on_spill", "vocabulary": null, "applies_to": ["inanimate"], "scalar": true}
+{"name": "flammability", "vocabulary": ["flammable", "inflammable"], "applies_to": ["inanimate"], "scalar": true}
+{"name": "made_of", "vocabulary": null, "applies_to": ["physical"], "scalar": true}

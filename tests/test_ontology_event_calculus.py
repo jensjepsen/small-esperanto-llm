@@ -22,12 +22,12 @@ from esperanto_lm.ontology import (
 )
 
 
-DATA_DIR = Path("data/ontology")
+
 
 
 @pytest.fixture
 def lex():
-    return load_lexicon(DATA_DIR)
+    return load_lexicon()
 
 
 # ---- Step 1: schema additions -------------------------------------------
@@ -197,7 +197,7 @@ def run_to_fixed_point_v2(trace, rules, lexicon=None):
     if lexicon is None:
         from esperanto_lm.ontology import load_lexicon
         from pathlib import Path
-        lexicon = load_lexicon(Path("data/ontology"))
+        lexicon = load_lexicon()
     flat: list = []
     for item in rules:
         if isinstance(item, _Rule):

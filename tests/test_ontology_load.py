@@ -13,22 +13,21 @@ from esperanto_lm.ontology import (
 from esperanto_lm.ontology.loader import resolve_signature
 
 
-# Use the real data directory for the prototype's golden cases. Structural
-# tests (failure paths) write a temporary tree. Tests use the real
-# DefaultMorphParser so we catch upstream parser changes; the StubMorphParser
-# remains available for fixtures that don't want the root dictionary.
-DATA_DIR = Path("data/ontology")
+# The real data directory lives next to the ontology module — tests
+# use the loader's default. Structural tests (failure paths) write a
+# temporary tree. Tests use the real DefaultMorphParser so we catch
+# upstream parser changes.
 
 
 def test_load_real_lexicon():
-    lex = load_lexicon(DATA_DIR)
+    lex = load_lexicon()
     assert "persono" in lex.concepts
     assert "pano" in lex.concepts
     assert "tranĉi" in lex.actions
 
 
 def test_trancxilo_is_derived_not_authored():
-    lex = load_lexicon(DATA_DIR)
+    lex = load_lexicon()
     knife = lex.concepts["tranĉilo"]
     assert knife.derived is True
     assert knife.derived_from == {"verb": "tranĉi", "affix": "il"}
@@ -44,17 +43,9 @@ def test_trancxilo_is_derived_not_authored():
     assert lex.concepts["ŝlosilo"].derived is True
 
 
-def test_quality_applies_to_derived_from_slot(tmp_path):
-    lex = load_lexicon(DATA_DIR)
-    # rompebla names slot=fragility, which applies_to=[inanimate]
-    assert lex.quality_applies_to["rompebla"] == ["inanimate"]
-    # varma names slot=temperature, which applies_to=[physical]
-    assert lex.quality_applies_to["varma"] == ["physical"]
-
-
 def _write_min_ontology(root: Path, **overrides):
     """Write a minimal ontology to `root`. `overrides` may set
-    'slots'/'concepts'/'qualities'/'actions'/'affixes'/'relations'/'types'
+    'slots'/'concepts'/'actions'/'affixes'/'relations'/'types'
     to a list of dicts (or dict for types) which will replace the default."""
     defaults = {
         "types": {"physical": None, "artifact": "physical"},
@@ -66,27 +57,16 @@ def _write_min_ontology(root: Path, **overrides):
             {"lemma": "domo", "entity_type": "artifact",
              "properties": {"color": ["red"]}},
         ],
-        "qualities": [],
         "relations": [],
         "actions": [],
         "affixes": [],
     }
     defaults.update(overrides)
     (root / "types.json").write_text(json.dumps(defaults["types"]))
-    for name in ("slots", "concepts", "qualities", "relations",
-                 "actions", "affixes"):
+    for name in ("slots", "concepts", "relations", "actions", "affixes"):
         with open(root / f"{name}.jsonl", "w") as f:
             for d in defaults[name]:
                 f.write(json.dumps(d) + "\n")
-
-
-def test_quality_with_unknown_slot_fails(tmp_path):
-    _write_min_ontology(
-        tmp_path,
-        qualities=[{"lemma": "ruĝa", "slot": "no_such_slot", "value": "red"}],
-    )
-    with pytest.raises(ValueError, match="no_such_slot"):
-        load_lexicon(tmp_path)
 
 
 def test_concept_value_outside_slot_vocabulary_fails(tmp_path):

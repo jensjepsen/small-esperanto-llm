@@ -11,6 +11,8 @@ wheels/
 
 # Data & outputs
 data/
+# ...except the ontology's packaged data, which ships with the library.
+!src/esperanto_lm/ontology/data/
 tokenizer/
 runs/
 results/
