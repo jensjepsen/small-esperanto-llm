@@ -208,7 +208,9 @@ def test_no_la_on_location_first_mention(lex):
 
 def test_setup_introduces_then_event_uses_definite(lex):
     """Akvo + glaso both first-mentioned in setup; subsequent fall events
-    use 'la X'."""
+    use 'la X'. Glaso's fali + rompiĝi aggregate onto one verb phrase
+    via the same-subject combiner — the article rule must still
+    resolve glaso as definite in that coordinated sentence."""
     t = Trace()
     glaso = t.add_entity("glaso", lex, entity_id="glaso")
     akvo = t.add_entity("akvo", lex, entity_id="akvo")
@@ -221,8 +223,10 @@ def test_setup_introduces_then_event_uses_definite(lex):
     # Setup line: both indefinite (akvo bare, glaso bare).
     assert "Akvo estis en glaso." in prose, \
         f"setup line should have both bare; got: {prose!r}"
-    # Subsequent: la glaso, la akvo.
-    assert "La glaso falis." in prose
+    # Subsequent glaso reference uses definite. Aggregation collapses
+    # fali + rompiĝi into one clause: "La glaso falis kaj rompiĝis."
+    assert "La glaso falis kaj rompiĝis." in prose, prose
+    # Subsequent akvo reference definite too.
     assert "la akvo falis." in prose
 
 
