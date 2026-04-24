@@ -7,14 +7,17 @@ from pathlib import Path
 import pytest
 
 from esperanto_lm.ontology import (
-    DEFAULT_RULES,
     Trace,
     load_lexicon,
-    make_use_instrument,
     make_event,
     realize_trace,
-    run_to_fixed_point,
     sample_scene,
+)
+from esperanto_lm.ontology.dsl import run_dsl
+from esperanto_lm.ontology.dsl.rules import (
+    DEFAULT_DSL_DERIVATIONS,
+    DEFAULT_DSL_RULES,
+    make_use_instrument_rules,
 )
 from esperanto_lm.ontology.realize import past_tense, to_accusative
 
@@ -115,7 +118,8 @@ def test_realize_canonical_kitchen_trace(lex):
     t.assert_relation("havi", (petro.id, knife.id), lex)
     t.add_event(make_event("uzi", roles={
         "agent": petro.id, "instrument": knife.id, "theme": pano.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex)
     assert "tranĉis" in prose
@@ -131,7 +135,8 @@ def test_realize_returns_string_for_random_traces(lex):
     rng = random.Random(123)
     for _ in range(30):
         t, _ = sample_scene(lex, rng)
-        run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+        run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
         prose = realize_trace(t, lex)
         assert isinstance(prose, str) and prose
         assert prose.endswith(".")
@@ -149,7 +154,8 @@ def test_use_instrument_event_collapses_in_prose(lex):
     t.assert_relation("havi", (sara.id, knife.id), lex)
     t.add_event(make_event("uzi", roles={
         "agent": sara.id, "instrument": knife.id, "theme": pano.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex)
     assert "tranĉis" in prose, "the synthesized verb should still be rendered"
@@ -175,7 +181,8 @@ def test_first_mention_indefinite_subsequent_definite(lex):
     t.assert_relation("havi", (sara.id, knife.id), lex)
     t.add_event(make_event("uzi", roles={
         "agent": sara.id, "instrument": knife.id, "theme": pano.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex)
     # First-mention bare:
@@ -207,7 +214,8 @@ def test_setup_introduces_then_event_uses_definite(lex):
     akvo = t.add_entity("akvo", lex, entity_id="akvo")
     t.assert_relation("en", (akvo.id, glaso.id), lex)
     t.add_event(make_event("fali", roles={"theme": glaso.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex)
     # Setup line: both indefinite (akvo bare, glaso bare).
@@ -284,7 +292,8 @@ def test_synthetic_grounding_for_agentless_drop(lex):
     t.add_entity("kuirejo", lex, entity_id="kuirejo")
     glaso = t.add_entity("glaso", lex, entity_id="glaso")
     t.add_event(make_event("fali", roles={"theme": glaso.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex, scene_location_id="kuirejo")
     # Synthetic setup: glaso grounded to la kuirejo.
@@ -304,7 +313,8 @@ def test_synthetic_grounding_skips_entities_already_in_relations(lex):
     akvo = t.add_entity("akvo", lex, entity_id="akvo")
     t.assert_relation("en", (akvo.id, glaso.id), lex)
     t.add_event(make_event("fali", roles={"theme": glaso.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex, scene_location_id="kuirejo")
     # Both akvo (subject) and glaso (object) are in the en relation, so
@@ -325,7 +335,8 @@ def test_no_synthetic_grounding_when_explicit_relation_present(lex):
     t.assert_relation("havi", (sara.id, pano.id), lex)
     t.add_event(make_event("manĝi", roles={
         "agent": sara.id, "theme": pano.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex, scene_location_id="kuirejo")
     # Sara's `havi pano` introduces pano; no synthetic 'Pano estis en la kuirejo'.
@@ -405,7 +416,8 @@ def test_realize_variation_changes_with_rng_seed(lex):
     sara.set_property("hunger", "hungry")
     t.add_event(make_event("manĝi", roles={
         "agent": sara.id, "theme": pano.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     outputs = set()
     for seed in range(10):
@@ -430,7 +442,8 @@ def test_realize_pronoun_substitution_for_lone_person(lex):
     sara.set_property("hunger", "hungry")
     t.add_event(make_event("manĝi", roles={
         "agent": sara.id, "theme": pano.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     saw_pronoun = False
     for seed in range(30):
@@ -456,7 +469,8 @@ def test_realize_no_pronoun_when_two_same_gender_persons(lex):
     sara.set_property("hunger", "hungry")
     t.add_event(make_event("manĝi", roles={
         "agent": sara.id, "theme": pano.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     for seed in range(30):
         prose = realize_trace(t, lex, scene_location_id="kuirejo",
@@ -471,7 +485,8 @@ def test_realize_variation_uses_alternate_connectives(lex):
     t = Trace()
     glaso = t.add_entity("glaso", lex, entity_id="glaso")
     t.add_event(make_event("fali", roles={"theme": glaso.id}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     seen_connectives = set()
     for seed in range(40):
@@ -497,7 +512,8 @@ def test_realize_deterministic_when_rng_is_none(lex):
     t.entities["petro"].set_property("hunger", "hungry")
     t.add_event(make_event("manĝi", roles={
         "agent": "petro", "theme": "pano"}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
 
     a = realize_trace(t, lex, scene_location_id="kuirejo")
     b = realize_trace(t, lex, scene_location_id="kuirejo")
@@ -512,7 +528,8 @@ def test_sampler_plus_prune_yields_only_participating_persons(lex):
     rng = random.Random(7)
     for _ in range(40):
         t, _ = sample_scene(lex, rng)
-        run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+        run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+            DEFAULT_DSL_DERIVATIONS, lex)
         prune_unused_persons(t)
         used = set()
         for ev in t.events:

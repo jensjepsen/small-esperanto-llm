@@ -1,4 +1,10 @@
-"""Esperanto lexical-semantic ontology + causal rule engine."""
+"""Esperanto lexical-semantic ontology + DSL rule engine.
+
+Phase 5 retired the imperative `run_to_fixed_point` engine and the
+hand-coded rule callables. The DSL under `esperanto_lm.ontology.dsl`
+is now the one and only runtime — see its package docstring for the
+pattern vocabulary, derivation layer, and fixed-point loop.
+"""
 from .containment import (
     containment_relation_for,
     reachable_from,
@@ -8,11 +14,9 @@ from .causal import (
     EntityInstance,
     Event,
     RelationAssertion,
-    Rule,
     Trace,
     effect_changes,
     make_event,
-    run_to_fixed_point,
 )
 from .loader import (
     FUNCTIONAL_SIGNATURE,
@@ -31,19 +35,6 @@ from .sampler import (
     prune_unused_persons,
     recipes_for,
     sample_scene,
-)
-from .rules import (
-    DEFAULT_RULES,
-    broken_container_releases_contents,
-    carried_fragile_falls_when_carrier_falls,
-    container_falls_contents_fall,
-    fire_spreads_to_adjacent_flammables,
-    fragile_falls_breaks,
-    hungry_eats_sated,
-    make_broken_fragile_creates_shards,
-    make_use_instrument,
-    make_wet_liquid_container_tips,
-    person_walks_on_hazard_falls,
 )
 from .schemas import (
     Action,
@@ -68,17 +59,9 @@ __all__ = [
     "resolve_signature", "signature_effects",
     # morph
     "DefaultMorphParser", "MorphParse", "MorphParser", "StubMorphParser",
-    # causal
-    "EntityInstance", "Event", "RelationAssertion", "Rule", "Trace",
-    "effect_changes", "make_event", "run_to_fixed_point",
-    # rules
-    "DEFAULT_RULES", "make_use_instrument",
-    "make_broken_fragile_creates_shards", "make_wet_liquid_container_tips",
-    "fragile_falls_breaks", "hungry_eats_sated",
-    "container_falls_contents_fall", "broken_container_releases_contents",
-    "person_walks_on_hazard_falls",
-    "carried_fragile_falls_when_carrier_falls",
-    "fire_spreads_to_adjacent_flammables",
+    # causal: state primitives only; rule execution lives in `dsl`.
+    "EntityInstance", "Event", "RelationAssertion", "Trace",
+    "effect_changes", "make_event",
     # realize
     "realize_trace",
     # sampler

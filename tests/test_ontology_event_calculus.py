@@ -180,11 +180,32 @@ def test_property_at_returns_initial_at_exact_creation_position(lex):
 
 # ---- Step 3: new engine + ported fragile_falls_breaks_v2 -----------------
 
-from esperanto_lm.ontology.causal import run_to_fixed_point as run_to_fixed_point_v2
-from esperanto_lm.ontology.rules import (
-    DEFAULT_RULES as DEFAULT_RULES_V2,
+from esperanto_lm.ontology.dsl import run_dsl as _run_dsl
+from esperanto_lm.ontology.dsl.rules import (
+    DEFAULT_DSL_RULES as DEFAULT_RULES_V2,
     fragile_falls_breaks as fragile_falls_breaks_v2,
 )
+
+
+def run_to_fixed_point_v2(trace, rules, lexicon=None):
+    """Compatibility shim: the original v2 engine took only (trace,
+    rules). The DSL engine requires lex for relation arg-order lookup
+    and concept-field reads; we materialize it here. Also flattens
+    any list-of-rules passed through (e.g. `make_use_instrument_v2(lex)`
+    now returns a list rather than one rule, per the Phase-4 port)."""
+    from esperanto_lm.ontology.dsl.engine import Rule as _Rule
+    if lexicon is None:
+        from esperanto_lm.ontology import load_lexicon
+        from pathlib import Path
+        lexicon = load_lexicon(Path("data/ontology"))
+    flat: list = []
+    for item in rules:
+        if isinstance(item, _Rule):
+            flat.append(item)
+        else:
+            # Assume iterable (e.g. make_use_instrument_v2's list).
+            flat.extend(item)
+    return _run_dsl(trace, flat, [], lexicon)
 
 
 def test_v2_engine_runs_fragile_break(lex):
@@ -236,87 +257,35 @@ def test_v2_engine_does_not_break_when_theme_already_broken(lex):
     assert "rompiĝi" not in actions
 
 
-def test_v2_engine_extended_creates_entity(lex):
-    """Custom v2 rule that creates a shards entity. The engine registers
-    it and entities_at(t+1) reflects the creation."""
-    def fragile_falls_creates_shards(trace: Trace, t: int) -> list:
-        out = []
-        for ev in trace.events[:t]:
-            if ev.action != "fali":
-                continue
-            theme_id = ev.roles.get("theme")
-            if not theme_id:
-                continue
-            fragility = trace.property_at(theme_id, "fragility", t)
-            if not fragility or "fragile" not in (
-                    fragility if isinstance(fragility, list) else [fragility]):
-                continue
-            integrity = trace.property_at(theme_id, "integrity", t)
-            already_broken = (integrity == "broken" or
-                              (isinstance(integrity, list) and "broken" in integrity))
-            if already_broken:
-                continue
-            shards_id = f"shards_of_{theme_id}"
-            shards = EntityInstance(
-                id=shards_id, concept_lemma="vitropecetoj",
-                entity_type="inanimate",
-                properties={"sharpness": ["sharp"]})
-            out.append(make_event(
-                action="rompiĝi",
-                roles={"theme": theme_id},
-                caused_by=[ev.id],
-                property_changes={(theme_id, "integrity"): "broken"},
-                creates=[shards],
-            ))
-        return out
-
-    t = Trace()
-    t.add_entity("glaso", lex, entity_id="glaso")
-    t.events.append(make_event("fali", roles={"theme": "glaso"}))
-
-    run_to_fixed_point_v2(t, [fragile_falls_creates_shards])
-
-    # The shards entity should now exist in the trace.
-    assert "shards_of_glaso" in t.entities
-    shards_ent = t.entities["shards_of_glaso"]
-    # created_at_event was set to the rompiĝi event's index.
-    rompig_idx = next(i for i, e in enumerate(t.events) if e.action == "rompiĝi")
-    assert shards_ent.created_at_event == rompig_idx
-    # Visible at positions > rompig_idx, not at <=.
-    assert "shards_of_glaso" in {e.id for e in t.entities_at(rompig_idx + 1)}
-    assert "shards_of_glaso" not in {e.id for e in t.entities_at(rompig_idx)}
-    # Initial property is readable via property_at.
-    assert t.property_at("shards_of_glaso", "sharpness",
-                         rompig_idx + 1) == ["sharp"]
-
-
-def test_v2_engine_memoization_prevents_infinite_loop(lex):
-    """A rule that always wants to fire the same event id must not loop
-    forever — the engine memoizes per event id."""
-    def always_fires_same_event(trace: Trace, t: int) -> list:
-        if t >= 1:
-            return [make_event("fali", roles={"theme": "glaso"},
-                               caused_by=["seed"])]
-        return []
-
-    t = Trace()
-    t.add_entity("glaso", lex, entity_id="glaso")
-    t.events.append(make_event("fali", roles={"theme": "glaso"}))
-    iters = run_to_fixed_point_v2(t, [always_fires_same_event])
-    assert iters < 50
-    fali_count = sum(1 for ev in t.events if ev.action == "fali")
-    assert fali_count == 2  # seed + 1 added by the rule
+# Retired in Phase 5: `test_v2_engine_extended_creates_entity` and
+# `test_v2_engine_memoization_prevents_infinite_loop` exercised the old
+# engine's `Callable[[Trace, int], list[Event]]` rule protocol (and its
+# per-event-id memoization semantics). The DSL engine uses declarative
+# `Rule` instances instead; equivalent coverage lives in
+# `test_ontology_dsl.py::test_3_create_entity_then_emit_resolves` (for
+# entity creation) and the DSL's per-(rule, event, binding)
+# memoization is exercised implicitly throughout the cascade tests.
 
 
 # ---- Step 4: ported rules (hungry_eats_sated, container_falls,
 #              broken_container, use_instrument) -----------------------------
 
-from esperanto_lm.ontology.rules import (
+from esperanto_lm.ontology.dsl.rules import (
     broken_container_releases_contents as broken_container_releases_contents_v2,
     container_falls_contents_fall as container_falls_contents_fall_v2,
     hungry_eats_sated as hungry_eats_sated_v2,
-    make_use_instrument as make_use_instrument_v2,
+    make_use_instrument_rules as _make_use_instrument_rules,
 )
+
+
+def make_use_instrument_v2(lex):
+    """Compatibility shim: the old factory returned a single rule; the
+    DSL version returns a list (one rule per instrument-capable verb).
+    For tests that pass the result into a `[...]` list, a list-of-rules
+    in place of one rule works via the engine's list flattening, but
+    many sites compose `[rule]` — return the list directly and accept
+    that it unpacks where used."""
+    return _make_use_instrument_rules(lex)
 
 
 def test_v2_hungry_eats_sated_fires(lex):
@@ -575,7 +544,7 @@ def test_v2_full_rule_pool_kitchen_cascade(lex):
     in the same trace."""
     # DEFAULT_RULES_V2 was renamed to DEFAULT_RULES in Step 6; alias here
     # for clarity within this test.
-    from esperanto_lm.ontology.rules import DEFAULT_RULES as DEFAULT_RULES_V2
+    from esperanto_lm.ontology.dsl.rules import DEFAULT_DSL_RULES as DEFAULT_RULES_V2
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
     t.add_entity("akvo", lex, entity_id="akvo")

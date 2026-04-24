@@ -14,18 +14,21 @@ from pathlib import Path
 import pytest
 
 from esperanto_lm.ontology import (
-    DEFAULT_RULES,
     Trace,
-    carried_fragile_falls_when_carrier_falls,
     effect_changes,
-    fire_spreads_to_adjacent_flammables,
     load_lexicon,
-    make_broken_fragile_creates_shards,
     make_event,
-    make_use_instrument,
-    make_wet_liquid_container_tips,
+)
+from esperanto_lm.ontology.dsl import run_dsl
+from esperanto_lm.ontology.dsl.rules import (
+    DEFAULT_DSL_DERIVATIONS,
+    DEFAULT_DSL_RULES,
+    broken_fragile_creates_shards,
+    carried_fragile_falls_when_carrier_falls,
+    fire_spreads_to_adjacent_flammables,
+    make_use_instrument_rules,
     person_walks_on_hazard_falls,
-    run_to_fixed_point,
+    wet_liquid_container_tips,
 )
 
 
@@ -38,11 +41,7 @@ def lex():
 
 
 def _all_rules(lex):
-    return DEFAULT_RULES + [
-        make_use_instrument(lex),
-        make_broken_fragile_creates_shards(lex),
-        make_wet_liquid_container_tips(lex),
-    ]
+    return DEFAULT_DSL_RULES + make_use_instrument_rules(lex)
 
 
 # ---- broken_fragile_creates_shards ---------------------------------------
@@ -53,7 +52,7 @@ def test_broken_glaso_spawns_vitropecetoj(lex):
     t.events.append(make_event("rompiĝi", roles={"theme": "glaso"},
                                property_changes={("glaso", "integrity"): "broken"}))
 
-    run_to_fixed_point(t, [make_broken_fragile_creates_shards(lex)])
+    run_dsl(t, [broken_fragile_creates_shards], [], lex)
 
     aperi_events = [e for e in t.events if e.action == "aperi"]
     assert len(aperi_events) == 1
@@ -68,7 +67,7 @@ def test_broken_non_transforming_does_not_spawn(lex):
     t = Trace()
     t.add_entity("ovo", lex, entity_id="ovo")
     t.events.append(make_event("rompiĝi", roles={"theme": "ovo"}))
-    run_to_fixed_point(t, [make_broken_fragile_creates_shards(lex)])
+    run_dsl(t, [broken_fragile_creates_shards], [], lex)
     assert not any(e.action == "aperi" for e in t.events)
 
 
@@ -78,7 +77,7 @@ def test_fallen_akvo_spawns_flako(lex):
     t = Trace()
     t.add_entity("akvo", lex, entity_id="akvo")
     t.events.append(make_event("fali", roles={"theme": "akvo"}))
-    run_to_fixed_point(t, [make_wet_liquid_container_tips(lex)])
+    run_dsl(t, [wet_liquid_container_tips], [], lex)
     aperi = [e for e in t.events if e.action == "aperi"]
     assert len(aperi) == 1
     puddle_id = aperi[0].roles["theme"]
@@ -91,7 +90,7 @@ def test_fallen_pano_does_not_spawn_puddle(lex):
     t = Trace()
     t.add_entity("pano", lex, entity_id="pano")
     t.events.append(make_event("fali", roles={"theme": "pano"}))
-    run_to_fixed_point(t, [make_wet_liquid_container_tips(lex)])
+    run_dsl(t, [wet_liquid_container_tips], [], lex)
     assert not any(e.action == "aperi" for e in t.events)
 
 
@@ -108,7 +107,7 @@ def test_person_in_same_location_as_hazard_falls(lex):
     t.assert_relation("en", ("glaso", "kuirejo"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
-    run_to_fixed_point(t, _all_rules(lex))
+    run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
 
     petro_falls = [e for e in t.events
                    if e.action == "fali" and e.roles.get("theme") == "petro"]
@@ -129,7 +128,7 @@ def test_person_in_different_location_does_not_fall(lex):
     t.assert_relation("en", ("glaso", "kuirejo"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
-    run_to_fixed_point(t, _all_rules(lex))
+    run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
 
     petro_falls = [e for e in t.events
                    if e.action == "fali" and e.roles.get("theme") == "petro"]
@@ -146,7 +145,7 @@ def test_carrier_falls_then_carried_fragile_falls(lex):
     # Hand-craft a fali on petro (normally this would come from a hazard).
     t.events.append(make_event("fali", roles={"theme": "petro"}))
 
-    run_to_fixed_point(t, [carried_fragile_falls_when_carrier_falls])
+    run_dsl(t, [carried_fragile_falls_when_carrier_falls], [], lex)
 
     botelo_falls = [e for e in t.events
                     if e.action == "fali" and e.roles.get("theme") == "botelo"]
@@ -159,7 +158,7 @@ def test_carrier_falls_sturdy_object_does_not_fall(lex):
     t.add_entity("libro", lex, entity_id="libro")   # sturdy
     t.assert_relation("havi", ("petro", "libro"), lex)
     t.events.append(make_event("fali", roles={"theme": "petro"}))
-    run_to_fixed_point(t, [carried_fragile_falls_when_carrier_falls])
+    run_dsl(t, [carried_fragile_falls_when_carrier_falls], [], lex)
     libro_falls = [e for e in t.events
                    if e.action == "fali" and e.roles.get("theme") == "libro"]
     assert not libro_falls
@@ -182,7 +181,7 @@ def test_deep_cascade_reaches_depth_3(lex):
     t.assert_relation("en", ("glaso", "kuirejo"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
-    run_to_fixed_point(t, _all_rules(lex))
+    run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
 
     by_id = {ev.id: ev for ev in t.events}
 
@@ -218,7 +217,7 @@ def test_fire_spreads_via_sur_contact(lex):
     t.assert_relation("sur", ("ligno", "breto"), lex)
     t.events.append(_bruli_seed(lex, "ligno"))
 
-    run_to_fixed_point(t, [fire_spreads_to_adjacent_flammables])
+    run_dsl(t, [fire_spreads_to_adjacent_flammables], DEFAULT_DSL_DERIVATIONS, lex)
 
     burning = {e.roles.get("theme") for e in t.events if e.action == "bruli"}
     assert burning == {"ligno", "breto"}
@@ -236,7 +235,7 @@ def test_fire_does_not_spread_to_nonflammables(lex):
     t.assert_relation("en", ("akvo", "glaso"), lex)
     t.events.append(_bruli_seed(lex, "papero"))
 
-    run_to_fixed_point(t, [fire_spreads_to_adjacent_flammables])
+    run_dsl(t, [fire_spreads_to_adjacent_flammables], DEFAULT_DSL_DERIVATIONS, lex)
 
     burning = {e.roles.get("theme") for e in t.events if e.action == "bruli"}
     # kuirejo is a location (skipped); glaso/akvo aren't flammable.
@@ -250,7 +249,7 @@ def test_fire_does_not_spread_to_location(lex):
     t.add_entity("papero", lex, entity_id="papero")
     t.assert_relation("en", ("papero", "kuirejo"), lex)
     t.events.append(_bruli_seed(lex, "papero"))
-    run_to_fixed_point(t, [fire_spreads_to_adjacent_flammables])
+    run_dsl(t, [fire_spreads_to_adjacent_flammables], DEFAULT_DSL_DERIVATIONS, lex)
     assert not any(e.roles.get("theme") == "kuirejo"
                    for e in t.events if e.action == "bruli")
 
@@ -274,7 +273,7 @@ def test_fire_reaches_depth_3_via_nested_containment(lex):
     t.assert_relation("sur", ("libro", "tablo"), lex)
     t.events.append(_bruli_seed(lex, "papero"))
 
-    run_to_fixed_point(t, [fire_spreads_to_adjacent_flammables])
+    run_dsl(t, [fire_spreads_to_adjacent_flammables], DEFAULT_DSL_DERIVATIONS, lex)
 
     by_id = {ev.id: ev for ev in t.events}
 
@@ -312,7 +311,7 @@ def test_deep_cascade_with_carried_fragile_reaches_depth_4(lex):
     t.assert_relation("havi", ("petro", "botelo"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
-    run_to_fixed_point(t, _all_rules(lex))
+    run_dsl(t, _all_rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
 
     # petro fell and dropped botelo.
     actions_by_theme = [(e.action, e.roles.get("theme")) for e in t.events]

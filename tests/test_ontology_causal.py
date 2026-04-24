@@ -6,13 +6,20 @@ from pathlib import Path
 import pytest
 
 from esperanto_lm.ontology import (
-    DEFAULT_RULES,
     Trace,
     load_lexicon,
     make_event,
-    make_use_instrument,
-    run_to_fixed_point,
 )
+from esperanto_lm.ontology.dsl import run_dsl
+from esperanto_lm.ontology.dsl.rules import (
+    DEFAULT_DSL_RULES,
+    make_use_instrument_rules,
+)
+
+
+def _run(t, lex):
+    return run_dsl(
+        t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex), [], lex)
 
 
 DATA_DIR = Path("data/ontology")
@@ -43,7 +50,7 @@ def test_use_instrument_synthesizes_cut_event(lex):
         "agent": "petro", "instrument": "tranĉilo", "theme": "pano"})
     t.add_event(seed)
 
-    iters = run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    iters = _run(t, lex)
 
     actions = [e.action for e in t.events]
     assert "uzi" in actions
@@ -60,7 +67,7 @@ def test_cut_event_mutates_pano_integrity(lex):
     assert t.entities["pano"].properties.get("integrity") == ["intact"]
     t.add_event(make_event("uzi", roles={
         "agent": "petro", "instrument": "tranĉilo", "theme": "pano"}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    _run(t, lex)
     assert t.property_at("pano", "integrity", len(t.events)) == "severed"
 
 
@@ -83,7 +90,7 @@ def test_theme_type_mismatch_yields_no_synthesis(lex):
 
     t.add_event(make_event("uzi", roles={
         "agent": "petro", "instrument": "tranĉilo", "theme": "ideo"}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    _run(t, lex)
     actions = [e.action for e in t.events]
     assert "tranĉi" not in actions, \
         "tranĉi should not fire on a non-physical theme"
@@ -115,7 +122,7 @@ def test_lock_via_slosilo_uses_same_generic_rule(lex):
     t.entities["pordo"].set_property("lock_state", "unlocked")
     t.add_event(make_event("uzi", roles={
         "agent": "petro", "instrument": "ŝlosilo", "theme": "pordo"}))
-    run_to_fixed_point(t, DEFAULT_RULES + [make_use_instrument(lex)])
+    _run(t, lex)
     actions = [e.action for e in t.events]
     assert "ŝlosi" in actions
     assert t.property_at("pordo", "lock_state", len(t.events)) == "locked"

@@ -26,16 +26,17 @@ from dataclasses import asdict
 from pathlib import Path
 
 from esperanto_lm.ontology import (
-    DEFAULT_RULES,
     Trace,
     load_lexicon,
-    make_broken_fragile_creates_shards,
-    make_use_instrument,
-    make_wet_liquid_container_tips,
     prune_unused_persons,
     realize_trace,
-    run_to_fixed_point,
     sample_scene,
+)
+from esperanto_lm.ontology.dsl import run_dsl
+from esperanto_lm.ontology.dsl.rules import (
+    DEFAULT_DSL_DERIVATIONS,
+    DEFAULT_DSL_RULES,
+    make_use_instrument_rules,
 )
 
 
@@ -155,13 +156,11 @@ def main() -> None:
 
     lex = load_lexicon()
     outer_rng = random.Random(args.seed)
-    # Build the full rule list: no-lex rules plus the lexicon-bound
-    # factory closures (instrument-use + transforms_on_* cascade rules).
-    rules = DEFAULT_RULES + [
-        make_use_instrument(lex),
-        make_broken_fragile_creates_shards(lex),
-        make_wet_liquid_container_tips(lex),
-    ]
+    # Full DSL rule set: base library plus one rule per instrument-
+    # capable verb (tranĉi, ŝlosi, purigi, najli). Derivations are the
+    # compositional layer — currently just flammability-from-material.
+    rules = DEFAULT_DSL_RULES + make_use_instrument_rules(lex)
+    derivations = DEFAULT_DSL_DERIVATIONS
 
     # Aggregates for summary stats
     scene_counts: Counter = Counter()
@@ -184,7 +183,7 @@ def main() -> None:
                 continue
 
             seed_event_ids = {ev.id for ev in trace.events}
-            iters = run_to_fixed_point(trace, rules)
+            iters = run_dsl(trace, rules, derivations, lex)
 
             synthesized = [
                 ev for ev in trace.events if ev.id not in seed_event_ids]

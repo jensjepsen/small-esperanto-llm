@@ -29,13 +29,11 @@ Event calculus:
 """
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from .loader import Lexicon
-from .schemas import Effect
 
 
 # ----------------------------- entities -----------------------------
@@ -290,66 +288,9 @@ class Trace:
         return ent.properties.get(prop)
 
 
-# ------------------------------ rule engine ------------------------------
-
-# Rule signature: (trace, t) -> list[Event]. Rules read state via
-# `trace.entities_at(t)` and `trace.property_at(eid, prop, t)`, return
-# events with `property_changes` and `creates`, and never mutate the
-# trace directly. Rules that need lexicon access are factory closures —
-# see `make_use_instrument` in rules.py.
-Rule = Callable[["Trace", int], list[Event]]
-
-
-def run_to_fixed_point(
-    trace: Trace, rules: list[Rule],
-    max_iterations: int = 50,
-) -> int:
-    """Event-calculus fixed-point engine.
-
-    For each iteration, for each rule, for each position t in
-    [0, len(trace.events)], call rule(trace, t) and process the events it
-    returns. Each new event is appended to trace.events with its
-    trace_position set; created entities (event.creates) are added to
-    trace.entities with created_at_event set to the new event's index.
-
-    Memoization is per event id only. The brief's suggested
-    `(rule_name, arg_key, t)` keying turns out to under-specify for
-    cascading rules: e.g. `container_falls_contents_fall` iterating
-    events at successive t values would re-emit the same `fali(akvo)`
-    event with the same id, just under different memoization keys.
-    Per-event-id dedup avoids that and naturally handles the brief's
-    "person falls multiple times" case: different walks have different
-    event ids, so the resulting falls (with different `caused_by`) get
-    different ids and both fire.
-
-    Trade-off: rules that should be allowed to re-fire as state changes
-    must ensure their produced events have distinguishing context (in
-    `caused_by` or roles). In practice this is automatic — rules react
-    to a specific triggering event and put it in `caused_by`.
-    """
-    fired_event_ids: set[str] = set()
-    for it in range(1, max_iterations + 1):
-        added_any = False
-        for rule in rules:
-            for t in range(len(trace.events) + 1):
-                produced = rule(trace, t)
-                for ev in produced:
-                    if ev.id in fired_event_ids:
-                        continue
-                    pos = len(trace.events)
-                    ev_with_pos = dataclasses.replace(
-                        ev, trace_position=pos)
-                    trace.events.append(ev_with_pos)
-                    fired_event_ids.add(ev.id)
-                    # Realize creates: register new entities into the
-                    # trace, marking when they came into existence.
-                    for created in ev.creates:
-                        if created.id in trace.entities:
-                            continue
-                        created.created_at_event = pos
-                        trace.entities[created.id] = created
-                    added_any = True
-        if not added_any:
-            return it
-    raise RuntimeError(
-        f"rule engine did not converge within {max_iterations} iterations")
+# The imperative `run_to_fixed_point` engine and its `Rule =
+# Callable[[Trace, int], list[Event]]` protocol used to live here.
+# Retired in Phase 5 of the ontology migration; replaced by
+# `esperanto_lm.ontology.dsl.run_dsl` which runs declarative DSL rules
+# plus a derivation layer. See `ontology/rules.py` for the redirect
+# note and `dsl/CLAUDE.md` for the new model.
