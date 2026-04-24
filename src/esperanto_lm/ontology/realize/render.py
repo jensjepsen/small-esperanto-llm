@@ -138,11 +138,15 @@ def _name_for(
 
 # =================== context ==================
 
+NONPERSON_PRONOUN_RATE = 0.7
+
+
 class _Ctx:
     """Per-trace rendering state. Not a dataclass because `mentioned`
     mutates in place and we don't want accidental copies."""
     __slots__ = ("trace", "lexicon", "mentioned", "rng", "tense",
-                 "scene_location_id", "rendered_event_ids")
+                 "scene_location_id", "rendered_event_ids",
+                 "last_nonperson")
 
     def __init__(self, trace, lexicon, *, scene_location_id, rng, tense):
         self.trace = trace
@@ -152,12 +156,48 @@ class _Ctx:
         self.tense = tense
         self.scene_location_id = scene_location_id
         self.rendered_event_ids: set[str] = set()
+        # Tracks the most recently mentioned non-person entity id.
+        # Cleared to None whenever a *different* non-person is mentioned,
+        # so `ĝi`/`ĝin` substitution only fires when the referent is
+        # unambiguous.
+        self.last_nonperson: Optional[str] = None
 
     def name_for(self, entity) -> str:
         return _name_for(
             entity, self.mentioned,
             scene_location_id=self.scene_location_id,
             rng=self.rng, trace=self.trace)
+
+    def theme_form(self, entity) -> str:
+        """Render a theme-position entity, pronominalizing to `ĝin`
+        when the entity is the currently-salient non-person referent
+        AND it's been mentioned before. Only fires for non-persons;
+        persons use the existing `li`/`ŝi` pathway via `name_for`.
+        """
+        if (entity.entity_type != "person"
+                and entity.id in self.mentioned
+                and self.last_nonperson == entity.id
+                and self.rng is not None
+                and self.rng.random() < NONPERSON_PRONOUN_RATE):
+            return "ĝin"
+        return to_accusative(self.name_for(entity))
+
+    def mark_nonperson_mention(self, entity) -> None:
+        """Call whenever a non-person entity is mentioned in rendered
+        prose. Pins the salient-referent slot so the next theme-
+        position mention of the same entity can pronominalize — or
+        invalidates the slot if it's a different entity."""
+        if entity.entity_type == "person":
+            return
+        self.last_nonperson = entity.id
+
+    def note_mention(self, entity) -> None:
+        """Record an entity as mentioned in rendered prose. Adds to
+        the `mentioned` set for article/pronoun resolution AND
+        updates the non-person salient slot for `ĝi`/`ĝin`
+        substitution."""
+        self.mentioned.add(entity.id)
+        self.mark_nonperson_mention(entity)
 
 
 # =================== per-message renderers ==================
@@ -170,9 +210,9 @@ def _render_scene_grounding(m: SceneGroundingMessage, ctx: _Ctx) -> Optional[str
     if scene_ent is None or ent is None:
         return None
     ent_form = ctx.name_for(ent)
-    ctx.mentioned.add(ent.id)
+    ctx.note_mention(ent)
     scene_form = ctx.name_for(scene_ent)
-    ctx.mentioned.add(scene_ent.id)
+    ctx.note_mention(scene_ent)
     template = _pick(ctx.rng, RELATION_TEMPLATES["en"])
     return template(ent_form, scene_form, ctx.tense)
 
@@ -184,7 +224,7 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
     if a is None or b is None:
         return None
     a_form = ctx.name_for(a)
-    ctx.mentioned.add(a.id)
+    ctx.note_mention(a)
     if rel.relation == "havi":
         b_form = to_accusative(ctx.name_for(b))
         template = _pick(ctx.rng, RELATION_TEMPLATES["havi"])
@@ -195,7 +235,7 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
         sent = template(a_form, b_form, ctx.tense)
     else:
         return None
-    ctx.mentioned.add(b.id)
+    ctx.note_mention(b)
     return sent
 
 
@@ -234,7 +274,7 @@ def _render_event_phrase(
         if loc is None:
             return None
         loc_form = ctx.name_for(loc)
-        ctx.mentioned.add(loc.id)
+        ctx.note_mention(loc)
         return f"En {loc_form} {inflect(ev.action, ctx.tense)}."
     else:
         return None
@@ -246,49 +286,51 @@ def _render_event_phrase(
     parts: list[str] = []
     if not drop_subject:
         subject_form = ctx.name_for(subject)
-        ctx.mentioned.add(subject.id)
+        ctx.note_mention(subject)
         parts.append(subject_form)
     else:
         # Skip subject; but still mark as mentioned for downstream
         # anaphora consistency.
-        ctx.mentioned.add(subject.id)
+        ctx.note_mention(subject)
     parts.append(inflect(ev.action, ctx.tense))
 
     if subject_role_name == "agent" and ev.roles.get("theme") and not drop_theme:
         theme = ctx.trace.entity(ev.roles["theme"])
         if theme is not None:
-            parts.append(to_accusative(ctx.name_for(theme)))
-            ctx.mentioned.add(theme.id)
+            parts.append(ctx.theme_form(theme))
+            ctx.note_mention(theme)
+            ctx.mark_nonperson_mention(theme)
             if source_entity_id is not None:
                 source_ent = ctx.trace.entities.get(source_entity_id)
                 if source_ent is not None:
                     parts.append(f"de {ctx.name_for(source_ent)}")
-                    ctx.mentioned.add(source_ent.id)
+                    ctx.note_mention(source_ent)
+                    ctx.mark_nonperson_mention(source_ent)
 
     if ev.roles.get("instrument"):
         instr = ctx.trace.entity(ev.roles["instrument"])
         if instr is not None:
             parts.append(f"per {ctx.name_for(instr)}")
-            ctx.mentioned.add(instr.id)
+            ctx.note_mention(instr)
 
     if ev.roles.get("recipient"):
         recip = ctx.trace.entity(ev.roles["recipient"])
         if recip is not None:
             parts.append(f"al {ctx.name_for(recip)}")
-            ctx.mentioned.add(recip.id)
+            ctx.note_mention(recip)
 
     if ev.roles.get("location"):
         loc = ctx.trace.entity(ev.roles["location"])
         if loc is not None:
             prep = "en" if loc.entity_type == "location" else "sur"
             parts.append(f"{prep} {ctx.name_for(loc)}")
-            ctx.mentioned.add(loc.id)
+            ctx.note_mention(loc)
 
     if ev.roles.get("destination"):
         dest = ctx.trace.entity(ev.roles["destination"])
         if dest is not None:
             parts.append(f"al {ctx.name_for(dest)}")
-            ctx.mentioned.add(dest.id)
+            ctx.note_mention(dest)
 
     # Strip trailing period for coordination (caller adds one).
     sent = " ".join(parts)
@@ -302,7 +344,7 @@ def _render_appearance(m: AppearanceMessage, ctx: _Ctx) -> Optional[str]:
     if ent is None or ent.id in ctx.mentioned:
         return None
     form = ctx.name_for(ent)
-    ctx.mentioned.add(ent.id)
+    ctx.note_mention(ent)
     verb = inflect("aperi", ctx.tense)
     return f"{verb.capitalize()} {form}."
 
@@ -323,9 +365,9 @@ def _render_relation_removed(
     if owner is None or theme is None:
         return None
     owner_form = ctx.name_for(owner)
-    ctx.mentioned.add(owner.id)
+    ctx.note_mention(owner)
     theme_form = to_accusative(ctx.name_for(theme))
-    ctx.mentioned.add(theme.id)
+    ctx.note_mention(theme)
     return f"{owner_form} ne plu hav{ctx.tense} {theme_form}."
 
 
@@ -342,9 +384,9 @@ def _render_relation_added(
     if owner is None or theme is None:
         return None
     owner_form = ctx.name_for(owner)
-    ctx.mentioned.add(owner.id)
+    ctx.note_mention(owner)
     theme_form = to_accusative(ctx.name_for(theme))
-    ctx.mentioned.add(theme.id)
+    ctx.note_mention(theme)
     return f"Nun {owner_form} hav{ctx.tense} {theme_form}."
 
 
@@ -355,7 +397,7 @@ def _render_destruction(
     if ent is None:
         return None
     form = ctx.name_for(ent)
-    ctx.mentioned.add(ent.id)
+    ctx.note_mention(ent)
     verb = inflect("malaperi", ctx.tense)
     return f"{form} {verb}."
 

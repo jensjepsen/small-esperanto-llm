@@ -423,32 +423,6 @@ person_slips_on_wet = rule(
 )
 
 
-# ---------- causal: person_slips_on_rain --------------------------------
-#
-# Sibling of person_slips_on_wet for the rain path. The puddle was
-# created by pluvi (not fali/rompiĝi), so the cause's "theme" walk
-# doesn't apply — pluvi carries its location directly. Persons en
-# that location slip on the puddle.
-
-person_slips_on_rain = rule(
-    when=event("aperi",
-               theme=entity(hazard="slippery") & bind(HR := var("H"))),
-    given=[
-        caused_by("pluvi", location=bind(LR := var("L"))),
-        # Only wet persons slip — the umbrella-protected ones stay dry
-        # per rain_wets_contents, so this guard filters them out
-        # automatically.
-        rel("en",
-            contained=(entity(type="person", wetness="wet")
-                       & bind(PR := var("P"))),
-            container=LR),
-        ~past_event("fali", theme=PR),
-    ],
-    then=emit("fali", theme=PR),
-    name="person_slips_on_rain",
-)
-
-
 # ---------- derivation: flammable as a derived property -----------------
 #
 # Demo: lexicon currently tags flammability directly on ligno/libro/etc.;
@@ -575,7 +549,6 @@ DEFAULT_DSL_RULES: list[Rule] = [
     container_falls_contents_fall,
     broken_container_releases_contents,
     person_slips_on_wet,
-    person_slips_on_rain,
     rain_wets_contents,
     rain_creates_puddle,
     carried_thing_falls_when_carrier_falls,

@@ -215,6 +215,54 @@ def test_preni_from_owner_narrates_de_source(lex):
     assert "de Maria" in prose or "de ŝi" in prose, prose
 
 
+def test_nonperson_theme_pronominalizes_cross_sentence(lex):
+    """After 'Petro havis pilkon.', re-mention of pilko as theme
+    can render as 'ĝin' when the salient slot still points to it.
+    Run many seeds; at least some should use the pronoun."""
+    import random
+    t = Trace()
+    t.add_entity("persono", lex, entity_id="petro")
+    t.add_entity("pilko",   lex, entity_id="pilko")
+    t.assert_relation("havi", ("petro", "pilko"), lex)
+    t.events.append(make_event(
+        "ĵeti", roles={"agent": "petro", "theme": "pilko"}))
+
+    seen_pronoun = False
+    for seed in range(20):
+        prose = realize_trace(
+            t, lex, setup_relations=t.snapshot_relations(),
+            rng=random.Random(seed))
+        if " ĝin" in prose:
+            seen_pronoun = True
+            break
+    assert seen_pronoun, (
+        "expected some seeds to pronominalize the ball as ĝin")
+
+
+def test_intervening_nonperson_blocks_pronominalization(lex):
+    """If a different non-person is mentioned between two references
+    to the ball, the second reference must stay definite (ambiguous
+    otherwise). Deterministic with rng=None — no pronouns fire at
+    all, so this is a negative test for both 'la pilko' and 'ĝin'."""
+    t = Trace()
+    t.add_entity("persono", lex, entity_id="petro")
+    t.add_entity("hundo",   lex, entity_id="hundo")
+    t.add_entity("pilko",   lex, entity_id="pilko")
+    t.assert_relation("havi", ("petro", "pilko"), lex)
+    t.events.append(make_event(
+        "ĵeti",  roles={"agent": "petro", "theme": "pilko"}))
+    t.events.append(make_event(
+        "kuri",  roles={"agent": "hundo"}))
+    t.events.append(make_event(
+        "kapti", roles={"agent": "hundo", "theme": "pilko"}))
+
+    prose = realize_trace(
+        t, lex, setup_relations=t.snapshot_relations())
+    # With rng=None, no pronouns at all — check the ball renders
+    # as "la pilko(n)" in kapti's slot, not bare "pilkon".
+    assert "kaptis la pilkon" in prose or "kaptas la pilkon" in prose, prose
+
+
 def test_kapti_from_nobody_has_no_source(lex):
     """If no one owns the theme when the catch happens, no 'de X'.
     ĵeti removes ownership first, so a subsequent kapti catches an
