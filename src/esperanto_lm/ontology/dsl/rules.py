@@ -11,8 +11,9 @@ from __future__ import annotations
 from ..loader import Lexicon
 from .engine import Rule
 from . import (
-    bind, caused_by, closure, create_entity, derive, emit, entity, event,
-    has_concept_field, past_event, property, rel, rule, var,
+    add_relation, bind, caused_by, closure, create_entity, derive, emit,
+    entity, event, has_concept_field, past_event, property, rel,
+    remove_relation, rule, var,
 )
 
 
@@ -138,6 +139,31 @@ carried_thing_falls_when_carrier_falls = rule(
     ],
     then=emit("fali", theme=F),
     name="carried_thing_falls_when_carrier_falls",
+)
+
+
+# ---------- causal: preni_transfers_ownership ---------------------------
+#
+# `preni` (take) moves an item from whoever currently `havi`s it to the
+# taker. Expressed as a pair of relation effects on the trace: remove
+# the old ownership, assert the new one. No-op when the taker already
+# holds the item (the remove + add cancel). When nothing else owns the
+# item (e.g. picking it up from a shelf) the `rel("havi", ...)` match
+# in given fails and the rule doesn't fire — a sibling rule could
+# handle environment-to-agent transfer later if needed.
+
+preni_transfers_ownership = rule(
+    when=event("preni",
+               agent=bind(TA := var("A")),
+               theme=bind(TT := var("T"))),
+    given=[
+        rel("havi", owner=bind(TM := var("M")), theme=TT),
+    ],
+    then=[
+        remove_relation("havi", TM, TT),
+        add_relation("havi", TA, TT),
+    ],
+    name="preni_transfers_ownership",
 )
 
 
@@ -298,6 +324,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     person_slips_on_wet,
     carried_thing_falls_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
+    preni_transfers_ownership,
     # Previously factory-produced; now plain values after Phase 2.
     broken_fragile_creates_shards,
     wet_liquid_container_tips,

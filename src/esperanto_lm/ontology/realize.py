@@ -407,8 +407,17 @@ def realize_trace(
     scene_location_id: Optional[str] = None,
     rng: Optional[random.Random] = None,
     tense: Optional[str] = None,
+    setup_relations: Optional[list] = None,
 ) -> str:
     """Render the full trace as a paragraph of Esperanto.
+
+    `setup_relations`: if provided, renders scene-setup sentences from
+    this list instead of `trace.relations`. Use case: rules that
+    modify relations (e.g. `preni` transferring ownership via
+    remove/add) leave `trace.relations` in the *post*-trace state.
+    Snapshotting relations before running the engine and passing the
+    snapshot here makes the rendered setup reflect the starting world
+    rather than the final one.
 
     `rng`: optional per-trace RNG for surface variation (templates,
     connectives, pronouns, tense). When None the realizer picks the
@@ -429,7 +438,9 @@ def realize_trace(
             trace, scene_location_id, mentioned, rng, tense):
         raw.append((sent, False))
 
-    for rel in trace.relations:
+    relations_for_setup = (setup_relations if setup_relations is not None
+                           else trace.relations)
+    for rel in relations_for_setup:
         sent = render_relation(rel, trace, lexicon, mentioned,
                                scene_location_id=scene_location_id,
                                rng=rng, tense=tense)

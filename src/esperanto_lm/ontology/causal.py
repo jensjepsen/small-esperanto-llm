@@ -178,6 +178,14 @@ class Trace:
     _event_ids: set[str] = field(default_factory=set)
     _next_entity_id: int = 1
 
+    def snapshot_relations(self) -> list[RelationAssertion]:
+        """Shallow copy of the current relations. Useful before running
+        the engine when the caller plans to pass the initial-state
+        relations to `realize_trace(..., setup_relations=...)` — rules
+        that modify relations (e.g. `preni`) otherwise leave
+        `trace.relations` in the post-run state."""
+        return list(self.relations)
+
     # ---------- entity helpers ----------
     def add_entity(
         self, concept_lemma: str, lexicon: Lexicon,
