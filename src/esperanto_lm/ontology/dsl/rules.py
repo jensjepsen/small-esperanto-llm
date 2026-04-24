@@ -258,6 +258,29 @@ iri_moves_agent = rule(
 )
 
 
+# ---------- causal: veturi_moves_agent ----------------------------------
+#
+# `veturi` is "travel by vehicle" — same location-transfer shape as iri
+# but with an instrument role for the vehicle. The rule just moves the
+# agent; the vehicle is narrative (the realizer renders "per aŭto").
+# If a scene needs the vehicle's location to track the agent, a
+# separate rule can move it alongside — scope for later.
+
+veturi_moves_agent = rule(
+    when=event("veturi",
+               agent=bind(VA := var("A")),
+               destination=bind(VD := var("D"))),
+    given=[
+        rel("en", contained=VA, container=bind(VO := var("O"))),
+    ],
+    then=[
+        remove_relation("en", VA, VO),
+        add_relation("en", VA, VD),
+    ],
+    name="veturi_moves_agent",
+)
+
+
 # ---------- causal: fire_spreads_to_adjacent_flammables (Phase 3) -------
 #
 # Closure with max_steps=1 yields immediate neighbors only — the
@@ -444,6 +467,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     fire_spreads_to_adjacent_flammables,
     preni_transfers_ownership,
     iri_moves_agent,
+    veturi_moves_agent,
     ĵeti_releases_possession,
     kapti_takes_possession_from_nobody,
     kapti_takes_possession_from_owner,
