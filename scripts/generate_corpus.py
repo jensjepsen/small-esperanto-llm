@@ -183,6 +183,12 @@ def main() -> None:
                 continue
 
             seed_event_ids = {ev.id for ev in trace.events}
+            # Snapshot the initial-state relations BEFORE the engine
+            # runs — rules that swap relations (preni/doni/iri/...)
+            # mutate trace.relations in place, so the realizer needs
+            # the original to render the scene setup correctly AND to
+            # detect change narration ("Maria ne plu havas la libron").
+            setup_relations = trace.snapshot_relations()
             iters = run_dsl(trace, rules, derivations, lex)
 
             synthesized = [
@@ -197,6 +203,7 @@ def main() -> None:
 
             prose = realize_trace(
                 trace, lex, scene_location_id=info.scene_location_id,
+                setup_relations=setup_relations,
                 rng=rng,
             )
 
