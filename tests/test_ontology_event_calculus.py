@@ -178,47 +178,45 @@ def test_property_at_returns_initial_at_exact_creation_position(lex):
     assert t.property_at("shards", "sharpness", 1) == ["sharp"]
 
 
-# ---- Step 3: new engine + ported fragile_falls_breaks_v2 -----------------
+# ---- Engine + ported rules from the DSL --------------------------------
 
 from esperanto_lm.ontology.dsl import run_dsl as _run_dsl
+from esperanto_lm.ontology.dsl.engine import Rule as _Rule
 from esperanto_lm.ontology.dsl.rules import (
-    DEFAULT_DSL_RULES as DEFAULT_RULES_V2,
-    fragile_falls_breaks as fragile_falls_breaks_v2,
+    DEFAULT_DSL_RULES,
+    fragile_falls_breaks,
 )
 
 
-def run_to_fixed_point_v2(trace, rules, lexicon=None):
-    """Compatibility shim: the original v2 engine took only (trace,
-    rules). The DSL engine requires lex for relation arg-order lookup
-    and concept-field reads; we materialize it here. Also flattens
-    any list-of-rules passed through (e.g. `make_use_instrument_v2(lex)`
-    now returns a list rather than one rule, per the Phase-4 port)."""
-    from esperanto_lm.ontology.dsl.engine import Rule as _Rule
+def _run_dsl_compat(trace, rules, lexicon=None):
+    """Test helper: most cases here pass a flat rule list and want the
+    engine to figure out the lexicon (load it lazily) and accept a
+    rule-or-list-of-rules in the input — `make_use_instrument_rules`
+    returns a list, while individual rules are bare. Flattens, then
+    delegates to `run_dsl` with empty derivations."""
     if lexicon is None:
         from esperanto_lm.ontology import load_lexicon
-        from pathlib import Path
         lexicon = load_lexicon()
     flat: list = []
     for item in rules:
         if isinstance(item, _Rule):
             flat.append(item)
         else:
-            # Assume iterable (e.g. make_use_instrument_v2's list).
             flat.extend(item)
     return _run_dsl(trace, flat, [], lexicon)
 
 
-def test_v2_engine_runs_fragile_break(lex):
-    """A fali on a fragile theme triggers a rompiĝi via the v2 rule, and
+def test_engine_runs_fragile_break(lex):
+    """A fali on a fragile theme triggers a rompiĝi via the rule, and
     the property_change is reflected in property_at after the new engine
     runs."""
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
     # Seed: glaso fell. Append directly (not via add_event so we don't
-    # depend on the old engine's effect-application).
+    # depend on engine effect-application).
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
-    iters = run_to_fixed_point_v2(t, DEFAULT_RULES_V2)
+    iters = _run_dsl_compat(t, DEFAULT_DSL_RULES)
 
     assert iters >= 1
     actions = [ev.action for ev in t.events]
@@ -230,35 +228,35 @@ def test_v2_engine_runs_fragile_break(lex):
     assert t.property_at("glaso", "integrity", 1) == ["intact"]
 
 
-def test_v2_engine_sets_trace_position(lex):
-    """Each event added by the v2 engine has trace_position set to its
+def test_engine_sets_trace_position(lex):
+    """Each event added by the DSL engine has trace_position set to its
     index in trace.events."""
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
-    run_to_fixed_point_v2(t, DEFAULT_RULES_V2)
-    # The seed event was appended without going through v2, so its
+    _run_dsl_compat(t, DEFAULT_DSL_RULES)
+    # The seed event was appended directly so its
     # trace_position is None.
     assert t.events[0].trace_position is None
-    # The synthesized rompiĝi was added by v2, so it has trace_position set.
+    # The synthesized rompiĝi has trace_position set by the engine.
     rompig = next(e for e in t.events if e.action == "rompiĝi")
     assert rompig.trace_position == t.events.index(rompig)
 
 
-def test_v2_engine_does_not_break_when_theme_already_broken(lex):
+def test_engine_does_not_break_when_theme_already_broken(lex):
     """If a theme is already broken, no second rompiĝi fires."""
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
     t.entities["glaso"].properties = {
         "fragility": ["fragile"], "integrity": ["broken"]}
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
-    run_to_fixed_point_v2(t, DEFAULT_RULES_V2)
+    _run_dsl_compat(t, DEFAULT_DSL_RULES)
     actions = [ev.action for ev in t.events]
     assert "rompiĝi" not in actions
 
 
-# Retired in Phase 5: `test_v2_engine_extended_creates_entity` and
-# `test_v2_engine_memoization_prevents_infinite_loop` exercised the old
+# Retired: `test_engine_extended_creates_entity` and
+# `test_engine_memoization_prevents_infinite_loop` exercised the old
 # engine's `Callable[[Trace, int], list[Event]]` rule protocol (and its
 # per-event-id memoization semantics). The DSL engine uses declarative
 # `Rule` instances instead; equivalent coverage lives in
@@ -267,38 +265,27 @@ def test_v2_engine_does_not_break_when_theme_already_broken(lex):
 # memoization is exercised implicitly throughout the cascade tests.
 
 
-# ---- Step 4: ported rules (hungry_eats_sated, container_falls,
-#              broken_container, use_instrument) -----------------------------
+# ---- Tests for individual ported rules ---------------------------------
 
 from esperanto_lm.ontology.dsl.rules import (
-    broken_container_releases_contents as broken_container_releases_contents_v2,
-    container_falls_contents_fall as container_falls_contents_fall_v2,
-    hungry_eats_sated as hungry_eats_sated_v2,
-    make_use_instrument_rules as _make_use_instrument_rules,
+    broken_container_releases_contents,
+    container_falls_contents_fall,
+    hungry_eats_sated,
+    make_use_instrument_rules,
 )
 
 
-def make_use_instrument_v2(lex):
-    """Compatibility shim: the old factory returned a single rule; the
-    DSL version returns a list (one rule per instrument-capable verb).
-    For tests that pass the result into a `[...]` list, a list-of-rules
-    in place of one rule works via the engine's list flattening, but
-    many sites compose `[rule]` — return the list directly and accept
-    that it unpacks where used."""
-    return _make_use_instrument_rules(lex)
-
-
-def test_v2_hungry_eats_sated_fires(lex):
+def test_hungry_eats_sated_fires(lex):
     """manĝi by a hungry agent → satiĝi event with hunger=sated change."""
     t = Trace()
     petro = t.add_entity("persono", lex, entity_id="petro")
     pano = t.add_entity("pano", lex, entity_id="pano")
-    # Make petro hungry via initial_properties (since v2 reads through there).
+    # Make petro hungry via initial_properties.
     petro.properties = {"hunger": ["hungry"]}
     t.events.append(make_event("manĝi", roles={
         "agent": "petro", "theme": "pano"}))
 
-    run_to_fixed_point_v2(t, [hungry_eats_sated_v2])
+    _run_dsl_compat(t, [hungry_eats_sated])
 
     actions = [ev.action for ev in t.events]
     assert "satiĝi" in actions
@@ -306,18 +293,18 @@ def test_v2_hungry_eats_sated_fires(lex):
     assert t.property_at("petro", "hunger", final_t) == "sated"
 
 
-def test_v2_hungry_does_not_fire_if_not_hungry(lex):
+def test_hungry_does_not_fire_if_not_hungry(lex):
     t = Trace()
     t.add_entity("persono", lex, entity_id="petro")
     t.add_entity("pano", lex, entity_id="pano")
     t.events.append(make_event("manĝi", roles={
         "agent": "petro", "theme": "pano"}))
-    run_to_fixed_point_v2(t, [hungry_eats_sated_v2])
+    _run_dsl_compat(t, [hungry_eats_sated])
     actions = [ev.action for ev in t.events]
     assert "satiĝi" not in actions
 
 
-def test_v2_container_falls_contents_fall(lex):
+def test_container_falls_contents_fall(lex):
     """fali on a glass that contains water → water also falls."""
     t = Trace()
     glaso = t.add_entity("glaso", lex, entity_id="glaso")
@@ -325,14 +312,14 @@ def test_v2_container_falls_contents_fall(lex):
     t.assert_relation("en", ("akvo", "glaso"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
-    run_to_fixed_point_v2(t, [container_falls_contents_fall_v2])
+    _run_dsl_compat(t, [container_falls_contents_fall])
 
     fali_themes = [ev.roles.get("theme") for ev in t.events
                    if ev.action == "fali"]
     assert "glaso" in fali_themes and "akvo" in fali_themes
 
 
-def test_v2_container_falls_doesnt_make_kitchen_fall(lex):
+def test_container_falls_doesnt_make_kitchen_fall(lex):
     """Locations are excluded from cascade — kitchen doesn't fall when
     a person in it is mentioned in a fali."""
     t = Trace()
@@ -344,13 +331,13 @@ def test_v2_container_falls_doesnt_make_kitchen_fall(lex):
     # If kuirejo somehow fell (it shouldn't — but the rule shouldn't
     # cascade to non-existent absurd events).
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
-    run_to_fixed_point_v2(t, [container_falls_contents_fall_v2])
+    _run_dsl_compat(t, [container_falls_contents_fall])
     # Glass has no contents en/sur it; rule shouldn't produce any fali.
     fali_count = sum(1 for ev in t.events if ev.action == "fali")
     assert fali_count == 1  # just the seed
 
 
-def test_v2_broken_container_releases_contents(lex):
+def test_broken_container_releases_contents(lex):
     """rompiĝi on a container → contents fall, even without a fall first."""
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
@@ -358,14 +345,14 @@ def test_v2_broken_container_releases_contents(lex):
     t.assert_relation("en", ("akvo", "glaso"), lex)
     t.events.append(make_event("rompiĝi", roles={"theme": "glaso"}))
 
-    run_to_fixed_point_v2(t, [broken_container_releases_contents_v2])
+    _run_dsl_compat(t, [broken_container_releases_contents])
 
     fali_themes = [ev.roles.get("theme") for ev in t.events
                    if ev.action == "fali"]
     assert "akvo" in fali_themes
 
 
-def test_v2_use_instrument_factory(lex):
+def test_use_instrument_factory(lex):
     """The factory-based use_instrument rule fires the signature verb
     with property_changes drawn from that verb's effect spec."""
     t = Trace()
@@ -376,8 +363,8 @@ def test_v2_use_instrument_factory(lex):
     t.events.append(make_event("uzi", roles={
         "agent": "petro", "instrument": "tranĉilo", "theme": "pano"}))
 
-    rule = make_use_instrument_v2(lex)
-    run_to_fixed_point_v2(t, [rule])
+    rule = make_use_instrument_rules(lex)
+    _run_dsl_compat(t, [rule])
 
     actions = [ev.action for ev in t.events]
     assert "tranĉi" in actions
@@ -386,7 +373,7 @@ def test_v2_use_instrument_factory(lex):
     assert t.property_at("pano", "integrity", final_t) == "severed"
 
 
-def test_v2_use_instrument_rejects_incompatible_theme(lex):
+def test_use_instrument_rejects_incompatible_theme(lex):
     """ŝlosilo's signature verb is ŝlosi, which requires theme=artifact.
     Substance themes (akvo) are rejected."""
     t = Trace()
@@ -397,17 +384,17 @@ def test_v2_use_instrument_rejects_incompatible_theme(lex):
     t.events.append(make_event("uzi", roles={
         "agent": "petro", "instrument": "ŝlosilo", "theme": "akvo"}))
 
-    rule = make_use_instrument_v2(lex)
-    run_to_fixed_point_v2(t, [rule])
+    rule = make_use_instrument_rules(lex)
+    _run_dsl_compat(t, [rule])
 
     actions = [ev.action for ev in t.events]
     assert "ŝlosi" not in actions
 
 
-def test_bridge_sampler_to_v2_hunger(lex):
+def test_bridge_sampler_to_engine_hunger(lex):
     """Bridge canary: the sampler's `set_initial_property("hunger", "hungry")`
-    on a person makes that hunger visible to the v2 engine via property_at.
-    Verifies sampler→v2 wiring before we delete the old engine in Step 6.
+    on a person makes that hunger visible to the DSL engine via property_at.
+    Verifies sampler→wiring.
     """
     import random as _r
     from esperanto_lm.ontology import sample_scene, prune_unused_persons
@@ -423,19 +410,19 @@ def test_bridge_sampler_to_v2_hunger(lex):
         manĝi_ev = next(e for e in t.events if e.action == "manĝi")
         agent_id = manĝi_ev.roles["agent"]
         # The bridge should have populated both properties and
-        # initial_properties — v2's property_at reads initial_properties.
+        # initial_properties — property_at reads them.
         assert t.property_at(agent_id, "hunger", 0) == ["hungry"], \
-            f"v2 didn't see hunger via initial_properties for {agent_id}"
-        # Run v2 engine. satiĝi should fire.
-        run_to_fixed_point_v2(t, [hungry_eats_sated_v2])
+            f"engine didnt see hunger via initial_properties for {agent_id}"
+        # Run DSL engine. satiĝi should fire.
+        _run_dsl_compat(t, [hungry_eats_sated])
         actions = [ev.action for ev in t.events]
         assert "satiĝi" in actions, \
-            f"hungry_eats_sated_v2 didn't fire after sampler setup"
+            f"hungry_eats_sated didn't fire after sampler setup"
         return  # done
     pytest.skip("no eat-recipe sampled in 30 attempts")
 
 
-# ---- Step 5: realizer first-mention for created entities ---------------
+# ---- Realizer first-mention for created entities ---------------
 
 def test_realizer_introduces_created_entity_via_appearance_line(lex):
     """A rompiĝi event with creates=[shards] should produce prose that
@@ -538,24 +525,24 @@ def test_realizer_synthetic_grounding_skips_created_entities(lex):
     assert "glaso" in prose.lower()
 
 
-def test_v2_full_rule_pool_kitchen_cascade(lex):
+def test_full_rule_pool_kitchen_cascade(lex):
     """End-to-end: fragile glass with water falls → glass breaks AND
-    water falls. All four no-lexicon v2 rules + use_instrument firing
+    water falls. All four no-lexicon DSL rules + use_instrument firing
     in the same trace."""
-    # DEFAULT_RULES_V2 was renamed to DEFAULT_RULES in Step 6; alias here
+    # Local alias kept for naming-symmetry within this test
     # for clarity within this test.
-    from esperanto_lm.ontology.dsl.rules import DEFAULT_DSL_RULES as DEFAULT_RULES_V2
+    from esperanto_lm.ontology.dsl.rules import DEFAULT_DSL_RULES as DEFAULT_DSL_RULES
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
     t.add_entity("akvo", lex, entity_id="akvo")
     t.assert_relation("en", ("akvo", "glaso"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
-    rules = DEFAULT_RULES_V2 + [make_use_instrument_v2(lex)]
-    run_to_fixed_point_v2(t, rules)
+    rules = DEFAULT_DSL_RULES + [make_use_instrument_rules(lex)]
+    _run_dsl_compat(t, rules)
 
     actions = [ev.action for ev in t.events]
-    assert "rompiĝi" in actions  # from fragile_falls_breaks_v2
+    assert "rompiĝi" in actions  # from fragile_falls_breaks
     fali_themes = [ev.roles.get("theme") for ev in t.events
                    if ev.action == "fali"]
     assert "akvo" in fali_themes  # from container_falls or broken_container

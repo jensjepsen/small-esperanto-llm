@@ -94,15 +94,15 @@ class Event:
         events the old engine produces; populated by new-engine rules
         that synthesize new entities (e.g. broken_fragile_creates_shards).
       property_changes: {(entity_id, prop_name): value} state changes
-        attributed to this event. Empty for old-engine events; populated
-        by new-engine rules.
-      trace_position: position at which this event fired. Set by the new
-        engine's run_to_fixed_point; None for old-engine events.
+        attributed to this event. Populated by rules whose `then`
+        includes `emit(...).changing(...)`.
+      trace_position: position at which this event fired in `trace.events`.
+        Set by the engine when an Emit effect produces the event; None
+        on hand-built seed events the caller appends directly.
 
     Note: frozen=True prevents reassignment of fields, but the mutable
     defaults (creates, property_changes) can still be appended/updated
-    by code that holds an Event reference. That's intentional during the
-    migration; once the old engine is gone we'll lock these down further.
+    by code that holds an Event reference.
     """
     id: str
     action: str
