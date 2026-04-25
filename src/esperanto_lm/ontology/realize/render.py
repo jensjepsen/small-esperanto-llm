@@ -18,6 +18,7 @@ from .messages import (
     CoordinatedMessage,
     DestructionMessage,
     EventMessage,
+    GroupedRelationMessage,
     Message,
     RelationAddedMessage,
     RelationMessage,
@@ -497,6 +498,41 @@ def _format_with_connective(
 
 # =================== dispatch ==================
 
+def _render_grouped_relation(
+    m: GroupedRelationMessage, ctx: _Ctx,
+) -> Optional[str]:
+    """'En la kuirejo estas tablo, glaso, kaj korbo.' / 'Sur la breto
+    estas libro kaj papero.' Container fronts the sentence; contents
+    are listed with comma + 'kaj' for the final entry."""
+    container = ctx.trace.entities.get(m.container_id)
+    if container is None:
+        return None
+    container_form = ctx.name_for(container)
+    ctx.note_mention(container)
+
+    contained_forms: list[str] = []
+    for cid in m.contained_ids:
+        ent = ctx.trace.entities.get(cid)
+        if ent is None:
+            continue
+        contained_forms.append(ctx.name_for(ent))
+        ctx.note_mention(ent)
+    if not contained_forms:
+        return None
+
+    if len(contained_forms) == 1:
+        list_str = contained_forms[0]
+    elif len(contained_forms) == 2:
+        list_str = f"{contained_forms[0]} kaj {contained_forms[1]}"
+    else:
+        head = ", ".join(contained_forms[:-1])
+        list_str = f"{head}, kaj {contained_forms[-1]}"
+
+    prep = "En" if m.relation == "en" else "Sur"
+    verb = "est" + ctx.tense
+    return f"{prep} {container_form} {verb} {list_str}."
+
+
 def _render_subordinated(
     m: SubordinatedMessage, ctx: _Ctx,
 ) -> Optional[str]:
@@ -542,6 +578,7 @@ def _collect_rendered_event_ids(m: Message, out: set[str]) -> None:
 _DISPATCH = {
     SceneGroundingMessage: _render_scene_grounding,
     RelationMessage: _render_relation,
+    GroupedRelationMessage: _render_grouped_relation,
     EventMessage: _render_event,
     AppearanceMessage: _render_appearance,
     RelationRemovedMessage: _render_relation_removed,

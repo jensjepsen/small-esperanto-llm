@@ -23,6 +23,7 @@ from .messages import (
     CoordinatedMessage,
     DestructionMessage,
     EventMessage,
+    GroupedRelationMessage,
     Message,
     RelationAddedMessage,
     RelationMessage,
@@ -403,6 +404,80 @@ def subordinate_creations(messages: list[Message]) -> list[Message]:
                 continue
         out.append(m)
         i += 1
+    return out
+
+
+def aggregate_relations(messages: list[Message]) -> list[Message]:
+    """Group setup-phase RelationMessages by (relation, container).
+
+    Walks the leading run of RelationMessages — the scene-setup phase
+    — re-orders them so siblings sharing a container appear together,
+    then collapses each `(en|sur, container)` group into one
+    `GroupedRelationMessage`. Result: instead of
+
+      "En la kuirejo estas Petro. En la kuirejo estas tablo. Sur la
+       tablo estas glaso. En la kuirejo estas korbo."
+
+    the planner emits
+
+      "En la kuirejo estas Petro, tablo, kaj korbo. Sur la tablo
+       estas glaso."
+
+    Only the leading run is touched — once an EventMessage or any
+    non-RelationMessage appears, that's the boundary; the rest of
+    the message stream stays in original order. `havi` and `apud`
+    relations are left as individual RelationMessages because
+    they don't aggregate as cleanly.
+    """
+    if not messages:
+        return messages
+    # Find the leading run of RelationMessages (the setup phase).
+    cut = 0
+    while cut < len(messages) and isinstance(messages[cut], RelationMessage):
+        cut += 1
+    if cut == 0:
+        return messages
+
+    setup = messages[:cut]
+    rest = messages[cut:]
+
+    # Bucket by (relation, container). Track first-appearance order
+    # so the output preserves the rough scene-introduction sequence.
+    buckets: dict[tuple[str, str], list[str]] = {}
+    bucket_order: list[tuple[str, str]] = []
+    leftover: list[RelationMessage] = []
+
+    for m in setup:
+        rel = m.relation
+        if rel.relation in ("en", "sur") and len(rel.args) == 2:
+            key = (rel.relation, rel.args[1])  # (relation, container)
+            if key not in buckets:
+                buckets[key] = []
+                bucket_order.append(key)
+            buckets[key].append(rel.args[0])
+        else:
+            leftover.append(m)
+
+    out: list[Message] = []
+    for key in bucket_order:
+        rel_name, container_id = key
+        contained_ids = buckets[key]
+        if len(contained_ids) >= 2:
+            out.append(GroupedRelationMessage(
+                relation=rel_name,
+                container_id=container_id,
+                contained_ids=contained_ids,
+            ))
+        else:
+            # Singleton: fall back to a regular RelationMessage so
+            # the existing renderer with its template variation kicks
+            # in.
+            from ..causal import RelationAssertion
+            out.append(RelationMessage(
+                relation=RelationAssertion(
+                    relation=rel_name, args=(contained_ids[0], container_id))))
+    out.extend(leftover)
+    out.extend(rest)
     return out
 
 

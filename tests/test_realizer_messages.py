@@ -21,8 +21,9 @@ from esperanto_lm.ontology.dsl.rules import (
 )
 from esperanto_lm.ontology.realize import (
     CoordinatedMessage, DestructionMessage, EventMessage,
-    RelationRemovedMessage, SubordinatedMessage,
-    aggregate_same_subject, plan_messages, subordinate_creations,
+    GroupedRelationMessage, RelationRemovedMessage, SubordinatedMessage,
+    aggregate_relations, aggregate_same_subject,
+    plan_messages, subordinate_creations,
 )
 
 
@@ -166,6 +167,48 @@ def test_manĝi_narrates_destruction(lex):
 
     prose = realize_trace(t, lex)
     assert "malaperis" in prose, prose
+
+
+# ==================== grouped relations ====================
+
+def test_three_things_in_kitchen_render_as_one_list(lex):
+    """Three entities en the kitchen → 'En la kuirejo estas X, Y, kaj Z.'
+    instead of three separate sentences."""
+    t = Trace()
+    t.add_entity("kuirejo", lex, entity_id="kuirejo")
+    t.add_entity("persono", lex, entity_id="petro")
+    t.add_entity("tablo", lex, entity_id="tablo")
+    t.add_entity("glaso", lex, entity_id="glaso")
+    t.assert_relation("en", ("petro", "kuirejo"), lex)
+    t.assert_relation("en", ("tablo", "kuirejo"), lex)
+    t.assert_relation("en", ("glaso", "kuirejo"), lex)
+
+    messages = plan_messages(t, lex, scene_location_id="kuirejo")
+    messages = aggregate_relations(messages)
+    grouped = [m for m in messages if isinstance(m, GroupedRelationMessage)]
+    assert len(grouped) == 1
+    assert grouped[0].container_id == "kuirejo"
+    assert set(grouped[0].contained_ids) == {"petro", "tablo", "glaso"}
+
+    prose = realize_trace(t, lex, scene_location_id="kuirejo")
+    # All three names appear in one comma-separated list with "kaj"
+    # before the last.
+    assert ", kaj " in prose, prose
+    assert "Petro" in prose and "tablo" in prose and "glaso" in prose
+
+
+def test_singleton_relations_dont_aggregate(lex):
+    """One entity per (relation, container) → stays as a singleton
+    RelationMessage, no GroupedRelationMessage. The renderer's
+    template variation kicks in for these."""
+    t = Trace()
+    t.add_entity("kuirejo", lex, entity_id="kuirejo")
+    t.add_entity("persono", lex, entity_id="petro")
+    t.assert_relation("en", ("petro", "kuirejo"), lex)
+
+    messages = aggregate_relations(plan_messages(t, lex))
+    grouped = [m for m in messages if isinstance(m, GroupedRelationMessage)]
+    assert grouped == []
 
 
 # ==================== object elision ====================

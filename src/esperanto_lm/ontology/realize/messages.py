@@ -130,6 +130,24 @@ class CoordinatedMessage(Message):
 
 
 @dataclass(kw_only=True)
+class GroupedRelationMessage(Message):
+    """Multiple entities in the same containment relation with the
+    same container, rendered as a single list sentence:
+
+      "En la kuirejo estas tablo, glaso, kaj korbo."
+      "Sur la breto estas libro kaj papero."
+
+    Produced by `aggregate_relations` from a run of RelationMessages
+    that share `(relation, container_id)`. Only `en` and `sur` —
+    `havi` and `apud` keep one-per-line for now (different rhetorical
+    weight; havi is rarely chained, apud is usually emphatic).
+    """
+    relation: str             # "en" or "sur"
+    container_id: str
+    contained_ids: list[str]
+
+
+@dataclass(kw_only=True)
 class SubordinatedMessage(Message):
     """`main, conjunction subordinate.` — one sentence with the
     subordinate clause tacked on after a comma.
