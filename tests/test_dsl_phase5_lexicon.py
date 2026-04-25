@@ -55,47 +55,46 @@ _NOT_FLAMMABLE = ["glaso", "najlo", "pano"]
 
 # ---- disk compactness ---------------------------------------------------
 
-def test_flammability_tag_removed_from_disk_concepts(lex):
+def test_flammability_tag_removed_from_disk_concepts():
     """No concept carries flammability=flammable on disk anymore —
-    it comes from the derivation. (A future derivation could imply
-    flammability=inflammable on other materials; that's why we check
-    the specific value.)"""
+    it comes from the derivation. Loaded with bake_derivations=False
+    so the bake doesn't materialize it onto the loaded concepts."""
+    raw = load_lexicon(bake_derivations=False)
     for lemma in _FORMERLY_FLAMMABLE:
-        c = lex.concepts[lemma]
+        c = raw.concepts[lemma]
         assert "flammability" not in c.properties, (
             f"{lemma!r} still has flammability tag on disk: "
             f"{c.properties}")
 
 
-def test_made_of_tag_present_on_formerly_flammable_concepts(lex):
+def test_made_of_tag_present_on_formerly_flammable_concepts():
     """Each formerly-tagged concept now carries `made_of` instead."""
+    raw = load_lexicon(bake_derivations=False)
     for lemma in _FORMERLY_FLAMMABLE:
-        c = lex.concepts[lemma]
+        c = raw.concepts[lemma]
         assert c.properties.get("made_of"), (
             f"{lemma!r} has no made_of tag: {c.properties}")
 
 
 # ---- derivation semantics -----------------------------------------------
 
-def _derived_flammability(t: Trace, lex, eid: str):
-    derived = DerivedState()
-    _run_derivations_to_fixed_point(
-        t, DEFAULT_DSL_DERIVATIONS, lex, derived)
-    return derived.get(eid, "flammability")
-
-
 @pytest.mark.parametrize("lemma", _FORMERLY_FLAMMABLE)
 def test_derivation_produces_flammable_for_each_formerly_tagged(lex, lemma):
-    t = Trace()
-    t.add_entity(lemma, lex, entity_id=lemma)
-    assert _derived_flammability(t, lex, lemma) == "flammable"
+    """The flammability_from_material derivation lands on every
+    formerly-tagged concept. After the lex-load bake, the property
+    is on `concept.properties` directly; effective_property reads it."""
+    c = lex.concepts[lemma]
+    assert c.properties.get("flammability") == ["flammable"], (
+        f"{lemma!r} should derive flammability=flammable; "
+        f"got {c.properties!r}")
 
 
 @pytest.mark.parametrize("lemma", _NOT_FLAMMABLE)
 def test_derivation_does_not_produce_flammable_for_others(lex, lemma):
-    t = Trace()
-    t.add_entity(lemma, lex, entity_id=lemma)
-    assert _derived_flammability(t, lex, lemma) is None
+    """Non-flammable-material concepts don't get flammability."""
+    c = lex.concepts[lemma]
+    assert "flammability" not in c.properties, (
+        f"{lemma!r} should not be flammable; got {c.properties!r}")
 
 
 # ---- end-to-end with the fire rule --------------------------------------

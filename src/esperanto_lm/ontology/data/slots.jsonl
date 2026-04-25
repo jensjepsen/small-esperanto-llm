@@ -11,7 +11,7 @@
 {"name": "cleanliness", "vocabulary": ["dirty", "clean"], "applies_to": ["physical"], "scalar": true}
 {"name": "indoor_outdoor", "vocabulary": ["indoor", "outdoor"], "applies_to": ["location"], "scalar": true}
 {"name": "attachment", "vocabulary": ["loose", "fastened"], "applies_to": ["physical"], "scalar": true}
-{"name": "state_of_matter", "vocabulary": ["solid", "liquid", "gas"], "applies_to": ["inanimate"], "scalar": true}
+{"name": "state_of_matter", "vocabulary": ["solid", "liquid", "gas"], "applies_to": ["physical"], "scalar": true}
 {"name": "hazard", "vocabulary": ["sharp", "slippery"], "applies_to": ["inanimate"], "scalar": true}
 {"name": "transforms_on_break", "vocabulary": null, "applies_to": ["inanimate"], "scalar": true}
 {"name": "transforms_on_spill", "vocabulary": null, "applies_to": ["inanimate"], "scalar": true}

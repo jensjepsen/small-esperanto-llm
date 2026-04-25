@@ -456,6 +456,12 @@ animal_is_made_of_meat = derive(
     name="animal_is_made_of_meat",
 )
 
+animate_is_solid = derive(
+    when=entity(type="animate") & bind(T_anim := var("T")),
+    implies=property(T_anim, "state_of_matter", "solid"),
+    name="animate_is_solid",
+)
+
 meat_is_edible = derive(
     when=entity(made_of="meat") & bind(T_m := var("T")),
     implies=property(T_m, "edibility", "edible"),
@@ -470,6 +476,7 @@ DEFAULT_DSL_DERIVATIONS = [
     flammability_from_material,
     animal_is_made_of_meat,
     meat_is_edible,
+    animate_is_solid,
 ]
 
 

@@ -197,7 +197,19 @@ DATA_DIR = Path(__file__).parent / "data"
 def load_lexicon(
     data_dir: Path = DATA_DIR,
     parser: MorphParser | None = None,
+    *, bake_derivations: bool = True,
 ) -> Lexicon:
+    """Load the lexicon from `data_dir`.
+
+    `bake_derivations`: when True (default), runs the DSL's
+    concept-compatible derivations once at load and writes their
+    implied properties back into `concept.properties`. This closes
+    the historical gap where the sampler — which scans
+    concept.properties directly — couldn't see facts that only
+    materialized at runtime via the DSL engine. Set to False for
+    tests of the bake function itself or for inspecting raw
+    on-disk concepts.
+    """
     parser = parser or DefaultMorphParser()
 
     spine = TypeSpine.from_json(data_dir / "types.json")
@@ -305,6 +317,16 @@ def load_lexicon(
                 f"derived concept {lemma!r} collides with authored concept; "
                 f"remove the authored entry — derivations are the truth")
         concepts[lemma] = concept
+
+    # Bake concept-compatible DSL derivations into concept properties
+    # so the sampler — which scans concept.properties directly — sees
+    # the same world the runtime engine does. Skip for bake-disabled
+    # loads (tests of the bake function itself, raw inspection).
+    if bake_derivations:
+        from .dsl.bake import bake_concept_derivations
+        from .dsl.rules import DEFAULT_DSL_DERIVATIONS
+        concepts = bake_concept_derivations(
+            concepts, DEFAULT_DSL_DERIVATIONS, spine)
 
     containment: list[ContainmentFact] = []
     containment_path = data_dir / "containment.jsonl"
