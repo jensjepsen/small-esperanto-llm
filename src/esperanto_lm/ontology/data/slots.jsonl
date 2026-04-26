@@ -25,3 +25,9 @@
 {"name": "can_use_tools", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
 {"name": "pri_relacio", "vocabulary": null, "applies_to": ["abstract"], "scalar": true}
 {"name": "lock_capable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
+{"name": "posture", "vocabulary": ["staranta", "sidanta", "kuŝanta"], "applies_to": ["animate"], "scalar": true, "varies": true}
+{"name": "sittable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
+{"name": "power_state", "vocabulary": ["aktiva", "neaktiva"], "applies_to": ["artifact"], "scalar": true, "varies": true}
+{"name": "lights_when_on", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
+{"name": "lit_state", "vocabulary": ["luma", "malluma"], "applies_to": ["location"], "scalar": true}
+{"name": "illuminated", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}

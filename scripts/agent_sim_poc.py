@@ -447,6 +447,136 @@ def _find_relation_adders(rules, relation):
     return out
 
 
+# Per-plan-for-drive cache for simulation results. _simulate_from_scratch
+# is called dozens of times per scene (refresh after each precondition
+# subgoal + synthesis exploration), often with the same (base, plan)
+# inputs. Caching here cuts wallclock dramatically. Cleared at
+# plan_for_drive entry so cross-call staleness is impossible. Callers
+# treat results as read-only — they query state, never mutate.
+_SIM_CACHE: dict[tuple, tuple] = {}
+
+
+def _plan_cache_key(plan):
+    """Hashable key for a plan: tuple of (verb, sorted-role-pairs)."""
+    return tuple(
+        (verb, tuple(sorted(roles.items())))
+        for verb, roles in plan
+    )
+
+
+_SLOT_PRODUCERS_CACHE: dict[int, dict[tuple[str, str], bool]] = {}
+
+
+def _slot_value_producible(slot: str, value: str, lex) -> bool:
+    """True if any verb in the lexicon writes (slot, value) as an
+    effect. Cached per-lexicon so repeated planner candidate filtering
+    doesn't re-scan actions."""
+    cache = _SLOT_PRODUCERS_CACHE.setdefault(id(lex), {})
+    key = (slot, value)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    found = False
+    for action in lex.actions.values():
+        for eff in action.effects:
+            if eff.property == slot and eff.value == value:
+                found = True
+                break
+        if found:
+            break
+    cache[key] = found
+    return found
+
+
+def _filter_candidates_by_slots(candidates, fv_id, slots_to_subgoal,
+                                  trace, lex):
+    """Drop candidates whose slot constraints can never be satisfied:
+    the slot's required value isn't currently set on the candidate AND
+    no verb writes that (slot, value). Big planner-pruning win for
+    static slots like `lights_when_on=yes` that mark a concept's
+    intrinsic role and can't be flipped — only matching candidates
+    (e.g. `lampo`) survive."""
+    out = []
+    for cand in candidates:
+        ent = trace.entities.get(cand)
+        if ent is None:
+            continue
+        ok = True
+        for v_local, slot, value in slots_to_subgoal:
+            if id(v_local) != fv_id:
+                continue
+            actual = ent.properties.get(slot, [])
+            if value in actual:
+                continue
+            if not _slot_value_producible(slot, value, lex):
+                ok = False
+                break
+        if ok:
+            out.append(cand)
+    return out
+
+
+def _simulate_from_scratch(base_trace, plan, lex, rules, derivations):
+    """Deepcopy `base_trace`, append events for each (verb, roles) in
+    `plan`, run the engine once. Returns the forked trace + the
+    derived state on top of it. Used by the planner to compute the
+    hypothetical state the next precondition check should see, after
+    prior subgoals have run.
+
+    The committed-plan-list pattern (vs. mutating in place + run_dsl
+    incrementally) is necessary because run_dsl recreates its
+    fired-bindings memo each call and would re-fire causal rules on
+    prior events — iri_moves_agent in particular re-fires its
+    remove_relation against the post-iri state and clobbers the only
+    `en` it just added. Running once on the full event list from a
+    fresh base avoids that.
+
+    Memoized per-plan-for-drive — see `_SIM_CACHE`."""
+    import copy
+    from esperanto_lm.ontology.causal import make_event, effect_changes
+    from esperanto_lm.ontology.dsl.engine import (
+        compute_derived_state, run_dsl,
+    )
+    from esperanto_lm.ontology.causal import Event
+    derivs = derivations or []
+    cache_key = (id(base_trace), _plan_cache_key(plan))
+    cached = _SIM_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    if not plan:
+        # Empty-plan short-circuit: skip the deepcopy. Compute
+        # derived once for the base; callers only read.
+        derived_state = compute_derived_state(base_trace, derivs, lex)
+        result = (base_trace, derived_state)
+        _SIM_CACHE[cache_key] = result
+        return result
+    t = copy.deepcopy(base_trace)
+    for verb, roles in plan:
+        ev = make_event(
+            verb, roles=roles,
+            property_changes=effect_changes(verb, roles, lex))
+        t.events.append(ev)
+        t._event_ids.add(ev.id)
+    run_dsl(t, rules, derivs, lex)
+    # Engine quirk: entities with `created_at_event=k` are visible
+    # only at `t>k` (see `Trace.property_at` liveness check).
+    # Without a follow-up event, derivations can't see freshly
+    # created entities like a fakto from `vidi`. Append a phantom
+    # event so `len(trace.events)` is one past every created
+    # entity's `created_at_event`, making them visible to the
+    # post-simulation derivation pass we use for what-if checks.
+    phantom = Event(
+        id=f"_settle_phantom_{len(t.events)}",
+        action="_settle_phantom",
+        roles={})
+    t.events.append(phantom)
+    t._event_ids.add(phantom.id)
+    derived_state = compute_derived_state(t, derivs, lex)
+    result = (t, derived_state)
+    _SIM_CACHE[cache_key] = result
+    return result
+
+
 def _resolve_preconditions(action, event_pat, roles, actor_id,
                            trace, lex, rules, derived,
                            max_depth, depth, seen, *, derivations=None):
@@ -455,67 +585,152 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
       - rule-level role pattern entity constraints (if rule given),
       - action.preconditions (cross-role relations from the schema).
     Returns (sub_plans, ok). Sub-plans are concatenated in the order
-    they're discovered (which is the order they need to fire)."""
-    sub_plans = []
-    for role_name, eid in list(roles.items()):
-        ent = trace.entities.get(eid)
-        if ent is None:
-            return [], False
-        role_spec = next(
-            (r for r in action.roles if r.name == role_name), None)
+    they're discovered (which is the order they need to fire).
+
+    Forward simulation: each subgoal's plan is added to a `committed`
+    list; before checking the next precondition, we resimulate from
+    the original trace + committed plan to get a fresh state. Loops
+    until all preconditions hold simultaneously (or max iters). This
+    catches the case where one subgoal invalidates a previously-
+    satisfied precondition — e.g. fetching a key in another room
+    breaks samloke(agent, theme) for malŝlosi, and a return-iri
+    needs to be inserted."""
+    from esperanto_lm.ontology.schemas import (
+        IfPropertyPrecondition, RelationPrecondition,
+    )
+    committed: list = []
+    cur_trace, cur_derived = trace, derived
+
+    def _refresh():
+        nonlocal cur_trace, cur_derived
+        if committed:
+            cur_trace, cur_derived = _simulate_from_scratch(
+                trace, committed, lex, rules, derivations)
+
+    def _ent(eid):
+        ent = cur_trace.entities.get(eid)
+        return ent
+
+    for _ in range(6):
+        progress = False
+        unresolved = False
+
         # Verb-level role property constraints.
-        if role_spec is not None and role_spec.properties:
-            for prop_slot, prop_vals in role_spec.properties.items():
-                values = _entity_property_values(ent, prop_slot, trace, derived)
-                if values & set(prop_vals):
-                    continue
-                expected = prop_vals[0] if prop_vals else None
-                if expected is None:
-                    return [], False
-                sub = plan_to_achieve(
-                    eid, prop_slot, expected, actor_id,
-                    trace, lex, rules, derived=derived,
-                    derivations=derivations,
-                    max_depth=max_depth, _depth=depth, _seen=seen)
-                if sub is None:
-                    return [], False
-                sub_plans.extend(sub)
-        # Rule-level role pattern entity constraints.
-        if event_pat is not None:
-            role_pat = event_pat.role_patterns.get(role_name)
-            if role_pat is not None:
-                pattern_props = _extract_pattern_props(role_pat)
-                for prop_slot, expected in pattern_props.items():
-                    values = _entity_property_values(ent, prop_slot, trace, derived)
-                    if expected in values:
+        for role_name, eid in list(roles.items()):
+            ent = _ent(eid)
+            if ent is None:
+                return [], False
+            role_spec = next(
+                (r for r in action.roles if r.name == role_name), None)
+            if role_spec is not None and role_spec.properties:
+                for prop_slot, prop_vals in role_spec.properties.items():
+                    values = _entity_property_values(
+                        ent, prop_slot, cur_trace, cur_derived)
+                    if values & set(prop_vals):
                         continue
+                    unresolved = True
+                    expected = prop_vals[0] if prop_vals else None
+                    if expected is None:
+                        return [], False
                     sub = plan_to_achieve(
                         eid, prop_slot, expected, actor_id,
-                        trace, lex, rules, derived=derived,
+                        cur_trace, lex, rules, derived=cur_derived,
                         derivations=derivations,
                         max_depth=max_depth, _depth=depth, _seen=seen)
                     if sub is None:
                         return [], False
-                    sub_plans.extend(sub)
+                    if sub:
+                        committed.extend(sub)
+                        progress = True
+                        _refresh()
+                        ent = _ent(eid)
+                        if ent is None:
+                            return [], False
+            # Rule-level role pattern entity constraints.
+            if event_pat is not None:
+                role_pat = event_pat.role_patterns.get(role_name)
+                if role_pat is not None:
+                    pattern_props = _extract_pattern_props(role_pat)
+                    for prop_slot, expected in pattern_props.items():
+                        values = _entity_property_values(
+                            ent, prop_slot, cur_trace, cur_derived)
+                        if expected in values:
+                            continue
+                        unresolved = True
+                        sub = plan_to_achieve(
+                            eid, prop_slot, expected, actor_id,
+                            cur_trace, lex, rules, derived=cur_derived,
+                            derivations=derivations,
+                            max_depth=max_depth, _depth=depth, _seen=seen)
+                        if sub is None:
+                            return [], False
+                        if sub:
+                            committed.extend(sub)
+                            progress = True
+                            _refresh()
+                            ent = _ent(eid)
+                            if ent is None:
+                                return [], False
 
-    # Action-level preconditions from the schema. Generic dispatch —
-    # any RelationPrecondition routes through plan_to_establish_relation,
-    # which itself handles derived relations via derivation walking.
-    # `samloke` reaches this path with no special-case; the planner
-    # walks the `shared_container_means_samloke` derivation to
-    # subgoal the underlying `en` relations.
-    for pc in action.preconditions:
-        eids = [roles.get(rn) for rn in pc.roles]
-        if any(e is None for e in eids):
-            continue
-        sub = plan_to_establish_relation(
-            pc.rel, tuple(eids), actor_id,
-            trace, lex, rules, derived=derived, derivations=derivations,
-            max_depth=max_depth, _depth=depth, _seen=seen)
-        if sub is None:
+        # Action-level preconditions.
+        for pc in action.preconditions:
+            if isinstance(pc, RelationPrecondition):
+                eids = [roles.get(rn) for rn in pc.roles]
+                if any(e is None for e in eids):
+                    continue
+                if _has_relation(
+                        pc.rel, tuple(eids), cur_trace, cur_derived, lex):
+                    continue
+                unresolved = True
+                sub = plan_to_establish_relation(
+                    pc.rel, tuple(eids), actor_id,
+                    cur_trace, lex, rules, derived=cur_derived,
+                    derivations=derivations,
+                    max_depth=max_depth, _depth=depth, _seen=seen)
+                if sub is None:
+                    return [], False
+                if sub:
+                    committed.extend(sub)
+                    progress = True
+                    _refresh()
+            elif isinstance(pc, IfPropertyPrecondition):
+                eid = roles.get(pc.role)
+                if eid is None:
+                    continue
+                ent = _ent(eid)
+                if ent is None:
+                    return [], False
+                gate = _entity_property_values(
+                    ent, pc.if_property, cur_trace, cur_derived)
+                if pc.if_value not in gate:
+                    continue
+                current = _entity_property_values(
+                    ent, pc.then_property, cur_trace, cur_derived)
+                if pc.then_value in current:
+                    continue
+                unresolved = True
+                sub = plan_to_achieve(
+                    eid, pc.then_property, pc.then_value, actor_id,
+                    cur_trace, lex, rules, derived=cur_derived,
+                    derivations=derivations,
+                    max_depth=max_depth, _depth=depth, _seen=seen)
+                if sub is None:
+                    return [], False
+                if sub:
+                    committed.extend(sub)
+                    progress = True
+                    _refresh()
+
+        if not unresolved:
+            return committed, True
+        if not progress:
             return [], False
-        sub_plans.extend(sub)
-    return sub_plans, True
+    return [], False
+
+
+import contextvars
+_PLANNER_RNG: contextvars.ContextVar = contextvars.ContextVar(
+    "_PLANNER_RNG", default=None)
 
 
 def plan_to_establish_relation(relation, target_args, actor_id,
@@ -560,6 +775,12 @@ def plan_to_establish_relation(relation, target_args, actor_id,
                 and "agent" not in role_arg_names)
             return 0 if actor_will_bind else 1
         rel_candidates.sort(key=_priority)
+    # Shuffle equally-ranked verbs so different runs surface different
+    # chain shapes (e.g. rakonti vs respondi vs montri for konas).
+    # Falls through to deterministic order when no rng is set.
+    _shuffle_rng = _PLANNER_RNG.get()
+    if _shuffle_rng is not None:
+        _shuffle_rng.shuffle(rel_candidates)
 
     for rule, event_pat, arg_sources in rel_candidates:
         action = lex.actions.get(event_pat.action)
@@ -1026,9 +1247,21 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
                     # then all locations. Used when the derivation
                     # imposes no entity-level identity constraints on
                     # the free var (samloke shape).
+                    #
+                    # When the actor is one of the targets, prefer the
+                    # NON-actor target's container so the actor does
+                    # the moving. Without this the planner satisfies
+                    # samloke(agent_in_lib, recipient_in_kitchen) by
+                    # moving the recipient to the library, which is
+                    # narratively backwards for "actor goes back to
+                    # tell" chains.
+                    ordered_targets = list(target_args)
+                    if actor_id in ordered_targets:
+                        ordered_targets.sort(
+                            key=lambda x: 0 if x != actor_id else 1)
                     candidates = []
                     seen_cand: set[str] = set()
-                    for target in target_args:
+                    for target in ordered_targets:
                         c = _container_of(target, trace)
                         if c is not None and c not in seen_cand:
                             seen_cand.add(c)
@@ -1039,6 +1272,12 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
                         if lex.types.is_subtype(ent.entity_type, "location"):
                             seen_cand.add(eid)
                             candidates.append(eid)
+                # Drop candidates whose slot constraints are unreachable
+                # from any verb's effects (e.g. lights_when_on=yes only
+                # holds on lampo; no verb writes it). Without this the
+                # planner explores every entity for every free var.
+                candidates = _filter_candidates_by_slots(
+                    candidates, fv_id, slots_to_subgoal, trace, lex)
                 assignments = [{fv_id: c} for c in candidates]
 
             for assignment in assignments:
@@ -1098,7 +1337,224 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
                         sub_plans.extend(sub)
                 if sub_ok:
                     return sub_plans
+    # Last resort: the free var refers to an entity that doesn't exist
+    # in the trace yet. Look for a causal rule whose `create_entity`
+    # would produce a matching entity AND whose `add_relation` effects
+    # satisfy the derivation's rel patterns about it. Plan that rule's
+    # trigger verb. For scias_lokon, this finds vidi: vidi creates a
+    # fakto and adds konas + subjekto + objekto in one shot, so firing
+    # vidi(actor, target) satisfies the entire derivation.
+    sub = _plan_via_synthesis(
+        relation, target_args, actor_id, trace, lex, rules,
+        derivations, derived, max_depth, depth, seen)
+    if sub is not None:
+        return sub
     return None
+
+
+def _plan_via_synthesis(relation, target_args, actor_id, trace, lex,
+                        rules, derivations, derived,
+                        max_depth, depth, seen):
+    """Plan a verb whose causal rule synthesizes the entities/relations
+    that satisfy the goal — possibly via one derivation step.
+
+    Strategy: try firing each create-entity verb (with role bindings
+    seeded from the goal's arg targets) on a forked trace; if the
+    goal relation then holds, plan that verb. This catches the
+    create-then-relate pattern (vidi creates a fakto whose subjekto
+    binding + konas relation, after derivation closure, satisfy
+    scias_lokon) without needing to reason symbolically about what
+    each rule's effects mean for the goal."""
+    # Pre-filter: only worth attempting synthesis when the goal
+    # relation is reachable from some create-entity rule's add_relation
+    # closure (directly or via one-step derivation). Avoids forking
+    # the trace for goals like `en` or `havi` where existing planner
+    # paths already handle everything.
+    if not _is_synthesis_candidate_relation(relation, rules, derivations):
+        return None
+
+    candidate_rules = []
+    for rule in rules:
+        if not any(isinstance(e, CreateEntity) for e in rule.then):
+            continue
+        verb_lemma = rule.when.action
+        action = lex.actions.get(verb_lemma)
+        if action is None:
+            continue
+        candidate_rules.append((rule, verb_lemma, action))
+    _shuffle_rng = _PLANNER_RNG.get()
+    if _shuffle_rng is not None:
+        _shuffle_rng.shuffle(candidate_rules)
+
+    for rule, verb_lemma, action in candidate_rules:
+        for role_bindings in _enumerate_seeded_role_bindings(
+                action, target_args, actor_id, trace, lex):
+            t_fork, d_fork = _simulate_from_scratch(
+                trace, [(verb_lemma, role_bindings)], lex, rules,
+                derivations)
+            if not _has_relation(
+                    relation, target_args, t_fork, d_fork, lex):
+                continue
+            plan = _plan_specific_action(
+                action, role_bindings, actor_id, trace, lex, rules,
+                derivations, derived, max_depth, depth, seen,
+                trigger_event_pat=rule.when)
+            if plan is not None:
+                return plan
+    return None
+
+
+_SYNTHESIS_CANDIDATE_CACHE: dict[int, set[str]] = {}
+
+
+def _is_synthesis_candidate_relation(
+    relation: str, rules: list, derivations: list,
+) -> bool:
+    """Static-precompute (and cache by `id(rules)`) the set of relations
+    reachable from any create-entity rule's add_relation effects, plus
+    one step of derivation closure. Goals outside this set can't
+    benefit from synthesis — skip the expensive forward simulation."""
+    cache_key = id(rules)
+    cached = _SYNTHESIS_CANDIDATE_CACHE.get(cache_key)
+    if cached is None:
+        # Direct: relations added by create-entity rules.
+        direct: set[str] = set()
+        for rule in rules:
+            if not any(isinstance(e, CreateEntity) for e in rule.then):
+                continue
+            for eff in rule.then:
+                if isinstance(eff, AddRelation):
+                    direct.add(eff.relation)
+        # One-step derivation closure: derived relations whose `when`
+        # mentions a directly-synthesizable relation.
+        reachable = set(direct)
+        for d in derivations:
+            for imp in d.implies:
+                if not isinstance(imp, RelationImplication):
+                    continue
+                whens = _walk_for_rel_patterns(d.when)
+                for g in d.given:
+                    whens.extend(_walk_for_rel_patterns(g))
+                if any(rp.relation in direct for rp in whens):
+                    reachable.add(imp.name)
+        cached = reachable
+        _SYNTHESIS_CANDIDATE_CACHE[cache_key] = cached
+    return relation in cached
+
+
+def _enumerate_seeded_role_bindings(action, target_args, actor_id,
+                                     trace, lex):
+    """Yield candidate role-binding dicts for `action`, seeded from
+    `target_args` (concrete entity ids the goal wants to involve).
+
+    Heuristic: for each subset of action's roles, try assigning each
+    target arg + the actor to a role whose type they're compatible
+    with. Other roles get filled at plan-execute time. Bounded by
+    O(roles! × len(targets)+1), small for our verb roster."""
+    role_specs = action.roles
+    candidates_per_role: list[list[str]] = []
+    seed_pool = list(set(list(target_args) + [actor_id]))
+    for role in role_specs:
+        compat = []
+        for eid in seed_pool:
+            ent = trace.entities.get(eid)
+            if ent is None:
+                continue
+            if not lex.types.is_subtype(ent.entity_type, role.type):
+                continue
+            compat.append(eid)
+        compat.append(None)   # placeholder: leave for _find_role_filler
+        candidates_per_role.append(compat)
+
+    def _expand(idx, current):
+        if idx == len(role_specs):
+            if not current:
+                return
+            non_none = [v for v in current.values() if v is not None]
+            if len(set(non_none)) != len(non_none):
+                return   # duplicate eid in two roles
+            yield {k: v for k, v in current.items() if v is not None}
+            return
+        role_name = role_specs[idx].name
+        for eid in candidates_per_role[idx]:
+            current[role_name] = eid
+            yield from _expand(idx + 1, current)
+        current.pop(role_name, None)
+
+    seen_combos: set = set()
+    for combo in _expand(0, {}):
+        key = tuple(sorted(combo.items()))
+        if key in seen_combos:
+            continue
+        seen_combos.add(key)
+        yield combo
+
+
+def _role_name_for_var(rule, var) -> str | None:
+    """Find which role of `rule.when` binds `var`. Returns None if
+    `var` isn't bound by any role in the trigger event pattern."""
+    if not isinstance(rule.when, EventPattern):
+        return None
+    for role_name, role_pat in rule.when.role_patterns.items():
+        for v in _extract_bind_vars(role_pat):
+            if v is var:
+                return role_name
+    return None
+
+
+def _role_name_for_var(rule, var) -> str | None:
+    """Find which role of `rule.when` binds `var`. Returns None if
+    `var` isn't bound by any role in the trigger event pattern."""
+    if not isinstance(rule.when, EventPattern):
+        return None
+    for role_name, role_pat in rule.when.role_patterns.items():
+        for v in _extract_bind_vars(role_pat):
+            if v is var:
+                return role_name
+    return None
+
+
+def _plan_specific_action(action, role_bindings, actor_id, trace, lex,
+                          rules, derivations, derived,
+                          max_depth, depth, seen, *, trigger_event_pat=None):
+    """Plan a specific action with given role bindings. Fills any
+    missing roles via the standard scene scan, resolves preconditions,
+    returns sub_plans + [(verb, roles)] or None."""
+    roles = dict(role_bindings)
+    action_role_names = {r.name for r in action.roles}
+    # Bind agent to actor if available and not already set.
+    if "agent" in action_role_names and "agent" not in roles:
+        if actor_id not in roles.values():
+            roles["agent"] = actor_id
+    # Type-check fixed bindings.
+    for role_name, eid in roles.items():
+        ent = trace.entities.get(eid)
+        role_spec = next(
+            (r for r in action.roles if r.name == role_name), None)
+        if (ent is None or role_spec is None
+                or not lex.types.is_subtype(
+                    ent.entity_type, role_spec.type)):
+            return None
+    # Reject duplicate-entity bindings.
+    if len(set(roles.values())) != len(roles):
+        return None
+    # Fill remaining roles from scene.
+    for role_spec in action.roles:
+        if role_spec.name in roles:
+            continue
+        eid = _find_role_filler(
+            role_spec, trace, lex, derived=derived,
+            exclude=set(roles.values()))
+        if eid is None:
+            return None
+        roles[role_spec.name] = eid
+    # Resolve preconditions.
+    sub_plans, ok = _resolve_preconditions(
+        action, trigger_event_pat, roles, actor_id, trace, lex, rules,
+        derived, max_depth, depth + 1, seen, derivations=derivations)
+    if not ok:
+        return None
+    return sub_plans + [(action.lemma, roles)]
 
 
 def _split_entity_constraints(when, given, target_var):
@@ -1274,6 +1730,9 @@ def plan_to_achieve(goal_entity_id, goal_slot, goal_value,
     # involves Lidia. Self-acting candidates remain as fallback.
     if actor_id != goal_entity_id:
         candidates.sort(key=lambda c: 0 if c[1] != "agent" else 1)
+    _shuffle_rng = _PLANNER_RNG.get()
+    if _shuffle_rng is not None:
+        _shuffle_rng.shuffle(candidates)
 
     for action, target_role, rule in candidates:
         event_pat = _trigger_event_pattern(rule) if rule else None
@@ -1429,6 +1888,8 @@ def _plan_property_via_derivation(entity_id, slot, value, actor_id,
                     ]
                 else:
                     candidates = list(trace.entities.keys())
+                candidates = _filter_candidates_by_slots(
+                    candidates, fv_id, slots_to_subgoal, trace, lex)
                 assignments = [{fv_id: c} for c in candidates]
 
             for assignment in assignments:
@@ -1461,12 +1922,46 @@ def _plan_property_via_derivation(entity_id, slot, value, actor_id,
                     sub_plans.extend(sub)
                 if not sub_ok:
                     continue
-                # Subgoal entity-pattern slot constraints (e.g. the
-                # seruro's lock_state=malŝlosita that lets the
-                # host_lock_state_unlocked_from_seruro derivation
-                # actually fire after we plan).
-                if free_vars:
-                    for fv_var_local, slot, value in slots_to_subgoal:
+                # Subgoal entity-pattern slot constraints. Two scopes:
+                # (a) constraints on imp.entity itself — e.g. when
+                #     `outdoor_is_luma` is bound to an indoor location,
+                #     its `indoor_outdoor=ekstera` constraint must be
+                #     satisfied (it can't be) so this derivation must
+                #     NOT claim the goal is achievable.
+                # (b) constraints on the free var (lock_state on the
+                #     seruro, power_state on the lamp).
+                # Both are subgoaled via plan_to_achieve.
+                # NB: rebind to es_/fv_ names so we don't shadow the
+                # function's `slot` / `value` params — earlier shadowing
+                # caused the next derivation in the outer loop to be
+                # skipped because `imp.slot != slot` saw the leaked
+                # inner loop value.
+                _, imp_entity_slots = _split_entity_constraints(
+                    d.when, d.given, imp.entity)
+                imp_ent = trace.entities.get(entity_id)
+                for es_var, es_slot, es_value in imp_entity_slots:
+                    if not sub_ok:
+                        break
+                    if es_var is not imp.entity:
+                        continue
+                    if imp_ent is None:
+                        sub_ok = False
+                        break
+                    actual = _entity_property_values(
+                        imp_ent, es_slot, trace, derived)
+                    if es_value in actual:
+                        continue
+                    sub = plan_to_achieve(
+                        entity_id, es_slot, es_value, actor_id,
+                        trace, lex, rules,
+                        derived=derived, derivations=derivations,
+                        max_depth=max_depth, _depth=depth, _seen=seen)
+                    if sub is None:
+                        sub_ok = False
+                        break
+                    sub_plans.extend(sub)
+                if sub_ok and free_vars:
+                    for fv_var_local, fv_slot, fv_value in slots_to_subgoal:
                         if id(fv_var_local) != fv_id:
                             continue
                         target_eid = assignment[fv_id]
@@ -1475,11 +1970,11 @@ def _plan_property_via_derivation(entity_id, slot, value, actor_id,
                             sub_ok = False
                             break
                         actual = _entity_property_values(
-                            target_ent, slot, trace, derived)
-                        if value in actual:
+                            target_ent, fv_slot, trace, derived)
+                        if fv_value in actual:
                             continue
                         sub = plan_to_achieve(
-                            target_eid, slot, value, actor_id,
+                            target_eid, fv_slot, fv_value, actor_id,
                             trace, lex, rules,
                             derived=derived, derivations=derivations,
                             max_depth=max_depth, _depth=depth, _seen=seen)
@@ -2234,38 +2729,54 @@ def _drive_weight(candidate) -> int:
     return weight
 
 
-def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=5):
+def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=5,
+                    rng=None):
     """Dispatch one drive to the right planner entry. Returns the
     plan or None. Computes derived state once. Doesn't fire — caller
-    is responsible for executing the plan against the trace."""
+    is responsible for executing the plan against the trace.
+
+    `rng` (optional): when given, the planner shuffles candidate verbs
+    at each enumeration site so different runs surface different
+    chain shapes — e.g. rakonti vs respondi vs montri for konas
+    goals. None preserves the deterministic enumeration order."""
     derived = compute_derived_state(t, derivations, lex)
     kind = drive[0]
-    if kind == "self_slot":
-        _, actor, slot, value = drive
-        return plan_to_achieve(
-            actor, slot, value, actor, t, lex, rules,
-            derived=derived, max_depth=max_depth)
-    if kind == "entity_slot":
-        _, actor, target, slot, value = drive
-        return plan_to_achieve(
-            target, slot, value, actor, t, lex, rules,
-            derived=derived, max_depth=max_depth)
-    if kind == "location":
-        _, actor, loc = drive
-        return plan_to_establish_relation(
-            "en", (actor, loc), actor, t, lex, rules,
-            derived=derived, derivations=derivations, max_depth=max_depth)
-    if kind == "possession":
-        _, actor, item = drive
-        return plan_to_establish_relation(
-            "havi", (actor, item), actor, t, lex, rules,
-            derived=derived, derivations=derivations, max_depth=max_depth)
-    if kind == "knowledge":
-        _, actor, knower, fakto_id = drive
-        return plan_to_establish_relation(
-            "konas", (knower, fakto_id), actor, t, lex, rules,
-            derived=derived, derivations=derivations, max_depth=max_depth)
-    return None
+    token = _PLANNER_RNG.set(rng)
+    _SIM_CACHE.clear()
+    try:
+        if kind == "self_slot":
+            _, actor, slot, value = drive
+            return plan_to_achieve(
+                actor, slot, value, actor, t, lex, rules,
+                derived=derived, derivations=derivations,
+                max_depth=max_depth)
+        if kind == "entity_slot":
+            _, actor, target, slot, value = drive
+            return plan_to_achieve(
+                target, slot, value, actor, t, lex, rules,
+                derived=derived, derivations=derivations,
+                max_depth=max_depth)
+        if kind == "location":
+            _, actor, loc = drive
+            return plan_to_establish_relation(
+                "en", (actor, loc), actor, t, lex, rules,
+                derived=derived, derivations=derivations,
+                max_depth=max_depth)
+        if kind == "possession":
+            _, actor, item = drive
+            return plan_to_establish_relation(
+                "havi", (actor, item), actor, t, lex, rules,
+                derived=derived, derivations=derivations,
+                max_depth=max_depth)
+        if kind == "knowledge":
+            _, actor, knower, fakto_id = drive
+            return plan_to_establish_relation(
+                "konas", (knower, fakto_id), actor, t, lex, rules,
+                derived=derived, derivations=derivations,
+                max_depth=max_depth)
+        return None
+    finally:
+        _PLANNER_RNG.reset(token)
 
 
 def _drive_summary(drive):
@@ -2298,30 +2809,53 @@ def _drive_summary(drive):
 # when initial is ŝlosita) makes the planner subgoal on it via existing
 # derivations + chained verbs — no augmenter, no boost weights.
 
-# Verbs the regressor targets, with a per-verb relative weight. Equal
-# weights = balanced across chains. Verbs not listed are skipped.
-REGRESSION_VERBS = [
-    ("malfermi", 1),
-    ("fermi", 1),
-    ("malŝlosi", 1),
-    ("ŝlosi", 1),
-    ("manĝi", 1),
-    ("preni", 1),
-    ("doni", 1),
-    ("veki", 1),
-    ("dormi", 1),
-    ("iri", 1),
-    ("rakonti", 1),
-    ("vidi", 1),
-]
+def _verbs_adding_konas(rules) -> set[str]:
+    """Verb lemmas whose causal rules add a konas relation. Used by
+    the regression sampler to surface knowledge-transfer chains
+    (rakonti, vidi). The check looks at the rule's then-effects rather
+    than action.effects (which is per-verb-schema property changes)
+    because konas additions live in the rule layer, not the schema."""
+    out: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        rule_effects = (rule.then if isinstance(rule.then, (list, tuple))
+                         else [rule.then])
+        for eff in rule_effects:
+            if isinstance(eff, AddRelation) and eff.relation == "konas":
+                out.add(rule.when.action)
+                break
+    return out
+
+
+def _regression_verb_pool(lex) -> list[str]:
+    """Verbs eligible as regression targets: any action whose first
+    effect writes a `varies=True` slot. The varies check matters
+    because the regressor sets the theme's effect-slot to a non-target
+    initial value — a slot whose value can't vary at instance time
+    has nothing to flip from."""
+    out = []
+    for lemma, action in lex.actions.items():
+        if not action.effects:
+            continue
+        slot = lex.slots.get(action.effects[0].property)
+        if slot is None or not slot.varies:
+            continue
+        out.append(lemma)
+    return out
 
 
 def _concepts_matching_role(lex, role_spec) -> list[str]:
-    """Concepts compatible with role_spec: subtype-correct AND any
-    immutable role.properties already present on the concept (e.g.
-    functional_signature=ŝlosi narrows instrument candidates to
-    ŝlosilo). Mutable slots (varies=True) are not filtered — those are
-    set at scene-init."""
+    """Concepts compatible with role_spec: subtype-correct AND every
+    role.properties slot is meaningful for the concept.
+
+    For immutable slots (e.g. functional_signature=ŝlosi) the concept's
+    declared value must intersect the role's required set.
+
+    For varies=True slots, the value gets randomized at instance-time —
+    but only if the concept declares the slot. A concept that doesn't
+    declare openness can't be a meaningful malfermi.theme even though
+    the type spine allows it."""
     out = []
     for lemma, concept in lex.concepts.items():
         if not lex.types.is_subtype(concept.entity_type, role_spec.type):
@@ -2331,32 +2865,18 @@ def _concepts_matching_role(lex, role_spec) -> list[str]:
             slot_def = lex.slots.get(slot)
             if slot_def is None:
                 continue
-            if slot_def.varies:
-                continue
             cvals = concept.properties.get(slot, [])
+            if slot_def.varies:
+                if not cvals:
+                    ok = False
+                    break
+                continue
             if not (set(vals) & set(cvals)):
                 ok = False
                 break
         if ok:
             out.append(lemma)
     return out
-
-
-def _concept_chain_potential(lex, concept_lemma, slot) -> int:
-    """Heuristic weight: how much does this concept extend the chain
-    if used as `slot`-producing target? Concepts with parts whose
-    state lifts to the host (pordo+seruro→lock_state) get a bonus
-    because the planner subgoals through host_lock_state derivations,
-    yielding a 2-step chain. Plain artifacts return 1."""
-    concept = lex.concepts.get(concept_lemma)
-    if concept is None:
-        return 1
-    if slot == "openness":
-        for part_spec in concept.parts:
-            part = lex.concepts.get(part_spec.concept)
-            if part and "lock_state" in part.properties:
-                return 5  # pordo (has seruro) preferred over kuseno
-    return 1
 
 
 def regress_for_verb(verb_name, lex, rng):
@@ -2383,12 +2903,43 @@ def regress_for_verb(verb_name, lex, rng):
         return None
     scene_id = scene_lemma
 
+    # Pick a second location for chain ingredients to live in. Forces
+    # the planner to subgoal on locomotion (iri) + retrieval (preni)
+    # rather than getting everything in a single room. Falls back to
+    # scene_id when only one location is available.
+    away_lemma = next(
+        (l for l in (rng.sample(locations, len(locations)))
+         if l != scene_lemma), scene_lemma)
+    away_id = away_lemma
+    if away_id != scene_id:
+        try:
+            _add_entity_randomized(t, away_lemma, lex, rng, entity_id=away_id)
+        except (KeyError, ValueError):
+            away_id = scene_id
+
+    eff = action.effects[0]
     role_eids: dict[str, str] = {}
     for role in action.roles:
         candidates = _concepts_matching_role(lex, role)
+        weights: list[float] | None = None
+        if role.name == eff.target_role:
+            # Effect target must declare the effect slot — otherwise
+            # set_property writes a slot the concept doesn't claim and
+            # nothing in the engine will treat it as state to flip.
+            candidates = [c for c in candidates
+                          if eff.property in lex.concepts[c].properties]
+            # Soft bias toward candidates that trigger a conditional
+            # precondition: gate-able candidates collectively get ~half
+            # the probability mass, the rest split the other half.
+            # Keeps both chain coverage (pordo for malfermi) and
+            # breadth coverage (sako/botelo/...) live in one run.
+            weights = _candidate_weights(candidates, role.name, action, lex)
         if not candidates:
             return None
-        concept_lemma = rng.choice(candidates)
+        if weights is not None:
+            concept_lemma = rng.choices(candidates, weights=weights, k=1)[0]
+        else:
+            concept_lemma = rng.choice(candidates)
         eid = concept_lemma
         suffix = 0
         while eid in t.entities:
@@ -2400,16 +2951,26 @@ def regress_for_verb(verb_name, lex, rng):
             return None
         role_eids[role.name] = eid
 
+    # Place each role-entity in scene_id, EXCEPT: the effect target
+    # gets a coin flip between scene_id and away_id (when distinct).
+    # Placing the target away forces samloke(agent, theme) preconditions
+    # to subgoal via iri, surfacing locomotion chains for verbs like
+    # kuiri/akvumi/fermi that don't otherwise need to move the agent.
     for role_name, eid in role_eids.items():
+        if (role_name == eff.target_role
+                and away_id != scene_id
+                and rng.random() < 0.5):
+            placement = away_id
+        else:
+            placement = scene_id
         try:
-            t.assert_relation("en", (eid, scene_id), lex)
+            t.assert_relation("en", (eid, placement), lex)
         except (KeyError, ValueError):
             return None
 
     # Set theme's effect-slot to a non-target value so the verb has
     # work to do. Other role.properties are deliberately NOT preset —
     # the planner subgoals on them, growing the chain.
-    eff = action.effects[0]
     target_eid = role_eids.get(eff.target_role)
     if target_eid is None:
         return None
@@ -2420,15 +2981,22 @@ def regress_for_verb(verb_name, lex, rng):
             t.entities[target_eid].set_property(
                 eff.property, rng.choice(non_target))
 
-    # Instrument needs to be held by the agent for tool-using verbs.
-    agent_eid = role_eids.get("agent")
-    instrument_eid = role_eids.get("instrument")
-    if agent_eid and instrument_eid:
-        try:
-            t.assert_relation("havi", (agent_eid, instrument_eid), lex)
-        except (KeyError, ValueError):
-            pass
+    # Force conditional preconditions to fire so chains land reliably.
+    # For each IfPropertyPrecondition, set the gate's if_property to
+    # if_value (so the gate fires) and then_property to a non-target
+    # value (so the planner subgoals on a producer verb). Without
+    # this, gate firing depends on randomization — pordo's lock_state
+    # randomizes 50/50 and only locked half lands a chain.
+    _force_conditional_gates(t, action, role_eids, lex, rng)
 
+    # Forward-chain seeding: walk action.preconditions and pre-place
+    # ingredients (chiefly instruments) for any verb the planner might
+    # subgoal on. Ingredients go in `away_id` so the planner has to
+    # locomote and retrieve, not just bind everything in one room.
+    _seed_chain_dependencies(
+        t, action, role_eids, scene_id, lex, rng, away_id=away_id)
+
+    agent_eid = role_eids.get("agent")
     if agent_eid is None:
         return None
     drive = ("entity_slot", agent_eid, target_eid,
@@ -2436,21 +3004,451 @@ def regress_for_verb(verb_name, lex, rng):
     return t, scene_id, drive
 
 
-def sample_regression_scene(lex, rng):
-    """Pick a verb (weighted) and regress a scene for it. Retries up to
-    a few times if a verb's regression fails; returns None if every
-    attempt fails."""
-    pool = [(v, w) for v, w in REGRESSION_VERBS if v in lex.actions]
+def _candidate_weights(
+    candidates: list, role_name: str, action, lex,
+) -> list[float] | None:
+    """Weights for sampling a role candidate, biasing toward concepts
+    that trigger a conditional precondition gating this role. Returns
+    None when no bias applies (no IfPropertyPrecondition on the role,
+    OR all/no candidates trigger a gate — uniform either way).
+
+    Bias formula: gate-able candidates collectively get the same
+    probability mass as non-gate-able ones, so a single gate-able
+    concept (e.g. pordo among 7 openness-having candidates) lands
+    roughly half the time. Keeps both chain growth and breadth in
+    one run without a tunable constant."""
+    from esperanto_lm.ontology.schemas import IfPropertyPrecondition
+
+    gate_props = {pc.if_property for pc in action.preconditions
+                  if isinstance(pc, IfPropertyPrecondition)
+                  and pc.role == role_name}
+    if not gate_props:
+        return None
+    gate_able = {c for c in candidates
+                 if any(p in lex.concepts[c].properties for p in gate_props)}
+    n_gate = len(gate_able)
+    n_other = len(candidates) - n_gate
+    if n_gate == 0 or n_other == 0:
+        return None   # uniform either way
+    boost = n_other / n_gate
+    return [boost if c in gate_able else 1.0 for c in candidates]
+
+
+def _seed_agent_knowledge(t, agent_eid, lex) -> None:
+    """For each `en` placement currently in the trace, create a fakto
+    entity (mirroring vidi_learns_en) and assert konas(agent, fakto).
+    Lets the planner skip the vidi → konas → scias_lokon subgoal chain
+    that's needed for preni — the regression sampler models agents as
+    knowing the scene's layout, not as discovering it.
+
+    No-op when agent_eid is None or not in the trace."""
+    from esperanto_lm.ontology.causal import EntityInstance
+    if agent_eid is None or agent_eid not in t.entities:
+        return
+    en_pairs = [(r.args[0], r.args[1]) for r in t.relations
+                if r.relation == "en"]
+    fakto_concept = lex.concepts.get("fakto")
+    if fakto_concept is None:
+        return
+    for subj, loc in en_pairs:
+        fid = f"fakto_from_en_{subj}_{loc}"
+        if fid in t.entities:
+            continue
+        t.entities[fid] = EntityInstance(
+            id=fid, concept_lemma="fakto",
+            entity_type=fakto_concept.entity_type,
+            properties={"pri_relacio": ["en"]},
+        )
+        try:
+            t.assert_relation("subjekto", (fid, subj), lex)
+            t.assert_relation("objekto", (fid, loc), lex)
+            t.assert_relation("konas", (agent_eid, fid), lex)
+        except (KeyError, ValueError):
+            continue
+
+
+def _force_conditional_gates(t, action, role_eids: dict, lex, rng) -> None:
+    """For each IfPropertyPrecondition on the target verb, force the
+    gate to fire by setting the role's if_property=if_value AND set
+    then_property to a non-target value so the planner has to subgoal
+    on it. Skips when the role concept doesn't declare if_property
+    (gate can't fire) or when then_property has no other vocabulary."""
+    from esperanto_lm.ontology.schemas import IfPropertyPrecondition
+
+    for pc in action.preconditions:
+        if not isinstance(pc, IfPropertyPrecondition):
+            continue
+        eid = role_eids.get(pc.role)
+        if eid is None:
+            continue
+        ent = t.entities.get(eid)
+        if ent is None:
+            continue
+        role_concept = lex.concepts.get(ent.concept_lemma)
+        if role_concept is None:
+            continue
+        if pc.if_property not in role_concept.properties:
+            continue
+        ent.set_property(pc.if_property, pc.if_value)
+        then_slot = lex.slots.get(pc.then_property)
+        if then_slot is None or not then_slot.vocabulary:
+            continue
+        adverse = [v for v in then_slot.vocabulary if v != pc.then_value]
+        if not adverse:
+            continue
+        ent.set_property(pc.then_property, rng.choice(adverse))
+
+
+def _concept_satisfies_role_props(concept, role, lex) -> bool:
+    """Does this concept satisfy role.properties? Mirrors
+    `_concepts_matching_role`'s per-slot checks but for a single
+    (concept, role) pair. Used by the chain seeder to decide whether
+    an existing role binding can be reused for a producer's role."""
+    for slot, vals in role.properties.items():
+        slot_def = lex.slots.get(slot)
+        if slot_def is None:
+            continue
+        cvals = concept.properties.get(slot, [])
+        if slot_def.varies:
+            if not cvals:
+                return False
+            continue
+        if not (set(vals) & set(cvals)):
+            return False
+    return True
+
+
+def _verbs_producing(lex, slot: str, value: str) -> list:
+    """Verbs whose first effect writes (slot, value). Used by chain
+    seeding to find the producer for a subgoaled property."""
+    out = []
+    for action in lex.actions.values():
+        for eff in action.effects:
+            if eff.property == slot and eff.value == value:
+                out.append(action)
+                break
+    return out
+
+
+def _seed_chain_dependencies(t, action, role_eids: dict, scene_id: str,
+                              lex, rng, *, away_id: str | None = None,
+                              seen: set | None = None) -> None:
+    """For each conditional precondition on `action` whose gate could
+    fire post-randomization, find verbs producing the required state
+    and seed their missing roles into the scene. Recurses on producer
+    verbs so multi-hop chains land. `seen` tracks visited verb lemmas
+    to bound recursion under cyclic preconditions.
+
+    `away_id` (when given) is a second location distinct from
+    `scene_id`. New entities seeded here go `en` away_id so the
+    planner has to subgoal on locomotion/retrieval rather than just
+    binding everything in one room. Falls back to scene_id when
+    away_id is None or equals scene_id.
+
+    Currently handles IfPropertyPrecondition only — the live case for
+    the lock chain. RelationPrecondition seeding (e.g. needing a
+    container so havi can be established) is a future extension."""
+    from esperanto_lm.ontology.sampler import _add_entity_randomized
+    from esperanto_lm.ontology.schemas import IfPropertyPrecondition
+    seen = (seen or set()) | {action.lemma}
+    placement_id = away_id if (away_id and away_id != scene_id) else scene_id
+
+    for pc in action.preconditions:
+        if not isinstance(pc, IfPropertyPrecondition):
+            continue
+        gate_eid = role_eids.get(pc.role)
+        if gate_eid is None:
+            continue
+        gate_concept = lex.concepts.get(t.entities[gate_eid].concept_lemma)
+        if gate_concept is None:
+            continue
+        # Pessimistic firing: if the role concept declares if_property,
+        # the gate could fire after randomization. Seed for it.
+        if pc.if_property not in gate_concept.properties:
+            continue
+        for producer in _verbs_producing(
+                lex, pc.then_property, pc.then_value):
+            if producer.lemma in seen:
+                continue
+            prod_role_eids = dict(role_eids)
+            for p_role in producer.roles:
+                existing = prod_role_eids.get(p_role.name)
+                if existing is not None:
+                    ent = t.entities[existing]
+                    role_concept = lex.concepts.get(ent.concept_lemma)
+                    if (lex.types.is_subtype(ent.entity_type, p_role.type)
+                            and role_concept is not None
+                            and _concept_satisfies_role_props(
+                                role_concept, p_role, lex)):
+                        continue   # reusable for producer's role
+                cands = _concepts_matching_role(lex, p_role)
+                if not cands:
+                    continue
+                concept_lemma = rng.choice(cands)
+                eid = concept_lemma
+                suffix = 0
+                while eid in t.entities:
+                    suffix += 1
+                    eid = f"{concept_lemma}_{p_role.name}" + (
+                        str(suffix) if suffix > 1 else "")
+                try:
+                    _add_entity_randomized(
+                        t, concept_lemma, lex, rng, entity_id=eid)
+                    t.assert_relation("en", (eid, placement_id), lex)
+                except (KeyError, ValueError):
+                    continue
+                prod_role_eids[p_role.name] = eid
+            _seed_chain_dependencies(
+                t, producer, prod_role_eids, scene_id, lex, rng,
+                away_id=away_id, seen=seen)
+
+
+def sample_regression_scene(lex, rng, *, rules=None):
+    """Pick a verb uniformly from the lexicon-derived eligible pool and
+    regress a scene for it. Retries up to a few times if a verb's
+    regression fails; returns None if every attempt fails.
+
+    Two pools are interleaved: (a) property-effect verbs from
+    `_regression_verb_pool` (handled by `regress_for_verb`) and
+    (b) verbs whose causal rules add the `konas` relation (handled by
+    `regress_for_konas_verb`). Knowledge-transfer chains naturally
+    surface from (b) — e.g. picking rakonti exercises the
+    `vidi → rakonti` chain when no agent yet knows the fakto."""
+    prop_pool = _regression_verb_pool(lex)
+    konas_pool = (sorted(_verbs_adding_konas(rules) & set(lex.actions))
+                   if rules else [])
+    pool = prop_pool + konas_pool
     if not pool:
         return None
-    verbs = [v for v, _ in pool]
-    weights = [w for _, w in pool]
     for _ in range(8):
-        verb = rng.choices(verbs, weights=weights, k=1)[0]
-        result = regress_for_verb(verb, lex, rng)
+        verb = rng.choice(pool)
+        if verb == "demandi":
+            result = regress_for_demandi(lex, rng)
+        elif verb in konas_pool:
+            result = regress_for_konas_verb(verb, lex, rng)
+        else:
+            result = regress_for_verb(verb, lex, rng)
         if result is not None:
             return result
     return None
+
+
+def regress_for_demandi(lex, rng):
+    """Build a scene where the actor wants to know a fakto and a
+    knower (already konas-asserted) is the natural source. Drive is
+    `("knowledge", actor, actor, fakto)` — the planner picks demandi
+    when there's a viable recipient who knows; falls back to vidi
+    otherwise. Pre-asserting konas(knower, fakto) lets demandi clear
+    its precondition without needing the knower to chain through
+    vidi themselves.
+
+    Target entity is placed in a different location AND not in the
+    actor's scene, so vidi(actor, target) would require iri while
+    demandi only needs samloke with the knower (often shorter).
+    Together with a forced agent-recipient gap, the planner usually
+    produces an `iri → demandi` chain."""
+    from esperanto_lm.ontology.sampler import _add_entity_randomized
+    from esperanto_lm.ontology.causal import EntityInstance
+
+    locations = [l for l, c in lex.concepts.items()
+                 if lex.types.is_subtype(c.entity_type, "location")]
+    if not locations:
+        return None
+    scene_lemma = rng.choice(locations)
+    away_pool = [l for l in locations if l != scene_lemma]
+    away_lemma = rng.choice(away_pool) if away_pool else scene_lemma
+
+    t = Trace()
+    try:
+        _add_entity_randomized(t, scene_lemma, lex, rng,
+                                entity_id=scene_lemma)
+        if away_lemma != scene_lemma:
+            _add_entity_randomized(t, away_lemma, lex, rng,
+                                    entity_id=away_lemma)
+    except (KeyError, ValueError):
+        return None
+    scene_id = scene_lemma
+
+    persons = [c.lemma for c in lex.concepts.values()
+               if c.entity_type == "person"]
+    if len(persons) < 2:
+        return None
+    actor_concept = rng.choice(persons)
+    knower_concept = rng.choice([p for p in persons if p != actor_concept])
+    name_pool = rng.sample(PERSON_NAMES, 2)
+    actor_eid, knower_eid = name_pool[0], name_pool[1]
+    try:
+        _add_entity_randomized(t, actor_concept, lex, rng,
+                                entity_id=actor_eid)
+        _add_entity_randomized(t, knower_concept, lex, rng,
+                                entity_id=knower_eid)
+    except (KeyError, ValueError):
+        return None
+    # Knower starts in away_lemma so the planner needs iri to reach
+    # them — surfaces "go to ask" chains rather than zero-step demandi.
+    try:
+        t.assert_relation("en", (actor_eid, scene_id), lex)
+        t.assert_relation("en", (knower_eid, away_lemma), lex)
+    except (KeyError, ValueError):
+        return None
+
+    # Pick a target entity (the fakto's subjekto) and place it
+    # arbitrarily — it won't be used by demandi planning, just exists
+    # so the fakto has a coherent referent.
+    physical_concepts = [
+        c.lemma for c in lex.concepts.values()
+        if lex.types.is_subtype(c.entity_type, "physical")
+        and c.entity_type != "person"
+        and not lex.types.is_subtype(c.entity_type, "location")
+    ]
+    if not physical_concepts:
+        return None
+    target_concept = rng.choice(physical_concepts)
+    target_eid = target_concept
+    suffix = 0
+    while target_eid in t.entities:
+        suffix += 1
+        target_eid = f"{target_concept}_{suffix}"
+    target_loc = away_lemma
+    try:
+        _add_entity_randomized(t, target_concept, lex, rng,
+                                entity_id=target_eid)
+        t.assert_relation("en", (target_eid, target_loc), lex)
+    except (KeyError, ValueError):
+        return None
+
+    fakto_concept = lex.concepts.get("fakto")
+    if fakto_concept is None:
+        return None
+    fakto_id = f"fakto_from_en_{target_eid}_{target_loc}"
+    if fakto_id not in t.entities:
+        t.entities[fakto_id] = EntityInstance(
+            id=fakto_id, concept_lemma="fakto",
+            entity_type=fakto_concept.entity_type,
+            properties={"pri_relacio": ["en"]},
+        )
+        try:
+            t.assert_relation("subjekto", (fakto_id, target_eid), lex)
+            t.assert_relation("objekto", (fakto_id, target_loc), lex)
+        except (KeyError, ValueError):
+            return None
+    # Pre-assert that the knower already konas the fakto, so demandi's
+    # precondition `konas(recipient, theme)` is satisfied without
+    # needing the knower to vidi the target themselves.
+    try:
+        t.assert_relation("konas", (knower_eid, fakto_id), lex)
+    except (KeyError, ValueError):
+        return None
+
+    drive = ("knowledge", actor_eid, actor_eid, fakto_id)
+    return t, scene_id, drive
+
+
+def regress_for_konas_verb(verb_name, lex, rng):
+    """Build a scene targeting a verb whose rule adds konas. The drive
+    is `("knowledge", actor, knower, fakto_id)` — the planner finds
+    the verb (rakonti or vidi) and chains backward as needed.
+
+    For rakonti specifically: places agent + recipient + a target
+    entity whose location becomes the subject of a pre-created fakto.
+    The agent doesn't initially know the fakto, so the planner
+    subgoals konas(agent, fakto) → vidi → rakonti."""
+    from esperanto_lm.ontology.sampler import _add_entity_randomized
+    from esperanto_lm.ontology.causal import EntityInstance
+    action = lex.actions.get(verb_name)
+    if action is None:
+        return None
+
+    locations = [l for l, c in lex.concepts.items()
+                 if lex.types.is_subtype(c.entity_type, "location")]
+    if not locations:
+        return None
+    scene_lemma = rng.choice(locations)
+    away_pool = [l for l in locations if l != scene_lemma]
+    away_lemma = rng.choice(away_pool) if away_pool else scene_lemma
+
+    t = Trace()
+    try:
+        _add_entity_randomized(t, scene_lemma, lex, rng,
+                                entity_id=scene_lemma)
+        if away_lemma != scene_lemma:
+            _add_entity_randomized(t, away_lemma, lex, rng,
+                                    entity_id=away_lemma)
+    except (KeyError, ValueError):
+        return None
+    scene_id = scene_lemma
+
+    # Pick agent + recipient from distinct person concepts.
+    persons = [c.lemma for c in lex.concepts.values()
+               if c.entity_type == "person"]
+    if len(persons) < 2:
+        return None
+    agent_concept = rng.choice(persons)
+    recipient_concept = rng.choice([p for p in persons
+                                     if p != agent_concept])
+    # Reuse PERSON_NAMES so realized prose gets human-styled names
+    # (Petro, Maria, ...) rather than raw concept-prefixed ids.
+    name_pool = rng.sample(PERSON_NAMES, 2)
+    agent_eid, recipient_eid = name_pool[0], name_pool[1]
+    try:
+        _add_entity_randomized(t, agent_concept, lex, rng,
+                                entity_id=agent_eid)
+        _add_entity_randomized(t, recipient_concept, lex, rng,
+                                entity_id=recipient_eid)
+    except (KeyError, ValueError):
+        return None
+    try:
+        t.assert_relation("en", (agent_eid, scene_id), lex)
+        t.assert_relation("en", (recipient_eid, scene_id), lex)
+    except (KeyError, ValueError):
+        return None
+
+    # Pick a target entity whose location becomes the fakto's content.
+    # Prefer placing it in `away_lemma` so the chain includes locomotion.
+    physical_concepts = [
+        c.lemma for c in lex.concepts.values()
+        if lex.types.is_subtype(c.entity_type, "physical")
+        and c.entity_type != "person"
+        and not lex.types.is_subtype(c.entity_type, "location")
+    ]
+    if not physical_concepts:
+        return None
+    target_concept = rng.choice(physical_concepts)
+    target_eid = target_concept
+    suffix = 0
+    while target_eid in t.entities:
+        suffix += 1
+        target_eid = f"{target_concept}_{suffix}"
+    target_loc = away_lemma
+    try:
+        _add_entity_randomized(t, target_concept, lex, rng,
+                                entity_id=target_eid)
+        t.assert_relation("en", (target_eid, target_loc), lex)
+    except (KeyError, ValueError):
+        return None
+
+    # Pre-create the fakto the planner will reference. Mirrors the id
+    # vidi_learns_en would synthesize for (en, target, target_loc),
+    # so the planner's konas-via-vidi back-derivation matches by id
+    # and uses the existing fakto rather than creating a new one.
+    fakto_concept = lex.concepts.get("fakto")
+    if fakto_concept is None:
+        return None
+    fakto_id = f"fakto_from_en_{target_eid}_{target_loc}"
+    if fakto_id not in t.entities:
+        t.entities[fakto_id] = EntityInstance(
+            id=fakto_id, concept_lemma="fakto",
+            entity_type=fakto_concept.entity_type,
+            properties={"pri_relacio": ["en"]},
+        )
+        try:
+            t.assert_relation("subjekto", (fakto_id, target_eid), lex)
+            t.assert_relation("objekto", (fakto_id, target_loc), lex)
+        except (KeyError, ValueError):
+            return None
+
+    drive = ("knowledge", agent_eid, recipient_eid, fakto_id)
+    return t, scene_id, drive
 
 
 def run_coverage_regression(lex, rules, derivations, *, n_scenes=50, seed=0,
@@ -2467,7 +3465,7 @@ def run_coverage_regression(lex, rules, derivations, *, n_scenes=50, seed=0,
     jsonl_records = []
 
     for _ in range(n_scenes):
-        sample = sample_regression_scene(lex, rng)
+        sample = sample_regression_scene(lex, rng, rules=rules)
         if sample is None:
             failed += 1
             continue
@@ -2477,7 +3475,7 @@ def run_coverage_regression(lex, rules, derivations, *, n_scenes=50, seed=0,
             drive_kind_counts["sampled"].get(kind, 0) + 1)
         setup = t.snapshot_relations()
         try:
-            plan = plan_for_drive(drive, t, lex, rules, derivations)
+            plan = plan_for_drive(drive, t, lex, rules, derivations, rng=rng)
         except Exception:
             failed += 1
             continue
@@ -2593,7 +3591,7 @@ def run_coverage(lex, rules, derivations, *, n_scenes=50, seed=0,
             drive_kind_counts["sampled"].get(kind, 0) + 1)
         setup = t.snapshot_relations()
         try:
-            plan = plan_for_drive(drive, t, lex, rules, derivations)
+            plan = plan_for_drive(drive, t, lex, rules, derivations, rng=rng)
         except Exception:
             failed += 1
             continue

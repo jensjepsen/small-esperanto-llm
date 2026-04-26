@@ -436,6 +436,20 @@ def _attribute_relation_changes(
     MOVEMENT_VERBS = {"iri", "veturi"}
     PLACEMENT_VERBS = {"meti"}
     candidate_actions = TRANSFER_VERBS | MOVEMENT_VERBS | PLACEMENT_VERBS
+    # Each verb only mutates its own relation kinds. Without this gate,
+    # iri(agent, destination) would claim a same-event havi(agent, item)
+    # add (because "agent" is in iri's role values) and narrate it as
+    # a side effect of going somewhere. The havi belongs to the
+    # adjacent preni event.
+    VERB_RELATION_KINDS: dict[str, frozenset[str]] = {
+        "iri": frozenset({"en"}),
+        "veturi": frozenset({"en"}),
+        "preni": frozenset({"havi"}),
+        "kapti": frozenset({"havi"}),
+        "doni": frozenset({"havi"}),
+        "ĵeti": frozenset({"havi"}),
+        "meti": frozenset({"en"}),
+    }
 
     out: dict[str, list[Message]] = {}
     source_for_event: dict[str, str] = {}
@@ -447,12 +461,17 @@ def _attribute_relation_changes(
             continue
         ev_referents = {v for v in ev.roles.values()
                         if isinstance(v, str)}
+        relation_kinds = VERB_RELATION_KINDS.get(ev.action, frozenset())
         claims_rem: list = []
         claims_add: list = []
         for (rel, args) in list(unattributed_removes):
+            if rel not in relation_kinds:
+                continue
             if set(args) & ev_referents:
                 claims_rem.append((rel, args))
         for (rel, args) in list(unattributed_adds):
+            if rel not in relation_kinds:
+                continue
             if set(args) & ev_referents:
                 claims_add.append((rel, args))
 

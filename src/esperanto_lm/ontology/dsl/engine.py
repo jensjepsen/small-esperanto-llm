@@ -32,7 +32,9 @@ from .effects import (
     AddRelation, Change, CreateEntity, DestroyEntity, Effect, Emit,
     RemoveRelation,
 )
-from .implications import Implication, PropertyImplication, RelationImplication
+from .implications import (
+    Implication, PartImplication, PropertyImplication, RelationImplication,
+)
 from .patterns import (
     EventPattern, Pattern, Var,
 )
@@ -172,6 +174,7 @@ def validate_against_lexicon(
     rules are constructed at module load (before lex is available)."""
     slot_names = set(lex.slots.keys())
     rel_names = set(lex.relations.keys())
+    concept_names = set(lex.concepts.keys())
     for r in rules_or_derivations:
         _check_pattern_against_lex(r.name, r.when, slot_names, rel_names)
         for g in r.given:
@@ -188,6 +191,15 @@ def validate_against_lexicon(
                         raise ValueError(
                             f"derivation {r.name!r}: relation() refers to "
                             f"unknown relation {imp.name!r}.")
+                elif isinstance(imp, PartImplication):
+                    if imp.part_concept not in concept_names:
+                        raise ValueError(
+                            f"derivation {r.name!r}: part() refers to "
+                            f"unknown concept {imp.part_concept!r}.")
+                    if imp.relation not in rel_names:
+                        raise ValueError(
+                            f"derivation {r.name!r}: part() refers to "
+                            f"unknown relation {imp.relation!r}.")
 
 
 def _check_pattern_against_lex(

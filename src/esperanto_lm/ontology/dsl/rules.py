@@ -12,8 +12,8 @@ from ..loader import Lexicon
 from .engine import Rule
 from . import (
     add_relation, bind, caused_by, closure, create_entity, derive,
-    destroy_entity, emit, entity, event, has_concept_field, past_event,
-    property, rel, relation, remove_relation, rule, var,
+    destroy_entity, emit, entity, event, has_concept_field, part,
+    past_event, property, rel, relation, remove_relation, rule, var,
 )
 
 
@@ -240,13 +240,24 @@ porti_drop_when_carrier_falls = rule(
 
 # ---------- causal: preni_transfers_ownership ---------------------------
 #
-# `preni` (take) moves an item from whoever currently `havi`s it to the
-# taker. Expressed as a pair of relation effects on the trace: remove
-# the old ownership, assert the new one. No-op when the taker already
-# holds the item (the remove + add cancel). When nothing else owns the
-# item (e.g. picking it up from a shelf) the `rel("havi", ...)` match
-# in given fails and the rule doesn't fire — a sibling rule could
-# handle environment-to-agent transfer later if needed.
+# `preni` (take) covers both cases — same split as `kapti`:
+#   - from_nobody: pick up an unowned item (e.g. a key on a shelf).
+#                  Asserts havi(agent, theme); no removal needed.
+#   - transfers:   take from a current owner. Removes old havi, adds new.
+# Splitting keeps each case independently expressible and avoids the
+# match-fails-silently bug that previously left `preni` unable to
+# acquire unowned items.
+
+preni_acquires_unowned = rule(
+    when=event("preni",
+               agent=bind(TUA := var("A")),
+               theme=bind(TUT := var("T"))),
+    given=[
+        ~rel("havi", owner=bind(var("_any")), theme=TUT),
+    ],
+    then=add_relation("havi", TUA, TUT),
+    name="preni_acquires_unowned",
+)
 
 preni_transfers_ownership = rule(
     when=event("preni",
@@ -664,6 +675,64 @@ rakonti_transfers_fakto = rule(
 )
 
 
+# `demandi` is rakonti's inverse: the asker (agent) acquires the
+# fakto from someone who already knows it (recipient). Modeled as
+# atomic Q&A — firing demandi adds konas(agent, fakto), no separate
+# "recipient replies" event needed for the planner's purposes.
+demandi_extracts_fakto = rule(
+    when=event("demandi",
+               agent=bind(DEA := var("A")),
+               theme=bind(DET := var("T")),
+               recipient=bind(DER := var("R"))),
+    then=add_relation("konas", DEA, DET),
+    name="demandi_extracts_fakto",
+)
+
+
+# `respondi` mirrors rakonti structurally — agent transfers a fakto
+# to recipient. The conversational distinction (reply vs initiating
+# tell) doesn't change the semantics for the engine; it gives the
+# realizer a verb to pick when continuing a Q&A turn.
+respondi_transfers_fakto = rule(
+    when=event("respondi",
+               agent=bind(RPA := var("A")),
+               theme=bind(RPT := var("T")),
+               recipient=bind(RPR := var("R"))),
+    then=add_relation("konas", RPR, RPT),
+    name="respondi_transfers_fakto",
+)
+
+
+# `montri` (show) is vidi-flavored from the recipient's side: the
+# agent — already samloke with both theme and recipient — surfaces
+# the theme's location as a fakto and the recipient learns it. Same
+# create_entity shape as vidi_learns_en, but konas goes to the
+# recipient role instead of the agent. Lets "show, don't tell"
+# transfer knowledge of physical things without requiring the agent
+# to first konas any fakto.
+montri_shows_location = rule(
+    when=event("montri",
+               agent=bind(MNA := var("A")),
+               theme=bind(MNT := var("T")),
+               recipient=bind(MNR := var("R"))),
+    given=[
+        rel("en", contained=MNT, container=bind(MNL := var("L"))),
+    ],
+    then=[
+        create_entity(
+            concept="fakto",
+            as_var=(MNF := var("F")),
+            id_parts=("en", MNT, MNL),
+            initial_properties={"pri_relacio": "en"},
+        ),
+        add_relation("subjekto", MNF, MNT),
+        add_relation("objekto", MNF, MNL),
+        add_relation("konas", MNR, MNF),
+    ],
+    name="montri_shows_location",
+)
+
+
 # ---------- derivation: flammable as a derived property -----------------
 #
 # Demo: lexicon currently tags flammability directly on ligno/libro/etc.;
@@ -772,6 +841,25 @@ has_fins_can_swim = derive(
 )
 
 
+# Person concepts inherit canonical human parts. Authored persons
+# (persono, knabo, amiko, ...) declare these directly; this rule
+# materializes them onto AFFIX-DERIVED person concepts (kuiristo,
+# kantisto, ...) at bake time so they too qualify as tool-using
+# agents via has_hands_can_use_tools below. PartImplications are
+# bake-only (parts are static structural metadata).
+
+person_has_human_parts = derive(
+    when=entity(type="person") & bind(PHHP := var("P")),
+    implies=[
+        part(PHHP, "piedo"),
+        part(PHHP, "mano"),
+        part(PHHP, "kapo"),
+        part(PHHP, "okulo"),
+    ],
+    name="person_has_human_parts",
+)
+
+
 # Tool-use capability. Any entity with hands (mano) can use tools.
 # Currently this picks up persons (persono.parts includes mano) and
 # the apes (simio/gorilo/ĉimpanzo, declared with mano in parts).
@@ -871,6 +959,52 @@ animate_knows_self_object = derive(
 )
 
 
+# ---------- derivations: lighting (lamps, indoor vs outdoor) -----------
+#
+# Outdoor locations are luma by default; indoor locations need an
+# `aktiva` lamp present to be luma, otherwise they're malluma. An
+# agent in a luma location is `illuminated`. Vidi/montri then gate on
+# `illuminated=yes`, so dark-room scenes naturally chain through
+# `ŝalti(lamp)` before any visual interaction.
+
+outdoor_is_luma = derive(
+    when=entity(type="location", indoor_outdoor="ekstera") & bind(OIL := var("L")),
+    implies=property(OIL, "lit_state", "luma"),
+    name="outdoor_is_luma",
+)
+
+indoor_lit_by_active_lamp = derive(
+    when=entity(type="location", indoor_outdoor="interna") & bind(ILL := var("L")),
+    given=[
+        rel("en", contained=bind(ILD := var("D")), container=ILL),
+        entity(power_state="aktiva", lights_when_on="yes") & bind(ILD),
+    ],
+    implies=property(ILL, "lit_state", "luma"),
+    name="indoor_lit_by_active_lamp",
+)
+
+indoor_dark_without_active_lamp = derive(
+    when=entity(type="location", indoor_outdoor="interna") & bind(IDL := var("L")),
+    given=[
+        ~rel("en",
+             contained=entity(power_state="aktiva", lights_when_on="yes"),
+             container=IDL),
+    ],
+    implies=property(IDL, "lit_state", "malluma"),
+    name="indoor_dark_without_active_lamp",
+)
+
+agent_illuminated = derive(
+    when=entity(type="animate") & bind(AIA := var("A")),
+    given=[
+        rel("en", contained=AIA, container=bind(AIL := var("L"))),
+        entity(lit_state="luma") & bind(AIL),
+    ],
+    implies=property(AIA, "illuminated", "yes"),
+    name="agent_illuminated",
+)
+
+
 # ---------- derivation: host's lock_state lifts from its seruro --------
 #
 # A host with a `seruro` part takes its lock_state from the lock's
@@ -891,17 +1025,6 @@ host_lock_state_locked_from_seruro = derive(
     name="host_lock_state_locked_from_seruro",
 )
 
-artifact_without_seruro_unlocked = derive(
-    when=entity(type="artifact") & bind(AWSU := var("D")),
-    given=[
-        ~rel("havas_parton",
-             tuto=AWSU,
-             parto=entity(concept="seruro")),
-    ],
-    implies=property(AWSU, "lock_state", "malŝlosita"),
-    name="artifact_without_seruro_unlocked",
-)
-
 
 host_lock_state_unlocked_from_seruro = derive(
     when=entity(type="artifact") & bind(HLUD := var("D")),
@@ -913,6 +1036,24 @@ host_lock_state_unlocked_from_seruro = derive(
     ],
     implies=property(HLUD, "lock_state", "malŝlosita"),
     name="host_lock_state_unlocked_from_seruro",
+)
+
+
+# Lock-capability lifts from seruro to its host: a thing with a lock
+# IS lock-capable. Without this, only the seruro itself counts as
+# lock_capable=yes — pordo (which has the seruro as a part) wouldn't
+# qualify as a ŝlosi/malŝlosi target. Mirrors the lock_state lifts.
+
+host_lock_capable_from_seruro = derive(
+    when=entity(type="artifact") & bind(HLCD := var("D")),
+    given=[
+        rel("havas_parton",
+            tuto=HLCD,
+            parto=bind(HLCS := var("S"))),
+        entity(concept="seruro") & bind(HLCS),
+    ],
+    implies=property(HLCD, "lock_capable", "yes"),
+    name="host_lock_capable_from_seruro",
 )
 
 
@@ -1027,6 +1168,7 @@ DEFAULT_DSL_DERIVATIONS = [
     has_paws_can_walk,
     has_wings_can_fly,
     has_fins_can_swim,
+    person_has_human_parts,
     has_hands_can_use_tools,
     animate_has_hunger,
     animate_has_sleep_state,
@@ -1036,13 +1178,17 @@ DEFAULT_DSL_DERIVATIONS = [
     shared_container_means_samloke,
     host_samloke_with_part,
     samloke_propagates_through_artifact_parts,
-    artifact_without_seruro_unlocked,
     host_lock_state_locked_from_seruro,
     host_lock_state_unlocked_from_seruro,
+    host_lock_capable_from_seruro,
     animate_knows_self_subject,
     animate_knows_self_object,
     scias_lokon_via_en,
     scias_lokon_via_sur,
+    outdoor_is_luma,
+    indoor_lit_by_active_lamp,
+    indoor_dark_without_active_lamp,
+    agent_illuminated,
 ]
 
 
@@ -1057,6 +1203,9 @@ DEFAULT_DSL_RULES: list[Rule] = [
     vidi_learns_sur,
     vidi_learns_havi_owner,
     rakonti_transfers_fakto,
+    demandi_extracts_fakto,
+    respondi_transfers_fakto,
+    montri_shows_location,
     hungry_eats_sated,
     manĝi_destroys_theme,
     morti_destroys_self,
@@ -1069,6 +1218,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     rain_creates_puddle,
     porti_drop_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
+    preni_acquires_unowned,
     preni_transfers_ownership,
     doni_transfers_ownership,
     meti_places_in_location,

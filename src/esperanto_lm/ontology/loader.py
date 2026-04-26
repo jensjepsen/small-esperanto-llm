@@ -530,7 +530,8 @@ def load_lexicon(
         from .dsl.bake import bake_concept_derivations
         from .dsl.rules import DEFAULT_DSL_DERIVATIONS
         concepts = bake_concept_derivations(
-            concepts, DEFAULT_DSL_DERIVATIONS, spine, slots=slots)
+            concepts, DEFAULT_DSL_DERIVATIONS, spine,
+            slots=slots, relations=relations)
 
     containment: list[ContainmentFact] = []
     containment_path = data_dir / "containment.jsonl"

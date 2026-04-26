@@ -286,13 +286,19 @@ def _render_event(m: EventMessage, ctx: _Ctx) -> Optional[str]:
     return _append_precondition_clause(sentence, m.precondition, ctx)
 
 
-def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx) -> Optional[str]:
-    """Unfold a fakto entity into a `ke ...` subordinate clause.
+def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
+                               *, mode: str = "assertion") -> Optional[str]:
+    """Unfold a fakto entity into a subordinate clause.
     Reads the fakto's pri_relacio (still a property — string-valued)
-    and the subjekto/objekto relations:
+    and the subjekto/objekto relations.
+
+    `mode="assertion"` (default, for rakonti/etc.):
       en  → "ke X estas en Y"
       sur → "ke X estas sur Y"
       havi → "ke X havas Y" (Y in accusative)
+    `mode="question"` (for demandi):
+      en/sur → "kie estas X"
+      havi → "kiu havas X"
     Returns None if any field is missing or the relation isn't one
     we know how to surface yet."""
     def _unwrap_property(slot):
@@ -318,6 +324,14 @@ def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx) -> Optional[str]:
     obj_form = ctx.name_for(obj_ent)
     ctx.note_mention(subj_ent)
     ctx.note_mention(obj_ent)
+    if mode == "question":
+        copula = "estis" if ctx.tense == "past" else "estas"
+        if rel in ("en", "sur"):
+            return f"kie {copula} {subj_form}"
+        if rel == "havi":
+            verb = "havis" if ctx.tense == "past" else "havas"
+            return f"kiu {verb} {to_accusative(subj_form)}"
+        return None
     if rel == "en":
         copula = "estis" if ctx.tense == "past" else "estas"
         return f"ke {subj_form} {copula} en {obj_form}"
@@ -391,7 +405,10 @@ def _render_event_phrase(
             ke = None
             if (theme.entity_type == "abstract"
                     and ev.roles.get("recipient")):
-                ke = _render_fakto_as_ke_clause(theme, ctx)
+                # demandi (ask) renders the fakto as a question
+                # (kie/kiu) rather than an assertion (ke ...).
+                mode = "question" if ev.action == "demandi" else "assertion"
+                ke = _render_fakto_as_ke_clause(theme, ctx, mode=mode)
             if ke is not None:
                 recip = ctx.trace.entity(ev.roles["recipient"])
                 if recip is not None:

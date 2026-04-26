@@ -55,6 +55,23 @@ class RelationImplication(Implication):
         return {a for a in self.args if isinstance(a, Var)}
 
 
+@dataclass
+class PartImplication(Implication):
+    """`part(host, part_concept, relation)` — append a ConceptPart to the
+    matched host concept's `parts` list.
+
+    Bake-time only (parts are static structural metadata, not runtime
+    state). Lets rules express "all persons have these parts" without
+    repeating the parts list on every authored OR derived person concept.
+    The runtime derivation engine skips this implication kind."""
+    entity: Var
+    part_concept: str
+    relation: str = "havas_parton"
+
+    def reads(self) -> set[Var]:
+        return {self.entity}
+
+
 def property(entity: Var, slot: str, value: Any) -> PropertyImplication:
     """Imply that the entity bound to `entity` has the named slot equal
     to `value` (a literal or a Var that will be resolved at firing)."""
@@ -67,3 +84,13 @@ def relation(name: str, *args: Any) -> RelationImplication:
     """Imply that rel(name, *args) holds in the derived-relation layer.
     Args may be Vars (resolved per binding) or literal entity ids."""
     return RelationImplication(name, tuple(args))
+
+
+def part(entity: Var, part_concept: str,
+         relation_name: str = "havas_parton") -> PartImplication:
+    """Imply that the matched host concept has a part referencing
+    `part_concept` via `relation_name`. Materialized at bake time;
+    silent at runtime."""
+    if not isinstance(entity, Var):
+        raise TypeError("part(): entity must be a Var")
+    return PartImplication(entity, part_concept, relation_name)

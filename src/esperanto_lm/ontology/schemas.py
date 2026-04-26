@@ -153,10 +153,28 @@ class RelationPrecondition(_Frozen):
     roles: list[str]
 
 
+class IfPropertyPrecondition(_Frozen):
+    """A conditional property requirement on a single role: if the role
+    entity has `if_property=if_value`, then it must also have
+    `then_property=then_value`. The gate vacuously passes when
+    `if_property` is absent or holds a different value.
+
+    Use case: malfermi's theme must be unlocked, but only if it has a
+    lock at all. Things without lock_capable have no lock_state to
+    check; the gate is silent for them, leaving malfermi(skatolo)
+    plannable while still forcing malŝlosi → malfermi for pordo."""
+    kind: Literal["if_property"] = "if_property"
+    role: str
+    if_property: str
+    if_value: str
+    then_property: str
+    then_value: str
+
+
 # Discriminated union point — when more precondition kinds appear
 # (e.g. quantitative comparisons, negation), add them here. The kind
 # field is the tag the planner dispatches on.
-Precondition = RelationPrecondition
+Precondition = RelationPrecondition | IfPropertyPrecondition
 
 
 class Action(_Frozen):
@@ -192,7 +210,9 @@ class Action(_Frozen):
     def _check_precondition_roles(self):
         role_names = {r.name for r in self.roles}
         for pc in self.preconditions:
-            for rn in pc.roles:
+            referenced = (
+                pc.roles if isinstance(pc, RelationPrecondition) else [pc.role])
+            for rn in referenced:
                 if rn not in role_names:
                     raise ValueError(
                         f"action {self.lemma!r}: precondition references "
