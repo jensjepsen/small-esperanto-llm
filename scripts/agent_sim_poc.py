@@ -455,6 +455,27 @@ def _find_relation_adders(rules, relation):
 # treat results as read-only — they query state, never mutate.
 _SIM_CACHE: dict[tuple, tuple] = {}
 
+# Sibling cache for `compute_derived_state` calls inside the planner.
+# Same lifetime as _SIM_CACHE. The trace is read-only during planning,
+# so id-based keying is safe. Hit rate is high because the planner
+# repeatedly asks for derived state on the same trace fork while
+# resolving multiple preconditions.
+_DERIVED_CACHE: dict[int, "DerivedState"] = {}
+
+
+def _cached_compute_derived_state(trace, derivations, lex):
+    """Memoizing wrapper around compute_derived_state for planner use.
+    Keyed by id(trace) — safe because the planner forks but never
+    mutates traces. Cleared per plan_for_drive entry."""
+    from esperanto_lm.ontology.dsl.engine import compute_derived_state
+    key = id(trace)
+    cached = _DERIVED_CACHE.get(key)
+    if cached is not None:
+        return cached
+    result = compute_derived_state(trace, derivations or [], lex)
+    _DERIVED_CACHE[key] = result
+    return result
+
 
 def _plan_cache_key(plan):
     """Hashable key for a plan: tuple of (verb, sorted-role-pairs)."""
@@ -468,9 +489,15 @@ _SLOT_PRODUCERS_CACHE: dict[int, dict[tuple[str, str], bool]] = {}
 
 
 def _slot_value_producible(slot: str, value: str, lex) -> bool:
-    """True if any verb in the lexicon writes (slot, value) as an
-    effect. Cached per-lexicon so repeated planner candidate filtering
-    doesn't re-scan actions."""
+    """True if (slot, value) can be produced — either by a verb's
+    direct effect OR by a derivation's implication. Cached per-lexicon
+    so repeated planner candidate filtering doesn't re-scan.
+
+    Including derivations matters: lit_state=luma is never written by
+    a verb directly; it's derived from indoor_lit_by_active_lamp etc.
+    Without derivation reachability the filter drops every candidate
+    that could only satisfy the slot via derivation, killing the
+    `ŝalti → vidi` lighting chain."""
     cache = _SLOT_PRODUCERS_CACHE.setdefault(id(lex), {})
     key = (slot, value)
     cached = cache.get(key)
@@ -484,18 +511,41 @@ def _slot_value_producible(slot: str, value: str, lex) -> bool:
                 break
         if found:
             break
+    if not found:
+        from esperanto_lm.ontology.dsl.implications import (
+            PropertyImplication,
+        )
+        from esperanto_lm.ontology.dsl.rules import (
+            DEFAULT_DSL_DERIVATIONS,
+        )
+        for d in DEFAULT_DSL_DERIVATIONS:
+            for imp in d.implies:
+                if (isinstance(imp, PropertyImplication)
+                        and imp.slot == slot and imp.value == value):
+                    found = True
+                    break
+            if found:
+                break
     cache[key] = found
     return found
 
 
 def _filter_candidates_by_slots(candidates, fv_id, slots_to_subgoal,
                                   trace, lex):
-    """Drop candidates whose slot constraints can never be satisfied:
-    the slot's required value isn't currently set on the candidate AND
-    no verb writes that (slot, value). Big planner-pruning win for
-    static slots like `lights_when_on=yes` that mark a concept's
-    intrinsic role and can't be flipped — only matching candidates
-    (e.g. `lampo`) survive."""
+    """Drop candidates whose slot constraints can never be satisfied.
+    Two filters per slot:
+
+      (a) Type-applicability: the slot must apply to the candidate's
+          entity_type (per `slot.applies_to`). lit_state.applies_to=
+          ["location"] means non-locations can never have it, even
+          though it's derivation-producible. Without this, every
+          entity becomes a candidate for L in agent_illuminated and
+          the planner explodes recursively.
+      (b) Reachability: if the value isn't currently set, it must be
+          producible by some verb's effect OR by a derivation. Static
+          markers like `lights_when_on=yes` are only set on lampo;
+          no-one can change them, so candidates without it are
+          dropped."""
     out = []
     for cand in candidates:
         ent = trace.entities.get(cand)
@@ -505,6 +555,14 @@ def _filter_candidates_by_slots(candidates, fv_id, slots_to_subgoal,
         for v_local, slot, value in slots_to_subgoal:
             if id(v_local) != fv_id:
                 continue
+            slot_def = lex.slots.get(slot)
+            if slot_def is not None:
+                applies = any(
+                    lex.types.is_subtype(ent.entity_type, t)
+                    for t in slot_def.applies_to)
+                if not applies:
+                    ok = False
+                    break
             actual = ent.properties.get(slot, [])
             if value in actual:
                 continue
@@ -546,7 +604,8 @@ def _simulate_from_scratch(base_trace, plan, lex, rules, derivations):
     if not plan:
         # Empty-plan short-circuit: skip the deepcopy. Compute
         # derived once for the base; callers only read.
-        derived_state = compute_derived_state(base_trace, derivs, lex)
+        derived_state = _cached_compute_derived_state(
+            base_trace, derivs, lex)
         result = (base_trace, derived_state)
         _SIM_CACHE[cache_key] = result
         return result
@@ -571,7 +630,7 @@ def _simulate_from_scratch(base_trace, plan, lex, rules, derivations):
         roles={})
     t.events.append(phantom)
     t._event_ids.add(phantom.id)
-    derived_state = compute_derived_state(t, derivs, lex)
+    derived_state = _cached_compute_derived_state(t, derivs, lex)
     result = (t, derived_state)
     _SIM_CACHE[cache_key] = result
     return result
@@ -1682,7 +1741,7 @@ def plan_to_achieve(goal_entity_id, goal_slot, goal_value,
     # caller passed derivations but no precomputed cache. Recursive
     # calls just thread `derived` through.
     if derived is None and derivations is not None and _depth == 0:
-        derived = compute_derived_state(trace, derivations, lex)
+        derived = _cached_compute_derived_state(trace, derivations, lex)
 
     goal_entity = trace.entities.get(goal_entity_id)
     if goal_entity is None:
@@ -2739,10 +2798,11 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=5,
     at each enumeration site so different runs surface different
     chain shapes — e.g. rakonti vs respondi vs montri for konas
     goals. None preserves the deterministic enumeration order."""
-    derived = compute_derived_state(t, derivations, lex)
     kind = drive[0]
     token = _PLANNER_RNG.set(rng)
     _SIM_CACHE.clear()
+    _DERIVED_CACHE.clear()
+    derived = _cached_compute_derived_state(t, derivations, lex)
     try:
         if kind == "self_slot":
             _, actor, slot, value = drive
@@ -2996,6 +3056,15 @@ def regress_for_verb(verb_name, lex, rng):
     _seed_chain_dependencies(
         t, action, role_eids, scene_id, lex, rng, away_id=away_id)
 
+    # Indoor-scene lighting: planner-subgoaled vidi requires
+    # `illuminated=yes`, which is only derivable from an aktiva lamp
+    # in indoor locations. Seed a lampo only when the target verb's
+    # chain might involve vidi — havi/scias_lokon/konas preconditions
+    # all backchain through it. Otherwise the lamp clutters the prose
+    # for chains that never look at anything.
+    if _action_might_need_light(action):
+        _seed_indoor_lamp(t, scene_id, away_id, lex, rng)
+
     agent_eid = role_eids.get("agent")
     if agent_eid is None:
         return None
@@ -3128,6 +3197,285 @@ def _verbs_producing(lex, slot: str, value: str) -> list:
                 out.append(action)
                 break
     return out
+
+
+def _action_might_need_light(action) -> bool:
+    """True if this action's preconditions could backchain through
+    vidi — meaning the planner might subgoal `illuminated=yes` on the
+    agent. havi/scias_lokon/konas preconditions all chain to vidi
+    eventually. Used to gate lamp-seeding so chains that never
+    involve vidi don't get a useless lampo cluttering scene-setup."""
+    from esperanto_lm.ontology.schemas import RelationPrecondition
+    for pc in action.preconditions:
+        if isinstance(pc, RelationPrecondition):
+            if pc.rel in ("havi", "scias_lokon", "konas"):
+                return True
+    return False
+
+
+def _seed_indoor_lamp(t, scene_id, away_id, lex, rng) -> None:
+    """If a scene location is indoor, seed a lampo en that location.
+    Without it, planner-subgoaled vidi (in chains like vidi → preni →
+    ...) can't derive illuminated and the chain fails or only works
+    when scene happens to be outdoor. Done for both scene_id and
+    away_id since chains may need light in either."""
+    from esperanto_lm.ontology.sampler import _add_entity_randomized
+    if "lampo" not in lex.concepts:
+        return
+    for loc_id in (scene_id, away_id):
+        if loc_id is None:
+            continue
+        loc_ent = t.entities.get(loc_id)
+        if loc_ent is None:
+            continue
+        loc_concept = lex.concepts.get(loc_ent.concept_lemma)
+        if loc_concept is None:
+            continue
+        if loc_concept.properties.get("indoor_outdoor") != ["interna"]:
+            continue
+        # Skip if there's already a lamp en this location.
+        already_has = False
+        for r in t.relations:
+            if r.relation != "en" or r.args[1] != loc_id:
+                continue
+            inner = t.entities.get(r.args[0])
+            if inner is None:
+                continue
+            inner_concept = lex.concepts.get(inner.concept_lemma)
+            if (inner_concept is not None
+                    and inner_concept.properties.get("lights_when_on")
+                        == ["yes"]):
+                already_has = True
+                break
+        if already_has:
+            continue
+        lamp_id = "lampo"
+        suffix = 0
+        while lamp_id in t.entities:
+            suffix += 1
+            lamp_id = f"lampo_{suffix}"
+        try:
+            _add_entity_randomized(t, "lampo", lex, rng, entity_id=lamp_id)
+            t.assert_relation("en", (lamp_id, loc_id), lex)
+        except (KeyError, ValueError):
+            continue
+
+
+def _seed_role_property_dependencies(t, action, role_eids: dict,
+                                       lex, rng, derivations) -> None:
+    """For each role.property the role-entity likely won't satisfy and
+    that's producible only via a derivation chain (no verb directly
+    writes it), walk derivations backward to find required entities
+    and seed them into the scene.
+
+    Mirrors `_seed_chain_dependencies` but for role.properties. Without
+    this, vidi.agent.illuminated=yes never gets a lampo seeded —
+    illuminated has no direct verb producer, only the
+    `agent_illuminated` derivation, whose `given` requires the agent
+    to be in a luma location, which (indoors) requires an aktiva lamp."""
+    from esperanto_lm.ontology.sampler import _add_entity_randomized
+    seen_keys: set = set()
+    for role in action.roles:
+        if not role.properties:
+            continue
+        eid = role_eids.get(role.name)
+        if eid is None:
+            continue
+        ent = t.entities.get(eid)
+        if ent is None:
+            continue
+        for slot, vals in role.properties.items():
+            for value in vals:
+                _ensure_property_satisfiable(
+                    eid, slot, value, t, lex, rng, derivations,
+                    seen_keys, depth=0)
+
+
+def _ensure_property_satisfiable(target_eid, slot, value, t, lex, rng,
+                                   derivations, seen_keys, depth):
+    """Recursive helper for `_seed_role_property_dependencies`. If the
+    property is already satisfied or randomizable to satisfy, skip.
+    Otherwise walk derivations producing it; for each, walk `given`
+    for required entity bindings and seed missing ones."""
+    if depth > 4:
+        return
+    key = (target_eid, slot, value)
+    if key in seen_keys:
+        return
+    seen_keys = seen_keys | {key}
+
+    ent = t.entities.get(target_eid)
+    if ent is None:
+        return
+    actual = ent.properties.get(slot, [])
+    if value in actual:
+        return
+    slot_def = lex.slots.get(slot)
+    if slot_def is not None and slot_def.varies and slot in ent.properties:
+        # Will randomize at instance time; could land on `value`. Skip
+        # — over-seeding here would force the value, defeating the
+        # planner's chain-growth on randomization.
+        return
+
+    # If a verb directly writes (slot, value), the planner can subgoal
+    # via that verb at runtime; no seeding needed here (chain
+    # ingredients for the producer were already seeded by
+    # _seed_chain_dependencies if relevant).
+    if _slot_value_producible(slot, value, lex):
+        return
+
+    # Walk derivations producing (slot, value). For each, examine the
+    # `given` clauses and seed required entities.
+    from esperanto_lm.ontology.dsl.implications import PropertyImplication
+    from esperanto_lm.ontology.dsl.patterns import (
+        AndPattern, EntityPattern, RelPattern,
+    )
+    for d in derivations:
+        for imp in d.implies:
+            if not isinstance(imp, PropertyImplication):
+                continue
+            if imp.slot != slot or imp.value != value:
+                continue
+            # Bind imp.entity → target_eid. Walk d.given for rel
+            # patterns; for each, the "other" arg is a free location
+            # or entity that must exist with certain slot values.
+            var_bindings: dict[int, str] = {id(imp.entity): target_eid}
+            patterns = list(d.given)
+            # Container-walking case: `rel("en", contained=A, container=L)`
+            # binds L to wherever A is. Use that, then recurse on L's
+            # required slot values from sibling entity patterns.
+            container_var = None
+            for p in patterns:
+                if not isinstance(p, RelPattern):
+                    continue
+                if p.relation != "en":
+                    continue
+                # `contained` arg = imp.entity ?
+                contained_pat = p.arg_patterns.get("contained")
+                container_pat = p.arg_patterns.get("container")
+                if contained_pat is None or container_pat is None:
+                    continue
+                contained_var = _bind_var_in_pattern(contained_pat)
+                container_var_local = _bind_var_in_pattern(container_pat)
+                if contained_var is None or container_var_local is None:
+                    continue
+                if id(contained_var) != id(imp.entity):
+                    continue
+                # Find target_eid's container in trace.
+                for r in t.relations:
+                    if r.relation == "en" and r.args[0] == target_eid:
+                        var_bindings[id(container_var_local)] = r.args[1]
+                        container_var = container_var_local
+                        break
+                break
+            # For every entity-pattern in given that binds a known var
+            # AND has slot constraints, recurse to ensure those slots.
+            for p in patterns:
+                for ep, bound_var in _walk_entity_patterns_with_binds(p):
+                    if bound_var is None:
+                        continue
+                    bound_eid = var_bindings.get(id(bound_var))
+                    if bound_eid is None:
+                        continue
+                    for k, v in ep.constraints.items():
+                        if k in ("type", "concept", "has_suffix"):
+                            continue
+                        if not isinstance(v, str):
+                            continue
+                        _ensure_property_satisfiable(
+                            bound_eid, k, v, t, lex, rng, derivations,
+                            seen_keys, depth + 1)
+            # If a free var (the entity producer) needs to be
+            # introduced: find concepts matching the entity-pattern's
+            # constraints and seed one en the bound location.
+            if container_var is not None:
+                container_eid = var_bindings[id(container_var)]
+                for p in patterns:
+                    if not isinstance(p, RelPattern) or p.relation != "en":
+                        continue
+                    contained_pat = p.arg_patterns.get("contained")
+                    contained_var = _bind_var_in_pattern(contained_pat) \
+                        if contained_pat is not None else None
+                    if contained_var is None:
+                        continue
+                    if id(contained_var) == id(imp.entity):
+                        continue   # original target's en, not a producer
+                    if id(contained_var) in var_bindings:
+                        continue
+                    # Find this var's entity-pattern constraints in `given`.
+                    constraints: dict[str, str] = {}
+                    for q in patterns:
+                        for ep, bv in _walk_entity_patterns_with_binds(q):
+                            if bv is None or id(bv) != id(contained_var):
+                                continue
+                            for k, v in ep.constraints.items():
+                                if isinstance(v, str):
+                                    constraints[k] = v
+                    if not constraints:
+                        continue
+                    # Find a concept whose properties satisfy all
+                    # non-varies constraints (varies slots like
+                    # power_state randomize, so any concept declaring
+                    # the slot can satisfy at instance time).
+                    candidate_concepts = []
+                    for lemma, concept in lex.concepts.items():
+                        match = True
+                        for k, v in constraints.items():
+                            if k in ("type", "concept", "has_suffix"):
+                                continue
+                            slot_d = lex.slots.get(k)
+                            cvals = concept.properties.get(k, [])
+                            if slot_d is not None and slot_d.varies:
+                                if not cvals:
+                                    match = False
+                                    break
+                            else:
+                                if v not in cvals:
+                                    match = False
+                                    break
+                        if match:
+                            candidate_concepts.append(lemma)
+                    if not candidate_concepts:
+                        continue
+                    chosen = rng.choice(candidate_concepts)
+                    seed_eid = chosen
+                    suffix = 0
+                    while seed_eid in t.entities:
+                        suffix += 1
+                        seed_eid = f"{chosen}_{suffix}"
+                    try:
+                        _add_entity_randomized(
+                            t, chosen, lex, rng, entity_id=seed_eid)
+                        t.assert_relation(
+                            "en", (seed_eid, container_eid), lex)
+                    except (KeyError, ValueError):
+                        continue
+
+
+def _walk_entity_patterns_with_binds(pattern):
+    """Yield (EntityPattern, bound_var) pairs from a composed pattern.
+    Walks AndPatterns. Returns the EntityPattern alongside the Var
+    it's bound to (via `& bind(V)`), if any."""
+    from esperanto_lm.ontology.dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern,
+    )
+    if isinstance(pattern, EntityPattern):
+        yield (pattern, None)
+        return
+    if isinstance(pattern, AndPattern):
+        # Look for the canonical `entity(...) & bind(V)` shape.
+        ep = None
+        bv = None
+        for side in (pattern.left, pattern.right):
+            if isinstance(side, EntityPattern):
+                ep = side
+            elif isinstance(side, BindPattern):
+                bv = side.target
+        if ep is not None:
+            yield (ep, bv)
+        else:
+            yield from _walk_entity_patterns_with_binds(pattern.left)
+            yield from _walk_entity_patterns_with_binds(pattern.right)
 
 
 def _seed_chain_dependencies(t, action, role_eids: dict, scene_id: str,

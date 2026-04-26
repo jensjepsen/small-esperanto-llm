@@ -213,7 +213,7 @@ def _render_entity_quality(m, ctx: _Ctx) -> Optional[str]:
         return None
     form = ctx.name_for(ent)
     ctx.note_mention(ent)
-    copula = "estis" if ctx.tense == "past" else "estas"
+    copula = "estis" if ctx.tense == "is" else "estas"
     return f"{form} {copula} {m.quality_lemma}."
 
 
@@ -272,7 +272,7 @@ def _append_precondition_clause(
     if ent is None:
         return sentence
     ent_form = ctx.name_for(ent)
-    copula = "estis" if ctx.tense == "past" else "estas"
+    copula = "estis" if ctx.tense == "is" else "estas"
     base = sentence[:-1] if sentence.endswith(".") else sentence
     return f"{base} ĉar {ent_form} {copula} {quality_lemma}."
 
@@ -325,21 +325,21 @@ def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
     ctx.note_mention(subj_ent)
     ctx.note_mention(obj_ent)
     if mode == "question":
-        copula = "estis" if ctx.tense == "past" else "estas"
+        copula = "estis" if ctx.tense == "is" else "estas"
         if rel in ("en", "sur"):
             return f"kie {copula} {subj_form}"
         if rel == "havi":
-            verb = "havis" if ctx.tense == "past" else "havas"
+            verb = "havis" if ctx.tense == "is" else "havas"
             return f"kiu {verb} {to_accusative(subj_form)}"
         return None
     if rel == "en":
-        copula = "estis" if ctx.tense == "past" else "estas"
+        copula = "estis" if ctx.tense == "is" else "estas"
         return f"ke {subj_form} {copula} en {obj_form}"
     if rel == "sur":
-        copula = "estis" if ctx.tense == "past" else "estas"
+        copula = "estis" if ctx.tense == "is" else "estas"
         return f"ke {subj_form} {copula} sur {obj_form}"
     if rel == "havi":
-        verb = "havis" if ctx.tense == "past" else "havas"
+        verb = "havis" if ctx.tense == "is" else "havas"
         return f"ke {subj_form} {verb} {to_accusative(obj_form)}"
     return None
 
