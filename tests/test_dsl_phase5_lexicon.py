@@ -10,7 +10,7 @@ trace time. These tests verify:
   - The derivation recovers flammability for every formerly-tagged
     concept in the real lexicon.
   - Entities of non-flammable material don't get falsely marked.
-  - The fire cascade (which matches `entity(flammability='flammable')`)
+  - The fire cascade (which matches `entity(flammability='brulebla')`)
     still fires correctly once the derivation runs — end-to-end proof
     the migration is behaviorally neutral.
 """
@@ -84,7 +84,7 @@ def test_derivation_produces_flammable_for_each_formerly_tagged(lex, lemma):
     formerly-tagged concept. After the lex-load bake, the property
     is on `concept.properties` directly; effective_property reads it."""
     c = lex.concepts[lemma]
-    assert c.properties.get("flammability") == ["flammable"], (
+    assert c.properties.get("flammability") == ["brulebla"], (
         f"{lemma!r} should derive flammability=flammable; "
         f"got {c.properties!r}")
 
@@ -129,7 +129,7 @@ def test_asserted_flammability_still_wins_over_derived(lex):
     concepts."""
     t = Trace()
     breto = t.add_entity("breto", lex, entity_id="breto")
-    breto.set_property("flammability", "inflammable")  # asserted override
+    breto.set_property("flammability", "nebrulebla")  # asserted override
 
     derived = DerivedState()
     _run_derivations_to_fixed_point(
@@ -139,7 +139,7 @@ def test_asserted_flammability_still_wins_over_derived(lex):
     # value blocks it.
     assert derived.get("breto", "flammability") is None
     # And the effective property (asserted wins) is the override.
-    assert t.property_at("breto", "flammability", 0) == ["inflammable"]
+    assert t.property_at("breto", "flammability", 0) == ["nebrulebla"]
 
 
 # ---- derivation IS registered in DEFAULT_DSL_DERIVATIONS ----------------

@@ -39,11 +39,11 @@ def test_entity_properties_reflects_construction_state(lex):
     back into this dict."""
     e = EntityInstance(
         id="x", concept_lemma="glaso", entity_type="artifact",
-        properties={"fragility": ["fragile"]})
-    assert e.properties == {"fragility": ["fragile"]}
+        properties={"fragility": ["fragila"]})
+    assert e.properties == {"fragility": ["fragila"]}
     # Scene-init set_property writes through.
-    e.set_property("integrity", "intact")
-    assert e.properties["integrity"] == ["intact"]
+    e.set_property("integrity", "tuta")
+    assert e.properties["integrity"] == ["tuta"]
 
 
 def test_entity_lifecycle_fields_default_none(lex):
@@ -68,7 +68,7 @@ def test_event_id_independent_of_new_fields():
     ev2 = make_event(
         "rompiĝi", roles={"theme": "glaso"},
         creates=[shards],
-        property_changes={("glaso", "integrity"): "broken"},
+        property_changes={("glaso", "integrity"): "rompita"},
         trace_position=5)
     assert ev1.id == ev2.id
 
@@ -119,8 +119,8 @@ def test_property_at_no_changes_returns_initial(lex):
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
     # glaso concept has fragility=fragile, integrity=intact by default.
-    assert t.property_at("glaso", "integrity", 0) == ["intact"]
-    assert t.property_at("glaso", "integrity", 10) == ["intact"]
+    assert t.property_at("glaso", "integrity", 0) == ["tuta"]
+    assert t.property_at("glaso", "integrity", 10) == ["tuta"]
 
 
 def test_property_at_returns_most_recent_change(lex):
@@ -131,17 +131,17 @@ def test_property_at_returns_most_recent_change(lex):
     # Append two events that change integrity.
     t.events.append(make_event(
         "rompiĝi", roles={"theme": "glaso"},
-        property_changes={("glaso", "integrity"): "severed"}))
+        property_changes={("glaso", "integrity"): "tranĉita"}))
     t.events.append(make_event(
         "rompiĝi", roles={"theme": "glaso"}, caused_by=("x",),
-        property_changes={("glaso", "integrity"): "broken"}))
+        property_changes={("glaso", "integrity"): "rompita"}))
 
     # t=0: scene-initial
-    assert t.property_at("glaso", "integrity", 0) == ["intact"]
+    assert t.property_at("glaso", "integrity", 0) == ["tuta"]
     # t=1: after event 0 (severed)
-    assert t.property_at("glaso", "integrity", 1) == "severed"
+    assert t.property_at("glaso", "integrity", 1) == "tranĉita"
     # t=2: after event 1 (broken) — most recent wins
-    assert t.property_at("glaso", "integrity", 2) == "broken"
+    assert t.property_at("glaso", "integrity", 2) == "rompita"
 
 
 def test_property_at_returns_none_for_missing_entity(lex):
@@ -154,12 +154,12 @@ def test_property_at_returns_none_before_creation(lex):
     t = Trace()
     shards = EntityInstance(
         id="shards", concept_lemma="persono", entity_type="inanimate",
-        properties={"sharpness": ["sharp"]},
+        properties={"sharpness": ["akra"]},
         created_at_event=3)
     t.entities["shards"] = shards
     assert t.property_at("shards", "sharpness", 0) is None
     assert t.property_at("shards", "sharpness", 3) is None  # not yet at t=3
-    assert t.property_at("shards", "sharpness", 4) == ["sharp"]
+    assert t.property_at("shards", "sharpness", 4) == ["akra"]
 
 
 def test_property_at_returns_initial_at_exact_creation_position(lex):
@@ -169,13 +169,13 @@ def test_property_at_returns_initial_at_exact_creation_position(lex):
     t = Trace()
     shards = EntityInstance(
         id="shards", concept_lemma="persono", entity_type="inanimate",
-        properties={"sharpness": ["sharp"]},
+        properties={"sharpness": ["akra"]},
         created_at_event=0)
     t.entities["shards"] = shards
     # Fake an event at index 0 that created shards but made no property changes.
     t.events.append(make_event(
         "rompiĝi", roles={"theme": "glaso"}, creates=[shards]))
-    assert t.property_at("shards", "sharpness", 1) == ["sharp"]
+    assert t.property_at("shards", "sharpness", 1) == ["akra"]
 
 
 # ---- Engine + ported rules from the DSL --------------------------------
@@ -191,9 +191,8 @@ from esperanto_lm.ontology.dsl.rules import (
 def _run_dsl_compat(trace, rules, lexicon=None):
     """Test helper: most cases here pass a flat rule list and want the
     engine to figure out the lexicon (load it lazily) and accept a
-    rule-or-list-of-rules in the input — `make_use_instrument_rules`
-    returns a list, while individual rules are bare. Flattens, then
-    delegates to `run_dsl` with empty derivations."""
+    rule-or-list-of-rules in the input. Flattens, then delegates to
+    `run_dsl` with empty derivations."""
     if lexicon is None:
         from esperanto_lm.ontology import load_lexicon
         lexicon = load_lexicon()
@@ -223,9 +222,9 @@ def test_engine_runs_fragile_break(lex):
     assert "rompiĝi" in actions, actions
     # property_at should reflect the broken state after the rompiĝi event.
     final_t = len(t.events)
-    assert t.property_at("glaso", "integrity", final_t) == "broken"
+    assert t.property_at("glaso", "integrity", final_t) == "rompita"
     # Before the rompiĝi event, integrity is still intact.
-    assert t.property_at("glaso", "integrity", 1) == ["intact"]
+    assert t.property_at("glaso", "integrity", 1) == ["tuta"]
 
 
 def test_engine_sets_trace_position(lex):
@@ -248,7 +247,7 @@ def test_engine_does_not_break_when_theme_already_broken(lex):
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
     t.entities["glaso"].properties = {
-        "fragility": ["fragile"], "integrity": ["broken"]}
+        "fragility": ["fragila"], "integrity": ["rompita"]}
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
     _run_dsl_compat(t, DEFAULT_DSL_RULES)
     actions = [ev.action for ev in t.events]
@@ -271,7 +270,6 @@ from esperanto_lm.ontology.dsl.rules import (
     broken_container_releases_contents,
     container_falls_contents_fall,
     hungry_eats_sated,
-    make_use_instrument_rules,
 )
 
 
@@ -281,7 +279,7 @@ def test_hungry_eats_sated_fires(lex):
     petro = t.add_entity("persono", lex, entity_id="petro")
     pano = t.add_entity("pano", lex, entity_id="pano")
     # Make petro hungry via initial_properties.
-    petro.properties = {"hunger": ["hungry"]}
+    petro.properties = {"hunger": ["malsata"]}
     t.events.append(make_event("manĝi", roles={
         "agent": "petro", "theme": "pano"}))
 
@@ -290,7 +288,7 @@ def test_hungry_eats_sated_fires(lex):
     actions = [ev.action for ev in t.events]
     assert "satiĝi" in actions
     final_t = len(t.events)
-    assert t.property_at("petro", "hunger", final_t) == "sated"
+    assert t.property_at("petro", "hunger", final_t) == "sata"
 
 
 def test_hungry_does_not_fire_if_not_hungry(lex):
@@ -352,47 +350,8 @@ def test_broken_container_releases_contents(lex):
     assert "akvo" in fali_themes
 
 
-def test_use_instrument_factory(lex):
-    """The factory-based use_instrument rule fires the signature verb
-    with property_changes drawn from that verb's effect spec."""
-    t = Trace()
-    t.add_entity("persono", lex, entity_id="petro")
-    t.add_entity("pano", lex, entity_id="pano")
-    t.add_entity("tranĉilo", lex, entity_id="tranĉilo")
-    t.assert_relation("havi", ("petro", "tranĉilo"), lex)
-    t.events.append(make_event("uzi", roles={
-        "agent": "petro", "instrument": "tranĉilo", "theme": "pano"}))
-
-    rule = make_use_instrument_rules(lex)
-    _run_dsl_compat(t, [rule])
-
-    actions = [ev.action for ev in t.events]
-    assert "tranĉi" in actions
-    # tranĉi's effect: theme.integrity → severed
-    final_t = len(t.events)
-    assert t.property_at("pano", "integrity", final_t) == "severed"
-
-
-def test_use_instrument_rejects_incompatible_theme(lex):
-    """ŝlosilo's signature verb is ŝlosi, which requires theme=artifact.
-    Substance themes (akvo) are rejected."""
-    t = Trace()
-    t.add_entity("persono", lex, entity_id="petro")
-    t.add_entity("akvo", lex, entity_id="akvo")
-    t.add_entity("ŝlosilo", lex, entity_id="ŝlosilo")
-    t.assert_relation("havi", ("petro", "ŝlosilo"), lex)
-    t.events.append(make_event("uzi", roles={
-        "agent": "petro", "instrument": "ŝlosilo", "theme": "akvo"}))
-
-    rule = make_use_instrument_rules(lex)
-    _run_dsl_compat(t, [rule])
-
-    actions = [ev.action for ev in t.events]
-    assert "ŝlosi" not in actions
-
-
 def test_bridge_sampler_to_engine_hunger(lex):
-    """Bridge canary: the sampler's `set_initial_property("hunger", "hungry")`
+    """Bridge canary: the sampler's `set_initial_property("hunger", "malsata")`
     on a person makes that hunger visible to the DSL engine via property_at.
     Verifies sampler→wiring.
     """
@@ -401,7 +360,7 @@ def test_bridge_sampler_to_engine_hunger(lex):
 
     rng = _r.Random(0)
     # Sample until we get an eat-recipe (so the sampler exercises the
-    # set_initial_property("hunger", "hungry") path).
+    # set_initial_property("hunger", "malsata") path).
     for _ in range(30):
         t, info = sample_scene(lex, rng, scene="manĝejo")
         if "eats" not in info.recipe:
@@ -411,7 +370,7 @@ def test_bridge_sampler_to_engine_hunger(lex):
         agent_id = manĝi_ev.roles["agent"]
         # The bridge should have populated both properties and
         # initial_properties — property_at reads them.
-        assert t.property_at(agent_id, "hunger", 0) == ["hungry"], \
+        assert t.property_at(agent_id, "hunger", 0) == ["malsata"], \
             f"engine didnt see hunger via initial_properties for {agent_id}"
         # Run DSL engine. satiĝi should fire.
         _run_dsl_compat(t, [hungry_eats_sated])
@@ -436,7 +395,7 @@ def test_realizer_introduces_created_entity_via_appearance_line(lex):
     shards = EntityInstance(
         id="vitropecetoj", concept_lemma="vitropecetoj",
         entity_type="inanimate",
-        properties={"sharpness": ["sharp"]},
+        properties={"sharpness": ["akra"]},
         created_at_event=1)
     t.entities["vitropecetoj"] = shards
     # Event 0: glass falls.
@@ -444,7 +403,7 @@ def test_realizer_introduces_created_entity_via_appearance_line(lex):
     # Event 1: glass breaks, creating shards.
     t.events.append(make_event(
         "rompiĝi", roles={"theme": "glaso"}, caused_by=[t.events[0].id],
-        property_changes={("glaso", "integrity"): "broken"},
+        property_changes={("glaso", "integrity"): "rompita"},
         creates=[shards],
     ))
 
@@ -475,7 +434,7 @@ def test_realizer_subsequent_mention_of_created_entity_is_definite(lex):
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
     t.events.append(make_event(
         "rompiĝi", roles={"theme": "glaso"}, caused_by=[t.events[0].id],
-        property_changes={("glaso", "integrity"): "broken"},
+        property_changes={("glaso", "integrity"): "rompita"},
         creates=[shards]))
     t.events.append(make_event(
         "fali", roles={"theme": "petro"},
@@ -538,7 +497,7 @@ def test_full_rule_pool_kitchen_cascade(lex):
     t.assert_relation("en", ("akvo", "glaso"), lex)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
 
-    rules = DEFAULT_DSL_RULES + [make_use_instrument_rules(lex)]
+    rules = list(DEFAULT_DSL_RULES)
     _run_dsl_compat(t, rules)
 
     actions = [ev.action for ev in t.events]
@@ -548,4 +507,4 @@ def test_full_rule_pool_kitchen_cascade(lex):
     assert "akvo" in fali_themes  # from container_falls or broken_container
 
     final_t = len(t.events)
-    assert t.property_at("glaso", "integrity", final_t) == "broken"
+    assert t.property_at("glaso", "integrity", final_t) == "rompita"

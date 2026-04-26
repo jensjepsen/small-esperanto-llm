@@ -34,6 +34,18 @@ PERSON_NAMES = ["petro", "maria", "anna", "klara", "johano",
                 "elena", "pavel", "sara", "mikael", "lidia"]
 
 
+def _person_concepts(lex: Lexicon) -> list[str]:
+    """Every concept whose entity_type is `person`. Pulled live from the
+    lexicon so additions there flow through without code changes —
+    authored (persono, knabo, infano, doktoro…) and derived
+    (kuiristo, instruisto, dancisto…) alike. Persons render by their
+    entity_id (a name) so visible prose is the same regardless of
+    concept, but concept-coverage stats and any future concept-keyed
+    rules see real variety."""
+    return [c.lemma for c in lex.concepts.values()
+            if c.entity_type == "person"]
+
+
 @dataclass
 class SceneInfo:
     seed: int
@@ -97,21 +109,36 @@ class Recipe:
     seed_fn: Callable[[Trace, Lexicon, dict[str, str], random.Random], str]
 
 
-def _seed_uzi(t: Trace, lex: Lexicon, b: dict[str, str],
+def _make_seed_specific_verb(verb_lemma: str) -> Callable:
+    """Build a sampler seeder for an instrument-deriving verb. Fires
+    the verb directly with `agent + theme + instrument` bound — no
+    `uzi` indirection. Sets up the same precondition state the old
+    `_seed_uzi` did (havi(agent, instrument), unlock pordo themes).
+
+    `effect_changes` materializes the verb's intrinsic property
+    transitions on the seed event so downstream rules see the new
+    state. The old uzi cascade did this via `.changing(...)` in the
+    rule; now the seed event carries it directly."""
+    def _seed(t: Trace, lex: Lexicon, b: dict[str, str],
               rng: random.Random) -> str:
-    agent, instrument, theme = b["agent"], b["instrument"], b["theme"]
-    if not any(r.relation == "havi" and len(r.args) == 2
-               and r.args == (agent, instrument) for r in t.relations):
-        t.assert_relation("havi", (agent, instrument), lex)
-    # Unlock pordo so the lock-event is observable.
-    # set_initial_property mirrors into both `properties` (old engine)
-    # and `initial_properties` (v2 engine). TODO(step 6): once the old
-    # engine is removed, switch to direct initial_properties assignment.
-    if t.entities[theme].concept_lemma == "pordo":
-        t.entities[theme].set_property("lock_state", "unlocked")
-    t.add_event(make_event("uzi", roles={
-        "agent": agent, "instrument": instrument, "theme": theme}))
-    return f"use_{t.entities[instrument].concept_lemma}_on_{t.entities[theme].concept_lemma}"
+        agent = b["agent"]
+        instrument = b.get("instrument")
+        theme = b["theme"]
+        if instrument is not None and not any(
+                r.relation == "havi" and len(r.args) == 2
+                and r.args == (agent, instrument)
+                for r in t.relations):
+            t.assert_relation("havi", (agent, instrument), lex)
+        if t.entities[theme].concept_lemma == "pordo":
+            t.entities[theme].set_property("lock_state", "malŝlosita")
+        roles = {"agent": agent, "theme": theme}
+        if instrument is not None:
+            roles["instrument"] = instrument
+        t.add_event(make_event(
+            verb_lemma, roles=roles,
+            property_changes=effect_changes(verb_lemma, roles, lex)))
+        return f"{verb_lemma}_{t.entities[theme].concept_lemma}"
+    return _seed
 
 
 def _seed_eat(t: Trace, lex: Lexicon, b: dict[str, str],
@@ -119,7 +146,7 @@ def _seed_eat(t: Trace, lex: Lexicon, b: dict[str, str],
     agent, theme = b["agent"], b["theme"]
     # Bridge: writes to both old `properties` and new `initial_properties`
     # so both engines see the hungry state. See migration TODO above.
-    t.entities[agent].set_property("hunger", "hungry")
+    t.entities[agent].set_property("hunger", "malsata")
     # Persons traditionally hold their food via havi; animals just eat
     # from the scene without a possessive relation.
     if t.entities[agent].entity_type == "person":
@@ -227,6 +254,33 @@ _DIRECT_SEEDERS = {
 }
 
 
+def _make_generic_seeder(verb_lemma: str) -> Callable:
+    """Build a no-precondition seed function for any verb. Just emits
+    the event with whatever role bindings the resolver picked, baking
+    in the verb's intrinsic effects via `effect_changes`. Recipe label
+    embeds the theme concept (when present) so summary stats keep
+    granularity, e.g. `naĝi_persono` vs `dormi_kato`.
+
+    Verbs that need pre-state (manĝi sets hunger, instrument-using
+    verbs establish havi(agent, instrument), bruli requires
+    effect_changes baked) keep their bespoke seeders in
+    `_DIRECT_SEEDERS`; everything else flows through here."""
+    def _seeder(t: Trace, lex: Lexicon, b: dict[str, str],
+                rng: random.Random) -> str:
+        roles = dict(b)
+        t.add_event(make_event(
+            verb_lemma, roles=roles,
+            property_changes=effect_changes(verb_lemma, roles, lex)))
+        # Recipe label — prefer theme-based, fall back to destination,
+        # then to the verb alone for intransitive/agent-only events.
+        for role in ("theme", "destination"):
+            if role in roles:
+                concept = t.entities[roles[role]].concept_lemma
+                return f"{verb_lemma}_{concept}"
+        return verb_lemma
+    return _seeder
+
+
 def _role_spec_to_binding(role) -> RoleBinding:
     """Convert a verb's RoleSpec (type + properties) to a RoleBinding.
     Direct mirror — the binding just inherits the verb's declared
@@ -244,9 +298,29 @@ def _role_spec_to_binding(role) -> RoleBinding:
 
 
 def _build_direct_recipe(verb, seed_fn: Callable) -> Recipe:
-    """Generate a recipe from a verb's role specs."""
-    bindings = {role.name: _role_spec_to_binding(role)
-                for role in verb.roles}
+    """Generate a recipe from a verb's role specs.
+
+    Special handling: when a verb is `derives_instrument` AND has an
+    `instrument` role, the binding is augmented with
+    `functional_signature=verb.lemma` so the instrument is a tool for
+    THIS verb (tranĉilo for tranĉi, ŝlosilo for ŝlosi). Without this,
+    the sampler would pick any artifact, producing nonsense like
+    "tranĉas serpentidon per la pordo"."""
+    bindings: dict[str, RoleBinding] = {}
+    for role in verb.roles:
+        spec = _role_spec_to_binding(role)
+        if role.name == "instrument" and verb.derives_instrument:
+            sig_constraint = {"functional_signature": verb.lemma}
+            merged = (
+                {**spec.property, **sig_constraint} if spec.property
+                else sig_constraint)
+            spec = RoleBinding(
+                sense_id=spec.sense_id,
+                entity_type=spec.entity_type,
+                property=merged,
+                has_property=spec.has_property,
+            )
+        bindings[role.name] = spec
     return Recipe(name=verb.lemma, role_bindings=bindings, seed_fn=seed_fn)
 
 
@@ -266,8 +340,16 @@ def _build_use_recipes(lex: Lexicon) -> list[Recipe]:
         theme_role = next((r for r in verb.roles if r.name == "theme"), None)
         if theme_role is None:
             continue
+        # Inherit the agent constraint from the verb's own agent role
+        # so use_for_X stays in lockstep with the direct verb recipe.
+        # In practice this means tool-using verbs (which require
+        # can_use_tools=yes on their agent in actions.jsonl) get apes
+        # and persons; verbs without that constraint stay open.
+        agent_role = next((r for r in verb.roles if r.name == "agent"), None)
+        agent_binding = (_role_spec_to_binding(agent_role) if agent_role
+                         else RoleBinding(entity_type="animate"))
         bindings = {
-            "agent":      RoleBinding(entity_type="person"),
+            "agent":      agent_binding,
             "instrument": RoleBinding(
                 property={"functional_signature": verb.lemma}),
             "theme":      _role_spec_to_binding(theme_role),
@@ -275,7 +357,7 @@ def _build_use_recipes(lex: Lexicon) -> list[Recipe]:
         recipes.append(Recipe(
             name=f"use_for_{verb.lemma}",
             role_bindings=bindings,
-            seed_fn=_seed_uzi,
+            seed_fn=_make_seed_specific_verb(verb.lemma),
         ))
     return recipes
 
@@ -283,17 +365,41 @@ def _build_use_recipes(lex: Lexicon) -> list[Recipe]:
 _RECIPES_CACHE: dict[int, list[Recipe]] = {}
 
 
+# Verbs intentionally excluded from the auto-generic recipe pool.
+# Movement verbs (iri/veni/veturi) used to be skipped here because their
+# destination role would resolve to the current scene (a no-op). That's
+# now handled in `_resolve_bindings`: roles named `destination` exclude
+# the scene from candidates.
+_GENERIC_RECIPE_SKIP: set[str] = set()
+
+
 def recipes_for(lex: Lexicon) -> list[Recipe]:
-    """All recipes, generated from the lexicon. Cached per lex instance
-    so repeated sample_scene calls don't rebuild."""
+    """All recipes, generated from the lexicon. Two layers:
+
+      1. Verbs in `_DIRECT_SEEDERS` use their bespoke seed function
+         (these set up preconditions like hunger or initial havi).
+      2. Every other verb in the lexicon gets a generic seeder via
+         `_make_generic_seeder` — emits the event with role bindings
+         resolved by the sampler, no extra setup. This auto-covers
+         all new verbs added to the lexicon.
+
+    Cached per lex instance so repeated sample_scene calls don't
+    rebuild."""
     if id(lex) in _RECIPES_CACHE:
         return _RECIPES_CACHE[id(lex)]
     out: list[Recipe] = []
+    custom = set(_DIRECT_SEEDERS.keys())
     for verb_lemma, seed_fn in _DIRECT_SEEDERS.items():
         verb = lex.actions.get(verb_lemma)
         if verb is None:
             continue
         out.append(_build_direct_recipe(verb, seed_fn))
+    # Generic recipes for the remaining verbs.
+    for verb_lemma, verb in lex.actions.items():
+        if verb_lemma in custom or verb_lemma in _GENERIC_RECIPE_SKIP:
+            continue
+        out.append(_build_direct_recipe(
+            verb, _make_generic_seeder(verb_lemma)))
     out.extend(_build_use_recipes(lex))
     _RECIPES_CACHE[id(lex)] = out
     return out
@@ -322,14 +428,16 @@ def _ensure_placed(
 
     if not candidates:
         try:
-            trace.add_entity(entity_lemma, lex, entity_id=entity_lemma)
+            _add_entity_randomized(
+                trace, entity_lemma, lex, rng, entity_id=entity_lemma)
         except (KeyError, ValueError):
             pass
         return
 
     non_scene = [c for c in candidates if c[0] != scene]
     pick = rng.choice(non_scene) if non_scene else rng.choice(candidates)
-    trace.add_entity(entity_lemma, lex, entity_id=entity_lemma)
+    _add_entity_randomized(
+        trace, entity_lemma, lex, rng, entity_id=entity_lemma)
     trace.assert_relation(pick[1], (entity_lemma, pick[0]), lex)
 
 
@@ -344,19 +452,53 @@ def _resolve_bindings(
     ∪ (reachable concepts matching, excluding ones already placed).
     Materializes concept picks via containment placement.
 
+    Roles are resolved disjointly: each role's pick is excluded from
+    subsequent roles' candidate pools, so transitive verbs like
+    `instrui(agent, theme)` with two person slots produce two distinct
+    persons rather than reflexive bindings (which the realizer would
+    otherwise mis-render — "Li instruis lin" instead of "Li instruis sin").
+
+    Role name `destination` (used by movement verbs iri/veni/veturi):
+      * excludes the current scene from candidates (self-move is a no-op)
+      * expands the candidate pool to all matching concepts in the
+        lexicon, not just those reachable via containment from the
+        scene — destinations are *targets* of motion, they don't have
+        to be reachable as scene contents.
+      * placed bare (no containment relation), since destinations
+        aren't inside the current scene.
+
+    Other location-typed roles (e.g. `location` for pluvi) are
+    unaffected — pluvi at the current scene is exactly what we want.
+
     Returns the resolved {role: entity_id} dict, or None if any role
     has no candidates (recipe wasn't actually eligible)."""
     resolved: dict[str, str] = {}
     for role, spec in bindings_spec.items():
+        already_used = set(resolved.values())
+        excluded = set(already_used)
+        is_destination = role == "destination"
+        if is_destination:
+            excluded.add(scene)
         existing = [
             eid for eid, ent in trace.entities.items()
-            if _entity_matches(ent, spec, lex)
+            if eid not in excluded
+            and _entity_matches(ent, spec, lex)
         ]
-        concepts_avail = [
-            c for c in reachable
-            if c not in trace.entities
-            and _concept_matches(lex.concepts[c], spec, lex)
-        ]
+        if is_destination:
+            # Whole-lexicon candidates for destinations.
+            concepts_avail = [
+                lemma for lemma, c in lex.concepts.items()
+                if lemma not in excluded
+                and lemma not in trace.entities
+                and _concept_matches(c, spec, lex)
+            ]
+        else:
+            concepts_avail = [
+                c for c in reachable
+                if c not in trace.entities
+                and c not in excluded
+                and _concept_matches(lex.concepts[c], spec, lex)
+            ]
         # Tag each option so we know whether to materialize.
         options: list[tuple[str, str]] = (
             [("existing", e) for e in existing]
@@ -366,7 +508,11 @@ def _resolve_bindings(
             return None
         kind, value = rng.choice(options)
         if kind == "concept":
-            _ensure_placed(trace, lex, idx, scene, value, rng)
+            if is_destination:
+                _add_entity_randomized(
+                    trace, value, lex, rng, entity_id=value)
+            else:
+                _ensure_placed(trace, lex, idx, scene, value, rng)
             if value not in trace.entities:
                 return None
         resolved[role] = value
@@ -376,16 +522,25 @@ def _resolve_bindings(
 def _recipe_eligible(recipe: Recipe, trace: Trace, lex: Lexicon,
                      reachable: set[str]) -> bool:
     """Quick precheck: does each role have at least one candidate from
-    existing entities or reachable concepts?"""
-    for spec in recipe.role_bindings.values():
+    existing entities or reachable concepts?
+
+    Destination roles draw candidates from the WHOLE lexicon (movement
+    targets aren't constrained by scene reachability), so eligibility
+    checks them against `lex.concepts` instead of `reachable`."""
+    for role_name, spec in recipe.role_bindings.items():
         existing_match = any(
             _entity_matches(ent, spec, lex)
             for ent in trace.entities.values())
         if existing_match:
             continue
-        concept_match = any(
-            _concept_matches(lex.concepts[c], spec, lex)
-            for c in reachable)
+        if role_name == "destination":
+            concept_match = any(
+                _concept_matches(c, spec, lex)
+                for c in lex.concepts.values())
+        else:
+            concept_match = any(
+                _concept_matches(lex.concepts[c], spec, lex)
+                for c in reachable)
         if not concept_match:
             return False
     return True
@@ -412,13 +567,17 @@ def sample_scene(
     reachable = reachable_from(scene, idx, lex) - {scene}
 
     t = Trace()
+    # Scenes don't get state-randomization — locations have fixed
+    # affordances (indoor/outdoor) which are identity, not transient.
     t.add_entity(scene, lex, entity_id=scene)
 
     # Persons: 1-2, with 3:1 bias toward 1.
     n_persons = rng.choices([1, 2], weights=[3, 1], k=1)[0]
     persons: list[str] = []
+    person_concepts = _person_concepts(lex)
     for name in rng.sample(PERSON_NAMES, n_persons):
-        t.add_entity("persono", lex, entity_id=name)
+        concept = rng.choice(person_concepts)
+        _add_entity_randomized(t, concept, lex, rng, entity_id=name)
         t.assert_relation("en", (name, scene), lex)
         persons.append(name)
 
@@ -435,24 +594,39 @@ def sample_scene(
         raise RuntimeError(
             f"no recipes eligible in scene {scene!r}; "
             f"reachable: {sorted(reachable)}")
-    recipe = rng.choice(eligible)
-
-    # Resolve role bindings (materializes entities as needed).
-    bindings = _resolve_bindings(
-        t, lex, idx, scene, recipe.role_bindings, reachable, rng)
-    if bindings is None:
+    # Try recipes in random order until one resolves. Disjoint role
+    # resolution can fail eligibility-passing recipes (e.g. instrui
+    # needs two distinct persons but only one is in the scene), so
+    # fall through to the next eligible candidate rather than erroring.
+    rng.shuffle(eligible)
+    recipe = None
+    bindings = None
+    for candidate in eligible:
+        resolved = _resolve_bindings(
+            t, lex, idx, scene, candidate.role_bindings, reachable, rng)
+        if resolved is not None:
+            recipe = candidate
+            bindings = resolved
+            break
+    if recipe is None or bindings is None:
         raise RuntimeError(
-            f"recipe {recipe.name!r} eligible but resolution failed")
+            f"no eligible recipe could resolve in scene {scene!r}; "
+            f"tried {len(eligible)} candidates")
 
-    # 0-2 atmospheric extras for visual richness.
-    extras_pool = [
-        c for c in reachable
-        if c not in t.entities
-        and lex.concepts[c].entity_type not in ("person", "location")
-    ]
-    n_extras = rng.randint(0, 2)
-    for c in rng.sample(extras_pool, min(n_extras, len(extras_pool))):
-        _ensure_placed(t, lex, idx, scene, c, rng)
+    # Atmospheric extras are off by default — they appeared in scenes
+    # without doing anything narratively, leading to clutter like
+    # "papagido, kaprido, kaj formikido" in unrelated recipes. Set
+    # `n_extras = rng.randint(0, 1)` here if you want a small chance
+    # of an extra.
+    n_extras = 0
+    if n_extras > 0:
+        extras_pool = [
+            c for c in reachable
+            if c not in t.entities
+            and lex.concepts[c].entity_type not in ("person", "location")
+        ]
+        for c in rng.sample(extras_pool, min(n_extras, len(extras_pool))):
+            _ensure_placed(t, lex, idx, scene, c, rng)
 
     label = recipe.seed_fn(t, lex, bindings, rng)
 
@@ -466,6 +640,177 @@ def sample_scene(
         n_objects=n_objects,
         scene_location_id=scene,
     )
+
+
+# ----------------------- state randomization ------------------------------
+
+def _randomize_state(entity, lex: Lexicon, rng: random.Random) -> None:
+    """Initialize transient state on a freshly-added entity.
+
+    Single rule: for every slot the entity already has (because the
+    concept authored it OR a derivation placed it during the bake)
+    where the slot is marked `varies=True`, pick uniformly from the
+    slot's vocabulary and replace the value.
+
+    The concept's authored/derived value is just an *opt-in marker*
+    saying "this slot is meaningful for this concept" — random varies
+    the value freely. So:
+      - pordo (concept authors openness=closed) → instance gets
+        random open or closed
+      - tablo (no openness slot) → no random openness; tablo never
+        becomes a malfermi/fermi target
+      - persono (animate_has_hunger derivation seeds hunger=sated) →
+        every persono instance gets random hungry or sated → manĝi
+        with hunger=hungry precondition fires naturally
+    """
+    for slot_name in list(entity.properties.keys()):
+        slot = lex.slots.get(slot_name)
+        if slot is None or slot.vocabulary is None or not slot.scalar:
+            continue
+        if not slot.varies:
+            continue
+        choice = rng.choice(slot.vocabulary)
+        entity.set_property(slot_name, choice)
+
+
+def _add_entity_randomized(
+    trace: Trace, concept: str, lex: Lexicon,
+    rng: random.Random, *, entity_id: str,
+):
+    """Wrapper around `trace.add_entity` that immediately randomizes
+    transient state on the new entity AND materializes its declared
+    sub-entity parts (Concept.parts). Used for ALL entity additions
+    in the sampler so scenes naturally satisfy diverse preconditions
+    and parts come along for the ride."""
+    trace.add_entity(concept, lex, entity_id=entity_id)
+    _randomize_state(trace.entities[entity_id], lex, rng)
+    concept_def = lex.concepts.get(concept)
+    if concept_def is None:
+        return
+    for part_spec in concept_def.parts:
+        part_id = f"{entity_id}_{part_spec.concept}"
+        if part_id in trace.entities:
+            continue
+        # Recurse: parts may themselves declare parts. Cycles in the
+        # concept graph would loop, but our parts graph is a tree.
+        _add_entity_randomized(
+            trace, part_spec.concept, lex, rng, entity_id=part_id)
+        trace.assert_relation(
+            part_spec.relation, (entity_id, part_id), lex)
+
+
+# ----------------------- recipe chaining ----------------------------------
+
+def _recipe_can_reuse_entity(
+    recipe: Recipe, touched: set[str], trace: Trace, lex: Lexicon,
+) -> bool:
+    """True iff at least one of `recipe`'s roles can be filled by some
+    entity in `touched`. Used by `sample_chained_scene` to filter
+    sequel candidates to recipes that actually connect to the prior
+    event's entities."""
+    for spec in recipe.role_bindings.values():
+        for eid in touched:
+            ent = trace.entities.get(eid)
+            if ent is None:
+                continue
+            if _entity_matches(ent, spec, lex):
+                return True
+    return False
+
+
+def sample_chained_scene(
+    lex: Lexicon, rng: random.Random, *,
+    scene: str = "kuirejo",
+    rules,
+    derivations,
+    max_events: int = 4,
+    chain_p: float = 0.5,
+):
+    """Sample a scene + initial event, then iteratively extend with
+    sequels.
+
+    Algorithm per chain step:
+      1. Run the DSL engine on the current trace so the latest seed
+         event's effects (cascades, creates, destroys, property
+         changes) are materialized.
+      2. Find sequel candidates: recipes where at least one role can
+         be filled by an entity the most recent seed event touched
+         AND whose role bindings the trace can resolve disjointly.
+      3. Pick one randomly, fire its seed function, loop.
+
+    Stops when a coin flip says no (probability 1 - chain_p), when no
+    sequel candidates exist, when max_events is reached, or when role
+    resolution can't satisfy any candidate.
+
+    Engine cascades (broken→shards, rain→flako, etc.) are NOT counted
+    against `max_events` — only sampler-emitted seed events are. The
+    cap therefore reflects narrative beats, not total trace length.
+
+    Returns `(trace, info, setup_relations)`. The snapshot is taken
+    *after* the first seed event's pre-state relations are asserted
+    (matching the historical behavior of generate_corpus's snapshot)
+    but *before* the engine runs, so rule-driven relation changes
+    appear in the diff as narrative changes.
+    """
+    from .dsl import run_dsl
+
+    trace, info = sample_scene(lex, rng, scene=scene)
+    setup_relations = trace.snapshot_relations()
+    seed_event_indices: list[int] = [len(trace.events) - 1]
+    run_dsl(trace, rules, derivations, lex)
+
+    idx = resolve_containment(lex)
+    reachable = reachable_from(scene, idx, lex) - {scene}
+    all_recipes = recipes_for(lex)
+
+    while len(seed_event_indices) < max_events:
+        if rng.random() > chain_p:
+            break
+        last_seed = trace.events[seed_event_indices[-1]]
+        # Touched = entities the last seed event referenced as roles
+        # AND that still exist in the trace (destroyed entities can't
+        # be reused — entities_at(t) would filter them out anyway).
+        touched: set[str] = set()
+        for v in last_seed.roles.values():
+            if not isinstance(v, str):
+                continue
+            ent = trace.entities.get(v)
+            if ent is None:
+                continue
+            if (ent.destroyed_at_event is not None
+                    and ent.destroyed_at_event < len(trace.events)):
+                continue
+            touched.add(v)
+        if not touched:
+            break
+
+        candidates = [
+            r for r in all_recipes
+            if _recipe_can_reuse_entity(r, touched, trace, lex)
+        ]
+        if not candidates:
+            break
+
+        rng.shuffle(candidates)
+        fired = False
+        for candidate in candidates:
+            bindings = _resolve_bindings(
+                trace, lex, idx, scene, candidate.role_bindings,
+                reachable, rng)
+            if bindings is None:
+                continue
+            new_idx = len(trace.events)
+            candidate.seed_fn(trace, lex, bindings, rng)
+            if len(trace.events) <= new_idx:
+                continue   # seed_fn didn't add anything; try next
+            seed_event_indices.append(new_idx)
+            run_dsl(trace, rules, derivations, lex)
+            fired = True
+            break
+        if not fired:
+            break
+
+    return trace, info, setup_relations
 
 
 # ----------------------- prune --------------------------------------------

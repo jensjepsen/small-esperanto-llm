@@ -203,6 +203,20 @@ class _Ctx:
 
 # =================== per-message renderers ==================
 
+def _render_entity_quality(m, ctx: _Ctx) -> Optional[str]:
+    """'La sofo estas malseka.' — predicative attribution. The
+    quality lemma is already in adjective form (Esperanto -a ending),
+    no inflection needed for predicative use (predicative adjective
+    stays in nominative singular form to match the singular subject)."""
+    ent = ctx.trace.entities.get(m.entity_id)
+    if ent is None:
+        return None
+    form = ctx.name_for(ent)
+    ctx.note_mention(ent)
+    copula = "estis" if ctx.tense == "past" else "estas"
+    return f"{form} {copula} {m.quality_lemma}."
+
+
 def _render_scene_grounding(m: SceneGroundingMessage, ctx: _Ctx) -> Optional[str]:
     if ctx.scene_location_id is None:
         return None
@@ -240,10 +254,80 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
     return sent
 
 
+def _append_precondition_clause(
+    sentence: str,
+    precondition: Optional[tuple[str, str]],
+    ctx: _Ctx,
+) -> str:
+    """Fold an active precondition into a sentence as a `ĉar` clause:
+    "Maria manĝis la panon ĉar ŝi estis malsata." The precondition
+    entity has typically just been mentioned (it's the event's
+    subject or theme), so name_for will produce a pronoun where
+    appropriate. No-op if precondition is None or the entity is
+    missing."""
+    if precondition is None:
+        return sentence
+    eid, quality_lemma = precondition
+    ent = ctx.trace.entities.get(eid)
+    if ent is None:
+        return sentence
+    ent_form = ctx.name_for(ent)
+    copula = "estis" if ctx.tense == "past" else "estas"
+    base = sentence[:-1] if sentence.endswith(".") else sentence
+    return f"{base} ĉar {ent_form} {copula} {quality_lemma}."
+
+
 def _render_event(m: EventMessage, ctx: _Ctx) -> Optional[str]:
-    return _render_event_phrase(
+    sentence = _render_event_phrase(
         m.event, ctx, drop_subject=False,
         source_entity_id=m.source_entity_id)
+    if sentence is None:
+        return None
+    return _append_precondition_clause(sentence, m.precondition, ctx)
+
+
+def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx) -> Optional[str]:
+    """Unfold a fakto entity into a `ke ...` subordinate clause.
+    Reads the fakto's pri_relacio (still a property — string-valued)
+    and the subjekto/objekto relations:
+      en  → "ke X estas en Y"
+      sur → "ke X estas sur Y"
+      havi → "ke X havas Y" (Y in accusative)
+    Returns None if any field is missing or the relation isn't one
+    we know how to surface yet."""
+    def _unwrap_property(slot):
+        v = fakto_ent.properties.get(slot, [None])
+        return v[0] if isinstance(v, list) and v else v
+    rel = _unwrap_property("pri_relacio")
+    subj_id = None
+    obj_id = None
+    for r in ctx.trace.relations:
+        if r.args[0] != fakto_ent.id:
+            continue
+        if r.relation == "subjekto":
+            subj_id = r.args[1]
+        elif r.relation == "objekto":
+            obj_id = r.args[1]
+    if rel is None or subj_id is None or obj_id is None:
+        return None
+    subj_ent = ctx.trace.entity(subj_id)
+    obj_ent = ctx.trace.entity(obj_id)
+    if subj_ent is None or obj_ent is None:
+        return None
+    subj_form = ctx.name_for(subj_ent)
+    obj_form = ctx.name_for(obj_ent)
+    ctx.note_mention(subj_ent)
+    ctx.note_mention(obj_ent)
+    if rel == "en":
+        copula = "estis" if ctx.tense == "past" else "estas"
+        return f"ke {subj_form} {copula} en {obj_form}"
+    if rel == "sur":
+        copula = "estis" if ctx.tense == "past" else "estas"
+        return f"ke {subj_form} {copula} sur {obj_form}"
+    if rel == "havi":
+        verb = "havis" if ctx.tense == "past" else "havas"
+        return f"ke {subj_form} {verb} {to_accusative(obj_form)}"
+    return None
 
 
 def _render_event_phrase(
@@ -295,18 +379,36 @@ def _render_event_phrase(
         ctx.note_mention(subject)
     parts.append(inflect(ev.action, ctx.tense))
 
+    recipient_handled = False
     if subject_role_name == "agent" and ev.roles.get("theme") and not drop_theme:
         theme = ctx.trace.entity(ev.roles["theme"])
         if theme is not None:
-            parts.append(ctx.theme_form(theme))
-            ctx.note_mention(theme)
-            ctx.mark_nonperson_mention(theme)
-            if source_entity_id is not None:
-                source_ent = ctx.trace.entities.get(source_entity_id)
-                if source_ent is not None:
-                    parts.append(f"de {ctx.name_for(source_ent)}")
-                    ctx.note_mention(source_ent)
-                    ctx.mark_nonperson_mention(source_ent)
+            # Abstract themes (faktos) with a recipient unfold as a
+            # `al RECIP ke ...` clause: "rakontis al Petro ke la
+            # libro estas en la breto" instead of the literal "la
+            # fakton" accusative. The fakto's pri_* properties give
+            # us the underlying relation.
+            ke = None
+            if (theme.entity_type == "abstract"
+                    and ev.roles.get("recipient")):
+                ke = _render_fakto_as_ke_clause(theme, ctx)
+            if ke is not None:
+                recip = ctx.trace.entity(ev.roles["recipient"])
+                if recip is not None:
+                    parts.append(f"al {ctx.name_for(recip)}")
+                    ctx.note_mention(recip)
+                    recipient_handled = True
+                parts.append(ke)
+            else:
+                parts.append(ctx.theme_form(theme))
+                ctx.note_mention(theme)
+                ctx.mark_nonperson_mention(theme)
+                if source_entity_id is not None:
+                    source_ent = ctx.trace.entities.get(source_entity_id)
+                    if source_ent is not None:
+                        parts.append(f"de {ctx.name_for(source_ent)}")
+                        ctx.note_mention(source_ent)
+                        ctx.mark_nonperson_mention(source_ent)
 
     if ev.roles.get("instrument"):
         instr = ctx.trace.entity(ev.roles["instrument"])
@@ -314,7 +416,7 @@ def _render_event_phrase(
             parts.append(f"per {ctx.name_for(instr)}")
             ctx.note_mention(instr)
 
-    if ev.roles.get("recipient"):
+    if ev.roles.get("recipient") and not recipient_handled:
         recip = ctx.trace.entity(ev.roles["recipient"])
         if recip is not None:
             parts.append(f"al {ctx.name_for(recip)}")
@@ -441,8 +543,9 @@ def _render_coordinated(
             continue
         rest_bodies.append(phrase)
     if not rest_bodies:
-        return first_body + "."
-    return first_body + " kaj " + " kaj ".join(rest_bodies) + "."
+        return _append_precondition_clause(first_body + ".", first.precondition, ctx)
+    full = first_body + " kaj " + " kaj ".join(rest_bodies) + "."
+    return _append_precondition_clause(full, first.precondition, ctx)
 
 
 def _compute_theme_elision(children) -> list[bool]:
@@ -575,8 +678,11 @@ def _collect_rendered_event_ids(m: Message, out: set[str]) -> None:
         _collect_rendered_event_ids(m.subordinate, out)
 
 
+from .messages import EntityQualityMessage  # late import to avoid cycle
+
 _DISPATCH = {
     SceneGroundingMessage: _render_scene_grounding,
+    EntityQualityMessage: _render_entity_quality,
     RelationMessage: _render_relation,
     GroupedRelationMessage: _render_grouped_relation,
     EventMessage: _render_event,

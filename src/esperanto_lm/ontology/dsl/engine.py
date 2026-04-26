@@ -32,7 +32,7 @@ from .effects import (
     AddRelation, Change, CreateEntity, DestroyEntity, Effect, Emit,
     RemoveRelation,
 )
-from .implications import Implication, PropertyImplication
+from .implications import Implication, PropertyImplication, RelationImplication
 from .patterns import (
     EventPattern, Pattern, Var,
 )
@@ -183,6 +183,11 @@ def validate_against_lexicon(
                         raise ValueError(
                             f"derivation {r.name!r}: property() refers to "
                             f"unknown slot {imp.slot!r}.")
+                elif isinstance(imp, RelationImplication):
+                    if imp.name not in rel_names:
+                        raise ValueError(
+                            f"derivation {r.name!r}: relation() refers to "
+                            f"unknown relation {imp.name!r}.")
 
 
 def _check_pattern_against_lex(
@@ -263,6 +268,21 @@ def run_dsl(
         f"DSL engine did not converge within {max_cycles} cycles")
 
 
+def compute_derived_state(
+    trace: Trace, derivations: list[Derivation], lexicon: Lexicon,
+) -> DerivedState:
+    """Materialize the derived layer for the given trace and return it.
+    Pure read-only — does not fire causal rules or mutate the trace.
+
+    Use this when consumers outside the engine cycle (planners,
+    inspectors, debug tools) need to see derived properties like
+    `locomotion=walk` that are computed by Derivations rather than
+    baked into `entity.properties`."""
+    derived = DerivedState()
+    _run_derivations_to_fixed_point(trace, derivations, lexicon, derived)
+    return derived
+
+
 def _run_derivations_to_fixed_point(
     trace: Trace, derivations: list[Derivation],
     lexicon: Lexicon, derived: DerivedState,
@@ -284,13 +304,44 @@ def _run_derivations_to_fixed_point(
                         eid = bindings.get(imp.entity)
                         if eid is None:
                             continue
-                        # Asserted wins over derived.
+                        slot_def = lexicon.slots.get(imp.slot)
+                        scalar = slot_def.scalar if slot_def is not None else True
                         asserted = trace.property_at(
                             eid, imp.slot, len(trace.events))
-                        if asserted is not None:
-                            continue
                         value = resolve(imp.value, bindings)
-                        if derived.set(eid, imp.slot, value):
+                        if scalar:
+                            # Asserted wins for scalar slots.
+                            if asserted is not None:
+                                continue
+                        else:
+                            # Multi-valued: derivations can add to the
+                            # asserted set. Only skip if THIS specific
+                            # value is already asserted (avoids
+                            # redundant work, not a correctness gate).
+                            asserted_list = (
+                                asserted if isinstance(asserted, list)
+                                else [asserted] if asserted is not None
+                                else [])
+                            if value in asserted_list:
+                                continue
+                        if derived.set(eid, imp.slot, value, scalar=scalar):
+                            changed = True
+                    elif isinstance(imp, RelationImplication):
+                        # Resolve every Var arg via the binding; literal
+                        # ids pass through. If any arg is unbound,
+                        # skip — the derivation didn't fully match.
+                        resolved_args = []
+                        ok = True
+                        for arg in imp.args:
+                            v = resolve(arg, bindings)
+                            if v is None:
+                                ok = False
+                                break
+                            resolved_args.append(v)
+                        if not ok:
+                            continue
+                        if derived.add_relation(
+                                imp.name, tuple(resolved_args)):
                             changed = True
         if not changed:
             return
@@ -364,6 +415,12 @@ def _apply_effects(
                 continue
             if eff.entity_id is not None:
                 eid = eff.entity_id
+            elif eff.id_parts is not None:
+                parts = [
+                    str(resolve(p, b)) if isinstance(p, Var) else str(p)
+                    for p in eff.id_parts
+                ]
+                eid = f"{concept_lemma}_from_{'_'.join(parts)}"
             elif eff.id_from is not None:
                 from_value = resolve(eff.id_from, b)
                 eid = f"{concept_lemma}_from_{from_value}"
@@ -372,11 +429,16 @@ def _apply_effects(
             if eid in trace.entities:
                 b[eff.as_var] = eid
                 continue
+            props = {k: list(v) for k, v in concept.properties.items()}
+            if eff.initial_properties:
+                for slot, val in eff.initial_properties.items():
+                    resolved_val = resolve(val, b) if isinstance(val, Var) else val
+                    props[slot] = [resolved_val]
             ent = EntityInstance(
                 id=eid,
                 concept_lemma=concept_lemma,
                 entity_type=concept.entity_type,
-                properties={k: list(v) for k, v in concept.properties.items()},
+                properties=props,
                 created_at_event=len(trace.events),
             )
             trace.entities[eid] = ent

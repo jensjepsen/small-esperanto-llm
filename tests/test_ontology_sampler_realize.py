@@ -17,7 +17,6 @@ from esperanto_lm.ontology.dsl import run_dsl
 from esperanto_lm.ontology.dsl.rules import (
     DEFAULT_DSL_DERIVATIONS,
     DEFAULT_DSL_RULES,
-    make_use_instrument_rules,
 )
 from esperanto_lm.ontology.realize import past_tense, to_accusative
 
@@ -107,8 +106,9 @@ def test_sampler_seed_is_deterministic(lex):
 # ---- end-to-end realization ----------------------------------------------
 
 def test_realize_canonical_kitchen_trace(lex):
-    """End-to-end check on a known scene. uzi gets fused out per the
-    realizer; only the synthesized verb appears."""
+    """End-to-end check on a known scene. tranĉi is the canonical action
+    (no uzi indirection)."""
+    from esperanto_lm.ontology import effect_changes
     t = Trace()
     petro = t.add_entity("persono", lex, entity_id="petro")
     kuirejo = t.add_entity("kuirejo", lex, entity_id="kuirejo")
@@ -116,14 +116,15 @@ def test_realize_canonical_kitchen_trace(lex):
     knife = t.add_entity("tranĉilo", lex, entity_id="tranĉilo")
     t.assert_relation("en", (petro.id, kuirejo.id), lex)
     t.assert_relation("havi", (petro.id, knife.id), lex)
-    t.add_event(make_event("uzi", roles={
-        "agent": petro.id, "instrument": knife.id, "theme": pano.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    roles = {"agent": petro.id, "theme": pano.id, "instrument": knife.id}
+    t.add_event(make_event(
+        "tranĉi", roles=roles,
+        property_changes=effect_changes("tranĉi", roles, lex)))
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex)
     assert "tranĉis" in prose
-    assert " uzis " not in prose, "uzi should be fused out"
     assert "panon" in prose
     assert "en kuirejo" in prose, "kuirejo first-mention is bare"
     assert "Petro" in prose
@@ -135,36 +136,11 @@ def test_realize_returns_string_for_random_traces(lex):
     rng = random.Random(123)
     for _ in range(30):
         t, _ = sample_scene(lex, rng)
-        run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+        run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
         prose = realize_trace(t, lex)
         assert isinstance(prose, str) and prose
         assert prose.endswith(".")
-
-
-# ---- use-instrument fusion -----------------------------------------------
-
-def test_use_instrument_event_collapses_in_prose(lex):
-    """The redundant 'X uzis Y per Z. Tial X verbis Yn per Z.' becomes just
-    the second sentence."""
-    t = Trace()
-    sara = t.add_entity("persono", lex, entity_id="sara")
-    pano = t.add_entity("pano", lex, entity_id="pano")
-    knife = t.add_entity("tranĉilo", lex, entity_id="tranĉilo")
-    t.assert_relation("havi", (sara.id, knife.id), lex)
-    t.add_event(make_event("uzi", roles={
-        "agent": sara.id, "instrument": knife.id, "theme": pano.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
-            DEFAULT_DSL_DERIVATIONS, lex)
-
-    prose = realize_trace(t, lex)
-    assert "tranĉis" in prose, "the synthesized verb should still be rendered"
-    assert " uzis " not in prose, \
-        f"uzi should be collapsed; got: {prose!r}"
-    # No connective should land before the surviving verb sentence — its
-    # prose-cause was just collapsed.
-    assert "Tial Sara tranĉis" not in prose, \
-        f"no Tial when cause is fused out; got: {prose!r}"
 
 
 # ---- article tracking ----------------------------------------------------
@@ -179,13 +155,18 @@ def test_first_mention_indefinite_subsequent_definite(lex):
     knife = t.add_entity("tranĉilo", lex, entity_id="tranĉilo")
     t.assert_relation("en", (sara.id, kuirejo.id), lex)
     t.assert_relation("havi", (sara.id, knife.id), lex)
-    t.add_event(make_event("uzi", roles={
-        "agent": sara.id, "instrument": knife.id, "theme": pano.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    from esperanto_lm.ontology import effect_changes
+    roles = {"agent": sara.id, "theme": pano.id, "instrument": knife.id}
+    t.add_event(make_event(
+        "tranĉi", roles=roles,
+        property_changes=effect_changes("tranĉi", roles, lex)))
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex)
-    # First-mention bare:
+    # First-mention bare. The salience filter suppresses pure-decoration
+    # quality grounding, so the bare first mention happens in the
+    # havi/event sentences as it always did.
     assert "en kuirejo" in prose, \
         f"first mention of kuirejo should be bare; got: {prose!r}"
     assert "havis tranĉilon" in prose, \
@@ -216,7 +197,7 @@ def test_setup_introduces_then_event_uses_definite(lex):
     akvo = t.add_entity("akvo", lex, entity_id="akvo")
     t.assert_relation("en", (akvo.id, glaso.id), lex)
     t.add_event(make_event("fali", roles={"theme": glaso.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex)
@@ -296,7 +277,7 @@ def test_synthetic_grounding_for_agentless_drop(lex):
     t.add_entity("kuirejo", lex, entity_id="kuirejo")
     glaso = t.add_entity("glaso", lex, entity_id="glaso")
     t.add_event(make_event("fali", roles={"theme": glaso.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex, scene_location_id="kuirejo")
@@ -317,7 +298,7 @@ def test_synthetic_grounding_skips_entities_already_in_relations(lex):
     akvo = t.add_entity("akvo", lex, entity_id="akvo")
     t.assert_relation("en", (akvo.id, glaso.id), lex)
     t.add_event(make_event("fali", roles={"theme": glaso.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex, scene_location_id="kuirejo")
@@ -339,7 +320,7 @@ def test_no_synthetic_grounding_when_explicit_relation_present(lex):
     t.assert_relation("havi", (sara.id, pano.id), lex)
     t.add_event(make_event("manĝi", roles={
         "agent": sara.id, "theme": pano.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     prose = realize_trace(t, lex, scene_location_id="kuirejo")
@@ -417,10 +398,10 @@ def test_realize_variation_changes_with_rng_seed(lex):
     pano = t.add_entity("pano", lex, entity_id="pano")
     t.assert_relation("en", (sara.id, kuirejo.id), lex)
     t.assert_relation("havi", (sara.id, pano.id), lex)
-    sara.set_property("hunger", "hungry")
+    sara.set_property("hunger", "malsata")
     t.add_event(make_event("manĝi", roles={
         "agent": sara.id, "theme": pano.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     outputs = set()
@@ -443,10 +424,10 @@ def test_realize_pronoun_substitution_for_lone_person(lex):
     pano = t.add_entity("pano", lex, entity_id="pano")
     t.assert_relation("en", (sara.id, kuirejo.id), lex)
     t.assert_relation("havi", (sara.id, pano.id), lex)
-    sara.set_property("hunger", "hungry")
+    sara.set_property("hunger", "malsata")
     t.add_event(make_event("manĝi", roles={
         "agent": sara.id, "theme": pano.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     saw_pronoun = False
@@ -470,10 +451,10 @@ def test_realize_no_pronoun_when_two_same_gender_persons(lex):
     t.assert_relation("en", (sara.id, kuirejo.id), lex)
     t.assert_relation("en", (maria.id, kuirejo.id), lex)
     t.assert_relation("havi", (sara.id, pano.id), lex)
-    sara.set_property("hunger", "hungry")
+    sara.set_property("hunger", "malsata")
     t.add_event(make_event("manĝi", roles={
         "agent": sara.id, "theme": pano.id}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     for seed in range(30):
@@ -498,7 +479,7 @@ def test_realize_variation_uses_alternate_connectives(lex):
     t.assert_relation("en", ("glaso", "kuirejo"), lex)
     t.assert_relation("en", ("akvo", "glaso"), lex)
     t.add_event(make_event("fali", roles={"theme": "glaso"}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     seen_connectives = set()
@@ -520,10 +501,10 @@ def test_realize_deterministic_when_rng_is_none(lex):
     t.add_entity("pano", lex, entity_id="pano")
     t.assert_relation("en", ("petro", "kuirejo"), lex)
     t.assert_relation("havi", ("petro", "pano"), lex)
-    t.entities["petro"].set_property("hunger", "hungry")
+    t.entities["petro"].set_property("hunger", "malsata")
     t.add_event(make_event("manĝi", roles={
         "agent": "petro", "theme": "pano"}))
-    run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+    run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
     a = realize_trace(t, lex, scene_location_id="kuirejo")
@@ -539,7 +520,7 @@ def test_sampler_plus_prune_yields_only_participating_persons(lex):
     rng = random.Random(7)
     for _ in range(40):
         t, _ = sample_scene(lex, rng)
-        run_dsl(t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex),
+        run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
         prune_unused_persons(t)
         used = set()

@@ -71,6 +71,9 @@ def _matches_concept(
             elif key == "has_suffix":
                 if not concept.lemma.endswith(expected):
                     return False
+            elif key == "concept":
+                if concept.lemma != expected:
+                    return False
             else:
                 actual = props.get(key)
                 if actual is None:
@@ -100,6 +103,7 @@ def _matches_concept(
 
 def bake_concept_derivations(
     concepts: dict[str, Concept], derivations: Iterable, lex_types,
+    slots: dict | None = None,
 ) -> dict[str, Concept]:
     """Apply each concept-compatible derivation to each concept,
     iterating to fixed point. Returns a new concepts dict — the input
@@ -137,13 +141,24 @@ def bake_concept_derivations(
                 for imp in d.implies:
                     if not isinstance(imp, PropertyImplication):
                         continue
-                    if imp.slot in props:
-                        continue   # asserted wins
                     value = imp.value
                     if isinstance(value, Var):
                         continue   # can't resolve free vars at concept time
-                    props[imp.slot] = [value]
-                    changed = True
+                    slot_def = slots.get(imp.slot) if slots else None
+                    is_scalar = slot_def is None or slot_def.scalar
+                    if imp.slot in props:
+                        if is_scalar:
+                            continue   # asserted wins for scalar slots
+                        # Multi-valued slot: APPEND if not already present.
+                        # Lets multiple derivations contribute (e.g.
+                        # person_can_walk + person_can_swim both writing
+                        # to locomotion).
+                        if value not in props[imp.slot]:
+                            props[imp.slot] = props[imp.slot] + [value]
+                            changed = True
+                    else:
+                        props[imp.slot] = [value]
+                        changed = True
         if not changed:
             break
 

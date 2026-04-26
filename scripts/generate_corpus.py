@@ -30,18 +30,24 @@ from esperanto_lm.ontology import (
     load_lexicon,
     prune_unused_persons,
     realize_trace,
-    sample_scene,
 )
+from esperanto_lm.ontology.sampler import sample_chained_scene
 from esperanto_lm.ontology.dsl import run_dsl
 from esperanto_lm.ontology.dsl.rules import (
     DEFAULT_DSL_DERIVATIONS,
     DEFAULT_DSL_RULES,
-    make_use_instrument_rules,
 )
 
 
-SCENES_DEFAULT = ["kuirejo", "laborejo", "ĝardeno",
-                  "manĝejo", "salono", "oficejo"]
+SCENES_DEFAULT = [
+    # Indoor
+    "kuirejo", "manĝejo", "salono", "oficejo", "laborejo",
+    "biblioteko", "hospitalo", "lernejo", "restoracio", "vendejo",
+    "dormejo", "lavejo",
+    # Outdoor
+    "ĝardeno", "parko", "kampo", "valo", "vilaĝo", "urbo",
+    "lago", "maro", "insulo",
+]
 
 
 # Small function-word blocklist for "distinct content words" approximation.
@@ -93,7 +99,7 @@ def _attribute_rule(event, trace) -> str:
                 theme = trace.entities.get(event.roles.get("theme", ""))
                 if theme is not None and theme.entity_type != "person":
                     return "container_falls_contents_fall"
-                return "carried_thing_falls_when_carrier_falls"
+                return "porti_drop_when_carrier_falls"
             if cause.action == "rompiĝi":
                 return "broken_container_releases_contents"
         return "fali:unknown"
@@ -159,7 +165,7 @@ def main() -> None:
     # Full DSL rule set: base library plus one rule per instrument-
     # capable verb (tranĉi, ŝlosi, purigi, najli). Derivations are the
     # compositional layer — currently just flammability-from-material.
-    rules = DEFAULT_DSL_RULES + make_use_instrument_rules(lex)
+    rules = DEFAULT_DSL_RULES
     derivations = DEFAULT_DSL_DERIVATIONS
 
     # Aggregates for summary stats
@@ -177,22 +183,21 @@ def main() -> None:
             rng = random.Random(sample_seed)
 
             try:
-                trace, info = sample_scene(lex, rng, scene=scene)
+                trace, info, setup_relations = sample_chained_scene(
+                    lex, rng, scene=scene,
+                    rules=rules, derivations=derivations,
+                    max_events=4, chain_p=0.5)
             except (ValueError, KeyError, RuntimeError) as e:
                 skipped += 1
                 continue
 
-            seed_event_ids = {ev.id for ev in trace.events}
-            # Snapshot the initial-state relations BEFORE the engine
-            # runs — rules that swap relations (preni/doni/iri/...)
-            # mutate trace.relations in place, so the realizer needs
-            # the original to render the scene setup correctly AND to
-            # detect change narration ("Maria ne plu havas la libron").
-            setup_relations = trace.snapshot_relations()
-            iters = run_dsl(trace, rules, derivations, lex)
-
-            synthesized = [
-                ev for ev in trace.events if ev.id not in seed_event_ids]
+            # `sample_chained_scene` runs the engine internally after
+            # each seed event. Synthesized events are everything the
+            # engine added (cascades, emits, etc.) — i.e. trace events
+            # whose `caused_by` is non-empty. Seeds are the bare ones.
+            iters = 0  # the chained sampler doesn't expose iter counts;
+                       # we lose that summary stat for now.
+            synthesized = [ev for ev in trace.events if ev.caused_by]
             synth_actions = [ev.action for ev in synthesized]
 
             # Attribute each synthesized event to a rule.

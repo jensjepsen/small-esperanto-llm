@@ -102,9 +102,12 @@ def test_unknown_entity_type_fails(tmp_path):
         load_lexicon(tmp_path)
 
 
-def test_derives_instrument_without_effects_fails(tmp_path):
-    # A verb flagged for instrument derivation but with no non-instrument
-    # effects has nothing to project as functional signature.
+def test_derives_instrument_without_effects_succeeds(tmp_path):
+    # A verb flagged derives_instrument but lacking property effects is
+    # valid: the functional_signature is just the verb lemma, and the
+    # verb's semantics may live in a causal rule (e.g. skribi creates a
+    # skribaĵo entity rather than mutating a property). The loader
+    # trusts the author.
     _write_min_ontology(
         tmp_path,
         types={"physical": None, "artifact": "physical",
@@ -123,8 +126,11 @@ def test_derives_instrument_without_effects_fails(tmp_path):
         affixes=[
             {"form": "il", "kind": "suffix", "attaches_to": "verb",
              "produces": "noun", "output_type": "artifact",
+             "trigger_flag": "derives_instrument",
              "signature_source": "effect", "noun_ending": "o"},
         ],
     )
-    with pytest.raises(ValueError, match="no effects"):
-        load_lexicon(tmp_path)
+    lex = load_lexicon(tmp_path)
+    assert "starilo" in lex.concepts
+    assert lex.concepts["starilo"].properties.get(
+        "functional_signature") == ["stari"]

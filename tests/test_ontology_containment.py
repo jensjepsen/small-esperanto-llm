@@ -30,16 +30,16 @@ def _write_lexicon(tmp: Path, *, containment: list[dict] | None = None,
     }
     slots = [
         {"name": "indoor_outdoor",
-         "vocabulary": ["indoor", "outdoor"],
+         "vocabulary": ["interna", "ekstera"],
          "applies_to": ["location"], "scalar": True},
     ]
     if extra_slots:
         slots.extend(extra_slots)
     concepts = [
         {"lemma": "kuirejo", "entity_type": "location",
-         "properties": {"indoor_outdoor": ["indoor"]}},
+         "properties": {"indoor_outdoor": ["interna"]}},
         {"lemma": "ĝardeno", "entity_type": "location",
-         "properties": {"indoor_outdoor": ["outdoor"]}},
+         "properties": {"indoor_outdoor": ["ekstera"]}},
         {"lemma": "tablo", "entity_type": "artifact", "properties": {}},
         {"lemma": "pordo", "entity_type": "artifact", "properties": {}},
         {"lemma": "muro", "entity_type": "artifact", "properties": {}},
@@ -175,12 +175,12 @@ def test_entity_type_pattern_matches_all_subtypes(tmp_path):
 
 def test_property_pattern_matches_concepts_with_value(tmp_path):
     _write_lexicon(tmp_path, containment=[
-        {"container_pattern": {"property": {"indoor_outdoor": "indoor"}},
+        {"container_pattern": {"property": {"indoor_outdoor": "interna"}},
          "contained": "muro", "relation": "en"},
     ])
     lex = load_lexicon(tmp_path)
     idx = resolve_containment(lex)
-    # kuirejo is indoor_outdoor=indoor; ĝardeno is outdoor.
+    # kuirejo is indoor_outdoor=interna; ĝardeno is ekstera.
     assert "muro" in {f.contained for f in idx.get("kuirejo", [])}
     assert "muro" not in {f.contained for f in idx.get("ĝardeno", [])}
 
@@ -190,7 +190,7 @@ def test_conjunction_requires_all_fields_match(tmp_path):
     _write_lexicon(tmp_path, containment=[
         {"container_pattern": {
             "entity_type": "location",
-            "property": {"indoor_outdoor": "outdoor"},
+            "property": {"indoor_outdoor": "ekstera"},
          },
          "contained": "muro", "relation": "en"},
     ])

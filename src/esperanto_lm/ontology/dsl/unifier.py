@@ -25,30 +25,72 @@ from .patterns import Bindings, Pattern, Var
 
 @dataclass
 class DerivedState:
-    """Tracks properties materialized by derivation rules, keyed by
-    (entity_id, slot). Distinct from `Trace.entities[...].properties`
-    and event `property_changes`, which are asserted state.
+    """Tracks facts materialized by derivation rules. Two layers:
+
+      properties — keyed by (entity_id, slot), value is the derived
+        slot value. Distinct from `Trace.entities[*].properties` and
+        event `property_changes`, which are asserted state.
+
+      relations — set of (relation_name, args_tuple) tuples. Distinct
+        from `Trace.relations`, which is the asserted relation list.
+        Used for relations whose existence follows from other state
+        (e.g. `samloke(A, B)` from shared `en` container).
 
     Fully rebuilt at the start of each derivation phase — see
-    `engine.run_dsl`. Consumers check asserted first (via
-    `Trace.property_at`) and fall back here."""
+    `engine.run_dsl`. Consumers should check asserted first and fall
+    back to derived (see `effective_property` /
+    `effective_has_relation` on MatchContext)."""
     properties: dict[tuple[str, str], Any] = field(default_factory=dict)
+    relations: set[tuple[str, tuple[str, ...]]] = field(default_factory=set)
 
     def clear(self) -> None:
         self.properties.clear()
+        self.relations.clear()
 
     def get(self, eid: str, slot: str) -> Any:
         return self.properties.get((eid, slot))
 
-    def set(self, eid: str, slot: str, value: Any) -> bool:
-        """Set a derived value. Returns True if the value changed (new or
-        different from previous)."""
+    def set(self, eid: str, slot: str, value: Any,
+            scalar: bool = True) -> bool:
+        """Set a derived value. Returns True if the value changed.
+
+        For scalar slots, replaces any prior value. For multi-valued
+        slots (`scalar=False` in the slot definition), accumulates a
+        sorted list — multiple derivations can contribute distinct
+        values to the same slot (e.g. has_paws_can_walk +
+        has_wings_can_fly both writing `locomotion` for a bird
+        produces `[fly, walk]`, not a ping-pong)."""
         key = (eid, slot)
         prev = self.properties.get(key)
-        if prev == value:
+        if scalar:
+            if prev == value:
+                return False
+            self.properties[key] = value
+            return True
+        # Multi-valued: accumulate as a sorted list of distinct values.
+        if isinstance(prev, list):
+            existing = list(prev)
+        elif prev is None:
+            existing = []
+        else:
+            existing = [prev]
+        if value in existing:
             return False
-        self.properties[key] = value
+        existing.append(value)
+        existing.sort()
+        self.properties[key] = existing
         return True
+
+    def add_relation(self, name: str, args: tuple[str, ...]) -> bool:
+        """Assert a derived relation. Returns True if it's new."""
+        key = (name, tuple(args))
+        if key in self.relations:
+            return False
+        self.relations.add(key)
+        return True
+
+    def has_relation(self, name: str, args: tuple[str, ...]) -> bool:
+        return (name, tuple(args)) in self.relations
 
     def snapshot(self) -> dict[tuple[str, str], Any]:
         return dict(self.properties)

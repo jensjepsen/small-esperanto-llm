@@ -25,6 +25,7 @@ from .schemas import (
     ContainmentPattern,
     Effect,
     PropertySlot,
+    Quality,
     Relation,
 )
 from .types import TypeSpine
@@ -46,6 +47,7 @@ class Lexicon:
     actions: dict[str, Action]
     affixes: dict[str, Affix]                   # keyed by form (e.g. "il")
     containment: list[ContainmentFact] = field(default_factory=list)
+    qualities: dict[str, Quality] = field(default_factory=dict)  # keyed by lemma
 
     # ---------- read helpers ----------
     def concept(self, lemma: str) -> Concept:
@@ -111,11 +113,10 @@ def _validate_property_bundle(
 
 # --------------------------- compositional derivation ---------------------------
 
-def _derive_instrument(
+def _derive_concept_from_verb(
     verb: Action, affix: Affix, parser: MorphParser,
 ) -> Concept:
-    """Compose verb + -il- into an artifact concept whose
-    functional_signature points at the verb.
+    """Compose verb + affix into a derived concept.
 
     Stem extraction: we use the verb lemma minus its final -i, *not* the
     morphological root from the parser. The parser strips derivational
@@ -124,13 +125,18 @@ def _derive_instrument(
     tool is purigilo (not purilo). Lemma-minus-i gives purig → purigilo,
     while still working for plain stems like tranĉi → tranĉ → tranĉilo.
     Parser is kept for future affix kinds whose derivation needs root
-    stripping (e.g. -ej- on a place name).
+    stripping.
+
+    Functional signature is attached only when `signature_source == 'effect'`
+    (the -il- case): the produced artifact is defined by the verb it tools
+    for. -ist-, -aĵ-, -ej- derivations don't carry a functional signature.
     """
-    _ = parser  # parser unused for instrument derivation; see docstring
+    _ = parser  # parser unused for current affixes; see docstring
     stem = verb.lemma[:-1] if verb.lemma.endswith("i") else verb.lemma
     surface = stem + affix.form + (affix.noun_ending or "")
-    properties = {**affix.output_properties,
-                  FUNCTIONAL_SIGNATURE: [verb.lemma]}
+    properties = dict(affix.output_properties)
+    if affix.signature_source == "effect":
+        properties[FUNCTIONAL_SIGNATURE] = [verb.lemma]
     return Concept(
         lemma=surface,
         entity_type=affix.output_type,
@@ -140,47 +146,212 @@ def _derive_instrument(
     )
 
 
-def _apply_derivations(
-    *, actions: dict[str, Action], affixes: dict[str, Affix],
-    parser: MorphParser, slots: dict[str, PropertySlot], spine: TypeSpine,
-) -> dict[str, Concept]:
-    """Walk all verbs flagged `derives_instrument` and apply each affix
-    whose `attaches_to == 'verb'` and `produces == 'noun'` with
-    `signature_source == 'effect'`. Returns a dict of derived concepts.
-    """
-    instr_affixes = [
-        a for a in affixes.values()
-        if a.attaches_to == "verb" and a.produces == "noun"
-        and a.signature_source == "effect"
-    ]
-    derived: dict[str, Concept] = {}
-    for verb in actions.values():
-        if not verb.derives_instrument:
+def _derive_concept_from_concept(
+    parent: Concept, affix: Affix,
+    slots: dict[str, PropertySlot], spine: TypeSpine,
+) -> Concept:
+    """Compose noun + affix into a derived concept (e.g. kato + id =
+    katido). Stem extraction strips the input's final -o (Esperanto
+    noun ending). No functional signature: -id-/-ar- products are
+    independent of any verb.
+
+    Property inheritance: each parent property is copied into the
+    derived concept IF its slot's `applies_to` covers the affix's
+    `output_type`. This means -id- (output_type=animal) inherits the
+    parent animal's locomotion (slot.applies_to=animate ⊇ animal),
+    while -ar- (output_type=collective) does not (locomotion doesn't
+    apply to collective). Affix's `output_properties` then overlay,
+    taking precedence over inherited values."""
+    stem = parent.lemma[:-1] if parent.lemma.endswith("o") else parent.lemma
+    surface = stem + affix.form + (affix.noun_ending or "")
+    properties: dict[str, list[str]] = {}
+    for slot_name, value in parent.properties.items():
+        slot = slots.get(slot_name)
+        if slot is None:
             continue
-        # The effect-signature semantics requires the verb to actually have
-        # at least one effect on a non-instrument role; otherwise the
-        # signature would be empty and the instrument meaningless.
-        non_instr_effects = [
-            e for e in verb.effects if e.target_role != "instrument"]
-        if not non_instr_effects:
-            raise ValueError(
-                f"verb {verb.lemma!r} has derives_instrument=True but no "
-                f"effects on a non-instrument role; nothing to project")
-        for affix in instr_affixes:
-            concept = _derive_instrument(verb, affix, parser)
-            # Validate the synthesized concept against the slot registry
-            # just like authored concepts.
-            _validate_property_bundle(
-                owner=f"derived:{concept.lemma}",
-                properties=concept.properties,
-                entity_type=concept.entity_type,
-                slots=slots, spine=spine,
-            )
-            if concept.lemma in derived:
+        if any(spine.is_subtype(affix.output_type, t) for t in slot.applies_to):
+            properties[slot_name] = list(value)
+    properties.update({k: list(v) for k, v in affix.output_properties.items()})
+    return Concept(
+        lemma=surface,
+        entity_type=affix.output_type,
+        properties=properties,
+        derived=True,
+        derived_from={"concept": parent.lemma, "affix": affix.form},
+    )
+
+
+def _derive_quality_from_verb(verb: Action, affix: Affix) -> Quality:
+    """Compose verb + adjective affix into a Quality lemma. For -it-
+    (passive past participle): ŝlosi + it + a = ŝlosita. The result
+    is the adjective naming the state the verb produces."""
+    stem = verb.lemma[:-1] if verb.lemma.endswith("i") else verb.lemma
+    surface = stem + affix.form + (affix.noun_ending or "")
+    return Quality(
+        lemma=surface,
+        derived=True,
+        derived_from={"verb": verb.lemma, "affix": affix.form},
+    )
+
+
+def _derive_quality_from_quality(
+    parent: Quality, affix: Affix,
+) -> Quality:
+    """Compose adjective + composition affix. Three patterns:
+      mal- (prefix): mal + lemma → malvarma (no stem strip)
+      -eg- (suffix): strip -a, add eg + a → varmega
+      -et- (suffix): strip -a, add et + a → varmeta
+    """
+    if affix.kind == "prefix":
+        surface = affix.form + parent.lemma
+    else:
+        # Suffix: strip the trailing -a from the parent lemma, then
+        # append affix form + new ending.
+        stem = parent.lemma[:-1] if parent.lemma.endswith("a") else parent.lemma
+        surface = stem + affix.form + (affix.noun_ending or "")
+    return Quality(
+        lemma=surface,
+        derived=True,
+        derived_from={"quality": parent.lemma, "affix": affix.form},
+    )
+
+
+def _apply_quality_derivations(
+    *, actions: dict[str, Action],
+    qualities_in: dict[str, Quality],
+    affixes: dict[str, Affix],
+) -> dict[str, Quality]:
+    """Synthesize Quality lemmas via adjective-producing affixes.
+
+    Two dispatch paths:
+      attaches_to=verb: iterate Actions, fire when `trigger_flag` is
+        set on the verb. Used by -it- (passive past participle).
+      attaches_to=adjective: iterate existing qualities, fire
+        unconditionally. Used by mal-/-eg-/-et- composition. Skips
+        qualities that are themselves derived from another adjective
+        (no infinite recursion: malvarma stays a single mal-, not
+        mal-mal-mal-).
+
+    Already-existing qualities (authored or earlier-derived) are
+    skipped silently — collisions are common in composition (mal- on
+    "varma" produces "malvarma" which we may already author for
+    explicit clarity), and the existing entry is the source of truth.
+    """
+    qualities: dict[str, Quality] = {}
+    for affix in affixes.values():
+        if affix.produces != "adjective":
+            continue
+
+        if affix.attaches_to == "verb":
+            if not affix.trigger_flag:
                 raise ValueError(
-                    f"derived concept {concept.lemma!r} produced twice "
-                    f"(by {verb.lemma!r} and another verb)")
-            derived[concept.lemma] = concept
+                    f"affix {affix.form!r}: adjective-from-verb requires "
+                    f"trigger_flag")
+            for verb in actions.values():
+                if not getattr(verb, affix.trigger_flag, False):
+                    continue
+                q = _derive_quality_from_verb(verb, affix)
+                if q.lemma in qualities or q.lemma in qualities_in:
+                    continue
+                qualities[q.lemma] = q
+
+        elif affix.attaches_to == "adjective":
+            # Source pool: authored qualities + qualities derived from
+            # verbs (e.g. ŝlosita). Don't recurse into qualities that
+            # are themselves adjective-derived — mal- on malvarma would
+            # give "malmalvarma" which isn't meaningful.
+            sources = list(qualities_in.values()) + [
+                q for q in qualities.values()
+                if not (q.derived_from and "quality" in q.derived_from)
+            ]
+            for parent in sources:
+                if parent.derived_from and "quality" in parent.derived_from:
+                    continue
+                # Lexical-shape filters to avoid double-marking:
+                #   mal-  on a lemma already starting "mal" or "ne" →
+                #         don't (malvarma → malmalvarma is meaningless;
+                #          nebrulebla → malnebrulebla = un-not-
+                #          flammable is just confused).
+                #   -eg-  on a lemma already ending "ega"/"eta" → don't
+                #         (varmega → varmegega is super-super-warm;
+                #          intensification doesn't compound usefully)
+                #   -et-  on a lemma already ending "ega"/"eta" → don't
+                if affix.form == "mal" and parent.lemma.startswith(("mal", "ne")):
+                    continue
+                if affix.form in ("eg", "et"):
+                    if parent.lemma.endswith(("ega", "eta")):
+                        continue
+                q = _derive_quality_from_quality(parent, affix)
+                if q.lemma in qualities or q.lemma in qualities_in:
+                    continue
+                qualities[q.lemma] = q
+
+    return qualities
+
+
+def _apply_derivations(
+    *, actions: dict[str, Action], concepts: dict[str, Concept],
+    affixes: dict[str, Affix], parser: MorphParser,
+    slots: dict[str, PropertySlot], spine: TypeSpine,
+) -> dict[str, Concept]:
+    """For each affix, synthesize derived concepts. Two dispatch paths:
+
+    - `attaches_to=verb`: iterate actions, fire when `trigger_flag`
+      Boolean is set on the verb. Used by -il-, -ist-, -aĵ-, -ej-.
+
+    - `attaches_to=noun`: iterate concepts, fire when concept's
+      entity_type is-a `trigger_concept_type`. Used by -id-, -ar-.
+
+    Adding a new affix kind is data-only when it fits one of these
+    patterns; a genuinely new pattern needs a new dispatch arm here.
+    """
+    derived: dict[str, Concept] = {}
+
+    def _admit(concept: Concept, source_label: str) -> None:
+        _validate_property_bundle(
+            owner=f"derived:{concept.lemma}",
+            properties=concept.properties,
+            entity_type=concept.entity_type,
+            slots=slots, spine=spine,
+        )
+        if concept.lemma in derived:
+            raise ValueError(
+                f"derived concept {concept.lemma!r} produced twice "
+                f"(by {source_label!r} and another source)")
+        derived[concept.lemma] = concept
+
+    for affix in affixes.values():
+        if affix.produces != "noun":
+            continue
+
+        if affix.attaches_to == "verb":
+            if not affix.trigger_flag:
+                raise ValueError(
+                    f"affix {affix.form!r}: attaches_to=verb requires "
+                    f"trigger_flag")
+            for verb in actions.values():
+                if not getattr(verb, affix.trigger_flag, False):
+                    continue
+                _admit(_derive_concept_from_verb(verb, affix, parser),
+                       verb.lemma)
+
+        elif affix.attaches_to == "noun":
+            if not affix.trigger_concept_type:
+                raise ValueError(
+                    f"affix {affix.form!r}: attaches_to=noun requires "
+                    f"trigger_concept_type")
+            target = affix.trigger_concept_type
+            if not spine.known(target):
+                raise ValueError(
+                    f"affix {affix.form!r}: unknown "
+                    f"trigger_concept_type {target!r}")
+            for parent in concepts.values():
+                if not spine.is_subtype(parent.entity_type, target):
+                    continue
+                _admit(_derive_concept_from_concept(
+                       parent, affix, slots, spine),
+                       parent.lemma)
+
     return derived
 
 
@@ -300,16 +471,22 @@ def load_lexicon(
         af = Affix(**d)
         if af.form in affixes:
             raise ValueError(f"duplicate affix {af.form!r}")
-        if not spine.known(af.output_type):
-            raise ValueError(
-                f"affix {af.form!r}: unknown output_type {af.output_type!r}")
+        # Adjective-producing affixes synthesize Quality lemmas, not
+        # Concept entities — their `output_type` is the conventional
+        # marker "quality" and isn't a real entity type. Skip the
+        # spine check for those.
+        if af.produces != "adjective":
+            if not spine.known(af.output_type):
+                raise ValueError(
+                    f"affix {af.form!r}: unknown output_type "
+                    f"{af.output_type!r}")
         affixes[af.form] = af
 
     # Compositional derivation. Synthesized concepts join the registry
     # alongside authored ones.
     derived = _apply_derivations(
-        actions=actions, affixes=affixes, parser=parser,
-        slots=slots, spine=spine,
+        actions=actions, concepts=concepts, affixes=affixes,
+        parser=parser, slots=slots, spine=spine,
     )
     for lemma, concept in derived.items():
         if lemma in concepts:
@@ -317,6 +494,33 @@ def load_lexicon(
                 f"derived concept {lemma!r} collides with authored concept; "
                 f"remove the authored entry — derivations are the truth")
         concepts[lemma] = concept
+
+    # Qualities live in their own registry — they're adjective lemmas
+    # referenced by slot vocabularies and rendered as adjectives by
+    # the realizer. Two sources:
+    #   (1) Authored in qualities.jsonl — base adjectives like
+    #       "fragila", "varma", "pura" that aren't tied to a verb.
+    #   (2) Auto-derived from verbs flagged `derives_quality` via the
+    #       -it- (passive past participle) affix — e.g. "ŝlosita"
+    #       from ŝlosi.
+    qualities: dict[str, Quality] = {}
+    qualities_path = data_dir / "qualities.jsonl"
+    if qualities_path.exists():
+        for d in _read_jsonl(qualities_path):
+            q = Quality(**d)
+            if q.lemma in qualities:
+                raise ValueError(f"duplicate quality {q.lemma!r}")
+            qualities[q.lemma] = q
+    derived_qualities = _apply_quality_derivations(
+        actions=actions, qualities_in=qualities, affixes=affixes)
+    for lemma, q in derived_qualities.items():
+        # Skip-if-exists handled inside _apply_quality_derivations now.
+        # If we still see a collision here it's a bug.
+        if lemma in qualities:
+            raise ValueError(
+                f"derived quality {lemma!r} collides; this should "
+                f"have been skipped inside derivation")
+        qualities[lemma] = q
 
     # Bake concept-compatible DSL derivations into concept properties
     # so the sampler — which scans concept.properties directly — sees
@@ -326,7 +530,7 @@ def load_lexicon(
         from .dsl.bake import bake_concept_derivations
         from .dsl.rules import DEFAULT_DSL_DERIVATIONS
         concepts = bake_concept_derivations(
-            concepts, DEFAULT_DSL_DERIVATIONS, spine)
+            concepts, DEFAULT_DSL_DERIVATIONS, spine, slots=slots)
 
     containment: list[ContainmentFact] = []
     containment_path = data_dir / "containment.jsonl"
@@ -366,7 +570,7 @@ def load_lexicon(
     return Lexicon(
         types=spine, slots=slots, concepts=concepts,
         relations=relations, actions=actions, affixes=affixes,
-        containment=containment,
+        containment=containment, qualities=qualities,
     )
 
 

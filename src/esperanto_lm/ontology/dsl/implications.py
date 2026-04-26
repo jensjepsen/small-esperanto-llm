@@ -1,14 +1,22 @@
 """Derivation-rule implications.
 
-In this slice, derivations can only imply properties (no relations, no
-entities). A `property(entity_var, slot, value)` implication means:
-for every binding produced by the derivation's `when + given`, assert
-that entity has slot=value in the derived layer.
+Derivations can imply two kinds of facts:
 
-Derived properties are erased and re-materialized every cycle of the
+  property(entity_var, slot, value)
+    Assert entity.slot=value in the derived-property layer for every
+    binding produced by the derivation's `when + given`.
+
+  relation(name, *args)
+    Assert rel(name, *args) in the derived-relation layer. Args are
+    Vars (resolved per binding) or literal entity ids. Used for
+    relations whose existence follows from other state — e.g.
+    `samloke(A, B)` follows from `A and B share an en container`.
+
+Derived facts are erased and re-materialized every cycle of the
 engine's fixed-point loop, so a derivation whose precondition stops
 holding automatically "un-derives" its output — this is what lets
-'drying a wet surface makes it not slippery' just work.
+'drying a wet surface makes it not slippery' just work, and what lets
+samloke un-derive when an actor walks away.
 """
 from __future__ import annotations
 
@@ -36,9 +44,26 @@ class PropertyImplication(Implication):
         return out
 
 
+@dataclass
+class RelationImplication(Implication):
+    """`relation(name, *args)` — derived relation assertion. Each arg
+    is a Var (resolved per binding) or a literal entity id string."""
+    name: str
+    args: tuple[Any, ...]
+
+    def reads(self) -> set[Var]:
+        return {a for a in self.args if isinstance(a, Var)}
+
+
 def property(entity: Var, slot: str, value: Any) -> PropertyImplication:
     """Imply that the entity bound to `entity` has the named slot equal
     to `value` (a literal or a Var that will be resolved at firing)."""
     if not isinstance(entity, Var):
         raise TypeError("property(): entity must be a Var")
     return PropertyImplication(entity, slot, value)
+
+
+def relation(name: str, *args: Any) -> RelationImplication:
+    """Imply that rel(name, *args) holds in the derived-relation layer.
+    Args may be Vars (resolved per binding) or literal entity ids."""
+    return RelationImplication(name, tuple(args))

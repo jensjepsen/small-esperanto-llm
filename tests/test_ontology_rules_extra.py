@@ -13,15 +13,11 @@ from esperanto_lm.ontology import (
     make_event,
 )
 from esperanto_lm.ontology.dsl import run_dsl
-from esperanto_lm.ontology.dsl.rules import (
-    DEFAULT_DSL_RULES,
-    make_use_instrument_rules,
-)
+from esperanto_lm.ontology.dsl.rules import DEFAULT_DSL_RULES
 
 
 def _run(t, lex):
-    return run_dsl(
-        t, DEFAULT_DSL_RULES + make_use_instrument_rules(lex), [], lex)
+    return run_dsl(t, list(DEFAULT_DSL_RULES), [], lex)
 
 
 
@@ -41,7 +37,7 @@ def test_fragile_glass_falls_then_breaks(lex):
     _run(t, lex)
     actions = [e.action for e in t.events]
     assert "rompiĝi" in actions
-    assert t.property_at("glaso", "integrity", len(t.events)) == "broken"
+    assert t.property_at("glaso", "integrity", len(t.events)) == "rompita"
 
 
 def test_sturdy_table_falls_does_not_break(lex):
@@ -95,7 +91,7 @@ def test_hungry_person_eats_becomes_sated_and_consumes_food(lex):
     t = Trace()
     petro = t.add_entity("persono", lex, entity_id="petro")
     pano = t.add_entity("pano", lex, entity_id="pano")
-    petro.set_property("hunger", "hungry")
+    petro.set_property("hunger", "malsata")
     roles = {"agent": petro.id, "theme": pano.id}
     t.add_event(make_event(
         "manĝi", roles=roles,
@@ -103,9 +99,9 @@ def test_hungry_person_eats_becomes_sated_and_consumes_food(lex):
     _run(t, lex)
     actions = [e.action for e in t.events]
     assert "satiĝi" in actions, "satiation rule should fire"
-    assert t.property_at("petro", "hunger", len(t.events)) == "sated"
+    assert t.property_at("petro", "hunger", len(t.events)) == "sata"
     # manĝi's intrinsic effect consumed the food.
-    assert t.property_at("pano", "presence", len(t.events)) == "consumed"
+    assert t.property_at("pano", "presence", len(t.events)) == "manĝita"
 
 
 def test_already_sated_person_eats_no_satiation_event(lex):
@@ -122,22 +118,23 @@ def test_already_sated_person_eats_no_satiation_event(lex):
     assert "satiĝi" not in actions
     # Food is still consumed by manĝi's own effect — that's intrinsic, not
     # gated on hunger.
-    assert t.property_at("pano", "presence", len(t.events)) == "consumed"
+    assert t.property_at("pano", "presence", len(t.events)) == "manĝita"
 
 
 # ---- second derived instrument: ŝlosilo (acceptance) ----------------------
 
-def test_slosilo_locks_pordo_via_generic_rule(lex):
-    """Acceptance: the same generic instrument-use rule that fires
-    tranĉilo→tranĉi also fires ŝlosilo→ŝlosi without modification."""
+def test_slosilo_locks_pordo(lex):
+    """Direct ŝlosi event with instrument=ŝlosilo mutates lock_state."""
+    from esperanto_lm.ontology import effect_changes
     t = Trace()
     maria = t.add_entity("persono", lex, entity_id="maria")
     pordo = t.add_entity("pordo", lex, entity_id="pordo")
     slosilo = t.add_entity("ŝlosilo", lex, entity_id="ŝlosilo")
     t.assert_relation("havi", (maria.id, slosilo.id), lex)
-    pordo.set_property("lock_state", "unlocked")
-    t.add_event(make_event("uzi", roles={
-        "agent": maria.id, "instrument": slosilo.id, "theme": pordo.id}))
+    pordo.set_property("lock_state", "malŝlosita")
+    roles = {"agent": maria.id, "theme": pordo.id, "instrument": slosilo.id}
+    t.add_event(make_event(
+        "ŝlosi", roles=roles,
+        property_changes=effect_changes("ŝlosi", roles, lex)))
     _run(t, lex)
-    assert any(e.action == "ŝlosi" for e in t.events)
-    assert t.property_at("pordo", "lock_state", len(t.events)) == "locked"
+    assert t.property_at("pordo", "lock_state", len(t.events)) == "ŝlosita"

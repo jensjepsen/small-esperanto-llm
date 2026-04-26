@@ -17,7 +17,7 @@ from esperanto_lm.ontology import (
 )
 from esperanto_lm.ontology.dsl import run_dsl
 from esperanto_lm.ontology.dsl.rules import (
-    DEFAULT_DSL_DERIVATIONS, DEFAULT_DSL_RULES, make_use_instrument_rules,
+    DEFAULT_DSL_DERIVATIONS, DEFAULT_DSL_RULES,
 )
 from esperanto_lm.ontology.realize import (
     CoordinatedMessage, DestructionMessage, EventMessage,
@@ -33,7 +33,7 @@ def lex():
 
 
 def _rules(lex):
-    return DEFAULT_DSL_RULES + make_use_instrument_rules(lex)
+    return list(DEFAULT_DSL_RULES)
 
 
 # ========================== aggregation ==========================
@@ -220,7 +220,7 @@ def test_coordinated_children_share_theme_elide(lex):
     t.add_entity("persono", lex, entity_id="maria")
     t.add_entity("pano",    lex, entity_id="pano")
     t.assert_relation("havi", ("maria", "pano"), lex)
-    t.entities["maria"].set_property("hunger", "hungry")
+    t.entities["maria"].set_property("hunger", "malsata")
     roles = {"agent": "maria", "theme": "pano"}
     t.events.append(make_event(
         "kuiri", roles=roles,

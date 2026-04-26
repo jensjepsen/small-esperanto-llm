@@ -1,1 +1,11 @@
-{"form": "il", "kind": "suffix", "attaches_to": "verb", "produces": "noun", "output_type": "artifact", "signature_source": "effect", "noun_ending": "o", "output_properties": {"state_of_matter": ["solid"]}}
+{"form": "il", "kind": "suffix", "attaches_to": "verb", "produces": "noun", "output_type": "artifact", "trigger_flag": "derives_instrument", "signature_source": "effect", "noun_ending": "o", "output_properties": {"state_of_matter": ["solida"]}}
+{"form": "ist", "kind": "suffix", "attaches_to": "verb", "produces": "noun", "output_type": "person", "trigger_flag": "derives_professional", "signature_source": "none", "noun_ending": "o", "output_properties": {}}
+{"form": "aĵ", "kind": "suffix", "attaches_to": "verb", "produces": "noun", "output_type": "physical", "trigger_flag": "derives_thing", "signature_source": "none", "noun_ending": "o", "output_properties": {}}
+{"form": "ej", "kind": "suffix", "attaches_to": "verb", "produces": "noun", "output_type": "location", "trigger_flag": "derives_place", "signature_source": "none", "noun_ending": "o", "output_properties": {"indoor_outdoor": ["interna"]}}
+{"form": "id", "kind": "suffix", "attaches_to": "noun", "produces": "noun", "output_type": "animal", "trigger_concept_type": "animal", "signature_source": "none", "noun_ending": "o", "output_properties": {}}
+{"form": "ar", "kind": "suffix", "attaches_to": "noun", "produces": "noun", "output_type": "collective", "trigger_concept_type": "animal", "signature_source": "none", "noun_ending": "o", "output_properties": {}}
+{"form": "it", "kind": "suffix", "attaches_to": "verb", "produces": "adjective", "output_type": "quality", "trigger_flag": "derives_quality", "signature_source": "none", "noun_ending": "a", "output_properties": {}}
+{"form": "mal", "kind": "prefix", "attaches_to": "adjective", "produces": "adjective", "output_type": "quality", "signature_source": "none", "output_properties": {}}
+{"form": "eg", "kind": "suffix", "attaches_to": "adjective", "produces": "adjective", "output_type": "quality", "signature_source": "none", "noun_ending": "a", "output_properties": {}}
+{"form": "et", "kind": "suffix", "attaches_to": "adjective", "produces": "adjective", "output_type": "quality", "signature_source": "none", "noun_ending": "a", "output_properties": {}}
+

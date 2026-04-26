@@ -1,10 +1,10 @@
 """DSL ports of the causal-rule library.
 
 Phases 1–4 ported here. Each rule is a module-level value the engine
-introspects via `collect_rules`. `make_use_instrument_rules(lex)`
-emits one rule per instrument-capable verb from the lexicon — the
-only dynamic-dispatch rule needed lexicon access in the old engine,
-and the DSL replaces it with a cleanly-enumerated set.
+introspects via `collect_rules`. Instrument-using verbs (tranĉi,
+ŝlosi, purigi, najli, ...) are first-class actions with their own
+`instrument` role and `effects` — they don't need a meta-verb
+dispatch layer.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .engine import Rule
 from . import (
     add_relation, bind, caused_by, closure, create_entity, derive,
     destroy_entity, emit, entity, event, has_concept_field, past_event,
-    property, rel, remove_relation, rule, var,
+    property, rel, relation, remove_relation, rule, var,
 )
 
 
@@ -21,10 +21,26 @@ from . import (
 
 fragile_falls_breaks = rule(
     when=event("fali",
-               theme=entity(fragility="fragile", integrity="intact")
+               theme=entity(fragility="fragila", integrity="tuta")
                      & bind(T := var("T"))),
-    then=emit("rompiĝi", theme=T).changing(T, "integrity", "broken"),
+    then=emit("rompiĝi", theme=T).changing(T, "integrity", "rompita"),
     name="fragile_falls_breaks",
+)
+
+
+# ---------- causal: bati_breaks_fragile ---------------------------------
+#
+# Hitting a fragile, intact thing breaks it. Same shape as
+# fragile_falls_breaks — different trigger event, identical effect —
+# so the downstream cascade (broken_fragile_creates_shards →
+# aperi(vitropecetoj) → person_slips_on_wet etc.) reuses transparently.
+
+bati_breaks_fragile = rule(
+    when=event("bati",
+               theme=entity(fragility="fragila", integrity="tuta")
+                     & bind(BT := var("T"))),
+    then=emit("rompiĝi", theme=BT).changing(BT, "integrity", "rompita"),
+    name="bati_breaks_fragile",
 )
 
 
@@ -37,8 +53,8 @@ fragile_falls_breaks = rule(
 
 hungry_eats_sated = rule(
     when=event("manĝi",
-               agent=entity(hunger="hungry") & bind(A := var("A"))),
-    then=emit("satiĝi", theme=A).changing(A, "hunger", "sated"),
+               agent=entity(hunger="malsata") & bind(A := var("A"))),
+    then=emit("satiĝi", theme=A).changing(A, "hunger", "sata"),
     name="hungry_eats_sated",
 )
 
@@ -54,6 +70,48 @@ manĝi_destroys_theme = rule(
     when=event("manĝi", theme=bind(TE := var("T"))),
     then=destroy_entity(TE),
     name="manĝi_destroys_theme",
+)
+
+
+# ---------- causal: morti_destroys_self ---------------------------------
+#
+# Dying removes the entity from the trace — `entities_at(t)` stops
+# returning it after the morti event. Mirrors `manĝi_destroys_theme`
+# (eaten things vanish) for the lifecycle layer. Bodies-after-death
+# would need a transforms_on_death slot like fragile→shards; we don't
+# model that yet — the entity is just gone.
+
+morti_destroys_self = rule(
+    when=event("morti", theme=bind(MtT := var("T"))),
+    then=destroy_entity(MtT),
+    name="morti_destroys_self",
+)
+
+
+# ---------- causal: mortigi_causes_morti --------------------------------
+#
+# Killing is causative dying — `mortigi` doesn't destroy the theme
+# itself; it emits a separate `morti` event whose own rule does the
+# destruction. This keeps causation explicit (the trace shows BOTH
+# events, with morti.caused_by pointing at mortigi) and lets the
+# realizer narrate "Petro mortigis la muson, kiu mortis."
+
+mortigi_causes_morti = rule(
+    when=event("mortigi", theme=bind(MgT := var("T"))),
+    then=emit("morti", theme=MgT),
+    name="mortigi_causes_morti",
+)
+
+
+# ---------- causal: detrui_destroys_theme -------------------------------
+#
+# Explicit destruction. Same shape as manĝi_destroys_theme but invoked
+# via the `detrui` verb rather than as a side effect of eating.
+
+detrui_destroys_theme = rule(
+    when=event("detrui", theme=bind(DtT := var("T"))),
+    then=destroy_entity(DtT),
+    name="detrui_destroys_theme",
 )
 
 
@@ -137,22 +195,46 @@ broken_container_releases_contents = rule(
 )
 
 
-# ---------- causal: carried_thing_falls_when_carrier_falls (Phase 3) ----
+# ---------- causal: porti_establishes_carrying --------------------------
 #
-# When a person falls, everything they `havi` also falls. Fragility
-# isn't checked here — a dropped book hits the floor too. Breakage
-# is a separate consequence: `fragile_falls_breaks` fires on the
-# resulting fali if the carried thing happens to be fragile.
+# `porti` (carry) establishes a `portas` relation between agent and
+# theme. Distinct from `havi` (ownership): you can `havi` a book left
+# at home without `porti`-ing it. A scene that wants the agent to be
+# carrying something at the start can either include the porti event
+# (sets up portas via this rule) or assert portas directly in setup.
 
-carried_thing_falls_when_carrier_falls = rule(
-    when=event("fali",
-               theme=entity(type="person") & bind(P := var("P"))),
+porti_establishes_carrying = rule(
+    when=event("porti",
+               agent=bind(PoA := var("A")),
+               theme=bind(PoT := var("T"))),
+    then=add_relation("portas", PoA, PoT),
+    name="porti_establishes_carrying",
+)
+
+
+# ---------- causal: porti_drop_when_carrier_falls (Phase 3, updated) ----
+#
+# When a carrier falls, everything they `portas` also falls AND the
+# portas relation is removed (the agent has lost their grip). Fragility
+# isn't checked — a dropped book hits the floor too. Breakage is a
+# separate consequence: `fragile_falls_breaks` fires on the resulting
+# fali if the carried thing happens to be fragile.
+#
+# Replaces the older havi-based rule. Ownership doesn't drop on a fall
+# (your books at home stay yours when you trip outside) — only active
+# carrying does, which is what `portas` models.
+
+porti_drop_when_carrier_falls = rule(
+    when=event("fali", theme=bind(P := var("P"))),
     given=[
-        rel("havi", owner=P, theme=bind(F := var("F"))),
+        rel("portas", carrier=P, theme=bind(F := var("F"))),
         ~past_event("fali", theme=F),
     ],
-    then=emit("fali", theme=F),
-    name="carried_thing_falls_when_carrier_falls",
+    then=[
+        emit("fali", theme=F),
+        remove_relation("portas", P, F),
+    ],
+    name="porti_drop_when_carrier_falls",
 )
 
 
@@ -308,6 +390,27 @@ iri_moves_agent = rule(
 )
 
 
+# ---------- causal: veni_moves_agent ------------------------------------
+#
+# `veni` (come) is the arrival twin of `iri` — same relation transfer,
+# different framing. Useful for scenes told from the destination's
+# perspective ("Petro venis al la lernejo") rather than the origin's.
+
+veni_moves_agent = rule(
+    when=event("veni",
+               agent=bind(VnA := var("A")),
+               destination=bind(VnD := var("D"))),
+    given=[
+        rel("en", contained=VnA, container=bind(VnO := var("O"))),
+    ],
+    then=[
+        remove_relation("en", VnA, VnO),
+        add_relation("en", VnA, VnD),
+    ],
+    name="veni_moves_agent",
+)
+
+
 # ---------- causal: veturi_moves_agent ----------------------------------
 #
 # `veturi` is "travel by vehicle" — same location-transfer shape as iri
@@ -344,12 +447,12 @@ fire_spreads_to_adjacent_flammables = rule(
     given=[
         closure({"en", "sur", "apud"}, from_=B,
                 to_=(~entity(type="location")
-                     & entity(flammability="flammable")
+                     & entity(flammability="brulebla")
                      & bind(N := var("N"))),
                 max_steps=1),
         ~past_event("bruli", theme=N),
     ],
-    then=emit("bruli", theme=N).changing(N, "presence", "consumed"),
+    then=emit("bruli", theme=N).changing(N, "presence", "manĝita"),
     name="fire_spreads_to_adjacent_flammables",
 )
 
@@ -371,7 +474,7 @@ rain_wets_contents = rule(
         # rather than a whole new slot.
         ~rel("havi", owner=RX, theme=entity(has_suffix="ombrelo")),
     ],
-    then=emit("_wet", theme=RX).changing(RX, "wetness", "wet"),
+    then=emit("_wet", theme=RX).changing(RX, "wetness", "malseka"),
     name="rain_wets_contents",
 )
 
@@ -379,7 +482,7 @@ rain_creates_puddle = rule(
     when=event("pluvi", location=bind(RPL := var("L"))),
     given=[
         # Outdoor places only — indoor rain would need a roof leak.
-        entity(indoor_outdoor="outdoor") & bind(RPL),
+        entity(indoor_outdoor="ekstera") & bind(RPL),
     ],
     then=[
         create_entity(concept="flako", as_var=(RPF := var("F")), from_=RPL),
@@ -390,18 +493,67 @@ rain_creates_puddle = rule(
 )
 
 
+# ---------- causal: skribi_creates_text -----------------------------------
+#
+# Writing produces marks-on-the-surface. Modeled as entity creation
+# rather than a property toggle: the produced `skribaĵo` is a real
+# thing that sits on the theme via `sur`, can later be referred to,
+# and could be destroyed by viŝi. Symmetric with how rain_creates_puddle
+# spawns a flako on a location.
+
+skribi_creates_text = rule(
+    when=event("skribi", theme=bind(SkT := var("T"))),
+    then=[
+        create_entity(concept="skribaĵo",
+                      as_var=(SkS := var("S")), from_=SkT),
+        emit("aperi", theme=SkS),
+        add_relation("sur", SkS, SkT),
+    ],
+    name="skribi_creates_text",
+)
+
+
+# ---------- causal: viŝi_destroys_skribaĵo -----------------------------
+#
+# Wiping is the symmetric inverse of writing: when viŝi targets a
+# skribaĵo entity (text-on-surface), the entity is destroyed.
+#
+# Two constraints narrow this rule beyond "any wipe of any skribaĵo":
+#   1. Theme must instantiate the `skribaĵo` concept exactly — wiping
+#      a table is harmless narrative.
+#   2. The wiping agent must have previously written on the surface
+#      the skribaĵo lives on. You can only erase your own writing
+#      (or text on a surface you've written on) — strangers don't
+#      arrive and erase. Encoded via `past_event("skribi", ...)`.
+#
+# The surface is recovered via the `sur` relation that
+# `skribi_creates_text` placed when synthesizing the skribaĵo.
+
+viŝi_destroys_skribaĵo = rule(
+    when=event("viŝi",
+               agent=bind(VsA := var("A")),
+               theme=entity(concept="skribaĵo") & bind(VsT := var("T"))),
+    given=[
+        rel("sur", contained=VsT, container=bind(VsP := var("P"))),
+        past_event("skribi", agent=VsA, theme=VsP),
+    ],
+    then=destroy_entity(VsT),
+    name="viŝi_destroys_skribaĵo",
+)
+
+
 # ---------- causal: person_slips_on_wet (Phase 3, updated) -------------
 #
 # Wet surfaces cause slips; sharp shards do not (stepping on broken
 # glass would cut you, but that's a different event we don't model).
-# Filter on `hazard="slippery"` specifically — the aperi event has to
+# Filter on `hazard="glita"` specifically — the aperi event has to
 # bring a slippery thing into existence (a flako is the canonical
 # example). The hazard's location is inferred from the cause's theme —
 # the entity that fell or broke to produce the puddle.
 
 person_slips_on_wet = rule(
     when=event("aperi",
-               theme=entity(hazard="slippery") & bind(H := var("H"))),
+               theme=entity(hazard="glita") & bind(H := var("H"))),
     given=[
         # The cause's theme is the origin entity (the thing that
         # fell to produce the puddle). `fali` is the expected shape;
@@ -423,6 +575,95 @@ person_slips_on_wet = rule(
 )
 
 
+# ---------- causal: knowledge transfer ----------------------------------
+#
+# Knowledge is fact-grained. A `fakto` entity captures one specific
+# relation instance — `(pri_relacio, pri_subjekto, pri_objekto)` — and
+# `konas(agent, fakto)` means the agent knows that specific fact. The
+# fakto's id is composite-deterministic (`fakto_from_<rel>_<a>_<b>`)
+# so the same fact creates the same entity across rule firings.
+#
+# When an agent `vidi`s an entity X, they learn one fakto per relation
+# X currently participates in — separate rule per relation kind /
+# arg-position so the binding stays explicit. Add more rules here as
+# new relations grow narrative weight (currently: en, sur, havi).
+#
+# `rakonti` transfers knowledge of one specific fakto from teller to
+# recipient — pure information move, no fakto creation.
+
+vidi_learns_en = rule(
+    when=event("vidi",
+               agent=bind(VEA := var("A")),
+               theme=bind(VET := var("T"))),
+    given=[
+        rel("en", contained=VET, container=bind(VEL := var("L"))),
+    ],
+    then=[
+        create_entity(
+            concept="fakto",
+            as_var=(VEF := var("F")),
+            id_parts=("en", VET, VEL),
+            initial_properties={"pri_relacio": "en"},
+        ),
+        add_relation("subjekto", VEF, VET),
+        add_relation("objekto", VEF, VEL),
+        add_relation("konas", VEA, VEF),
+    ],
+    name="vidi_learns_en",
+)
+
+vidi_learns_sur = rule(
+    when=event("vidi",
+               agent=bind(VSA := var("A")),
+               theme=bind(VST := var("T"))),
+    given=[
+        rel("sur", contained=VST, container=bind(VSL := var("L"))),
+    ],
+    then=[
+        create_entity(
+            concept="fakto",
+            as_var=(VSF := var("F")),
+            id_parts=("sur", VST, VSL),
+            initial_properties={"pri_relacio": "sur"},
+        ),
+        add_relation("subjekto", VSF, VST),
+        add_relation("objekto", VSF, VSL),
+        add_relation("konas", VSA, VSF),
+    ],
+    name="vidi_learns_sur",
+)
+
+vidi_learns_havi_owner = rule(
+    when=event("vidi",
+               agent=bind(VHA := var("A")),
+               theme=bind(VHT := var("T"))),
+    given=[
+        rel("havi", owner=bind(VHO := var("O")), theme=VHT),
+    ],
+    then=[
+        create_entity(
+            concept="fakto",
+            as_var=(VHF := var("F")),
+            id_parts=("havi", VHO, VHT),
+            initial_properties={"pri_relacio": "havi"},
+        ),
+        add_relation("subjekto", VHF, VHO),
+        add_relation("objekto", VHF, VHT),
+        add_relation("konas", VHA, VHF),
+    ],
+    name="vidi_learns_havi_owner",
+)
+
+rakonti_transfers_fakto = rule(
+    when=event("rakonti",
+               agent=bind(RKA := var("A")),
+               theme=bind(RKT := var("T")),
+               recipient=bind(RKR := var("R"))),
+    then=add_relation("konas", RKR, RKT),
+    name="rakonti_transfers_fakto",
+)
+
+
 # ---------- derivation: flammable as a derived property -----------------
 #
 # Demo: lexicon currently tags flammability directly on ligno/libro/etc.;
@@ -434,38 +675,344 @@ flammability_from_material = derive(
     when=(entity(made_of="wood")
           | entity(made_of="paper")
           | entity(made_of="fabric")
-          | entity(made_of="wicker"))
+          | entity(made_of="wicker")
+          | entity(made_of="plant"))
          & bind(T_w := var("T")),
-    implies=property(T_w, "flammability", "flammable"),
+    implies=property(T_w, "flammability", "brulebla"),
     name="flammability_from_material",
 )
 
 
-# ---------- derivation chain: animals → meat → edible -------------------
+# ---------- derivation: meat is edible ---------------------------------
 #
-# "All animals are made of meat." "Things made of meat are edible."
-# Two derivations that chain within a single cycle of the engine's
-# derivation phase (fixed point). An entity of type=animal thus gains
-# edibility=edible transitively — the manĝi role constraint
-# `theme: edibility=edible` then matches animal themes naturally,
-# via the effective_property read that sees the derived layer.
-
-animal_is_made_of_meat = derive(
-    when=entity(type="animal") & bind(T_a := var("T")),
-    implies=property(T_a, "made_of", "meat"),
-    name="animal_is_made_of_meat",
-)
+# Things made of meat are edible. The `meat_is_edible` derivation ties
+# `made_of=meat` to `edibility=manĝebla`, but live animals no longer
+# auto-derive `made_of=meat` — that earlier blanket derivation made
+# every cat, fish, and bee instantly edible to a hungry agent ("Maria
+# manĝis la simion"). Now meat exists only on entities that are
+# explicitly meat: the `viando` substance concept, plus any future
+# processed-animal-product concepts. Killing an animal and obtaining
+# meat is a separate (multi-step) chain to be modeled later.
 
 animate_is_solid = derive(
     when=entity(type="animate") & bind(T_anim := var("T")),
-    implies=property(T_anim, "state_of_matter", "solid"),
+    implies=property(T_anim, "state_of_matter", "solida"),
     name="animate_is_solid",
+)
+
+
+# All persons walk and swim by default. Two derivations because each
+# `derive()` carries one `PropertyImplication`; the bake mechanism
+# appends to multi-valued slots (locomotion is scalar=False), so both
+# values land. Authored persons that need to differ (e.g. an injured
+# character who can't swim) can override by asserting locomotion
+# explicitly — asserted wins for scalar slots; for multi-valued ones
+# the bake won't drop existing entries either.
+
+# Persons share the `parts` vocabulary with animals. Two derivations
+# give them feet and hands; locomotion=walk then arises through the
+# anatomy chain (parts=piedo → has_paws_can_walk → locomotion=walk),
+# which the bake's fixed-point loop resolves in a single load.
+# Swimming stays as its own derivation — humans swim by skill, not
+# anatomy, so there's no body-part to point at.
+
+person_can_swim = derive(
+    when=entity(type="person") & bind(T_ps := var("T")),
+    implies=property(T_ps, "locomotion", "swim"),
+    name="person_can_swim",
+)
+
+
+# Anatomy → ability. Body parts (the `parts` slot, multi-valued) imply
+# what locomotion an animal can perform. The bake's append-on-non-scalar
+# behavior lets multiple of these fire on the same animal — birdo
+# (piedo + flugilo) gets locomotion=[walk, fly], rano (piedo + naĝilo)
+# gets [walk, swim]. Animals without any of the relevant parts
+# (e.g. serpento) keep whatever locomotion is asserted directly.
+#
+# This is meronymy as the source of affordances: instead of declaring
+# "what kato can do", declare "what kato is made of" and let the
+# anatomy imply ability. Adding a new motility (climb? jump?) means
+# adding a part (manoj? kruroj?) and a one-line derivation.
+
+has_paws_can_walk = derive(
+    when=entity() & bind(T_paw := var("T")),
+    given=[
+        rel("havas_parton",
+            tuto=T_paw,
+            parto=bind(P_paw := var("P"))),
+        entity(concept="piedo") & bind(P_paw),
+    ],
+    implies=property(T_paw, "locomotion", "walk"),
+    name="has_paws_can_walk",
+)
+
+has_wings_can_fly = derive(
+    when=entity() & bind(T_wing := var("T")),
+    given=[
+        rel("havas_parton",
+            tuto=T_wing,
+            parto=bind(P_wing := var("P"))),
+        entity(concept="flugilo") & bind(P_wing),
+    ],
+    implies=property(T_wing, "locomotion", "fly"),
+    name="has_wings_can_fly",
+)
+
+has_fins_can_swim = derive(
+    when=entity() & bind(T_fin := var("T")),
+    given=[
+        rel("havas_parton",
+            tuto=T_fin,
+            parto=bind(P_fin := var("P"))),
+        entity(concept="naĝilo") & bind(P_fin),
+    ],
+    implies=property(T_fin, "locomotion", "swim"),
+    name="has_fins_can_swim",
+)
+
+
+# Tool-use capability. Any entity with hands (mano) can use tools.
+# Currently this picks up persons (persono.parts includes mano) and
+# the apes (simio/gorilo/ĉimpanzo, declared with mano in parts).
+# Other animals lack mano → can't use tools → can't be agents of
+# tool-using verbs. Extending to other body-part-based capabilities
+# (e.g. trunk → can_use_tools for elephants) is a one-line addition.
+
+has_hands_can_use_tools = derive(
+    when=entity() & bind(T_tool := var("T")),
+    given=[
+        rel("havas_parton",
+            tuto=T_tool,
+            parto=bind(P_tool := var("P"))),
+        entity(concept="mano") & bind(P_tool),
+    ],
+    implies=property(T_tool, "can_use_tools", "yes"),
+    name="has_hands_can_use_tools",
+)
+
+
+# Broad transient-state slots get an initial value on every concept of
+# the relevant type via these derivations. The bake materializes the
+# default; the sampler's `_randomize_state` then overrides it with a
+# uniform pick from the slot's vocabulary at each instance creation.
+# So the derivation's value isn't really a "default" — it's an opt-in
+# marker that says "this slot is meaningful for entities of this type,
+# please vary it at instance time."
+
+animate_has_hunger = derive(
+    when=entity(type="animate") & bind(T_h := var("T")),
+    implies=property(T_h, "hunger", "sata"),
+    name="animate_has_hunger",
+)
+
+animate_has_sleep_state = derive(
+    when=entity(type="animate") & bind(T_sl := var("T")),
+    implies=property(T_sl, "sleep_state", "vekita"),
+    name="animate_has_sleep_state",
+)
+
+physical_has_cleanliness = derive(
+    when=entity(type="physical") & bind(T_cl := var("T")),
+    implies=property(T_cl, "cleanliness", "pura"),
+    name="physical_has_cleanliness",
+)
+
+physical_has_temperature = derive(
+    when=entity(type="physical") & bind(T_te := var("T")),
+    implies=property(T_te, "temperature", "varma"),
+    name="physical_has_temperature",
+)
+
+physical_has_wetness = derive(
+    when=entity(type="physical") & bind(T_we := var("T")),
+    implies=property(T_we, "wetness", "seka"),
+    name="physical_has_wetness",
 )
 
 meat_is_edible = derive(
     when=entity(made_of="meat") & bind(T_m := var("T")),
-    implies=property(T_m, "edibility", "edible"),
+    implies=property(T_m, "edibility", "manĝebla"),
     name="meat_is_edible",
+)
+
+
+# ---------- derivation: animates know facts about themselves -----------
+#
+# Lidia inherently knows that Lidia is in la maro — she IS Lidia, and
+# she's the subject of that fact. Without these derivations the
+# planner happily samples drives like "Sara wants Lidia to know that
+# Lidia is in la maro" and dispatches a `vidi → rakonti` chain to
+# tell Lidia what she already knows. Two derivations: one for facts
+# where the animate is the pri_subjekto (containment, ownership), one
+# for where they're pri_objekto (havi-from-the-thing's-perspective —
+# rare for animals, but cheap to derive symmetrically).
+
+animate_knows_self_subject = derive(
+    when=entity(type="animate") & bind(SKSA := var("A")),
+    given=[
+        rel("subjekto",
+            fakto=bind(SKSF := var("F")),
+            entity=SKSA),
+    ],
+    implies=relation("konas", SKSA, SKSF),
+    name="animate_knows_self_subject",
+)
+
+animate_knows_self_object = derive(
+    when=entity(type="animate") & bind(SKOA := var("A")),
+    given=[
+        rel("objekto",
+            fakto=bind(SKOF := var("F")),
+            entity=SKOA),
+    ],
+    implies=relation("konas", SKOA, SKOF),
+    name="animate_knows_self_object",
+)
+
+
+# ---------- derivation: host's lock_state lifts from its seruro --------
+#
+# A host with a `seruro` part takes its lock_state from the lock's
+# state. Two derivations because PropertyImplication is per-value
+# (no "bind a Var from a property value" mechanism — same constraint
+# as everywhere else). Adding more lock states later means more
+# derivations, but the value vocabulary is small.
+
+host_lock_state_locked_from_seruro = derive(
+    when=entity(type="artifact") & bind(HLLD := var("D")),
+    given=[
+        rel("havas_parton",
+            tuto=HLLD,
+            parto=bind(HLLS := var("S"))),
+        entity(concept="seruro", lock_state="ŝlosita") & bind(HLLS),
+    ],
+    implies=property(HLLD, "lock_state", "ŝlosita"),
+    name="host_lock_state_locked_from_seruro",
+)
+
+artifact_without_seruro_unlocked = derive(
+    when=entity(type="artifact") & bind(AWSU := var("D")),
+    given=[
+        ~rel("havas_parton",
+             tuto=AWSU,
+             parto=entity(concept="seruro")),
+    ],
+    implies=property(AWSU, "lock_state", "malŝlosita"),
+    name="artifact_without_seruro_unlocked",
+)
+
+
+host_lock_state_unlocked_from_seruro = derive(
+    when=entity(type="artifact") & bind(HLUD := var("D")),
+    given=[
+        rel("havas_parton",
+            tuto=HLUD,
+            parto=bind(HLUS := var("S"))),
+        entity(concept="seruro", lock_state="malŝlosita") & bind(HLUS),
+    ],
+    implies=property(HLUD, "lock_state", "malŝlosita"),
+    name="host_lock_state_unlocked_from_seruro",
+)
+
+
+# ---------- derivation: knowing a location-fakto means knowing where ----
+#
+# An agent who knows a fakto whose relation is `en` or `sur` (and the
+# fakto's subjekto is some entity T) knows where T is. Two derivations,
+# one per locative relation. Used as a precondition by verbs that
+# require knowing the target's location (preni, kapti, veki, mortigi).
+
+scias_lokon_via_en = derive(
+    when=rel("konas",
+             knower=bind(SLEK := var("K")),
+             fakto=bind(SLEF := var("F"))),
+    given=[
+        entity(type="abstract", pri_relacio="en") & bind(SLEF),
+        rel("subjekto", fakto=SLEF, entity=bind(SLET := var("T"))),
+    ],
+    implies=relation("scias_lokon", SLEK, SLET),
+    name="scias_lokon_via_en",
+)
+
+scias_lokon_via_sur = derive(
+    when=rel("konas",
+             knower=bind(SLSK := var("K")),
+             fakto=bind(SLSF := var("F"))),
+    given=[
+        entity(type="abstract", pri_relacio="sur") & bind(SLSF),
+        rel("subjekto", fakto=SLSF, entity=bind(SLST := var("T"))),
+    ],
+    implies=relation("scias_lokon", SLSK, SLST),
+    name="scias_lokon_via_sur",
+)
+
+
+# ---------- derivation: parts inherit samloke from their host ----------
+#
+# A host is trivially samloke with its own parts (Maria with her own
+# piedo). And anyone samloke with the host is samloke with the parts
+# too — the door's lock is wherever the door is, so anyone in the
+# room with the door is in the room with its lock. Two derivations,
+# composable with the existing en-based samloke chain.
+
+host_samloke_with_part = derive(
+    when=rel("havas_parton",
+             tuto=bind(HSWPH := var("H")),
+             parto=bind(HSWPP := var("P"))),
+    implies=relation("samloke", HSWPH, HSWPP),
+    name="host_samloke_with_part",
+)
+
+samloke_propagates_through_artifact_parts = derive(
+    when=rel("samloke",
+             a=bind(SPTPA := var("A")),
+             b=bind(SPTPB := var("B"))),
+    given=[
+        # Only propagate through artifact hosts. Without this gate,
+        # samloke cascades across every animate's body parts
+        # (samloke(maria, petro) → samloke(maria, petro_piedo) →
+        # samloke(maria, petro_mano) → ...) which doesn't terminate
+        # in reasonable time. Body parts are samloke with their own
+        # host (host_samloke_with_part) but not with arbitrary
+        # observers — which is also more semantically right ("Maria
+        # is in the same place as Petro's hand" is technically true
+        # but not what we mean by samloke for verb planning).
+        entity(type="artifact") & bind(SPTPB),
+        rel("havas_parton",
+            tuto=SPTPB,
+            parto=bind(SPTPP := var("P"))),
+    ],
+    implies=relation("samloke", SPTPA, SPTPP),
+    name="samloke_propagates_through_artifact_parts",
+)
+
+
+# ---------- derivation: samloke from shared `en` container -------------
+#
+# Two entities are `samloke` (in the same place) iff some container L
+# holds both. Single derivation; engine's fixed-point loop is what makes
+# samloke un-derive automatically when an actor walks away — no
+# explicit retraction. The relation is symmetric (declared in
+# relations.jsonl), so `RelPattern.search` will yield matches for both
+# arg orderings; we only need to derive one ordering here.
+#
+# We DO derive the reflexive case samloke(X, X) for entities that are
+# in some container — every entity is trivially in the same place as
+# itself. Cluttery in the derived layer but correct, and the planner
+# never asks "make X co-located with itself" so it doesn't matter.
+
+shared_container_means_samloke = derive(
+    when=rel("en",
+             contained=bind(SLA := var("A")),
+             container=bind(SLL := var("L"))),
+    given=[
+        rel("en",
+            contained=bind(SLB := var("B")),
+            container=SLL),
+    ],
+    implies=relation("samloke", SLA, SLB),
+    name="shared_container_means_samloke",
 )
 
 
@@ -474,75 +1021,29 @@ meat_is_edible = derive(
 # auto-registration. Pass to `run_dsl(..., derivations=...)`.
 DEFAULT_DSL_DERIVATIONS = [
     flammability_from_material,
-    animal_is_made_of_meat,
     meat_is_edible,
     animate_is_solid,
+    person_can_swim,
+    has_paws_can_walk,
+    has_wings_can_fly,
+    has_fins_can_swim,
+    has_hands_can_use_tools,
+    animate_has_hunger,
+    animate_has_sleep_state,
+    physical_has_cleanliness,
+    physical_has_temperature,
+    physical_has_wetness,
+    shared_container_means_samloke,
+    host_samloke_with_part,
+    samloke_propagates_through_artifact_parts,
+    artifact_without_seruro_unlocked,
+    host_lock_state_locked_from_seruro,
+    host_lock_state_unlocked_from_seruro,
+    animate_knows_self_subject,
+    animate_knows_self_object,
+    scias_lokon_via_en,
+    scias_lokon_via_sur,
 ]
-
-
-# ---------- factory: use_instrument (Phase 4) ---------------------------
-#
-# The old engine had a single dynamic `make_use_instrument(lex)` rule
-# that resolved each `uzi` event's instrument signature at match time.
-# The DSL reifies this: one rule per instrument-capable verb (tranĉi,
-# ŝlosi, purigi, najli, ...), generated from the lexicon. Each rule's
-# `when` pins the specific functional_signature it cares about, so
-# exactly one rule matches any given uzi event — same firing pattern,
-# but every rule is a first-class, introspectable value.
-
-def make_use_instrument_rules(lex: Lexicon) -> list[Rule]:
-    """Emit one causal rule per `derives_instrument` verb in the
-    lexicon. The synthesized event carries the verb's declared effects
-    as property_changes, matching the old engine's behavior.
-
-    Callers: `rules = DEFAULT_DSL_RULES + make_use_instrument_rules(lex)`.
-    """
-    out: list[Rule] = []
-    for verb in lex.actions.values():
-        if not verb.derives_instrument:
-            continue
-        theme_role = next(
-            (r for r in verb.roles if r.name == "theme"), None)
-        if theme_role is None:
-            continue
-        has_instrument_role = any(
-            r.name == "instrument" for r in verb.roles)
-
-        # Fresh variables per rule; each rule's scope is independent.
-        A = var("A")
-        INST = var("INST")
-        TH = var("TH")
-
-        # Theme-role entity constraints: type + any declared property
-        # requirements (RoleSpec.properties is dict[str, list[str]];
-        # the DSL constraint is scalar, so take the first value).
-        theme_constraints: dict[str, object] = {"type": theme_role.type}
-        for slot, values in (theme_role.properties or {}).items():
-            if values:
-                theme_constraints[slot] = values[0]
-
-        emit_roles: dict[str, object] = {"agent": A, "theme": TH}
-        if has_instrument_role:
-            emit_roles["instrument"] = INST
-        emission = emit(verb.lemma, **emit_roles)
-        for eff in verb.effects:
-            target_var = {"agent": A, "theme": TH, "instrument": INST}.get(
-                eff.target_role)
-            if target_var is None:
-                continue
-            emission = emission.changing(
-                target_var, eff.property, eff.value)
-
-        out.append(rule(
-            when=event("uzi",
-                       agent=bind(A),
-                       instrument=entity(functional_signature=verb.lemma)
-                                  & bind(INST),
-                       theme=entity(**theme_constraints) & bind(TH)),
-            then=emission,
-            name=f"use_for_{verb.lemma}",
-        ))
-    return out
 
 
 # Convenience bundle: all standalone rules, ordered to match the old
@@ -551,24 +1052,36 @@ def make_use_instrument_rules(lex: Lexicon) -> list[Rule]:
 # is what the Phase-4 parity tests assert.
 DEFAULT_DSL_RULES: list[Rule] = [
     fragile_falls_breaks,
+    bati_breaks_fragile,
+    vidi_learns_en,
+    vidi_learns_sur,
+    vidi_learns_havi_owner,
+    rakonti_transfers_fakto,
     hungry_eats_sated,
     manĝi_destroys_theme,
+    morti_destroys_self,
+    mortigi_causes_morti,
+    detrui_destroys_theme,
     container_falls_contents_fall,
     broken_container_releases_contents,
     person_slips_on_wet,
     rain_wets_contents,
     rain_creates_puddle,
-    carried_thing_falls_when_carrier_falls,
+    porti_drop_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
     preni_transfers_ownership,
     doni_transfers_ownership,
     meti_places_in_location,
     meti_places_on_surface,
     iri_moves_agent,
+    veni_moves_agent,
     veturi_moves_agent,
     ĵeti_releases_possession,
     kapti_takes_possession_from_nobody,
     kapti_takes_possession_from_owner,
+    skribi_creates_text,
+    viŝi_destroys_skribaĵo,
+    porti_establishes_carrying,
     # Previously factory-produced; now plain values after Phase 2.
     broken_fragile_creates_shards,
     wet_liquid_container_tips,

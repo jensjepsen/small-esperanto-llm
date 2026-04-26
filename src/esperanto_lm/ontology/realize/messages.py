@@ -72,9 +72,17 @@ class EventMessage(Message):
     theme — "Klara prenas la libron de Maria" — so the previous
     owner is narrated even though we suppress the separate
     "Maria ne plu havas" line.
+
+    `precondition` (optional): a `(entity_id, quality_lemma)` pair
+    naming a state that ENABLED this event (the verb or a rule
+    conditioned on it AND the entity actually has that value). Folded
+    into the rendered sentence as a `ĉar` ("because") clause — e.g.
+    "Maria manĝis la panon ĉar ŝi estis malsata." Pre-grounding the
+    same quality separately is suppressed by the planner.
     """
     event: Event
     source_entity_id: Optional[str] = None
+    precondition: Optional[tuple[str, str]] = None
 
 
 @dataclass(kw_only=True)
@@ -127,6 +135,19 @@ class CoordinatedMessage(Message):
     the full sentence planner.
     """
     children: list[Message] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
+class EntityQualityMessage(Message):
+    """'La X estas Y.' — predicative attribution of a quality to an
+    entity. Used in scene grounding to surface the random initial
+    state of varies-flagged slots ("La sofo estas malseka.",
+    "Hungra Maria parolis." — the attributive form is a stretch goal).
+
+    The quality is a Quality lemma (e.g. "ŝlosita", "malsata") and the
+    renderer outputs it directly as the adjective surface form."""
+    entity_id: str
+    quality_lemma: str
 
 
 @dataclass(kw_only=True)

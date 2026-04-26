@@ -1,16 +1,16 @@
 {"container_pattern": {"entity_type": "location"}, "contained": "pordo", "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "purigilo", "relation": "en"}
 {"container_pattern": {"contains": "pordo"}, "contained": "ŝlosilo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "muro", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "fenestro", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "tablo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "seĝo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "indoor"}}, "contained": "libro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "muro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "fenestro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "tablo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "seĝo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "libro", "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "animal", "relation": "en"}
-{"container": "kuirejo", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
-{"container": "manĝejo", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
-{"container": "salono", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
-{"container": "tablo", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "sur"}
+{"container": "kuirejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "manĝejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "salono", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "tablo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "sur"}
 {"container": "tablo", "contained": "glaso", "relation": "sur"}
 {"container": "tablo", "contained": "botelo", "relation": "sur"}
 {"container": "tablo", "contained": "korbo", "relation": "sur"}
@@ -23,9 +23,9 @@
 {"container": "breto", "contained": "libro", "relation": "sur"}
 {"container": "sofo", "contained": "libro", "relation": "sur"}
 {"container": "sofo", "contained": "korbo", "relation": "sur"}
-{"container": "glaso", "contained_pattern": {"property": {"state_of_matter": "liquid"}}, "relation": "en"}
-{"container": "botelo", "contained_pattern": {"property": {"state_of_matter": "liquid"}}, "relation": "en"}
-{"container": "korbo", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
+{"container": "glaso", "contained_pattern": {"property": {"state_of_matter": "likva"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "botelo", "contained_pattern": {"property": {"state_of_matter": "likva"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "korbo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "kuirejo", "contained": "tranĉilo", "relation": "en"}
 {"container": "kuirejo", "contained": "glaso", "relation": "en"}
 {"container": "kuirejo", "contained": "botelo", "relation": "en"}
@@ -66,9 +66,47 @@
 {"container": "hospitalo", "contained": "seĝo", "relation": "en"}
 {"container": "restoracio", "contained": "tablo", "relation": "en"}
 {"container": "restoracio", "contained": "seĝo", "relation": "en"}
-{"container": "restoracio", "contained_pattern": {"property": {"edibility": "edible"}}, "relation": "en"}
+{"container": "restoracio", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "vendejo", "contained": "breto", "relation": "en"}
 {"container": "vendejo", "contained": "korbo", "relation": "en"}
 {"container": "parko", "contained": "arbo", "relation": "en"}
 {"container": "parko", "contained": "floro", "relation": "en"}
 {"container": "parko", "contained": "seĝo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lito", "relation": "en"}
+{"container": "lito", "contained": "kuseno", "relation": "sur"}
+{"container": "lito", "contained": "matraco", "relation": "sur"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "ŝranko", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "telero", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "taso", "relation": "en"}
+{"container": "tablo", "contained": "telero", "relation": "sur"}
+{"container": "tablo", "contained": "taso", "relation": "sur"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "vazo", "relation": "en"}
+{"container": "kuirejo", "contained": "forko", "relation": "en"}
+{"container": "kuirejo", "contained": "kulero", "relation": "en"}
+{"container": "manĝejo", "contained": "forko", "relation": "en"}
+{"container": "manĝejo", "contained": "kulero", "relation": "en"}
+{"container": "laborejo", "contained": "martelo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "spegulo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lustro", "relation": "en"}
+{"container": "lavejo", "contained": "sapo", "relation": "en"}
+{"container": "lavejo", "contained": "spegulo", "relation": "en"}
+{"container": "ĝardeno", "contained": "herbo", "relation": "en"}
+{"container": "ĝardeno", "contained": "arbusto", "relation": "en"}
+{"container": "parko", "contained": "herbo", "relation": "en"}
+{"container": "parko", "contained": "arbusto", "relation": "en"}
+{"container": "kampo", "contained": "herbo", "relation": "en"}
+{"container": "valo", "contained": "herbo", "relation": "en"}
+{"container": "lago", "contained": "fiŝo", "relation": "en"}
+{"container": "maro", "contained": "fiŝo", "relation": "en"}
+{"container": "rivero", "contained": "fiŝo", "relation": "en"}
+{"container": "lago", "contained": "ŝipo", "relation": "en"}
+{"container": "maro", "contained": "ŝipo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "ombrelo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "mantelo", "relation": "en"}
+{"container": "parko", "contained": "pilko", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "pilko", "relation": "en"}
+{"container_pattern": {"entity_type": "location"}, "contained": "skatolo", "relation": "en"}
+{"container_pattern": {"entity_type": "location"}, "contained": "sako", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "aŭto", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "biciklo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "trajno", "relation": "en"}

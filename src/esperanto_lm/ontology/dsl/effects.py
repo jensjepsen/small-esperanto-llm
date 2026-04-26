@@ -63,7 +63,7 @@ def emit(action: str, **role_vars) -> Emit:
     attach property changes to the emitted event itself.
 
         emit("rompiĝi", theme=T)
-        emit("satiĝi", theme=A).changing(A, "hunger", "sated")
+        emit("satiĝi", theme=A).changing(A, "hunger", "sata")
     """
     return Emit(action, dict(role_vars))
 
@@ -80,6 +80,16 @@ class CreateEntity(Effect):
     # produce deterministic ids of the same shape the old engine used,
     # so trace parity holds across the migration.
     id_from: Optional[Var] = None
+    # Composite-id form: id = "{concept}_from_{p1}_{p2}_...". Each part
+    # is a Var (resolved per binding) or a literal string. Use when a
+    # single from_ value isn't unique enough — fakto entities encoding
+    # (relation, subject, object) need all three to dedupe correctly.
+    id_parts: Optional[tuple[Any, ...]] = None
+    # Per-instance properties applied at creation time (in addition to
+    # whatever the concept itself authors). Values can be Vars
+    # (resolved per binding) or literals. Avoids the synthetic-_change
+    # event roundtrip when the rule already knows the values.
+    initial_properties: Optional[dict[str, Any]] = None
 
     def reads(self) -> set[Var]:
         out: set[Var] = set()
@@ -87,6 +97,14 @@ class CreateEntity(Effect):
             out.add(self.concept)
         if self.id_from is not None:
             out.add(self.id_from)
+        if self.id_parts is not None:
+            for p in self.id_parts:
+                if isinstance(p, Var):
+                    out.add(p)
+        if self.initial_properties is not None:
+            for v in self.initial_properties.values():
+                if isinstance(v, Var):
+                    out.add(v)
         return out
 
     def writes(self) -> set[Var]:
@@ -97,16 +115,24 @@ def create_entity(
     concept: Var | str, as_var: Var, *,
     entity_id: Optional[str] = None,
     from_: Optional[Var] = None,
+    id_parts: Optional[tuple[Any, ...]] = None,
+    initial_properties: Optional[dict[str, Any]] = None,
 ) -> CreateEntity:
     """Bring a new entity into the trace. `as_var` is bound to the new
     entity id so subsequent effects can reference it.
 
         create_entity(concept=K, as_var=S)
-        create_entity(concept=K, as_var=S, from_=T)  # id = "{K}_from_{T}"
+        create_entity(concept=K, as_var=S, from_=T)
+            # id = "{K}_from_{T}"
+        create_entity(concept=K, as_var=S, id_parts=("en", T, L),
+                      initial_properties={"slot": V})
+            # id = "{K}_from_en_{T}_{L}", and the new entity has
+            # slot=V set at creation time
     """
     if not isinstance(as_var, Var):
         raise TypeError("create_entity: as_var must be a Var")
-    return CreateEntity(concept, as_var, entity_id, from_)
+    return CreateEntity(
+        concept, as_var, entity_id, from_, id_parts, initial_properties)
 
 
 # ------------------------- destroy_entity --------------------------

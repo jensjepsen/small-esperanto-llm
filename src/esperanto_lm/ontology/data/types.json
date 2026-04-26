@@ -3,6 +3,7 @@
   "animate": "physical",
   "inanimate": "physical",
   "location": "physical",
+  "collective": "physical",
   "person": "animate",
   "animal": "animate",
   "artifact": "inanimate",

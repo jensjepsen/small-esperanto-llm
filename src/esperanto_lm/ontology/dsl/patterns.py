@@ -145,7 +145,8 @@ class EntityPattern(Pattern):
 
     Constraint keys:
       `type` — required entity_type (subtype-checked via Lexicon).
-      `has_suffix` — lemma must end with this suffix.
+      `concept` — exact concept-lemma match.
+      `has_suffix` — concept lemma must end with this suffix.
       anything else — treated as a slot name; value must hold (asserted
                       or derived) on the entity at match time.
 
@@ -160,22 +161,39 @@ class EntityPattern(Pattern):
         ent = ctx.trace.entities.get(value)
         if ent is None:
             return
-        if _entity_matches(ent, self.constraints, ctx):
+        if _entity_matches(ent, self.constraints, ctx, bindings):
             yield bindings
 
     def search(self, ctx, bindings):
         for eid, ent in ctx.trace.entities.items():
-            if _entity_matches(ent, self.constraints, ctx):
+            if _entity_matches(ent, self.constraints, ctx, bindings):
                 yield bindings
 
 
-def _entity_matches(ent, constraints: dict[str, Any], ctx) -> bool:
+def _entity_matches(ent, constraints: dict[str, Any], ctx, bindings) -> bool:
     for key, expected in constraints.items():
+        # Var-valued constraints resolve from current bindings — lets
+        # patterns like `entity(pri_subjekto=SKA)` test "this fakto's
+        # pri_subjekto equals the entity bound to SKA". An unbound Var
+        # fails the match (no candidate value to compare against yet).
+        if isinstance(expected, Var):
+            resolved = bindings.get(expected)
+            if resolved is None:
+                return False
+            expected = resolved
         if key == "type":
             if not ctx.lexicon.types.is_subtype(ent.entity_type, expected):
                 return False
         elif key == "has_suffix":
             if not ent.concept_lemma.endswith(expected):
+                return False
+        elif key == "concept":
+            # Exact concept-lemma match — the entity instantiates this
+            # specific concept. Used by rules that key on a concept's
+            # identity (e.g. viŝi_destroys_skribaĵo matches themes
+            # whose concept is exactly "skribaĵo", not just any
+            # physical thing).
+            if ent.concept_lemma != expected:
                 return False
         else:
             # Slot lookup: check effective property (asserted | derived).
@@ -200,10 +218,11 @@ def _value_matches(actual, expected) -> bool:
 
 
 def entity(**constraints) -> EntityPattern:
-    """Match an entity by type and/or properties. Keys: `type`,
-    `has_suffix`, or any slot name.
+    """Match an entity by type, concept, and/or properties. Keys:
+    `type`, `concept`, `has_suffix`, or any slot name.
 
-        entity(type="artifact", fragility="fragile")
+        entity(type="artifact", fragility="fragila")
+        entity(concept="skribaĵo")
     """
     return EntityPattern(dict(constraints))
 
@@ -215,7 +234,7 @@ class RelPattern(Pattern):
     """Match a relation instance by name and arg patterns.
 
     `arg_patterns` is keyed by positional slot name (e.g. "container",
-    "contained" for "en"; "agent", "theme" for "uzi"-roles). Resolved
+    "contained" for "en"; "owner", "theme" for "havi"). Resolved
     at match time against the relation's declared arg order.
     """
     relation: str
@@ -233,13 +252,40 @@ class RelPattern(Pattern):
         rel_def = ctx.lexicon.relations.get(self.relation)
         if rel_def is None:
             return
+        # Source 1: asserted relations on the trace.
+        # Source 2: derived relations from the current derivation cycle.
+        # Symmetric relations yield matches for both arg orderings —
+        # `samloke(A, B)` should also satisfy a query for
+        # `rel("samloke", a=B, b=A)`.
+        seen: set[tuple[str, ...]] = set()
+        candidates: list[tuple[str, ...]] = []
         for r in ctx.trace.relations:
             if r.relation != self.relation:
                 continue
             if len(r.args) != len(rel_def.arg_names):
                 continue
+            if r.args not in seen:
+                seen.add(r.args)
+                candidates.append(r.args)
+        for (name, args) in ctx.derived.relations:
+            if name != self.relation:
+                continue
+            if len(args) != len(rel_def.arg_names):
+                continue
+            if args not in seen:
+                seen.add(args)
+                candidates.append(args)
+
+        for args in candidates:
             yield from _apply_args(
-                self.arg_patterns, rel_def.arg_names, r.args, ctx, bindings)
+                self.arg_patterns, rel_def.arg_names, args, ctx, bindings)
+            if rel_def.symmetric and len(args) == 2 and args[0] != args[1]:
+                swapped = (args[1], args[0])
+                if swapped not in seen:
+                    seen.add(swapped)
+                    yield from _apply_args(
+                        self.arg_patterns, rel_def.arg_names, swapped,
+                        ctx, bindings)
 
     def apply_to_value(self, value, ctx, bindings):
         # Rel is a relational existence check — no inherent "value"
@@ -321,7 +367,7 @@ def _apply_event_roles(role_patterns, ev, ctx, bindings):
 def event(action: str, **role_patterns) -> EventPattern:
     """Match a causal rule's triggering event.
 
-        event("fali", theme=entity(fragility="fragile") & bind(T))
+        event("fali", theme=entity(fragility="fragila") & bind(T))
     """
     return EventPattern(action, {k: _coerce(v) for k, v in role_patterns.items()})
 
@@ -554,12 +600,12 @@ class AndPattern(Pattern):
         # and apply the other as value-filter (or fall back to search).
         from_entity = _find_entity_source(self.left)
         if from_entity is not None:
-            for eid in _iter_entity_candidates(from_entity, ctx):
+            for eid in _iter_entity_candidates(from_entity, ctx, bindings):
                 yield from _value_or_search(self.right, eid, ctx, bindings)
             return
         from_entity = _find_entity_source(self.right)
         if from_entity is not None:
-            for eid in _iter_entity_candidates(from_entity, ctx):
+            for eid in _iter_entity_candidates(from_entity, ctx, bindings):
                 yield from _value_or_search(self.left, eid, ctx, bindings)
             return
         # Neither side enumerates entities — pure search composition.
@@ -588,18 +634,21 @@ def _find_entity_source(pattern: Pattern) -> Optional[Pattern]:
     return None
 
 
-def _iter_entity_candidates(pattern: Pattern, ctx):
+def _iter_entity_candidates(pattern: Pattern, ctx, bindings):
     """Enumerate distinct entity_ids matching an EntityPattern or an
     Or-union of them. Dedupes across branches so an entity matching
-    multiple branches yields once."""
+    multiple branches yields once. `bindings` lets EntityPattern
+    constraints with Var values resolve against the current bindings
+    (e.g. `entity(pri_subjekto=SKSA)` checks fakto.pri_subjekto ==
+    bindings[SKSA])."""
     if isinstance(pattern, EntityPattern):
         for eid, ent in ctx.trace.entities.items():
-            if _entity_matches(ent, pattern.constraints, ctx):
+            if _entity_matches(ent, pattern.constraints, ctx, bindings):
                 yield eid
     elif isinstance(pattern, OrPattern):
         seen: set[str] = set()
         for branch in (pattern.left, pattern.right):
-            for eid in _iter_entity_candidates(branch, ctx):
+            for eid in _iter_entity_candidates(branch, ctx, bindings):
                 if eid not in seen:
                     seen.add(eid)
                     yield eid

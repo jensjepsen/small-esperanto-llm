@@ -17,11 +17,12 @@ from __future__ import annotations
 from typing import Optional
 
 from ..causal import Event, RelationAssertion, Trace
-from ..loader import Lexicon, resolve_signature
+from ..loader import Lexicon
 from .messages import (
     AppearanceMessage,
     CoordinatedMessage,
     DestructionMessage,
+    EntityQualityMessage,
     EventMessage,
     GroupedRelationMessage,
     Message,
@@ -48,13 +49,25 @@ def plan_messages(
     attached to the destroying event's group.
     """
     messages: list[Message] = []
-    skip_uzi_ids = _use_instrument_skip_set(trace, lexicon)
 
     # 1. Scene grounding — implicit "X estis en la SCENE." lines for
     # non-person event participants without an explicit relation.
     for eid in _synthetic_grounding_targets(
             trace, scene_location_id, setup_relations):
         messages.append(SceneGroundingMessage(entity_id=eid))
+
+    # 1b. Compute event-attached preconditions (active causal triggers
+    # to fold into event sentences as "ĉar ..." clauses).
+    event_preconds = _event_preconditions(trace, lexicon)
+    # Entities whose precondition will be inlined — suppress separate
+    # quality grounding for those.
+    inlined_entities = {eid for (eid, _) in event_preconds.values()}
+
+    # 1c. Quality grounding — surface CAUSALLY RELEVANT transient
+    # states as standalone sentences ("La pordo estas fermita."), but
+    # skip entities whose state will be folded into a `ĉar` clause.
+    for msg in _quality_grounding_messages(trace, lexicon, inlined_entities):
+        messages.append(msg)
 
     # 2. Scene-setup relations — from the snapshot if provided, else
     # the (possibly mutated) current relations.
@@ -70,12 +83,11 @@ def plan_messages(
 
     # 4. Events, with per-event trailers.
     for ev in trace.events:
-        if ev.id in skip_uzi_ids:
-            continue
         messages.append(EventMessage(
             event=ev,
             cause_event_id=(ev.caused_by[0] if ev.caused_by else None),
-            source_entity_id=source_by_event.get(ev.id)))
+            source_entity_id=source_by_event.get(ev.id),
+            precondition=event_preconds.get(ev.id)))
 
         # Appearance lines for entities created by this event.
         for created in ev.creates:
@@ -91,6 +103,220 @@ def plan_messages(
             messages.append(dmsg)
 
     return messages
+
+
+# -------------------- helpers: salience-driven quality grounding -----
+
+def _extract_entity_constraints(patt) -> dict[str, object]:
+    """Walk a pattern tree, return slot-value constraints from any
+    EntityPattern under it. Skips type/concept/has_suffix (not slot
+    values). Conservatively under-extracts on Or/Not — those are
+    rare in our preconditions and over-extraction would surface
+    irrelevant slots."""
+    from ..dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern,
+    )
+    if isinstance(patt, EntityPattern):
+        return {k: v for k, v in patt.constraints.items()
+                if k not in ("type", "concept", "has_suffix")}
+    if isinstance(patt, AndPattern):
+        out = dict(_extract_entity_constraints(patt.left))
+        out.update(_extract_entity_constraints(patt.right))
+        return out
+    if isinstance(patt, BindPattern):
+        return {}
+    # OrPattern, NotPattern, etc. — skip
+    return {}
+
+
+def _event_preconditions(
+    trace: Trace, lexicon: Lexicon,
+) -> dict[str, tuple[str, str]]:
+    """For each event, find one ACTIVE precondition: an (entity_id,
+    quality_lemma) pair where some verb-role or rule-pattern conditions
+    on a slot AND the entity actually has the constraint's value.
+
+    Returns {event_id: (entity_id, quality_lemma)} for events that have
+    such a precondition. Used to:
+      (1) suppress separate quality grounding for that entity (the
+          quality is already going to be inlined),
+      (2) attach the precondition to the EventMessage so the renderer
+          emits a `ĉar` clause.
+
+    For events with multiple satisfied preconditions, picks
+    deterministically: alphabetical by role name, then by slot name.
+    """
+    from ..dsl.patterns import EventPattern
+    from ..dsl.rules import DEFAULT_DSL_RULES
+    rules = list(DEFAULT_DSL_RULES)
+
+    out: dict[str, tuple[str, str]] = {}
+    for ev in trace.events:
+        # Synthesized events (cause is non-empty) inherit causal
+        # connectives from their cause; skip ĉar for them.
+        if ev.caused_by:
+            continue
+        action = lexicon.actions.get(ev.action)
+        candidates: list[tuple[str, str, str]] = []  # (role, slot, expected)
+
+        # (a) Verb-level role property constraints.
+        if action is not None:
+            for role in action.roles:
+                if not role.properties:
+                    continue
+                if role.name not in ev.roles:
+                    continue
+                for slot, vals in role.properties.items():
+                    if vals:
+                        candidates.append((role.name, slot, vals[0]))
+
+        # (b) Rule-level constraints from any rule whose `when` is an
+        # EventPattern matching this event's action.
+        for rule in rules:
+            when = rule.when
+            if not isinstance(when, EventPattern):
+                continue
+            if when.action != ev.action:
+                continue
+            for role_name, role_patt in when.role_patterns.items():
+                if role_name not in ev.roles:
+                    continue
+                for slot, expected in _extract_entity_constraints(
+                        role_patt).items():
+                    if isinstance(expected, str):
+                        candidates.append((role_name, slot, expected))
+
+        # Filter to candidates whose actual entity value matches
+        # AND whose slot is varies-flagged (otherwise the precondition
+        # is identity, surfacing it as ĉar reads odd: "tranĉis ĉar
+        # estas solida"). Pick one deterministically.
+        candidates.sort()
+        for role_name, slot, expected in candidates:
+            slot_def = lexicon.slots.get(slot)
+            if slot_def is None or not getattr(slot_def, "varies", False):
+                continue
+            eid = ev.roles[role_name]
+            if not isinstance(eid, str):
+                continue
+            ent = trace.entities.get(eid)
+            if ent is None:
+                continue
+            actual = ent.properties.get(slot, [])
+            if isinstance(actual, list) and expected in actual:
+                out[ev.id] = (eid, expected)
+                break
+            if actual == expected:
+                out[ev.id] = (eid, expected)
+                break
+    return out
+
+
+def _salient_entity_slots(
+    trace: Trace, lexicon: Lexicon,
+) -> set[tuple[str, str]]:
+    """For each event in the trace, collect the (entity_id, slot_name)
+    pairs that are causally relevant — meaning either:
+      (a) the verb's role had a property constraint on that slot
+          (verb-level precondition), or
+      (b) a causal rule's `when` event matched the verb and constrained
+          a role on that slot (rule-level precondition like
+          hungry_eats_sated requiring agent.hunger=malsata).
+
+    Effects (slots the verb writes) are NOT included — those become
+    visible through the event narration and any state-change messages
+    that follow; pre-grounding them would be redundant.
+    """
+    relevant: set[tuple[str, str]] = set()
+
+    # (a) Verb-level role property constraints.
+    for ev in trace.events:
+        action = lexicon.actions.get(ev.action)
+        if action is None:
+            continue
+        for role in action.roles:
+            if not role.properties:
+                continue
+            if role.name not in ev.roles:
+                continue
+            eid = ev.roles[role.name]
+            if not isinstance(eid, str):
+                continue
+            for slot in role.properties.keys():
+                relevant.add((eid, slot))
+
+    # (b) Rule-level role property constraints. Late-import to avoid
+    # cycles with the realizer.
+    from ..dsl.patterns import EventPattern
+    from ..dsl.rules import DEFAULT_DSL_RULES
+    rules = list(DEFAULT_DSL_RULES)
+    for ev in trace.events:
+        for rule in rules:
+            when = rule.when
+            if not isinstance(when, EventPattern):
+                continue
+            if when.action != ev.action:
+                continue
+            for role_name, role_patt in when.role_patterns.items():
+                if role_name not in ev.roles:
+                    continue
+                eid = ev.roles[role_name]
+                if not isinstance(eid, str):
+                    continue
+                for slot in _extract_entity_constraints(role_patt).keys():
+                    relevant.add((eid, slot))
+
+    return relevant
+
+
+def _quality_grounding_messages(
+    trace: Trace, lexicon: Lexicon,
+    skip_entities: Optional[set[str]] = None,
+) -> list[Message]:
+    """Surface qualities that are CAUSALLY RELEVANT to the trace's
+    events: only (entity, slot) pairs that some verb or rule's
+    preconditions reference get pre-ground sentences.
+
+    `skip_entities`: entities whose precondition will be inlined into
+    an event sentence as a `ĉar` clause — skip standalone grounding
+    for them to avoid duplication.
+
+    This filters out atmospheric noise like "La sako estas malpura"
+    when nothing in the trace actually reads cleanliness. What survives
+    is preconditions that explain the events: "La pordo estas fermita."
+    landing before "Maria malfermis la pordon" only if some verb/rule
+    conditions on the theme's openness AND the precondition isn't
+    already being folded into the event sentence.
+
+    Skips persons (predicative form like "Maria estas malsata" reads
+    stilted in Esperanto; attributive "Hungra Maria" is the natural
+    shape but hasn't been built yet) and mid-trace creations (those
+    get AppearanceMessage instead)."""
+    salient = _salient_entity_slots(trace, lexicon)
+    skip = skip_entities or set()
+
+    out: list[Message] = []
+    seen: set[str] = set()  # at most one quality per entity
+    for (eid, slot_name) in sorted(salient):
+        if eid in seen or eid in skip:
+            continue
+        ent = trace.entities.get(eid)
+        if ent is None:
+            continue
+        if ent.entity_type == "person":
+            continue
+        if ent.created_at_event is not None:
+            continue
+        slot = lexicon.slots.get(slot_name)
+        if slot is None or not getattr(slot, "varies", False):
+            continue
+        value = ent.properties.get(slot_name)
+        if not value:
+            continue
+        quality = value[0] if isinstance(value, list) else value
+        out.append(EntityQualityMessage(
+            entity_id=eid, quality_lemma=quality))
+        seen.add(eid)
+    return out
 
 
 # -------------------- helpers: synthetic grounding -------------------
@@ -113,6 +339,15 @@ def _synthetic_grounding_targets(
     for r in rels:
         in_relations.update(r.args)
 
+    # Entities that are sub-entity-parts of something else (body parts,
+    # locks, etc.) shouldn't be grounded as independent scene contents
+    # — they surface via their host. Walk havas_parton, collect the
+    # parto-side ids.
+    is_part: set[str] = set()
+    for r in rels:
+        if r.relation == "havas_parton" and len(r.args) == 2:
+            is_part.add(r.args[1])
+
     in_events: set[str] = set()
     for ev in trace.events:
         for v in ev.roles.values():
@@ -127,6 +362,22 @@ def _synthetic_grounding_targets(
             continue
         ent = trace.entities.get(eid)
         if ent is None or ent.entity_type == "person":
+            continue
+        # Don't ground other locations as scene contents — they're
+        # destinations of motion (iri/veni/veturi) or otherwise
+        # parallel to the scene, not inside it. Saying "Estas oficejo
+        # en la insulo" is wrong both spatially and narratively.
+        if ent.entity_type == "location":
+            continue
+        # Skip abstract entities (faktos and the like) — they don't
+        # live in the scene's physical containment graph; saying
+        # "Fakto estis en la dormejo" is incoherent. Knowledge of the
+        # fakto surfaces via konas-relation prose instead.
+        if ent.entity_type == "abstract":
+            continue
+        # Skip sub-entity parts (body parts, locks). They surface via
+        # their host's prose, not as standalone scene contents.
+        if eid in is_part:
             continue
         if ent.created_at_event is not None:
             continue
@@ -253,39 +504,6 @@ def _destruction_messages_for_event(
             out.append(DestructionMessage(
                 entity_id=eid, cause_event_id=ev.id))
     return out
-
-
-# ------------------- helpers: use-instrument fusion -----------------
-
-def _use_instrument_skip_set(
-    trace: Trace, lexicon: Lexicon,
-) -> set[str]:
-    """Identify `uzi` events whose synthesized verb-event we'll render
-    instead. Same logic as the old realizer — kept here because it's a
-    planning-stage concern (decide which events to drop) rather than a
-    rendering concern."""
-    by_id = {e.id: e for e in trace.events}
-    skip: set[str] = set()
-    for e2 in trace.events:
-        if not e2.caused_by or len(e2.caused_by) != 1:
-            continue
-        e1 = by_id.get(e2.caused_by[0])
-        if e1 is None or e1.action != "uzi":
-            continue
-        instr_id = e1.roles.get("instrument")
-        if not instr_id:
-            continue
-        instr = trace.entity(instr_id)
-        if instr is None:
-            continue
-        instr_concept = lexicon.concepts.get(instr.concept_lemma)
-        if instr_concept is None:
-            continue
-        source = resolve_signature(lexicon, instr_concept)
-        if source is None or source.lemma != e2.action:
-            continue
-        skip.add(e1.id)
-    return skip
 
 
 # --------------------------- transforms -------------------------

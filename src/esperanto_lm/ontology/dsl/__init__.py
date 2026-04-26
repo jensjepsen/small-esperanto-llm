@@ -32,11 +32,12 @@ from .effects import (
     remove_relation,
 )
 from .engine import (
-    Derivation, Rule, collect_rules, derive, rule, run_dsl,
-    validate_against_lexicon,
+    Derivation, Rule, collect_rules, compute_derived_state, derive, rule,
+    run_dsl, validate_against_lexicon,
 )
 from .implications import (
-    Implication, PropertyImplication, property,
+    Implication, PropertyImplication, RelationImplication,
+    property, relation,
 )
 from .patterns import (
     AndPattern, BindPattern, CausedByPattern, ClosurePattern, EntityPattern,
@@ -60,9 +61,11 @@ __all__ = [
     "add_relation", "change", "create_entity", "destroy_entity", "emit",
     "remove_relation",
     # implications
-    "Implication", "PropertyImplication", "property",
+    "Implication", "PropertyImplication", "RelationImplication",
+    "property", "relation",
     # engine
-    "Derivation", "Rule", "collect_rules", "derive", "rule", "run_dsl",
+    "Derivation", "Rule", "collect_rules", "compute_derived_state",
+    "derive", "rule", "run_dsl",
     "validate_against_lexicon",
     # unifier
     "DerivedState", "MatchContext", "enumerate_bindings", "resolve",

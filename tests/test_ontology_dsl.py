@@ -64,11 +64,11 @@ def _build_lex() -> Lexicon:
         "tablo": Concept(lemma="tablo", entity_type="artifact", properties={}),
         "glaso": Concept(
             lemma="glaso", entity_type="artifact",
-            properties={"fragility": ["fragile"], "integrity": ["intact"],
+            properties={"fragility": ["fragila"], "integrity": ["tuta"],
                         "transforms_on_break": ["vitropecetoj"]}),
         "vitropecetoj": Concept(
             lemma="vitropecetoj", entity_type="inanimate",
-            properties={"fragility": ["sturdy"]}),
+            properties={"fragility": ["fortika"]}),
         "persono": Concept(
             lemma="persono", entity_type="person", properties={}),
         "floro": Concept(
@@ -143,7 +143,7 @@ def test_1_pattern_reuse_across_rules(lex):
     # Reused in a derivation.
     wooden_flammable = derive(
         when=WOODEN,
-        implies=property(T, "flammability", "flammable"),
+        implies=property(T, "flammability", "brulebla"),
         name="wooden_flammable")
 
     # Reused in a causal rule (same pattern, different context).
@@ -249,7 +249,7 @@ def test_4_negation_in_given(lex):
     """~rel(...) composes as a conjunctive clause."""
     T = var("T")
     orphan_fragile_breaks = rule(
-        when=event("fali", theme=entity(fragility="fragile") & bind(T)),
+        when=event("fali", theme=entity(fragility="fragila") & bind(T)),
         given=[~rel("en", container=bind(var("anyC")), contained=T)],
         then=emit("rompiĝi", theme=T),
         name="orphan_fragile_breaks")
@@ -280,7 +280,7 @@ def test_5_simple_derivation(lex):
     T = var("T")
     wooden_flammable = derive(
         when=entity(made_of="wood") & bind(T),
-        implies=property(T, "flammability", "flammable"),
+        implies=property(T, "flammability", "brulebla"),
         name="wooden_flammable")
 
     t = Trace()
@@ -294,7 +294,7 @@ def test_5_simple_derivation(lex):
     # observable: a causal rule that matches on the derived property.
     T2 = var("T2")
     bruli_if_flammable = rule(
-        when=event("fali", theme=entity(flammability="flammable") & bind(T2)),
+        when=event("fali", theme=entity(flammability="brulebla") & bind(T2)),
         then=emit("bruli", theme=T2),
         name="bruli_if_flammable")
 
@@ -317,11 +317,11 @@ def test_6_chained_derivation(lex):
 
     wooden_flammable = derive(
         when=entity(made_of="wood") & bind(T),
-        implies=property(T, "flammability", "flammable"),
+        implies=property(T, "flammability", "brulebla"),
         name="wooden_flammable")
 
     flammable_ignitable = derive(
-        when=entity(flammability="flammable") & bind(T2),
+        when=entity(flammability="brulebla") & bind(T2),
         implies=property(T2, "ignitable", "yes"),
         name="flammable_ignitable")
 
@@ -355,7 +355,7 @@ def test_7_asserted_overrides_derived(lex):
     T = var("T")
     wooden_flammable = derive(
         when=entity(made_of="wood") & bind(T),
-        implies=property(T, "flammability", "flammable"),
+        implies=property(T, "flammability", "brulebla"),
         name="wooden_flammable")
 
     t = Trace()
@@ -366,7 +366,7 @@ def test_7_asserted_overrides_derived(lex):
 
     T2 = var("T2")
     fires_if_flammable = rule(
-        when=event("fali", theme=entity(flammability="flammable") & bind(T2)),
+        when=event("fali", theme=entity(flammability="brulebla") & bind(T2)),
         then=emit("bruli", theme=T2),
         name="fires_if_flammable")
 
@@ -434,19 +434,19 @@ def test_8_reversal_on_condition_failure(lex):
 # =========================================================================
 
 def test_9_causal_rule_matches_derived_property(lex):
-    """A derivation produces flammability='flammable' on a wooden thing.
-    A causal rule matching entity(flammability='flammable') fires on
+    """A derivation produces flammability='brulebla' on a wooden thing.
+    A causal rule matching entity(flammability='brulebla') fires on
     that wooden thing. Derivations are transparent to the causal
     matcher."""
     T = var("T")
     wooden_flammable = derive(
         when=entity(made_of="wood") & bind(T),
-        implies=property(T, "flammability", "flammable"),
+        implies=property(T, "flammability", "brulebla"),
         name="wooden_flammable")
 
     T2 = var("T2")
     falling_flammable_burns = rule(
-        when=event("fali", theme=entity(flammability="flammable") & bind(T2)),
+        when=event("fali", theme=entity(flammability="brulebla") & bind(T2)),
         then=emit("bruli", theme=T2),
         name="falling_flammable_burns")
 
