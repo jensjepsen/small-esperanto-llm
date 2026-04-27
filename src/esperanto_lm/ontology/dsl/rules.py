@@ -999,6 +999,55 @@ has_fins_can_swim = derive(
 )
 
 
+# A location is a body of water if some likva-state thing is part-of
+# or en it. Two derivations to cover both routes: lakes/seas/rivers
+# declare `parts: [{"concept": "akvo"}]` (auto-instantiated by the
+# sampler — the water is "built in"), while a piscino or barelo with
+# water poured in gets the same affordance via `en`. Same shape, same
+# implies; the only difference is which relation surfaces the link
+# between the location and the water inside it.
+
+location_water_body_via_part = derive(
+    when=entity(type="location") & bind(LwbL := var("L")),
+    given=[
+        rel("havas_parton",
+            tuto=LwbL,
+            parto=entity(state_of_matter="likva")),
+    ],
+    implies=property(LwbL, "water_body", "yes"),
+    name="location_water_body_via_part",
+)
+
+
+location_water_body_via_en = derive(
+    when=entity(type="location") & bind(LweL := var("L")),
+    given=[
+        rel("en",
+            contained=entity(state_of_matter="likva"),
+            container=LweL),
+    ],
+    implies=property(LweL, "water_body", "yes"),
+    name="location_water_body_via_en",
+)
+
+
+# An entity inside a body of water is in_water. Built on top of
+# water_body: the part-vs-en distinction is already absorbed there,
+# so this derivation just chains "T en L" + "L is a water_body".
+# Same shape as agent_illuminated (entity en a luma location →
+# illuminated) — single free var L which the planner can subgoal.
+
+entity_in_water_from_water_body = derive(
+    when=entity(type="physical") & bind(IwT := var("T")),
+    given=[
+        rel("en", contained=IwT, container=bind(IwL := var("L"))),
+        entity(water_body="yes") & bind(IwL),
+    ],
+    implies=property(IwT, "in_water", "yes"),
+    name="entity_in_water_from_water_body",
+)
+
+
 # Person concepts inherit canonical human parts. Authored persons
 # (persono, knabo, amiko, ...) declare these directly; this rule
 # materializes them onto AFFIX-DERIVED person concepts (kuiristo,
@@ -1366,6 +1415,9 @@ DEFAULT_DSL_DERIVATIONS = [
     has_paws_can_walk,
     has_wings_can_fly,
     has_fins_can_swim,
+    location_water_body_via_part,
+    location_water_body_via_en,
+    entity_in_water_from_water_body,
     person_has_human_parts,
     has_hands_can_use_tools,
     animate_has_hunger,

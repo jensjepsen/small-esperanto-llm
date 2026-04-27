@@ -32,3 +32,5 @@
 {"name": "lit_state", "vocabulary": ["luma", "malluma"], "applies_to": ["location"], "scalar": true}
 {"name": "illuminated", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
 {"name": "motorized", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
+{"name": "in_water", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "water_body", "vocabulary": ["yes"], "applies_to": ["location"], "scalar": true}
