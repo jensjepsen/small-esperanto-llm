@@ -3838,12 +3838,43 @@ def regress_for_vehicle(lex, rng):
     if not vehicles:
         return None
 
-    locations = [l for l, c in lex.concepts.items()
-                 if lex.types.is_subtype(c.entity_type, "location")]
-    if len(locations) < 2:
+    # Group locations by which terrain affordance their declared
+    # parts produce. Filters scenes/destinations to the vehicle's
+    # habitat — keeps the planner from generating "trajno en
+    # salono" or "ŝipo al kuirejo". MatchPrecondition (deferred) will
+    # enforce the same constraint at the planner level; for now this
+    # seeder bias plus the existing role.properties machinery is
+    # enough to clean up the prose.
+    def _locations_with_part(part_concept):
+        return [l for l, c in lex.concepts.items()
+                if lex.types.is_subtype(c.entity_type, "location")
+                and any(p.concept == part_concept for p in c.parts)]
+    terrain_to_locs = {
+        "land": _locations_with_part("vojo"),
+        "rail": _locations_with_part("relo"),
+        "water": [l for l, c in lex.concepts.items()
+                  if lex.types.is_subtype(c.entity_type, "location")
+                  and any(p.concept == "akvo" for p in c.parts)],
+    }
+
+    # Pick vehicle first, then constrain locations to its habitat.
+    vehicle_concept = rng.choice(vehicles)
+    veh_terrain = (lex.concepts[vehicle_concept]
+                   .properties.get("terrain", []))
+    compatible_locs: list[str] = []
+    for terr in veh_terrain:
+        compatible_locs.extend(terrain_to_locs.get(terr, []))
+    # Vehicles without a terrain tag (none currently, but defensive)
+    # fall back to any location.
+    if not compatible_locs:
+        compatible_locs = [
+            l for l, c in lex.concepts.items()
+            if lex.types.is_subtype(c.entity_type, "location")]
+    compatible_locs = list(set(compatible_locs))
+    if len(compatible_locs) < 2:
         return None
-    scene_lemma = rng.choice(locations)
-    away_lemma = rng.choice([l for l in locations if l != scene_lemma])
+    scene_lemma = rng.choice(compatible_locs)
+    away_lemma = rng.choice([l for l in compatible_locs if l != scene_lemma])
 
     t = Trace()
     try:
@@ -3868,7 +3899,6 @@ def regress_for_vehicle(lex, rng):
     except (KeyError, ValueError):
         return None
 
-    vehicle_concept = rng.choice(vehicles)
     vehicle_eid = vehicle_concept
     suffix = 0
     while vehicle_eid in t.entities:

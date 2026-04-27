@@ -1031,6 +1031,49 @@ location_water_body_via_en = derive(
 )
 
 
+# Habitat surfaces: a location's terrain is whatever its parts
+# afford. Vehicles declare a matching `terrain` value intrinsically
+# (aŭto/biciklo=land, trajno=rail, ŝipo=water). When MatchPrecondition
+# lands, veturi will gate instrument.terrain ⊆ destination.terrain;
+# until then these derivations supply the data side and let the
+# vehicle seeder bias placement.
+
+location_terrain_land_via_part = derive(
+    when=entity(type="location") & bind(LtlL := var("L")),
+    given=[
+        rel("havas_parton",
+            tuto=LtlL,
+            parto=entity(concept="vojo")),
+    ],
+    implies=property(LtlL, "terrain", "land"),
+    name="location_terrain_land_via_part",
+)
+
+
+location_terrain_rail_via_part = derive(
+    when=entity(type="location") & bind(LtrL := var("L")),
+    given=[
+        rel("havas_parton",
+            tuto=LtrL,
+            parto=entity(concept="relo")),
+    ],
+    implies=property(LtrL, "terrain", "rail"),
+    name="location_terrain_rail_via_part",
+)
+
+
+location_terrain_water_via_part = derive(
+    when=entity(type="location") & bind(LtwL := var("L")),
+    given=[
+        rel("havas_parton",
+            tuto=LtwL,
+            parto=entity(state_of_matter="likva")),
+    ],
+    implies=property(LtwL, "terrain", "water"),
+    name="location_terrain_water_via_part",
+)
+
+
 # An entity inside a body of water is in_water. Built on top of
 # water_body: the part-vs-en distinction is already absorbed there,
 # so this derivation just chains "T en L" + "L is a water_body".
@@ -1417,6 +1460,9 @@ DEFAULT_DSL_DERIVATIONS = [
     has_fins_can_swim,
     location_water_body_via_part,
     location_water_body_via_en,
+    location_terrain_land_via_part,
+    location_terrain_rail_via_part,
+    location_terrain_water_via_part,
     entity_in_water_from_water_body,
     person_has_human_parts,
     has_hands_can_use_tools,
