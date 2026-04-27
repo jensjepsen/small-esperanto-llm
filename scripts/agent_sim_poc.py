@@ -3958,6 +3958,9 @@ def regress_for_vehicle(lex, rng):
         "water": [l for l, c in lex.concepts.items()
                   if lex.types.is_subtype(c.entity_type, "location")
                   and any(p.concept == "akvo" for p in c.parts)],
+        "air": [l for l, c in lex.concepts.items()
+                if lex.types.is_subtype(c.entity_type, "location")
+                and "ekstera" in c.properties.get("indoor_outdoor", [])],
     }
 
     # Pick vehicle first, then constrain locations to its habitat.

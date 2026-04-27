@@ -1120,6 +1120,18 @@ location_terrain_indoor_via_indoor_outdoor = derive(
 )
 
 
+# Outdoor places carry an `air` terrain — the sky over them. Lets
+# aviadilo (terrain=[air, land]) and pure fliers (papilio, abelo
+# with terrain=[air]) match outdoor destinations through the air
+# axis. Indoor locations get no air, so insects don't eniri kitchens
+# and aviadilo doesn't try to land on a salono.
+location_terrain_air_via_outdoor = derive(
+    when=entity(type="location", indoor_outdoor="ekstera") & bind(LtaL := var("L")),
+    implies=property(LtaL, "terrain", "air"),
+    name="location_terrain_air_via_outdoor",
+)
+
+
 # Animate terrain comes from locomotion: walkers go on land and into
 # buildings, swimmers go in water, fliers in air (and can land too),
 # slitherers on land. The terrain slot is non-scalar so an animate
@@ -1585,6 +1597,7 @@ DEFAULT_DSL_DERIVATIONS = [
     location_terrain_rail_via_part,
     location_terrain_water_via_part,
     location_terrain_indoor_via_indoor_outdoor,
+    location_terrain_air_via_outdoor,
     animate_terrain_land_from_walk,
     animate_terrain_indoor_from_walk,
     animate_terrain_water_from_swim,
