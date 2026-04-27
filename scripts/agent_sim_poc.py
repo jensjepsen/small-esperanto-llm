@@ -412,6 +412,9 @@ def _find_relation_adders(rules, relation):
       ("role", role_name) — Var bound by event_pat's role pattern
       ("created", create_entity_eff) — Var bound by a create_entity in
                                        the same `then` (e.g. fakto)
+      ("given", given_pat, arg_name) — Var bound by a `given` rel
+                                       pattern's named arg (e.g. legi
+                                       extracts a fakto via priskribas)
     Args that can't be sourced fail the rule entirely."""
     out = []
     for rule in rules:
@@ -426,6 +429,21 @@ def _find_relation_adders(rules, relation):
         for eff in effects:
             if isinstance(eff, CreateEntity):
                 var_to_creator[id(eff.as_var)] = eff
+        # Vars bound by `given` rel patterns (not also event-role-bound).
+        # Lets rules like legi_extracts_fakto — where the konas fakto
+        # is sourced from a priskribas given clause rather than an
+        # event role — surface as konas-adders to the planner.
+        var_to_given: dict[int, tuple] = {}
+        for g_pat in (rule.given or ()):
+            if not isinstance(g_pat, RelPattern):
+                continue
+            for arg_name, arg_pat in g_pat.arg_patterns.items():
+                v = _bind_var_in_pattern(arg_pat)
+                if v is None:
+                    continue
+                if id(v) in var_to_role or id(v) in var_to_creator:
+                    continue
+                var_to_given.setdefault(id(v), (g_pat, arg_name))
         for eff in effects:
             if not isinstance(eff, AddRelation):
                 continue
@@ -440,6 +458,9 @@ def _find_relation_adders(rules, relation):
                     arg_sources.append(("role", var_to_role[id(arg)]))
                 elif id(arg) in var_to_creator:
                     arg_sources.append(("created", var_to_creator[id(arg)]))
+                elif id(arg) in var_to_given:
+                    g_pat, arg_name = var_to_given[id(arg)]
+                    arg_sources.append(("given", g_pat, arg_name))
                 else:
                     arg_sources.append(None)
             if all(s is not None for s in arg_sources):
@@ -486,6 +507,38 @@ def _plan_cache_key(plan):
 
 
 _SLOT_PRODUCERS_CACHE: dict[int, dict[tuple[str, str], bool]] = {}
+
+
+def _chain_richness_weight(candidate, lex) -> float:
+    """Score a relation-adder candidate by how many subgoals its
+    selection would create — proxy for chain length. Counts
+    action.preconditions + total slots across all role.properties.
+    Used as a weight in candidate-shuffling so chain-rich verbs
+    (veturi vs iri for `en` goals) surface longer narratives."""
+    _rule, event_pat, _arg_sources = candidate
+    action = lex.actions.get(event_pat.action)
+    if action is None:
+        return 1.0
+    score = 1 + len(action.preconditions)
+    for role in action.roles:
+        score += len(role.properties)
+    return float(score)
+
+
+def _weighted_shuffle(items, weights, rng):
+    """Return items in a weighted-random order: higher weight → more
+    likely to appear earlier. Uses iterative weighted sampling without
+    replacement. Falls back to uniform shuffle when all weights are
+    equal."""
+    if len(items) <= 1:
+        return list(items)
+    out = []
+    pool = list(zip(items, weights))
+    while pool:
+        ws = [w for _, w in pool]
+        idx = rng.choices(range(len(pool)), weights=ws, k=1)[0]
+        out.append(pool.pop(idx)[0])
+    return out
 
 
 def _slot_value_producible(slot: str, value: str, lex) -> bool:
@@ -834,12 +887,20 @@ def plan_to_establish_relation(relation, target_args, actor_id,
                 and "agent" not in role_arg_names)
             return 0 if actor_will_bind else 1
         rel_candidates.sort(key=_priority)
-    # Shuffle equally-ranked verbs so different runs surface different
-    # chain shapes (e.g. rakonti vs respondi vs montri for konas).
-    # Falls through to deterministic order when no rng is set.
+    # Weighted shuffle of equally-priority candidates so chain-rich
+    # verbs (more preconditions / role-properties → more subgoaling
+    # potential) are picked more often, surfacing longer chains
+    # naturally. Without the weight, the shuffle was uniform and the
+    # planner reliably picked the verb with fewest preconditions
+    # (`iri` over `veturi`), making rich chains rare. Weight is just
+    # a count of action.preconditions + total role.properties — pure
+    # data, no per-verb hardcoding.
     _shuffle_rng = _PLANNER_RNG.get()
     if _shuffle_rng is not None:
-        _shuffle_rng.shuffle(rel_candidates)
+        rel_candidates = _weighted_shuffle(
+            rel_candidates,
+            [_chain_richness_weight(c, lex) for c in rel_candidates],
+            _shuffle_rng)
 
     for rule, event_pat, arg_sources in rel_candidates:
         action = lex.actions.get(event_pat.action)
@@ -935,6 +996,53 @@ def plan_to_establish_relation(relation, target_args, actor_id,
                         ok = False
                         break
                     predetermined[id(other_arg)] = found_value
+                if not ok:
+                    break
+            elif src[0] == "given":
+                _tag, g_pat, fixed_arg_name = src
+                rel_def = lex.relations.get(g_pat.relation)
+                if rel_def is None:
+                    ok = False
+                    break
+                arg_names = list(rel_def.arg_names)
+                if fixed_arg_name not in arg_names:
+                    ok = False
+                    break
+                fixed_idx = arg_names.index(fixed_arg_name)
+                # Find a trace relation matching g_pat with fixed
+                # arg = target_eid; bind the other-arg Vars from the
+                # trace's actual values via `predetermined`. Mirrors
+                # the sibling-AddRelation back-derivation used by the
+                # ("created", ...) branch above.
+                match_args = None
+                for asserted in trace.relations:
+                    if asserted.relation != g_pat.relation:
+                        continue
+                    if len(asserted.args) != len(arg_names):
+                        continue
+                    if asserted.args[fixed_idx] != target_eid:
+                        continue
+                    match_args = asserted.args
+                    break
+                if match_args is None:
+                    ok = False
+                    break
+                for other_name, other_pat in g_pat.arg_patterns.items():
+                    if other_name == fixed_arg_name:
+                        continue
+                    other_var = _bind_var_in_pattern(other_pat)
+                    if other_var is None:
+                        continue
+                    if other_name not in arg_names:
+                        ok = False
+                        break
+                    other_idx = arg_names.index(other_name)
+                    other_value = match_args[other_idx]
+                    existing = predetermined.get(id(other_var))
+                    if existing is not None and existing != other_value:
+                        ok = False
+                        break
+                    predetermined[id(other_var)] = other_value
                 if not ok:
                     break
         if not ok:
@@ -3572,6 +3680,8 @@ def sample_regression_scene(lex, rng, *, rules=None):
         verb = rng.choice(pool)
         if verb == "demandi":
             result = regress_for_demandi(lex, rng)
+        elif verb == "legi":
+            result = regress_for_legi(lex, rng)
         elif verb in konas_pool:
             result = regress_for_konas_verb(verb, lex, rng)
         else:
@@ -3685,6 +3795,124 @@ def regress_for_demandi(lex, rng):
     # needing the knower to vidi the target themselves.
     try:
         t.assert_relation("konas", (knower_eid, fakto_id), lex)
+    except (KeyError, ValueError):
+        return None
+
+    drive = ("knowledge", actor_eid, actor_eid, fakto_id)
+    return t, scene_id, drive
+
+
+def regress_for_legi(lex, rng):
+    """Build a scene where the actor wants to know a fakto and a
+    readable artifact (libro / papero) sits in the scene with a
+    pre-asserted `priskribas` link to that fakto. Drive is
+    `("knowledge", actor, actor, fakto)` — the planner picks legi
+    because the text is samloke and the priskribas relation makes
+    legi's rule applicable.
+
+    Mirrors the regress_for_demandi structure: actor placed in scene,
+    target physical entity placed elsewhere, fakto pre-created from
+    (en, target, target_loc), readable text seeded with priskribas →
+    fakto. Iri-to-text isn't needed since the text starts samloke."""
+    from esperanto_lm.ontology.sampler import _add_entity_randomized
+    from esperanto_lm.ontology.causal import EntityInstance
+
+    readables = [
+        c.lemma for c in lex.concepts.values()
+        if "legebla" in c.properties.get("readability", [])
+    ]
+    if not readables:
+        return None
+
+    locations = [l for l, c in lex.concepts.items()
+                 if lex.types.is_subtype(c.entity_type, "location")]
+    if not locations:
+        return None
+    scene_lemma = rng.choice(locations)
+    away_pool = [l for l in locations if l != scene_lemma]
+    away_lemma = rng.choice(away_pool) if away_pool else scene_lemma
+
+    t = Trace()
+    try:
+        _add_entity_randomized(t, scene_lemma, lex, rng,
+                                entity_id=scene_lemma)
+        if away_lemma != scene_lemma:
+            _add_entity_randomized(t, away_lemma, lex, rng,
+                                    entity_id=away_lemma)
+    except (KeyError, ValueError):
+        return None
+    scene_id = scene_lemma
+
+    persons = [c.lemma for c in lex.concepts.values()
+               if c.entity_type == "person"]
+    if not persons:
+        return None
+    actor_concept = rng.choice(persons)
+    actor_eid = rng.choice(PERSON_NAMES)
+    try:
+        _add_entity_randomized(t, actor_concept, lex, rng,
+                                entity_id=actor_eid)
+        t.assert_relation("en", (actor_eid, scene_id), lex)
+    except (KeyError, ValueError):
+        return None
+
+    text_concept = rng.choice(readables)
+    text_eid = text_concept
+    suffix = 0
+    while text_eid in t.entities:
+        suffix += 1
+        text_eid = f"{text_concept}_{suffix}"
+    # Half the time, place the text in `away_lemma` so the planner
+    # has to chain iri → legi (and possibly iri-back → instrui /
+    # rakonti). Same coin-flip pattern the demandi seeder uses to
+    # force locomotion in front of the knowledge verb.
+    text_loc = (away_lemma if (away_lemma != scene_id and rng.random() < 0.5)
+                else scene_id)
+    try:
+        _add_entity_randomized(t, text_concept, lex, rng,
+                                entity_id=text_eid)
+        t.assert_relation("en", (text_eid, text_loc), lex)
+    except (KeyError, ValueError):
+        return None
+
+    physical_concepts = [
+        c.lemma for c in lex.concepts.values()
+        if lex.types.is_subtype(c.entity_type, "physical")
+        and c.entity_type != "person"
+        and not lex.types.is_subtype(c.entity_type, "location")
+    ]
+    if not physical_concepts:
+        return None
+    target_concept = rng.choice(physical_concepts)
+    target_eid = target_concept
+    while target_eid in t.entities:
+        suffix += 1
+        target_eid = f"{target_concept}_{suffix}"
+    target_loc = away_lemma
+    try:
+        _add_entity_randomized(t, target_concept, lex, rng,
+                                entity_id=target_eid)
+        t.assert_relation("en", (target_eid, target_loc), lex)
+    except (KeyError, ValueError):
+        return None
+
+    fakto_concept = lex.concepts.get("fakto")
+    if fakto_concept is None:
+        return None
+    fakto_id = f"fakto_from_en_{target_eid}_{target_loc}"
+    if fakto_id not in t.entities:
+        t.entities[fakto_id] = EntityInstance(
+            id=fakto_id, concept_lemma="fakto",
+            entity_type=fakto_concept.entity_type,
+            properties={"pri_relacio": ["en"]},
+        )
+        try:
+            t.assert_relation("subjekto", (fakto_id, target_eid), lex)
+            t.assert_relation("objekto", (fakto_id, target_loc), lex)
+        except (KeyError, ValueError):
+            return None
+    try:
+        t.assert_relation("priskribas", (text_eid, fakto_id), lex)
     except (KeyError, ValueError):
         return None
 

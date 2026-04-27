@@ -524,6 +524,28 @@ skribi_creates_text = rule(
 )
 
 
+# When the writer already konas a fakto, the produced skribaĵo
+# carries that fakto via `priskribas` — text records what the
+# author knows. Downstream `legi_extracts_fakto` then propagates the
+# fakto to readers. Split from skribi_creates_text so the base case
+# (writing produces a blank text) still fires when the agent has
+# nothing to record.
+skribi_records_fakto = rule(
+    when=event("skribi",
+               agent=bind(SrA := var("A")),
+               theme=bind(SrT := var("T"))),
+    given=[
+        rel("konas", knower=SrA, fakto=bind(SrF := var("F"))),
+    ],
+    then=[
+        create_entity(concept="skribaĵo",
+                      as_var=(SrS := var("S")), from_=SrT),
+        add_relation("priskribas", SrS, SrF),
+    ],
+    name="skribi_records_fakto",
+)
+
+
 # ---------- causal: viŝi_destroys_skribaĵo -----------------------------
 #
 # Wiping is the symmetric inverse of writing: when viŝi targets a
@@ -730,6 +752,39 @@ montri_shows_location = rule(
         add_relation("konas", MNR, MNF),
     ],
     name="montri_shows_location",
+)
+
+
+# `instrui` (teach) is rakonti's pedagogical sibling — same shape
+# (agent transfers a fakto they konas to a recipient) and same
+# semantics. Distinct lemma gives the realizer a verb choice for
+# instructional contexts (instructor → student) vs narrative ones
+# (storyteller → listener); the engine treats them identically.
+instrui_transfers_fakto = rule(
+    when=event("instrui",
+               agent=bind(ITA := var("A")),
+               theme=bind(ITT := var("T")),
+               recipient=bind(ITR := var("R"))),
+    then=add_relation("konas", ITR, ITT),
+    name="instrui_transfers_fakto",
+)
+
+
+# `legi` (read) extracts a fakto from a text. Asynchronous knowledge
+# transfer: where rakonti requires the source to be physically
+# present, legi only needs the reader to be samloke with the text.
+# The text-to-fakto link comes from `priskribas(text, fakto)`, set
+# either at scene init (regression seed) or by skribi_creates_text
+# when the writer konas a fakto they wanted to record.
+legi_extracts_fakto = rule(
+    when=event("legi",
+               agent=bind(LeA := var("A")),
+               theme=bind(LeT := var("T"))),
+    given=[
+        rel("priskribas", text=LeT, fakto=bind(LeF := var("F"))),
+    ],
+    then=add_relation("konas", LeA, LeF),
+    name="legi_extracts_fakto",
 )
 
 
@@ -1249,6 +1304,8 @@ DEFAULT_DSL_RULES: list[Rule] = [
     demandi_extracts_fakto,
     respondi_transfers_fakto,
     montri_shows_location,
+    instrui_transfers_fakto,
+    legi_extracts_fakto,
     hungry_eats_sated,
     manĝi_destroys_theme,
     morti_destroys_self,
@@ -1273,6 +1330,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     kapti_takes_possession_from_nobody,
     kapti_takes_possession_from_owner,
     skribi_creates_text,
+    skribi_records_fakto,
     viŝi_destroys_skribaĵo,
     porti_establishes_carrying,
     # Previously factory-produced; now plain values after Phase 2.
