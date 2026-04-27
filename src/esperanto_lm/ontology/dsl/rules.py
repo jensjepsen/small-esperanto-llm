@@ -395,7 +395,7 @@ iri_moves_agent = rule(
     ],
     then=[
         remove_relation("en", IA, IO),
-        add_relation("en", IA, ID),
+        add_relation("apud", IA, ID),
     ],
     name="iri_moves_agent",
 )
@@ -416,7 +416,7 @@ veni_moves_agent = rule(
     ],
     then=[
         remove_relation("en", VnA, VnO),
-        add_relation("en", VnA, VnD),
+        add_relation("apud", VnA, VnD),
     ],
     name="veni_moves_agent",
 )
@@ -442,7 +442,7 @@ kuri_moves_agent = rule(
     ],
     then=[
         remove_relation("en", KrA, KrO),
-        add_relation("en", KrA, KrD),
+        add_relation("apud", KrA, KrD),
     ],
     name="kuri_moves_agent",
 )
@@ -473,13 +473,13 @@ naĝi_moves_agent = rule(
 eniri_enters_location = rule(
     when=event("eniri",
                agent=bind(EnA := var("A")),
-               destination=bind(EnD := var("D"))),
+               theme=bind(EnT := var("T"))),
     given=[
-        rel("apud", subject=EnA, neighbor=EnD),
+        rel("apud", subject=EnA, neighbor=EnT),
     ],
     then=[
-        remove_relation("apud", EnA, EnD),
-        add_relation("en", EnA, EnD),
+        remove_relation("apud", EnA, EnT),
+        add_relation("en", EnA, EnT),
     ],
     name="eniri_enters_location",
 )
@@ -494,7 +494,7 @@ flugi_moves_agent = rule(
     ],
     then=[
         remove_relation("en", FgA, FgO),
-        add_relation("en", FgA, FgD),
+        add_relation("apud", FgA, FgD),
     ],
     name="flugi_moves_agent",
 )
@@ -518,7 +518,7 @@ sekvi_brings_agent_to_theme = rule(
     ],
     then=[
         remove_relation("en", SqA, SqO),
-        add_relation("en", SqA, SqL),
+        add_relation("apud", SqA, SqL),
     ],
     name="sekvi_brings_agent_to_theme",
 )
@@ -541,7 +541,7 @@ voki_summons_theme = rule(
     ],
     then=[
         remove_relation("en", VkT, VkO),
-        add_relation("en", VkT, VkL),
+        add_relation("apud", VkT, VkL),
     ],
     name="voki_summons_theme",
 )
@@ -564,7 +564,7 @@ veturi_moves_agent = rule(
     ],
     then=[
         remove_relation("en", VA, VO),
-        add_relation("en", VA, VD),
+        add_relation("apud", VA, VD),
     ],
     name="veturi_moves_agent",
 )
@@ -1534,6 +1534,26 @@ shared_apud_means_samloke = derive(
 )
 
 
+# Mixed: one entity en a location, another apud the same location
+# → samloke. Bridges the en/apud split — Petro inside the kuirejo
+# and Klara just arrived (apud) are at the same place. Without this
+# derivation the model would treat "follower at the door" and
+# "followed inside" as not co-located, breaking samloke-gated
+# verbs like rakonti.
+mixed_en_apud_means_samloke = derive(
+    when=rel("en",
+             contained=bind(MEA := var("A")),
+             container=bind(MEL := var("L"))),
+    given=[
+        rel("apud",
+            subject=bind(MEB := var("B")),
+            neighbor=MEL),
+    ],
+    implies=relation("samloke", MEA, MEB),
+    name="mixed_en_apud_means_samloke",
+)
+
+
 # Convenience bundle: every derivation the library ships with.
 # Callers assemble explicitly (as they do for rules) — no hidden
 # auto-registration. Pass to `run_dsl(..., derivations=...)`.
@@ -1566,6 +1586,7 @@ DEFAULT_DSL_DERIVATIONS = [
     physical_has_wetness,
     shared_container_means_samloke,
     shared_apud_means_samloke,
+    mixed_en_apud_means_samloke,
     host_samloke_with_part,
     samloke_propagates_through_artifact_parts,
     host_lock_state_locked_from_seruro,
