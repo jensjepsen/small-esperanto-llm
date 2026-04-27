@@ -3685,6 +3685,14 @@ def sample_regression_scene(lex, rng, *, rules=None):
             result = regress_for_movement(lex, rng)
             if result is not None:
                 return result
+        # veturi has the same pool-entry gap (no effects, no konas)
+        # AND requires a person agent (can_use_tools=yes) with a
+        # vehicle in scene. Without this seeder, veturi → ŝalti
+        # chains never surface in regression coverage.
+        if rng.random() < 0.10:
+            result = regress_for_vehicle(lex, rng)
+            if result is not None:
+                return result
         verb = rng.choice(pool)
         if verb == "demandi":
             result = regress_for_demandi(lex, rng)
@@ -3807,6 +3815,73 @@ def regress_for_demandi(lex, rng):
         return None
 
     drive = ("knowledge", actor_eid, actor_eid, fakto_id)
+    return t, scene_id, drive
+
+
+def regress_for_vehicle(lex, rng):
+    """Person actor + vehicle scene, location drive. veturi never
+    surfaces from the verb pool (no effects → not in prop_pool, no
+    konas → not in konas_pool, animal-only movement seeder excludes
+    persons → no person-actor location drives anywhere). This seeder
+    closes the gap.
+
+    Motorized vehicles (aŭto/trajno/ŝipo) start with motoro.power_state
+    =neaktiva, so the planner naturally chains ŝalti(motoro) before
+    veturi via the if_property precondition. Biciklo bypasses the
+    chain — surfaces shorter veturi-only plans for variety."""
+    from esperanto_lm.ontology.sampler import _add_entity_randomized
+
+    vehicles = [
+        c.lemma for c in lex.concepts.values()
+        if "yes" in c.properties.get("is_vehicle", [])
+    ]
+    if not vehicles:
+        return None
+
+    locations = [l for l, c in lex.concepts.items()
+                 if lex.types.is_subtype(c.entity_type, "location")]
+    if len(locations) < 2:
+        return None
+    scene_lemma = rng.choice(locations)
+    away_lemma = rng.choice([l for l in locations if l != scene_lemma])
+
+    t = Trace()
+    try:
+        _add_entity_randomized(t, scene_lemma, lex, rng,
+                                entity_id=scene_lemma)
+        _add_entity_randomized(t, away_lemma, lex, rng,
+                                entity_id=away_lemma)
+    except (KeyError, ValueError):
+        return None
+    scene_id = scene_lemma
+
+    persons = [c.lemma for c in lex.concepts.values()
+               if c.entity_type == "person"]
+    if not persons:
+        return None
+    actor_concept = rng.choice(persons)
+    actor_eid = rng.choice(PERSON_NAMES)
+    try:
+        _add_entity_randomized(t, actor_concept, lex, rng,
+                                entity_id=actor_eid)
+        t.assert_relation("en", (actor_eid, scene_id), lex)
+    except (KeyError, ValueError):
+        return None
+
+    vehicle_concept = rng.choice(vehicles)
+    vehicle_eid = vehicle_concept
+    suffix = 0
+    while vehicle_eid in t.entities:
+        suffix += 1
+        vehicle_eid = f"{vehicle_concept}_{suffix}"
+    try:
+        _add_entity_randomized(t, vehicle_concept, lex, rng,
+                                entity_id=vehicle_eid)
+        t.assert_relation("en", (vehicle_eid, scene_id), lex)
+    except (KeyError, ValueError):
+        return None
+
+    drive = ("location", actor_eid, away_lemma)
     return t, scene_id, drive
 
 
