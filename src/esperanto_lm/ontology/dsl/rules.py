@@ -422,6 +422,62 @@ veni_moves_agent = rule(
 )
 
 
+# ---------- causal: locomotion variants of iri -------------------------
+#
+# kuri/naĝi/flugi share iri's en-transfer mechanic but gate on a
+# different locomotion value, so the planner picks a creature-fit
+# verb when achieving an `en` goal: birds flugi (wings → locomotion=fly),
+# fish/persons naĝi (fins or default → locomotion=swim), walkers kuri
+# or iri (paws → locomotion=walk). The `_filter_candidates_by_slots`
+# pass surfaces only the verbs the actor satisfies, so a serpento
+# (locomotion=slither) finds none of these and would need its own
+# rule — left for when slither-typed locations exist to receive it.
+
+kuri_moves_agent = rule(
+    when=event("kuri",
+               agent=bind(KrA := var("A")),
+               destination=bind(KrD := var("D"))),
+    given=[
+        rel("en", contained=KrA, container=bind(KrO := var("O"))),
+    ],
+    then=[
+        remove_relation("en", KrA, KrO),
+        add_relation("en", KrA, KrD),
+    ],
+    name="kuri_moves_agent",
+)
+
+
+naĝi_moves_agent = rule(
+    when=event("naĝi",
+               agent=bind(NgA := var("A")),
+               destination=bind(NgD := var("D"))),
+    given=[
+        rel("en", contained=NgA, container=bind(NgO := var("O"))),
+    ],
+    then=[
+        remove_relation("en", NgA, NgO),
+        add_relation("en", NgA, NgD),
+    ],
+    name="naĝi_moves_agent",
+)
+
+
+flugi_moves_agent = rule(
+    when=event("flugi",
+               agent=bind(FgA := var("A")),
+               destination=bind(FgD := var("D"))),
+    given=[
+        rel("en", contained=FgA, container=bind(FgO := var("O"))),
+    ],
+    then=[
+        remove_relation("en", FgA, FgO),
+        add_relation("en", FgA, FgD),
+    ],
+    name="flugi_moves_agent",
+)
+
+
 # ---------- causal: sekvi_brings_agent_to_theme ------------------------
 #
 # Following relocates the follower to wherever the followed currently
@@ -1372,6 +1428,9 @@ DEFAULT_DSL_RULES: list[Rule] = [
     meti_places_on_surface,
     iri_moves_agent,
     veni_moves_agent,
+    kuri_moves_agent,
+    naĝi_moves_agent,
+    flugi_moves_agent,
     sekvi_brings_agent_to_theme,
     voki_summons_theme,
     veturi_moves_agent,

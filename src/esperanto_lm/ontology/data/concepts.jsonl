@@ -70,7 +70,7 @@
 {"lemma": "suno", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "luno", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "monto", "entity_type": "natural_object", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["stone"]}}
-{"lemma": "rivero", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "rivero", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"], "state_of_matter": ["likva"]}}
 {"lemma": "vulpo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
 {"lemma": "lupo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
 {"lemma": "leono", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
@@ -89,8 +89,8 @@
 {"lemma": "matraco", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"]}}
 {"lemma": "herbo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["plant"]}}
 {"lemma": "arbusto", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"]}}
-{"lemma": "lago", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
-{"lemma": "maro", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "lago", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"], "state_of_matter": ["likva"]}}
+{"lemma": "maro", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"], "state_of_matter": ["likva"]}}
 {"lemma": "skatolo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"], "made_of": ["wood"]}}
 {"lemma": "sako", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["malfermita"], "made_of": ["fabric"]}}
 {"lemma": "nubo", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
