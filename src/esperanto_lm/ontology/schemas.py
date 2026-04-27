@@ -171,10 +171,30 @@ class IfPropertyPrecondition(_Frozen):
     then_value: str
 
 
+class MatchPrecondition(_Frozen):
+    """Two roles must overlap on a slot value. Action is plannable
+    iff `entity(role_a).slot_a ∩ entity(role_b).slot_b ≠ ∅`. Pure
+    rejection — the planner skips the candidate when the match
+    fails; no subgoaling, since the use case is intrinsic typed
+    properties (terrain, material) that no verb changes.
+
+    Use case: veturi requires the instrument's terrain to be one
+    the destination affords. aŭto (terrain=land) → kuirejo (no
+    terrain) fails; aŭto → urbo (terrain=land via vojo part)
+    passes."""
+    kind: Literal["match"] = "match"
+    role_a: str
+    slot_a: str
+    role_b: str
+    slot_b: str
+
+
 # Discriminated union point — when more precondition kinds appear
 # (e.g. quantitative comparisons, negation), add them here. The kind
 # field is the tag the planner dispatches on.
-Precondition = RelationPrecondition | IfPropertyPrecondition
+Precondition = (
+    RelationPrecondition | IfPropertyPrecondition | MatchPrecondition
+)
 
 
 class Action(_Frozen):
@@ -210,8 +230,12 @@ class Action(_Frozen):
     def _check_precondition_roles(self):
         role_names = {r.name for r in self.roles}
         for pc in self.preconditions:
-            referenced = (
-                pc.roles if isinstance(pc, RelationPrecondition) else [pc.role])
+            if isinstance(pc, RelationPrecondition):
+                referenced = pc.roles
+            elif isinstance(pc, MatchPrecondition):
+                referenced = [pc.role_a, pc.role_b]
+            else:
+                referenced = [pc.role]
             for rn in referenced:
                 if rn not in role_names:
                     raise ValueError(

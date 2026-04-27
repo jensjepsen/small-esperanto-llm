@@ -708,7 +708,7 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
     breaks samloke(agent, theme) for malŝlosi, and a return-iri
     needs to be inserted."""
     from esperanto_lm.ontology.schemas import (
-        IfPropertyPrecondition, RelationPrecondition,
+        IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
     )
     committed: list = []
     cur_trace, cur_derived = trace, derived
@@ -832,6 +832,26 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
                     committed.extend(sub)
                     progress = True
                     _refresh()
+            elif isinstance(pc, MatchPrecondition):
+                # Pure rejection: no subgoaling. The slots involved
+                # (terrain, material, ...) are intrinsic — no verb
+                # writes them — so an empty intersection means the
+                # candidate role-fill is incompatible. Caller tries
+                # the next candidate in the enumeration.
+                eid_a = roles.get(pc.role_a)
+                eid_b = roles.get(pc.role_b)
+                if eid_a is None or eid_b is None:
+                    continue
+                ent_a = _ent(eid_a)
+                ent_b = _ent(eid_b)
+                if ent_a is None or ent_b is None:
+                    return [], False
+                values_a = _entity_property_values(
+                    ent_a, pc.slot_a, cur_trace, cur_derived)
+                values_b = _entity_property_values(
+                    ent_b, pc.slot_b, cur_trace, cur_derived)
+                if not values_a & values_b:
+                    return [], False
 
         if not unresolved:
             return committed, True
