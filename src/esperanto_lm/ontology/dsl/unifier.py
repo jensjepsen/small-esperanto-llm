@@ -106,11 +106,20 @@ class MatchContext:
     rules — the current focus event.
 
     `effective_property(eid, slot)` is the unified-view accessor: asserted
-    wins over derived. Patterns use this when matching slot constraints."""
+    wins over derived. Patterns use this when matching slot constraints.
+
+    Indexes (lazy, scoped to one engine cycle):
+      `entities_by_type` — exact entity_type → list of (eid, ent)
+      `relations_by_name` — relation name → list of args tuples,
+        union of asserted + derived.
+    Pattern matching consults these to avoid O(N) scans of the full
+    entities dict / relations list per pattern × per derivation cycle."""
     trace: Trace
     lexicon: Lexicon
     derived: DerivedState
     focus_event: Optional[Event] = None
+    _entities_by_type_cache: Optional[dict] = None
+    _relations_by_name_cache: Optional[dict] = None
 
     def effective_property(self, eid: str, slot: str) -> Any:
         """Read asserted-then-derived. Used by EntityPattern constraint
@@ -119,6 +128,64 @@ class MatchContext:
         if asserted is not None:
             return asserted
         return self.derived.get(eid, slot)
+
+    def entities_of_type(self, type_name: str) -> list:
+        """Return [(eid, ent)] where ent.entity_type is-a `type_name`.
+        Cached: built on first call by walking trace.entities once and
+        bucketing by every ancestor type. Subsequent lookups are O(1)
+        in the bucket."""
+        if self._entities_by_type_cache is None:
+            spine = self.lexicon.types
+            buckets: dict[str, list] = {}
+            # For each entity, add it to the bucket for its exact type
+            # AND every ancestor type. is_subtype handles the spine
+            # walk once per (entity_type × candidate-ancestor) but we
+            # only call it for ancestors actually queried — so do
+            # exact-type bucketing here, expand on lookup.
+            for eid, ent in self.trace.entities.items():
+                buckets.setdefault(ent.entity_type, []).append((eid, ent))
+            self._entities_by_type_cache = buckets
+        cache = self._entities_by_type_cache
+        # Direct hit
+        direct = cache.get(type_name, [])
+        # Walk other buckets to find subtype matches and merge.
+        # Memoize the merged result under the queried type so future
+        # queries are O(1).
+        merged_key = ("__merged__", type_name)
+        if merged_key in cache:
+            return cache[merged_key]
+        spine = self.lexicon.types
+        merged = []
+        for et, ents in cache.items():
+            if isinstance(et, tuple):
+                continue
+            try:
+                if spine.is_subtype(et, type_name):
+                    merged.extend(ents)
+            except KeyError:
+                continue
+        cache[merged_key] = merged
+        return merged
+
+    def relations_of(self, relation_name: str) -> list:
+        """Return [args_tuple] for asserted + derived relations with
+        the given name. Cached, but the cache is invalidated when
+        `derived.relations` grows — derivations chain (e.g. samloke
+        propagates through parts after shared_container fires) and
+        later derivations within the same cycle must see earlier ones'
+        relation outputs."""
+        derived_version = len(self.derived.relations)
+        if (self._relations_by_name_cache is None
+                or getattr(self, "_relations_cache_version", None)
+                != derived_version):
+            buckets: dict[str, list] = {}
+            for r in self.trace.relations:
+                buckets.setdefault(r.relation, []).append(r.args)
+            for (name, args) in self.derived.relations:
+                buckets.setdefault(name, []).append(args)
+            self._relations_by_name_cache = buckets
+            self._relations_cache_version = derived_version
+        return self._relations_by_name_cache.get(relation_name, [])
 
 
 # --------------------- enumerate bindings -------------------------

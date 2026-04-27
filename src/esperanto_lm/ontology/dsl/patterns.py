@@ -165,6 +165,18 @@ class EntityPattern(Pattern):
             yield bindings
 
     def search(self, ctx, bindings):
+        # Type-indexed fast path: when the pattern constrains
+        # `type=X`, query the context's entity-by-type index instead
+        # of scanning every entity in the trace. ~30 derivations × N
+        # entities × cycles → indexed lookup is dramatically cheaper
+        # for large scenes. Falls back to the full scan if no type
+        # constraint or the type is Var-resolved.
+        type_constraint = self.constraints.get("type")
+        if isinstance(type_constraint, str):
+            for eid, ent in ctx.entities_of_type(type_constraint):
+                if _entity_matches(ent, self.constraints, ctx, bindings):
+                    yield bindings
+            return
         for eid, ent in ctx.trace.entities.items():
             if _entity_matches(ent, self.constraints, ctx, bindings):
                 yield bindings
@@ -252,24 +264,14 @@ class RelPattern(Pattern):
         rel_def = ctx.lexicon.relations.get(self.relation)
         if rel_def is None:
             return
-        # Source 1: asserted relations on the trace.
-        # Source 2: derived relations from the current derivation cycle.
-        # Symmetric relations yield matches for both arg orderings —
+        # Use the relation-by-name index instead of scanning all
+        # asserted + derived relations per pattern call. Symmetric
+        # relations yield matches for both arg orderings —
         # `samloke(A, B)` should also satisfy a query for
         # `rel("samloke", a=B, b=A)`.
         seen: set[tuple[str, ...]] = set()
         candidates: list[tuple[str, ...]] = []
-        for r in ctx.trace.relations:
-            if r.relation != self.relation:
-                continue
-            if len(r.args) != len(rel_def.arg_names):
-                continue
-            if r.args not in seen:
-                seen.add(r.args)
-                candidates.append(r.args)
-        for (name, args) in ctx.derived.relations:
-            if name != self.relation:
-                continue
+        for args in ctx.relations_of(self.relation):
             if len(args) != len(rel_def.arg_names):
                 continue
             if args not in seen:
