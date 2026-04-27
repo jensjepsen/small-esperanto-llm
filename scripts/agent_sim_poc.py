@@ -2916,6 +2916,25 @@ def _drive_weight(candidate) -> int:
     return weight
 
 
+def _dedupe_adjacent_steps(plan):
+    """Drop adjacent (verb, roles) pairs that are identical. Symptom
+    treatment for a planner-redundancy bug: independent subgoal
+    paths sometimes both emit the same en-establishing event,
+    yielding chains like `eniri(X, salono) → eniri(X, salono)` where
+    the second is a no-op (the rule's `given` clause fails because
+    the first eniri already removed the apud). The duplicate event
+    still lands in the trace and the realizer dutifully prints
+    'eniris la salonon kaj eniris la salonon'. Adjacent dedup
+    cleans up the prose without masking distant non-no-op repeats."""
+    if not plan:
+        return plan
+    out = [plan[0]]
+    for step in plan[1:]:
+        if step != out[-1]:
+            out.append(step)
+    return out
+
+
 def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=5,
                     rng=None):
     """Dispatch one drive to the right planner entry. Returns the
@@ -2934,35 +2953,37 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=5,
     try:
         if kind == "self_slot":
             _, actor, slot, value = drive
-            return plan_to_achieve(
+            plan = plan_to_achieve(
                 actor, slot, value, actor, t, lex, rules,
                 derived=derived, derivations=derivations,
                 max_depth=max_depth)
-        if kind == "entity_slot":
+        elif kind == "entity_slot":
             _, actor, target, slot, value = drive
-            return plan_to_achieve(
+            plan = plan_to_achieve(
                 target, slot, value, actor, t, lex, rules,
                 derived=derived, derivations=derivations,
                 max_depth=max_depth)
-        if kind == "location":
+        elif kind == "location":
             _, actor, loc = drive
-            return plan_to_establish_relation(
+            plan = plan_to_establish_relation(
                 "en", (actor, loc), actor, t, lex, rules,
                 derived=derived, derivations=derivations,
                 max_depth=max_depth)
-        if kind == "possession":
+        elif kind == "possession":
             _, actor, item = drive
-            return plan_to_establish_relation(
+            plan = plan_to_establish_relation(
                 "havi", (actor, item), actor, t, lex, rules,
                 derived=derived, derivations=derivations,
                 max_depth=max_depth)
-        if kind == "knowledge":
+        elif kind == "knowledge":
             _, actor, knower, fakto_id = drive
-            return plan_to_establish_relation(
+            plan = plan_to_establish_relation(
                 "konas", (knower, fakto_id), actor, t, lex, rules,
                 derived=derived, derivations=derivations,
                 max_depth=max_depth)
-        return None
+        else:
+            plan = None
+        return _dedupe_adjacent_steps(plan) if plan else plan
     finally:
         _PLANNER_RNG.reset(token)
 
