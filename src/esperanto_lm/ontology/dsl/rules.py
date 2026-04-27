@@ -1005,6 +1005,46 @@ agent_illuminated = derive(
 )
 
 
+# A vehicle's `power_state` lifts from its `motoro` part. Mirrors the
+# host_lock_state_*_from_seruro pattern. Pre-condition for veturi —
+# without an aktiva engine the vehicle can't carry the agent
+# anywhere, so the planner must subgoal ŝalti(motoro).
+
+vehicle_powered_from_active_motoro = derive(
+    when=entity(type="artifact") & bind(VPMD := var("D")),
+    given=[
+        rel("havas_parton", tuto=VPMD, parto=bind(VPMM := var("M"))),
+        entity(concept="motoro", power_state="aktiva") & bind(VPMM),
+    ],
+    implies=property(VPMD, "power_state", "aktiva"),
+    name="vehicle_powered_from_active_motoro",
+)
+
+vehicle_unpowered_from_inactive_motoro = derive(
+    when=entity(type="artifact") & bind(VUMD := var("D")),
+    given=[
+        rel("havas_parton", tuto=VUMD, parto=bind(VUMM := var("M"))),
+        entity(concept="motoro", power_state="neaktiva") & bind(VUMM),
+    ],
+    implies=property(VUMD, "power_state", "neaktiva"),
+    name="vehicle_unpowered_from_inactive_motoro",
+)
+
+# `motorized=yes` lifts from a motoro part. Marker that gates the
+# veturi.IfPropertyPrecondition so only engine-bearing vehicles need
+# their power_state to be aktiva — biciklo (no motoro) bypasses the
+# check entirely.
+vehicle_motorized_from_motoro = derive(
+    when=entity(type="artifact") & bind(VMD := var("D")),
+    given=[
+        rel("havas_parton", tuto=VMD, parto=bind(VMM := var("M"))),
+        entity(concept="motoro") & bind(VMM),
+    ],
+    implies=property(VMD, "motorized", "yes"),
+    name="vehicle_motorized_from_motoro",
+)
+
+
 # ---------- derivation: host's lock_state lifts from its seruro --------
 #
 # A host with a `seruro` part takes its lock_state from the lock's
@@ -1189,6 +1229,9 @@ DEFAULT_DSL_DERIVATIONS = [
     indoor_lit_by_active_lamp,
     indoor_dark_without_active_lamp,
     agent_illuminated,
+    vehicle_powered_from_active_motoro,
+    vehicle_unpowered_from_inactive_motoro,
+    vehicle_motorized_from_motoro,
 ]
 
 

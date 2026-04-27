@@ -31,3 +31,4 @@
 {"name": "lights_when_on", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
 {"name": "lit_state", "vocabulary": ["luma", "malluma"], "applies_to": ["location"], "scalar": true}
 {"name": "illuminated", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
+{"name": "motorized", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
