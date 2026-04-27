@@ -392,6 +392,13 @@ iri_moves_agent = rule(
                destination=bind(ID := var("D"))),
     given=[
         rel("en", contained=IA, container=bind(IO := var("O"))),
+        # Negation guard: don't re-fire after a downstream eniri puts
+        # the agent en the destination. Without this, iri's given
+        # would re-match with O=D, removing en and re-adding apud,
+        # undoing the eniri's transition. Same pattern needed on
+        # every travel verb whose `given` lookup is on a relation
+        # that downstream events can mutate.
+        ~rel("en", contained=IA, container=ID),
     ],
     then=[
         remove_relation("en", IA, IO),
@@ -413,6 +420,7 @@ veni_moves_agent = rule(
                destination=bind(VnD := var("D"))),
     given=[
         rel("en", contained=VnA, container=bind(VnO := var("O"))),
+        ~rel("en", contained=VnA, container=VnD),
     ],
     then=[
         remove_relation("en", VnA, VnO),
@@ -439,6 +447,7 @@ kuri_moves_agent = rule(
                destination=bind(KrD := var("D"))),
     given=[
         rel("en", contained=KrA, container=bind(KrO := var("O"))),
+        ~rel("en", contained=KrA, container=KrD),
     ],
     then=[
         remove_relation("en", KrA, KrO),
@@ -454,6 +463,7 @@ naĝi_moves_agent = rule(
                destination=bind(NgD := var("D"))),
     given=[
         rel("en", contained=NgA, container=bind(NgO := var("O"))),
+        ~rel("en", contained=NgA, container=NgD),
     ],
     then=[
         remove_relation("en", NgA, NgO),
@@ -491,6 +501,7 @@ flugi_moves_agent = rule(
                destination=bind(FgD := var("D"))),
     given=[
         rel("en", contained=FgA, container=bind(FgO := var("O"))),
+        ~rel("en", contained=FgA, container=FgD),
     ],
     then=[
         remove_relation("en", FgA, FgO),
@@ -515,6 +526,7 @@ sekvi_brings_agent_to_theme = rule(
     given=[
         rel("en", contained=SqT, container=bind(SqL := var("L"))),
         rel("en", contained=SqA, container=bind(SqO := var("O"))),
+        ~rel("en", contained=SqA, container=SqL),
     ],
     then=[
         remove_relation("en", SqA, SqO),
@@ -538,6 +550,7 @@ voki_summons_theme = rule(
     given=[
         rel("en", contained=VkA, container=bind(VkL := var("L"))),
         rel("en", contained=VkT, container=bind(VkO := var("O"))),
+        ~rel("en", contained=VkT, container=VkL),
     ],
     then=[
         remove_relation("en", VkT, VkO),
@@ -561,6 +574,7 @@ veturi_moves_agent = rule(
                destination=bind(VD := var("D"))),
     given=[
         rel("en", contained=VA, container=bind(VO := var("O"))),
+        ~rel("en", contained=VA, container=VD),
     ],
     then=[
         remove_relation("en", VA, VO),

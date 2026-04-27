@@ -712,6 +712,20 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
     )
     committed: list = []
     cur_trace, cur_derived = trace, derived
+    # Track constraints we've certified as satisfied; sibling subgoals
+    # (and recursive descendants) must not invalidate them. See the
+    # _PRESERVE_CONSTRAINTS docstring for context.
+    accumulated_preserve = list(_PRESERVE_CONSTRAINTS.get())
+    _preserve_token = _PRESERVE_CONSTRAINTS.set(tuple(accumulated_preserve))
+
+    def _push_preserve(entry):
+        nonlocal _preserve_token
+        if entry in accumulated_preserve:
+            return
+        accumulated_preserve.append(entry)
+        _PRESERVE_CONSTRAINTS.reset(_preserve_token)
+        _preserve_token = _PRESERVE_CONSTRAINTS.set(
+            tuple(accumulated_preserve))
 
     def _refresh():
         nonlocal cur_trace, cur_derived
@@ -723,6 +737,11 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
         ent = cur_trace.entities.get(eid)
         return ent
 
+    def _ret(value):
+        # Guarantee the ContextVar token is reset on every exit.
+        _PRESERVE_CONSTRAINTS.reset(_preserve_token)
+        return value
+
     for _ in range(6):
         progress = False
         unresolved = False
@@ -731,7 +750,7 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
         for role_name, eid in list(roles.items()):
             ent = _ent(eid)
             if ent is None:
-                return [], False
+                return _ret(([], False))
             role_spec = next(
                 (r for r in action.roles if r.name == role_name), None)
             if role_spec is not None and role_spec.properties:
@@ -743,21 +762,21 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
                     unresolved = True
                     expected = prop_vals[0] if prop_vals else None
                     if expected is None:
-                        return [], False
+                        return _ret(([], False))
                     sub = plan_to_achieve(
                         eid, prop_slot, expected, actor_id,
                         cur_trace, lex, rules, derived=cur_derived,
                         derivations=derivations,
                         max_depth=max_depth, _depth=depth, _seen=seen)
                     if sub is None:
-                        return [], False
+                        return _ret(([], False))
                     if sub:
                         committed.extend(sub)
                         progress = True
                         _refresh()
                         ent = _ent(eid)
                         if ent is None:
-                            return [], False
+                            return _ret(([], False))
             # Rule-level role pattern entity constraints.
             if event_pat is not None:
                 role_pat = event_pat.role_patterns.get(role_name)
@@ -792,6 +811,7 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
                     continue
                 if _has_relation(
                         pc.rel, tuple(eids), cur_trace, cur_derived, lex):
+                    _push_preserve(("rel", pc.rel, tuple(eids)))
                     continue
                 unresolved = True
                 sub = plan_to_establish_relation(
@@ -800,18 +820,19 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
                     derivations=derivations,
                     max_depth=max_depth, _depth=depth, _seen=seen)
                 if sub is None:
-                    return [], False
+                    return _ret(([], False))
                 if sub:
                     committed.extend(sub)
                     progress = True
                     _refresh()
+                _push_preserve(("rel", pc.rel, tuple(eids)))
             elif isinstance(pc, IfPropertyPrecondition):
                 eid = roles.get(pc.role)
                 if eid is None:
                     continue
                 ent = _ent(eid)
                 if ent is None:
-                    return [], False
+                    return _ret(([], False))
                 gate = _entity_property_values(
                     ent, pc.if_property, cur_trace, cur_derived)
                 if pc.if_value not in gate:
@@ -827,7 +848,7 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
                     derivations=derivations,
                     max_depth=max_depth, _depth=depth, _seen=seen)
                 if sub is None:
-                    return [], False
+                    return _ret(([], False))
                 if sub:
                     committed.extend(sub)
                     progress = True
@@ -845,24 +866,58 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
                 ent_a = _ent(eid_a)
                 ent_b = _ent(eid_b)
                 if ent_a is None or ent_b is None:
-                    return [], False
+                    return _ret(([], False))
                 values_a = _entity_property_values(
                     ent_a, pc.slot_a, cur_trace, cur_derived)
                 values_b = _entity_property_values(
                     ent_b, pc.slot_b, cur_trace, cur_derived)
                 if not values_a & values_b:
-                    return [], False
+                    return _ret(([], False))
 
         if not unresolved:
-            return committed, True
+            return _ret((committed, True))
         if not progress:
-            return [], False
-    return [], False
+            return _ret(([], False))
+    return _ret(([], False))
 
 
 import contextvars
 _PLANNER_RNG: contextvars.ContextVar = contextvars.ContextVar(
     "_PLANNER_RNG", default=None)
+
+# Constraints that any candidate sub-plan must preserve, accumulated
+# by `_resolve_preconditions` as each precondition resolves. Inner
+# planners (plan_to_establish_relation, _plan_via_derivation, ...)
+# read this and reject candidates whose simulation would invalidate
+# a prior PC. Without it, sibling subgoals oscillate — e.g.
+# samloke(klara, mantelo) commits "klara → manĝejo", then
+# samloke(klara, pavel) commits "klara → laborejo", which breaks
+# the first samloke; the loop then re-resolves the first, and so on.
+#
+# Each entry is ("rel", relation_name, args_tuple) — only relation
+# constraints for now; property constraints can be added if the
+# pattern surfaces there too.
+_PRESERVE_CONSTRAINTS: contextvars.ContextVar = contextvars.ContextVar(
+    "_PRESERVE_CONSTRAINTS", default=())
+
+
+def _candidate_breaks_preserved(sub_plan, trace, lex, rules, derivations):
+    """True if simulating `trace + sub_plan` would invalidate any
+    constraint in the current `_PRESERVE_CONSTRAINTS`. Empty plans
+    (no events to fire) trivially preserve, since they don't change
+    state."""
+    preserve = _PRESERVE_CONSTRAINTS.get()
+    if not preserve or not sub_plan:
+        return False
+    sim_trace, sim_derived = _simulate_from_scratch(
+        trace, sub_plan, lex, rules, derivations)
+    for entry in preserve:
+        if entry[0] != "rel":
+            continue
+        _, rel_name, args = entry
+        if not _has_relation(rel_name, args, sim_trace, sim_derived, lex):
+            return True
+    return False
 
 
 def plan_to_establish_relation(relation, target_args, actor_id,
@@ -1151,7 +1206,11 @@ def plan_to_establish_relation(relation, target_args, actor_id,
             max_depth, _depth + 1, seen_next, derivations=derivations)
         if not ok:
             continue
-        return sub_plans + [(event_pat.action, roles)]
+        candidate_plan = sub_plans + [(event_pat.action, roles)]
+        if _candidate_breaks_preserved(
+                candidate_plan, trace, lex, rules, derivations):
+            continue
+        return candidate_plan
 
     # No verb plan worked. Try derivations whose `implies` produces
     # this relation — subgoal their `when + given` patterns. This is
@@ -1523,6 +1582,9 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
                             break
                         sub_plans.extend(sub)
                 if sub_ok:
+                    if _candidate_breaks_preserved(
+                            sub_plans, trace, lex, rules, derivations):
+                        continue
                     return sub_plans
     # Last resort: the free var refers to an entity that doesn't exist
     # in the trace yet. Look for a causal rule whose `create_entity`
