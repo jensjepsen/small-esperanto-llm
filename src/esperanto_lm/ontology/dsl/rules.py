@@ -463,6 +463,28 @@ naĝi_moves_agent = rule(
 )
 
 
+# `eniri` (enter) transitions an apud agent into en. Companion to
+# the travel verbs once they switch from end-state=en to end-state
+# =apud: iri puts you at the door, eniri takes you inside. The
+# action's MatchPrecondition (agent.terrain ⊆ destination.terrain)
+# gates which agents can enter which destinations; this rule just
+# performs the relation swap on a fired event.
+
+eniri_enters_location = rule(
+    when=event("eniri",
+               agent=bind(EnA := var("A")),
+               destination=bind(EnD := var("D"))),
+    given=[
+        rel("apud", subject=EnA, neighbor=EnD),
+    ],
+    then=[
+        remove_relation("apud", EnA, EnD),
+        add_relation("en", EnA, EnD),
+    ],
+    name="eniri_enters_location",
+)
+
+
 flugi_moves_agent = rule(
     when=event("flugi",
                agent=bind(FgA := var("A")),
@@ -1074,6 +1096,54 @@ location_terrain_water_via_part = derive(
 )
 
 
+# Indoor places carry an `indoor` terrain so eniri's MatchPrecondition
+# (agent.terrain ∩ destination.terrain) admits walkers — kuirejo,
+# salono, etc. don't need explicit parts to be enterable.
+location_terrain_indoor_via_indoor_outdoor = derive(
+    when=entity(type="location", indoor_outdoor="interna") & bind(LtiL := var("L")),
+    implies=property(LtiL, "terrain", "indoor"),
+    name="location_terrain_indoor_via_indoor_outdoor",
+)
+
+
+# Animate terrain comes from locomotion: walkers go on land and into
+# buildings, swimmers go in water, fliers in air (and can land too),
+# slitherers on land. The terrain slot is non-scalar so an animate
+# with multiple locomotions accumulates terrain values from each
+# derivation. eniri's MatchPrecondition then admits exactly the
+# destinations the agent's habitats cover.
+
+animate_terrain_land_from_walk = derive(
+    when=entity(type="animate", locomotion="walk") & bind(AtwL := var("A")),
+    implies=property(AtwL, "terrain", "land"),
+    name="animate_terrain_land_from_walk",
+)
+
+animate_terrain_indoor_from_walk = derive(
+    when=entity(type="animate", locomotion="walk") & bind(AtwI := var("A")),
+    implies=property(AtwI, "terrain", "indoor"),
+    name="animate_terrain_indoor_from_walk",
+)
+
+animate_terrain_water_from_swim = derive(
+    when=entity(type="animate", locomotion="swim") & bind(AtsW := var("A")),
+    implies=property(AtsW, "terrain", "water"),
+    name="animate_terrain_water_from_swim",
+)
+
+animate_terrain_air_from_fly = derive(
+    when=entity(type="animate", locomotion="fly") & bind(AtfA := var("A")),
+    implies=property(AtfA, "terrain", "air"),
+    name="animate_terrain_air_from_fly",
+)
+
+animate_terrain_land_from_slither = derive(
+    when=entity(type="animate", locomotion="slither") & bind(AtsL := var("A")),
+    implies=property(AtsL, "terrain", "land"),
+    name="animate_terrain_land_from_slither",
+)
+
+
 # An entity inside a body of water is in_water. Built on top of
 # water_body: the part-vs-en distinction is already absorbed there,
 # so this derivation just chains "T en L" + "L is a water_body".
@@ -1447,6 +1517,23 @@ shared_container_means_samloke = derive(
 )
 
 
+# Samloke also derives from shared apud target. Two travelers who
+# both arrived apud the lake are at the same place (the shore),
+# even if neither is en the lake. Mirrors the en-based derivation.
+shared_apud_means_samloke = derive(
+    when=rel("apud",
+             subject=bind(SLAA := var("A")),
+             neighbor=bind(SLAN := var("N"))),
+    given=[
+        rel("apud",
+            subject=bind(SLAB := var("B")),
+            neighbor=SLAN),
+    ],
+    implies=relation("samloke", SLAA, SLAB),
+    name="shared_apud_means_samloke",
+)
+
+
 # Convenience bundle: every derivation the library ships with.
 # Callers assemble explicitly (as they do for rules) — no hidden
 # auto-registration. Pass to `run_dsl(..., derivations=...)`.
@@ -1463,6 +1550,12 @@ DEFAULT_DSL_DERIVATIONS = [
     location_terrain_land_via_part,
     location_terrain_rail_via_part,
     location_terrain_water_via_part,
+    location_terrain_indoor_via_indoor_outdoor,
+    animate_terrain_land_from_walk,
+    animate_terrain_indoor_from_walk,
+    animate_terrain_water_from_swim,
+    animate_terrain_air_from_fly,
+    animate_terrain_land_from_slither,
     entity_in_water_from_water_body,
     person_has_human_parts,
     has_hands_can_use_tools,
@@ -1472,6 +1565,7 @@ DEFAULT_DSL_DERIVATIONS = [
     physical_has_temperature,
     physical_has_wetness,
     shared_container_means_samloke,
+    shared_apud_means_samloke,
     host_samloke_with_part,
     samloke_propagates_through_artifact_parts,
     host_lock_state_locked_from_seruro,
@@ -1529,6 +1623,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     kuri_moves_agent,
     naĝi_moves_agent,
     flugi_moves_agent,
+    eniri_enters_location,
     sekvi_brings_agent_to_theme,
     voki_summons_theme,
     veturi_moves_agent,

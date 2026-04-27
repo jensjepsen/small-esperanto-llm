@@ -1,5 +1,5 @@
 {"lemma": "persono", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "ĝardeno", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "ĝardeno", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}]}
 {"lemma": "salono", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "oficejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "biblioteko", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}

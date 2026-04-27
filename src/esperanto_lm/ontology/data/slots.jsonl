@@ -34,4 +34,4 @@
 {"name": "motorized", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
 {"name": "in_water", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
 {"name": "water_body", "vocabulary": ["yes"], "applies_to": ["location"], "scalar": true}
-{"name": "terrain", "vocabulary": ["land", "rail", "water"], "applies_to": ["physical"], "scalar": false}
+{"name": "terrain", "vocabulary": ["land", "rail", "water", "indoor", "air"], "applies_to": ["physical"], "scalar": false}
