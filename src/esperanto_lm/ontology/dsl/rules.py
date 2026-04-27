@@ -1120,15 +1120,16 @@ location_terrain_indoor_via_indoor_outdoor = derive(
 )
 
 
-# Outdoor places carry an `air` terrain — the sky over them. Lets
-# aviadilo (terrain=[air, land]) and pure fliers (papilio, abelo
-# with terrain=[air]) match outdoor destinations through the air
-# axis. Indoor locations get no air, so insects don't eniri kitchens
-# and aviadilo doesn't try to land on a salono.
-location_terrain_air_via_outdoor = derive(
-    when=entity(type="location", indoor_outdoor="ekstera") & bind(LtaL := var("L")),
+# Every location has air — outdoor sky, indoor breathable space.
+# Lets pure fliers (papilio, abelo with terrain=[air] only) reach
+# indoor destinations as well as outdoor ones. Aviadilo intentionally
+# does NOT carry air terrain (it's terrain=[land] now) — without an
+# airport/runway concept, treating planes as land vehicles is the
+# cleanest mechanical match; the "per aviadilo" narrative survives.
+location_has_air_terrain = derive(
+    when=entity(type="location") & bind(LtaL := var("L")),
     implies=property(LtaL, "terrain", "air"),
-    name="location_terrain_air_via_outdoor",
+    name="location_has_air_terrain",
 )
 
 
@@ -1597,7 +1598,7 @@ DEFAULT_DSL_DERIVATIONS = [
     location_terrain_rail_via_part,
     location_terrain_water_via_part,
     location_terrain_indoor_via_indoor_outdoor,
-    location_terrain_air_via_outdoor,
+    location_has_air_terrain,
     animate_terrain_land_from_walk,
     animate_terrain_indoor_from_walk,
     animate_terrain_water_from_swim,
