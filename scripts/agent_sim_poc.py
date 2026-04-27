@@ -3677,6 +3677,14 @@ def sample_regression_scene(lex, rng, *, rules=None):
     if not pool:
         return None
     for _ in range(8):
+        # Locomotion-driven scenes have no natural pool entry — kuri/
+        # naĝi/flugi/iri are effect-less movement verbs. Roll occasion-
+        # ally for a non-person animate actor with a location goal so
+        # flugi / naĝi surface for fliers / swimmers.
+        if rng.random() < 0.15:
+            result = regress_for_movement(lex, rng)
+            if result is not None:
+                return result
         verb = rng.choice(pool)
         if verb == "demandi":
             result = regress_for_demandi(lex, rng)
@@ -3799,6 +3807,58 @@ def regress_for_demandi(lex, rng):
         return None
 
     drive = ("knowledge", actor_eid, actor_eid, fakto_id)
+    return t, scene_id, drive
+
+
+def regress_for_movement(lex, rng):
+    """Pick a non-person animate actor and drive a location goal.
+    Surfaces flugi / naĝi for fliers / swimmers — verbs the konas-
+    and property-effect seeders never reach because those pick
+    persons (for konas) or pick the actor implicitly via a verb's
+    role pool (which is usually any-animate but skewed to persons
+    by sheer concept count).
+
+    No locomotion-aware destination filtering: the planner will
+    drop the candidate verb when its role.properties don't match
+    the actor (e.g. naĝi requires destination=likva). If no plan
+    can be built, the outer loop retries with a different verb."""
+    from esperanto_lm.ontology.sampler import _add_entity_randomized
+
+    animals = [
+        c.lemma for c in lex.concepts.values()
+        if lex.types.is_subtype(c.entity_type, "animate")
+        and not lex.types.is_subtype(c.entity_type, "person")
+    ]
+    if not animals:
+        return None
+
+    locations = [l for l, c in lex.concepts.items()
+                 if lex.types.is_subtype(c.entity_type, "location")]
+    if len(locations) < 2:
+        return None
+    scene_lemma = rng.choice(locations)
+    away_lemma = rng.choice([l for l in locations if l != scene_lemma])
+
+    t = Trace()
+    try:
+        _add_entity_randomized(t, scene_lemma, lex, rng,
+                                entity_id=scene_lemma)
+        _add_entity_randomized(t, away_lemma, lex, rng,
+                                entity_id=away_lemma)
+    except (KeyError, ValueError):
+        return None
+    scene_id = scene_lemma
+
+    actor_concept = rng.choice(animals)
+    actor_eid = actor_concept
+    try:
+        _add_entity_randomized(t, actor_concept, lex, rng,
+                                entity_id=actor_eid)
+        t.assert_relation("en", (actor_eid, scene_id), lex)
+    except (KeyError, ValueError):
+        return None
+
+    drive = ("location", actor_eid, away_lemma)
     return t, scene_id, drive
 
 
