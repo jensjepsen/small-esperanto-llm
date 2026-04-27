@@ -422,6 +422,53 @@ veni_moves_agent = rule(
 )
 
 
+# ---------- causal: sekvi_brings_agent_to_theme ------------------------
+#
+# Following relocates the follower to wherever the followed currently
+# resides. Same en-transfer shape as iri/veni — the difference is that
+# the destination isn't a named role; it's read off the theme's `en`.
+# The agent's locomotion/posture/sleep gates live on the action schema,
+# so the planner subgoals wakeup/stand the same way it does for iri.
+
+sekvi_brings_agent_to_theme = rule(
+    when=event("sekvi",
+               agent=bind(SqA := var("A")),
+               theme=bind(SqT := var("T"))),
+    given=[
+        rel("en", contained=SqT, container=bind(SqL := var("L"))),
+        rel("en", contained=SqA, container=bind(SqO := var("O"))),
+    ],
+    then=[
+        remove_relation("en", SqA, SqO),
+        add_relation("en", SqA, SqL),
+    ],
+    name="sekvi_brings_agent_to_theme",
+)
+
+
+# ---------- causal: voki_summons_theme ---------------------------------
+#
+# Calling relocates the THEME (the called party) to the agent's
+# location. Mirror of sekvi — the agency is reversed: caller stays put,
+# callee moves. Locomotion/posture/sleep gates are on theme (the one
+# that has to move), not agent.
+
+voki_summons_theme = rule(
+    when=event("voki",
+               agent=bind(VkA := var("A")),
+               theme=bind(VkT := var("T"))),
+    given=[
+        rel("en", contained=VkA, container=bind(VkL := var("L"))),
+        rel("en", contained=VkT, container=bind(VkO := var("O"))),
+    ],
+    then=[
+        remove_relation("en", VkT, VkO),
+        add_relation("en", VkT, VkL),
+    ],
+    name="voki_summons_theme",
+)
+
+
 # ---------- causal: veturi_moves_agent ----------------------------------
 #
 # `veturi` is "travel by vehicle" — same location-transfer shape as iri
@@ -1325,6 +1372,8 @@ DEFAULT_DSL_RULES: list[Rule] = [
     meti_places_on_surface,
     iri_moves_agent,
     veni_moves_agent,
+    sekvi_brings_agent_to_theme,
+    voki_summons_theme,
     veturi_moves_agent,
     ĵeti_releases_possession,
     kapti_takes_possession_from_nobody,
