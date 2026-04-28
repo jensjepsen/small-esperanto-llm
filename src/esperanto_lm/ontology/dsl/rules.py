@@ -1733,6 +1733,47 @@ DEFAULT_DSL_DERIVATIONS = [
 ]
 
 
+# Subset of DEFAULT_DSL_DERIVATIONS whose outputs depend ONLY on
+# static state (entity_type, parts via havas_parton, non-varying
+# slot values). These are materialized onto concept.properties at
+# bake-time, so re-firing them at runtime is wasted work — the
+# outputs are already in entity.properties when the entity is
+# instantiated. The runtime engine can skip them.
+#
+# Classification rule: a derivation is RUNTIME if any of its
+# patterns reference a `varies=true` slot value or a non-static
+# relation (en, apud, samloke, havi, konas, sur, priskribas,
+# scias_lokon, etc. — havas_parton is static). Everything else is
+# concept-stable. Curated by hand here rather than auto-detected
+# so the categorization is reviewable and stable across derivation
+# additions; new derivations default to RUNTIME unless explicitly
+# moved here.
+RUNTIME_DERIVATIONS = [
+    location_water_body_via_en,
+    entity_in_water_from_water_body,
+    shared_container_means_samloke,
+    shared_apud_means_samloke,
+    mixed_en_apud_means_samloke,
+    samloke_propagates_through_artifact_parts,
+    samloke_propagates_through_location_parts,
+    en_implies_samloke_with_container,
+    apud_implies_samloke_with_neighbor,
+    host_lock_state_locked_from_seruro,
+    host_lock_state_unlocked_from_seruro,
+    host_openness_closed_from_pordo,
+    host_openness_open_from_pordo,
+    animate_knows_self_subject,
+    animate_knows_self_object,
+    scias_lokon_via_en,
+    scias_lokon_via_sur,
+    indoor_lit_by_active_lamp,
+    indoor_dark_without_active_lamp,
+    agent_illuminated,
+    vehicle_powered_from_active_motoro,
+    vehicle_unpowered_from_inactive_motoro,
+]
+
+
 # Convenience bundle: all standalone rules, ordered to match the old
 # engine's DEFAULT_RULES followed by its factory-produced rules. Same
 # order means same firing sequence under the fixed-point loop, which
