@@ -264,6 +264,22 @@ class RelPattern(Pattern):
         rel_def = ctx.lexicon.relations.get(self.relation)
         if rel_def is None:
             return
+        # Pre-compute filter constraints from bound vars: if an arg
+        # pattern is `BindPattern(V)` and V is already in `bindings`,
+        # the corresponding tuple position must equal bindings[V].
+        # Filtering candidates here avoids recursing into _apply_args
+        # for tuples that can't possibly match — a major win when
+        # the planner subgoals into a derivation with most vars
+        # already bound by the parent.
+        arg_filters: list[tuple[int, str]] = []
+        for arg_idx, name in enumerate(rel_def.arg_names):
+            patt = self.arg_patterns.get(name)
+            if patt is None:
+                continue
+            v = _bound_var_value(patt, bindings)
+            if v is not None:
+                arg_filters.append((arg_idx, v))
+
         # Use the relation-by-name index instead of scanning all
         # asserted + derived relations per pattern call. Symmetric
         # relations yield matches for both arg orderings —
@@ -273,6 +289,9 @@ class RelPattern(Pattern):
         candidates: list[tuple[str, ...]] = []
         for args in ctx.relations_of(self.relation):
             if len(args) != len(rel_def.arg_names):
+                continue
+            if arg_filters and not all(
+                    args[i] == v for i, v in arg_filters):
                 continue
             if args not in seen:
                 seen.add(args)
@@ -284,15 +303,35 @@ class RelPattern(Pattern):
             if rel_def.symmetric and len(args) == 2 and args[0] != args[1]:
                 swapped = (args[1], args[0])
                 if swapped not in seen:
+                    if arg_filters and not all(
+                            swapped[i] == v for i, v in arg_filters):
+                        continue
                     seen.add(swapped)
                     yield from _apply_args(
                         self.arg_patterns, rel_def.arg_names, swapped,
                         ctx, bindings)
 
+
     def apply_to_value(self, value, ctx, bindings):
         # Rel is a relational existence check — no inherent "value"
         # position. Treat as search with whatever bindings are in scope.
         yield from self.search(ctx, bindings)
+
+
+def _bound_var_value(pattern, bindings):
+    """If `pattern` is a BindPattern (or And-wrapping one) whose Var
+    is already in `bindings`, return the bound value. Otherwise None
+    — caller treats as "no constraint to check"."""
+    if isinstance(pattern, BindPattern):
+        if pattern.target in bindings:
+            return bindings[pattern.target]
+        return None
+    if isinstance(pattern, AndPattern):
+        v = _bound_var_value(pattern.left, bindings)
+        if v is not None:
+            return v
+        return _bound_var_value(pattern.right, bindings)
+    return None
 
 
 def _apply_args(arg_patterns, arg_names, arg_values, ctx, bindings):
@@ -642,8 +681,19 @@ def _iter_entity_candidates(pattern: Pattern, ctx, bindings):
     multiple branches yields once. `bindings` lets EntityPattern
     constraints with Var values resolve against the current bindings
     (e.g. `entity(pri_subjekto=SKSA)` checks fakto.pri_subjekto ==
-    bindings[SKSA])."""
+    bindings[SKSA]).
+
+    Type-indexed fast path mirrors `EntityPattern.search` — when
+    the pattern constrains `type=X`, hit `ctx.entities_of_type(X)`
+    instead of scanning every entity. Frequent enough in derivation
+    cascades that this shows up as a hot loop without the index."""
     if isinstance(pattern, EntityPattern):
+        type_constraint = pattern.constraints.get("type")
+        if isinstance(type_constraint, str):
+            for eid, ent in ctx.entities_of_type(type_constraint):
+                if _entity_matches(ent, pattern.constraints, ctx, bindings):
+                    yield eid
+            return
         for eid, ent in ctx.trace.entities.items():
             if _entity_matches(ent, pattern.constraints, ctx, bindings):
                 yield eid
