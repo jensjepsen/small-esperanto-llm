@@ -692,10 +692,55 @@ def _simulate_from_scratch(base_trace, plan, lex, rules, derivations):
 def _resolve_preconditions(action, event_pat, roles, actor_id,
                            trace, lex, rules, derived,
                            max_depth, depth, seen, *, derivations=None):
+    """Try the default precondition order first; on failure, try
+    permutations. Wraps `_resolve_preconditions_in_order`.
+
+    The declared order works for most actions (preconditions are
+    typically chosen so the easiest gates come first). When it
+    doesn't — e.g. malŝlosi's `[samloke, havi]` commits an iri that
+    moves the agent away from the key needed for havi — a different
+    order solves it. With N PCs the search is N! orderings; for our
+    actions N ≤ 3, so worst case is 6 attempts. Early-exits on the
+    first ordering that succeeds, so the typical cost is one attempt.
+    """
+    import itertools
+    pcs = list(action.preconditions)
+    if len(pcs) <= 1:
+        return _resolve_preconditions_in_order(
+            action, event_pat, roles, actor_id, trace, lex, rules,
+            derived, max_depth, depth, seen,
+            pcs_order=pcs, derivations=derivations)
+    # Try the declared order first.
+    result = _resolve_preconditions_in_order(
+        action, event_pat, roles, actor_id, trace, lex, rules,
+        derived, max_depth, depth, seen,
+        pcs_order=pcs, derivations=derivations)
+    if result[1]:
+        return result
+    # Try other permutations. Order doesn't matter for correctness;
+    # take the first working one.
+    declared_tuple = tuple(pcs)
+    for perm in itertools.permutations(pcs):
+        if perm == declared_tuple:
+            continue
+        result = _resolve_preconditions_in_order(
+            action, event_pat, roles, actor_id, trace, lex, rules,
+            derived, max_depth, depth, seen,
+            pcs_order=list(perm), derivations=derivations)
+        if result[1]:
+            return result
+    return [], False
+
+
+def _resolve_preconditions_in_order(action, event_pat, roles, actor_id,
+                                     trace, lex, rules, derived,
+                                     max_depth, depth, seen, *,
+                                     pcs_order, derivations=None):
     """For each role binding, recursively satisfy:
       - verb-level role property constraints,
       - rule-level role pattern entity constraints (if rule given),
-      - action.preconditions (cross-role relations from the schema).
+      - action.preconditions (cross-role relations from the schema)
+        in the order specified by `pcs_order`.
     Returns (sub_plans, ok). Sub-plans are concatenated in the order
     they're discovered (which is the order they need to fire).
 
@@ -803,8 +848,9 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
                             if ent is None:
                                 return [], False
 
-        # Action-level preconditions.
-        for pc in action.preconditions:
+        # Action-level preconditions, in the order picked by the
+        # outer permutation wrapper.
+        for pc in pcs_order:
             if isinstance(pc, RelationPrecondition):
                 eids = [roles.get(rn) for rn in pc.roles]
                 if any(e is None for e in eids):
