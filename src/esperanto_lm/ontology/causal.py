@@ -186,6 +186,26 @@ class Trace:
         `trace.relations` in the post-run state."""
         return list(self.relations)
 
+    def fork(self) -> "Trace":
+        """Lightweight copy used by the planner's _simulate_from_scratch
+        instead of copy.deepcopy. Safe because:
+          - EntityInstance is conceptually immutable post-construction
+            (per the docstring); rules never mutate entity.properties.
+            New entities created by rules go into the new dict only.
+          - RelationAssertion objects are immutable; the list itself
+            gets appended/filtered, so we duplicate the list but share
+            the objects.
+          - Event objects are immutable; events list is append-only.
+        Hot path: ~10× faster than deepcopy in practice because Python's
+        deepcopy walks every nested object via reflection."""
+        new = Trace.__new__(Trace)
+        new.entities = dict(self.entities)
+        new.relations = list(self.relations)
+        new.events = list(self.events)
+        new._event_ids = set(self._event_ids)
+        new._next_entity_id = self._next_entity_id
+        return new
+
     # ---------- entity helpers ----------
     def add_entity(
         self, concept_lemma: str, lexicon: Lexicon,

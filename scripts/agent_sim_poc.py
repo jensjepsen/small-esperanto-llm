@@ -662,7 +662,7 @@ def _simulate_from_scratch(base_trace, plan, lex, rules, derivations):
         result = (base_trace, derived_state)
         _SIM_CACHE[cache_key] = result
         return result
-    t = copy.deepcopy(base_trace)
+    t = base_trace.fork()
     for verb, roles in plan:
         ev = make_event(
             verb, roles=roles,
