@@ -157,6 +157,13 @@ def bake_concept_derivations(
                         if isinstance(value, Var):
                             continue   # can't resolve free vars at concept time
                         slot_def = slots.get(imp.slot) if slots else None
+                        # varies=true slots get re-derived per-entity at
+                        # runtime (the host's openness depends on its
+                        # specific pordo's randomized openness, etc.).
+                        # Baking would freeze them to the concept default
+                        # and asserted-wins blocks runtime updates.
+                        if slot_def is not None and slot_def.varies:
+                            continue
                         is_scalar = slot_def is None or slot_def.scalar
                         if imp.slot in props:
                             if is_scalar:
@@ -355,6 +362,11 @@ def _bake_parts_aware(
                 if eid != HOST_ID:
                     continue
                 slot_def = slots.get(slot) if slots else None
+                # varies=true slots: same reasoning as the simple-pass —
+                # baking freezes them to the concept default and blocks
+                # runtime re-derivation per-instance.
+                if slot_def is not None and slot_def.varies:
+                    continue
                 is_scalar = slot_def is None or slot_def.scalar
                 props = work[host_lemma]
                 if slot in props:

@@ -1207,6 +1207,20 @@ person_has_human_parts = derive(
 )
 
 
+# Indoor locations have a door. Mirrors person_has_human_parts —
+# materialized at bake time onto every indoor concept, including
+# affix-derived ones like kuirejo, lavejo, dormejo. Combined with
+# host_openness_*_from_pordo, this gates eniri to indoor places
+# behind a malfermi step (and behind malŝlosi if the door's seruro
+# is locked).
+indoor_location_has_pordo = derive(
+    when=entity(type="location", indoor_outdoor="interna")
+         & bind(ILP := var("L")),
+    implies=part(ILP, "pordo"),
+    name="indoor_location_has_pordo",
+)
+
+
 # Tool-use capability. Any entity with hands (mano) can use tools.
 # Currently this picks up persons (persono.parts includes mano) and
 # the apes (simio/gorilo/ĉimpanzo, declared with mano in parts).
@@ -1444,6 +1458,40 @@ host_lock_capable_from_seruro = derive(
 )
 
 
+# ---------- derivation: host's openness lifts from its pordo -----------
+#
+# A host (location OR artifact) with a `pordo` part takes its openness
+# from the door's openness. Used by the eniri / veturi gates so a
+# closed-door location/vehicle requires malfermi(pordo) before entry.
+# Doorless hosts (kampo, lago, biciklo, ...) have no openness derived,
+# so the gate vacuously passes for them.
+
+host_openness_closed_from_pordo = derive(
+    when=entity() & bind(HOCD := var("D")),
+    given=[
+        rel("havas_parton",
+            tuto=HOCD,
+            parto=bind(HOCP := var("P"))),
+        entity(concept="pordo", openness="fermita") & bind(HOCP),
+    ],
+    implies=property(HOCD, "openness", "fermita"),
+    name="host_openness_closed_from_pordo",
+)
+
+
+host_openness_open_from_pordo = derive(
+    when=entity() & bind(HOOD := var("D")),
+    given=[
+        rel("havas_parton",
+            tuto=HOOD,
+            parto=bind(HOOP := var("P"))),
+        entity(concept="pordo", openness="malfermita") & bind(HOOP),
+    ],
+    implies=property(HOOD, "openness", "malfermita"),
+    name="host_openness_open_from_pordo",
+)
+
+
 # ---------- derivation: knowing a location-fakto means knowing where ----
 #
 # An agent who knows a fakto whose relation is `en` or `sur` (and the
@@ -1513,6 +1561,51 @@ samloke_propagates_through_artifact_parts = derive(
     ],
     implies=relation("samloke", SPTPA, SPTPP),
     name="samloke_propagates_through_artifact_parts",
+)
+
+
+# Same propagation for location hosts. Locations have static parts
+# (vojo, relo, akvo, pordo) — anyone samloke with the location is
+# samloke with those parts. Without this, malfermi(actor, kuirejo_pordo)
+# can never satisfy its samloke(actor, pordo) precondition, since
+# pordo isn't `en` anything (it's a part).
+samloke_propagates_through_location_parts = derive(
+    when=rel("samloke",
+             a=bind(SPLPA := var("A")),
+             b=bind(SPLPB := var("B"))),
+    given=[
+        entity(type="location") & bind(SPLPB),
+        rel("havas_parton",
+            tuto=SPLPB,
+            parto=bind(SPLPP := var("P"))),
+    ],
+    implies=relation("samloke", SPLPA, SPLPP),
+    name="samloke_propagates_through_location_parts",
+)
+
+
+# An entity in/at a location is samloke with the location itself.
+# Without these, samloke(petro, kuirejo) is never derivable from
+# `en(petro, kuirejo)` or `apud(petro, kuirejo)` — the existing
+# samloke derivations all need a SHARED container between two
+# entities. Lets the planner reach a location's parts (its pordo,
+# its seruro) for malfermi/malŝlosi gating.
+
+en_implies_samloke_with_container = derive(
+    when=rel("en",
+             contained=bind(EISA := var("A")),
+             container=bind(EISL := var("L"))),
+    implies=relation("samloke", EISA, EISL),
+    name="en_implies_samloke_with_container",
+)
+
+
+apud_implies_samloke_with_neighbor = derive(
+    when=rel("apud",
+             subject=bind(AISA := var("A")),
+             neighbor=bind(AISN := var("N"))),
+    implies=relation("samloke", AISA, AISN),
+    name="apud_implies_samloke_with_neighbor",
 )
 
 
@@ -1606,6 +1699,7 @@ DEFAULT_DSL_DERIVATIONS = [
     animate_terrain_land_from_slither,
     entity_in_water_from_water_body,
     person_has_human_parts,
+    indoor_location_has_pordo,
     has_hands_can_use_tools,
     animate_has_hunger,
     animate_has_sleep_state,
@@ -1617,9 +1711,14 @@ DEFAULT_DSL_DERIVATIONS = [
     mixed_en_apud_means_samloke,
     host_samloke_with_part,
     samloke_propagates_through_artifact_parts,
+    samloke_propagates_through_location_parts,
+    en_implies_samloke_with_container,
+    apud_implies_samloke_with_neighbor,
     host_lock_state_locked_from_seruro,
     host_lock_state_unlocked_from_seruro,
     host_lock_capable_from_seruro,
+    host_openness_closed_from_pordo,
+    host_openness_open_from_pordo,
     animate_knows_self_subject,
     animate_knows_self_object,
     scias_lokon_via_en,

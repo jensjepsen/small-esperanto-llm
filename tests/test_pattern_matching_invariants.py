@@ -164,10 +164,14 @@ def test_baked_facts_present(lex):
     parts = [p.concept for p in kuiristo.parts]
     assert "mano" in parts
     assert "yes" in kuiristo.properties.get("can_use_tools", [])
-    # pordo lifts lock_state from seruro part:
+    # pordo lifts lock_capable from its seruro part. lock_state itself
+    # is varies=true so it's deliberately NOT baked — the runtime
+    # derivation re-fires per-instance based on the actual seruro's
+    # randomized lock_state, rather than freezing to the seruro's
+    # default at concept-load time.
     pordo = lex.concepts["pordo"]
-    assert pordo.properties.get("lock_state") == ["ŝlosita"]
     assert pordo.properties.get("lock_capable") == ["yes"]
+    assert pordo.properties.get("lock_state") is None
     # Outdoor location is_luma baked:
     parko = lex.concepts["parko"]
     assert parko.properties.get("lit_state") == ["luma"]

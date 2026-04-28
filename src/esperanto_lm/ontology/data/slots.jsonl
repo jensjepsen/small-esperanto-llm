@@ -6,7 +6,7 @@
 {"name": "functional_signature", "vocabulary": null, "applies_to": ["artifact"], "scalar": true}
 {"name": "hunger", "vocabulary": ["malsata", "sata"], "applies_to": ["animate"], "scalar": true, "varies": true}
 {"name": "presence", "vocabulary": ["ĉeesta", "manĝita"], "applies_to": ["physical"], "scalar": true}
-{"name": "openness", "vocabulary": ["malfermita", "fermita"], "applies_to": ["artifact"], "scalar": true, "varies": true}
+{"name": "openness", "vocabulary": ["malfermita", "fermita"], "applies_to": ["physical"], "scalar": true, "varies": true}
 {"name": "water_state", "vocabulary": ["soifa", "akvumita"], "applies_to": ["physical"], "scalar": true, "varies": true}
 {"name": "cleanliness", "vocabulary": ["malpura", "pura"], "applies_to": ["physical"], "scalar": true, "varies": true}
 {"name": "indoor_outdoor", "vocabulary": ["interna", "ekstera"], "applies_to": ["location"], "scalar": true}
