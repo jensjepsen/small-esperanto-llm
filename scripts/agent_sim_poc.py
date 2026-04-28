@@ -923,7 +923,7 @@ def _candidate_breaks_preserved(sub_plan, trace, lex, rules, derivations):
 def plan_to_establish_relation(relation, target_args, actor_id,
                                trace, lex, rules, *, derived=None,
                                derivations=None,
-                               max_depth=4, _depth=0, _seen=None):
+                               max_depth=8, _depth=0, _seen=None):
     """Find a sequence of actions that asserts rel(relation, *target_args).
     Returns [] if already true, list of (verb, roles), or None.
 
@@ -933,6 +933,14 @@ def plan_to_establish_relation(relation, target_args, actor_id,
     are reached — no verb adds samloke, but a derivation produces it
     from shared `en` containers."""
     _seen = _seen or set()
+    # At top-level entry, materialize the derived layer once if the
+    # caller passed derivations but no precomputed cache. Without
+    # this, downstream candidate filters and synthesis checks see
+    # an empty derived layer and silently fail to find paths that
+    # depend on derivation-only properties (e.g. illuminated, terrain).
+    # Mirrors plan_to_achieve's same-shape guard.
+    if derived is None and derivations is not None and _depth == 0:
+        derived = _cached_compute_derived_state(trace, derivations, lex)
     key = ("rel", relation, tuple(target_args))
     if key in _seen or _depth >= max_depth:
         return None
@@ -1832,7 +1840,7 @@ def _split_entity_constraints(when, given, target_var):
 
 def plan_event_firing(verb, requested_roles, actor_id,
                       trace, lex, rules, *, derived=None, derivations=None,
-                      max_depth=5, _depth=0, _seen=None):
+                      max_depth=8, _depth=0, _seen=None):
     """Plan to fire `verb` with the requested roles, resolving any
     preconditions. Used by drives that target a specific verb-event
     rather than a goal state — e.g. knowledge drives currently target
@@ -1883,7 +1891,7 @@ def plan_event_firing(verb, requested_roles, actor_id,
 
 def plan_to_co_locate(eid_a, eid_b, actor_id, trace, lex, rules, *,
                       derived=None, derivations=None,
-                      max_depth=4, _depth=0, _seen=None):
+                      max_depth=8, _depth=0, _seen=None):
     """Compatibility wrapper — co-location is now a `samloke` relation
     goal handled generically by `plan_to_establish_relation` walking
     the `shared_container_means_samloke` derivation. Kept so existing
@@ -1898,7 +1906,7 @@ def plan_to_co_locate(eid_a, eid_b, actor_id, trace, lex, rules, *,
 def plan_to_achieve(goal_entity_id, goal_slot, goal_value,
                     actor_id, trace, lex, rules, *, derived=None,
                     derivations=None,
-                    max_depth=3, _depth=0, _seen=None):
+                    max_depth=8, _depth=0, _seen=None):
     """General-purpose subgoal planner. Find a sequence of actions
     that, when executed, would result in `goal_entity` having
     `goal_slot=goal_value`. Returns a list of (verb, roles) — possibly
@@ -2997,7 +3005,7 @@ def _dedupe_adjacent_steps(plan):
     return out
 
 
-def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=5,
+def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
                     rng=None):
     """Dispatch one drive to the right planner entry. Returns the
     plan or None. Computes derived state once. Doesn't fire — caller
