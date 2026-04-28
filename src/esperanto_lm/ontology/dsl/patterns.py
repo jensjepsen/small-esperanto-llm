@@ -165,12 +165,17 @@ class EntityPattern(Pattern):
             yield bindings
 
     def search(self, ctx, bindings):
-        # Type-indexed fast path: when the pattern constrains
-        # `type=X`, query the context's entity-by-type index instead
-        # of scanning every entity in the trace. ~30 derivations × N
-        # entities × cycles → indexed lookup is dramatically cheaper
-        # for large scenes. Falls back to the full scan if no type
-        # constraint or the type is Var-resolved.
+        # Indexed fast paths: pick the most selective constraint
+        # available. Concept is more selective than type
+        # (each concept has fewer entities than its type does),
+        # so prefer concept when present. Falls back to type, then
+        # full scan.
+        concept_constraint = self.constraints.get("concept")
+        if isinstance(concept_constraint, str):
+            for eid, ent in ctx.entities_of_concept(concept_constraint):
+                if _entity_matches(ent, self.constraints, ctx, bindings):
+                    yield bindings
+            return
         type_constraint = self.constraints.get("type")
         if isinstance(type_constraint, str):
             for eid, ent in ctx.entities_of_type(type_constraint):
@@ -688,6 +693,12 @@ def _iter_entity_candidates(pattern: Pattern, ctx, bindings):
     instead of scanning every entity. Frequent enough in derivation
     cascades that this shows up as a hot loop without the index."""
     if isinstance(pattern, EntityPattern):
+        concept_constraint = pattern.constraints.get("concept")
+        if isinstance(concept_constraint, str):
+            for eid, ent in ctx.entities_of_concept(concept_constraint):
+                if _entity_matches(ent, pattern.constraints, ctx, bindings):
+                    yield eid
+            return
         type_constraint = pattern.constraints.get("type")
         if isinstance(type_constraint, str):
             for eid, ent in ctx.entities_of_type(type_constraint):

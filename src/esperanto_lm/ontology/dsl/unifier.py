@@ -120,6 +120,7 @@ class MatchContext:
     focus_event: Optional[Event] = None
     _entities_by_type_cache: Optional[dict] = None
     _relations_by_name_cache: Optional[dict] = None
+    _entities_by_concept_cache: Optional[dict] = None
 
     def effective_property(self, eid: str, slot: str) -> Any:
         """Read asserted-then-derived. Used by EntityPattern constraint
@@ -166,6 +167,19 @@ class MatchContext:
                 continue
         cache[merged_key] = merged
         return merged
+
+    def entities_of_concept(self, concept_lemma: str) -> list:
+        """Return [(eid, ent)] where ent.concept_lemma == `concept_lemma`.
+        Cached lazily; built on first call by bucketing trace.entities.
+        Pattern matching for `entity(concept=X)` uses this instead of
+        scanning every entity — frequent in host-derivations like
+        `host_lock_state_*_from_seruro` that gate on a part's concept."""
+        if self._entities_by_concept_cache is None:
+            buckets: dict[str, list] = {}
+            for eid, ent in self.trace.entities.items():
+                buckets.setdefault(ent.concept_lemma, []).append((eid, ent))
+            self._entities_by_concept_cache = buckets
+        return self._entities_by_concept_cache.get(concept_lemma, [])
 
     def relations_of(self, relation_name: str) -> list:
         """Return [args_tuple] for asserted + derived relations with
