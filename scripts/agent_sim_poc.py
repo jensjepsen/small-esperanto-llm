@@ -41,7 +41,7 @@ from esperanto_lm.ontology.dsl.patterns import (
     RelPattern, Var,
 )
 from esperanto_lm.ontology.dsl.rules import (
-    DEFAULT_DSL_DERIVATIONS, DEFAULT_DSL_RULES,
+    DEFAULT_DSL_DERIVATIONS, DEFAULT_DSL_RULES, RUNTIME_DERIVATIONS,
 )
 
 
@@ -4656,7 +4656,12 @@ def scene_dirty_door(lex):
 def main():
     lex = load_lexicon()
     rules = list(DEFAULT_DSL_RULES)
-    derivations = list(DEFAULT_DSL_DERIVATIONS)
+    # Use the runtime-only subset — static derivations are already
+    # materialized onto entity.properties via bake, so re-firing
+    # them at runtime is wasted work. ~2× speedup on regression
+    # coverage with no loss of derived state at the consumer level
+    # (asserted/baked properties remain visible to queries).
+    derivations = list(RUNTIME_DERIVATIONS)
 
     scenes = [
         ("hungry maria (1-step direct)", scene_hungry_maria),
