@@ -704,32 +704,42 @@ def _resolve_preconditions(action, event_pat, roles, actor_id,
     first ordering that succeeds, so the typical cost is one attempt.
     """
     import itertools
-    pcs = list(action.preconditions)
-    if len(pcs) <= 1:
-        return _resolve_preconditions_in_order(
-            action, event_pat, roles, actor_id, trace, lex, rules,
-            derived, max_depth, depth, seen,
-            pcs_order=pcs, derivations=derivations)
-    # Try the declared order first.
-    result = _resolve_preconditions_in_order(
-        action, event_pat, roles, actor_id, trace, lex, rules,
-        derived, max_depth, depth, seen,
-        pcs_order=pcs, derivations=derivations)
-    if result[1]:
-        return result
-    # Try other permutations. Order doesn't matter for correctness;
-    # take the first working one.
-    declared_tuple = tuple(pcs)
-    for perm in itertools.permutations(pcs):
-        if perm == declared_tuple:
-            continue
+    rp_depth = _RP_DEPTH.get() + 1
+    rp_token = _RP_DEPTH.set(rp_depth)
+    try:
+        pcs = list(action.preconditions)
+        if len(pcs) <= 1:
+            return _resolve_preconditions_in_order(
+                action, event_pat, roles, actor_id, trace, lex, rules,
+                derived, max_depth, depth, seen,
+                pcs_order=pcs, derivations=derivations)
+        # Try the declared order first.
         result = _resolve_preconditions_in_order(
             action, event_pat, roles, actor_id, trace, lex, rules,
             derived, max_depth, depth, seen,
-            pcs_order=list(perm), derivations=derivations)
+            pcs_order=pcs, derivations=derivations)
         if result[1]:
             return result
-    return [], False
+        # Permute only when shallow enough that the cost stays
+        # bounded. At deeper levels, declared order has to suffice.
+        # The locked-door cascade hits permutation around rp_depth=3,
+        # so the cap accommodates it.
+        if rp_depth > _RP_PERMUTE_MAX_DEPTH:
+            return result
+        # Try other permutations. Take the first working one.
+        declared_tuple = tuple(pcs)
+        for perm in itertools.permutations(pcs):
+            if perm == declared_tuple:
+                continue
+            result = _resolve_preconditions_in_order(
+                action, event_pat, roles, actor_id, trace, lex, rules,
+                derived, max_depth, depth, seen,
+                pcs_order=list(perm), derivations=derivations)
+            if result[1]:
+                return result
+        return [], False
+    finally:
+        _RP_DEPTH.reset(rp_token)
 
 
 def _resolve_preconditions_in_order(action, event_pat, roles, actor_id,
@@ -945,6 +955,16 @@ _PLANNER_RNG: contextvars.ContextVar = contextvars.ContextVar(
 # pattern surfaces there too.
 _PRESERVE_CONSTRAINTS: contextvars.ContextVar = contextvars.ContextVar(
     "_PRESERVE_CONSTRAINTS", default=())
+
+# Tracks how deeply nested the current `_resolve_preconditions` call
+# is. The PC-permutation wrapper uses this to bound where alternate
+# orderings are tried — without a cap the cost compounds at every
+# multi-PC action down a chain (N!^D). Cap chosen so the locked-
+# door-key cascade (which needs malŝlosi-PC reordering at depth ~3)
+# still works while shallower actions don't multiplicatively explore.
+_RP_DEPTH: contextvars.ContextVar = contextvars.ContextVar(
+    "_RP_DEPTH", default=0)
+_RP_PERMUTE_MAX_DEPTH = 0
 
 
 def _candidate_breaks_preserved(sub_plan, trace, lex, rules, derivations):
@@ -3102,6 +3122,7 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
         return _dedupe_adjacent_steps(plan) if plan else plan
     finally:
         _PLANNER_RNG.reset(token)
+
 
 
 def _drive_summary(drive):
