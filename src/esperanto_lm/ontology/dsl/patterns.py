@@ -31,17 +31,25 @@ from typing import Any, Iterator, Optional
 # ---------------------------- variables ----------------------------
 
 class Var:
-    """A match variable. Identity-compared; name is for error messages."""
-    __slots__ = ("name",)
+    """A match variable. Identity-compared; name is for error messages.
+
+    Vars are used as `bindings` dict keys (millions of lookups per
+    planning session) and never mutate or get copied — each `var()`
+    call constructs a fresh instance with module-lifetime identity.
+    The hash is cached at construction so __hash__ avoids the per-call
+    `id()` builtin frame setup; safe because identity is by-design
+    immutable for Vars."""
+    __slots__ = ("name", "_hash")
 
     def __init__(self, name: str = "_anon"):
         self.name = name
+        self._hash = id(self)
 
     def __repr__(self) -> str:
         return f"${self.name}"
 
     def __hash__(self) -> int:
-        return id(self)
+        return self._hash
 
     def __eq__(self, other) -> bool:
         return self is other
@@ -112,11 +120,25 @@ class BindPattern(Pattern):
         return {self.target}
 
     def apply_to_value(self, value, ctx, bindings):
+        # Mutate-and-restore: write target into the SHARED bindings
+        # dict, yield it, then delete the key on the way out. Saves
+        # millions of `{**bindings, k: v}` allocations per planning
+        # session.
+        #
+        # Safety contract: callers may consume the yielded `bindings`
+        # only during the for-iteration. To capture across iterations
+        # (e.g. `list(...)` materialization), copy explicitly with
+        # `dict(b)`. The engine's causal phase does this at line 450
+        # of engine.py; the derivation phase consumes immediately.
         if self.target in bindings:
             if bindings[self.target] == value:
                 yield bindings
             return
-        yield {**bindings, self.target: value}
+        bindings[self.target] = value
+        try:
+            yield bindings
+        finally:
+            del bindings[self.target]
 
     def search(self, ctx, bindings):
         # Bind at top-level: only makes sense if the var is already bound

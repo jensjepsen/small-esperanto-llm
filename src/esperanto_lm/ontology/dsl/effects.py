@@ -159,6 +159,67 @@ def destroy_entity(target: Var | str) -> DestroyEntity:
     return DestroyEntity(target)
 
 
+# --------------------- consume_one --------------------------------
+
+@dataclass
+class ConsumeOne(Effect):
+    """Consume one unit of the target. Two modes determined at runtime:
+      - Target has a `count` slot: decrement count by 1 via a synthetic
+        `_change` event. Destroy the entity if count drops to 0.
+      - Target has no count slot (or count missing): destroy the entity
+        outright (matches the legacy "manĝi destroys theme" semantics).
+    Lets one rule handle both stack-style countable consumption (3 apples
+    → 2 apples) and single-unit consumption (one bread → gone)."""
+    target: Var | str
+
+    def reads(self) -> set[Var]:
+        return {self.target} if isinstance(self.target, Var) else set()
+
+
+def consume_one(target: Var | str) -> ConsumeOne:
+    """Consume one unit of the target — see `ConsumeOne`.
+
+        consume_one(T)
+    """
+    return ConsumeOne(target)
+
+
+# --------------------- transfer_n ---------------------------------
+
+@dataclass
+class TransferN(Effect):
+    """Transfer `cause_event.quantity` units of `source` from its current
+    owner to `target`. Reads quantity off the firing event (default 1).
+    Two modes determined at runtime:
+      - Source has no `count` slot (single-unit theme): full ownership
+        swap — remove havi(prior_owner, source), add havi(target, source).
+      - Source has a `count` slot:
+          - If qty >= source.count: full transfer (entity moves wholesale).
+          - Else: split — decrement source.count by qty and create a new
+            stack of `qty` units of the same concept owned by `target`.
+    The legacy preni/peti/doni rules used a manual remove+add pair; this
+    effect subsumes them and adds partial-stack support."""
+    source: Var | str
+    target: Var | str
+
+    def reads(self) -> set[Var]:
+        out: set[Var] = set()
+        if isinstance(self.source, Var):
+            out.add(self.source)
+        if isinstance(self.target, Var):
+            out.add(self.target)
+        return out
+
+
+def transfer_n(*, source: Var | str, target: Var | str) -> TransferN:
+    """Transfer N units of `source` to `target` (N from event.quantity).
+    See `TransferN` for split semantics.
+
+        transfer_n(source=T, target=A)
+    """
+    return TransferN(source, target)
+
+
 # ---------------------------- change -------------------------------
 
 @dataclass

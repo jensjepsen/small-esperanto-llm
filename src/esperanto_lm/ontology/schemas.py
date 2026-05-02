@@ -48,6 +48,35 @@ class PropertySlot(_Frozen):
     # Requires vocabulary to be non-null and scalar=True; open-vocab
     # and multi-valued slots can't be uniformly randomized.
     varies: bool = False
+    # When True, the slot applies to EVERY concept of its `applies_to`
+    # type without per-concept declaration — a default-derivation
+    # like `animate_has_hunger` materializes it for all instances at
+    # runtime. The regression sampler's concept-matching filters skip
+    # the "concept must declare this slot" check for pervasive slots.
+    #
+    # Examples (pervasive=True): hunger, thirst, sleep_state, posture,
+    # wetness, cleanliness, temperature, mood (when added).
+    # Examples (pervasive=False — opt-in via concept declaration or
+    # parts-derivation): openness, lock_state, power_state, fullness,
+    # attachment, water_state — these only apply to specific concepts
+    # (pordo gets openness, motoro gets power_state, glaso gets
+    # fullness, ...).
+    pervasive: bool = False
+    # When True, the slot's vocabulary words can be rendered as
+    # attributive adjectives on entities that hold them — "fragila pomo",
+    # "malsata Maria". Slot values must already be -a/participle adjective
+    # forms (fragila, malsata, ŝlosita); boolean tag slots like
+    # `is_clothing=yes` are not adjectival even though they're scalar.
+    # Realizer reads this flag to decide which slot values to surface
+    # as adjectives in noun phrases.
+    adjectival: bool = False
+    # The slot's unmarked / default value — what speakers leave
+    # implicit. The renderer skips adjective rendering when an entity's
+    # value matches this, so "fortika lampo" / "luma valo" / "sata
+    # Maria" don't surface as noise. Marked values (fragila, malluma,
+    # malsata) still render. None means every value is potentially
+    # marked (e.g. hazard: akra and glita are both noteworthy).
+    unmarked: Optional[str] = None
 
 
 class ConceptPart(_Frozen):
@@ -76,6 +105,22 @@ class Concept(_Frozen):
     # of verbs in its own right. Distinct from old-style capability
     # markers — the part is a real entity, not a slot value.
     parts: list[ConceptPart] = Field(default_factory=list)
+    # Superordinate concept lemmas this one is-a. Walks transitively at
+    # rendering time so a `papago` can be referred to as "birdo" or
+    # "animalo" if `papago.category=["birdo"]` and
+    # `birdo.category=["animalo"]`. Plain string lemmas — no validation
+    # that the parent concept exists, so tests can use ad-hoc taxa
+    # without padding the lexicon. List form allows multi-inheritance
+    # ("seĝo" might be both "meblo" and "lignaĵo") though most concepts
+    # will have 0 or 1 parents.
+    category: list[str] = Field(default_factory=list)
+    # When True, this concept is a category stub — semantically a real
+    # type (an artifact, an animal, …) but not directly instantiated
+    # in scenes. Carries shared properties for its children to inherit
+    # (e.g. lignaĵo holds made_of=wood for all wooden things). Scene
+    # selection skips these so we don't get incoherent prose like
+    # "Estis meblo en la salono"; the children render normally.
+    is_category_stub: bool = False
     # Marks concepts produced by composition rather than authored on disk.
     derived: bool = False
     # Provenance for derived concepts: which lemma(s) + affix(es) produced

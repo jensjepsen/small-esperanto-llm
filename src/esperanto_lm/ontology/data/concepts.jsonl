@@ -1,4 +1,4 @@
-{"lemma": "persono", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "persono", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
 {"lemma": "ĝardeno", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}]}
 {"lemma": "salono", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "oficejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
@@ -7,87 +7,87 @@
 {"lemma": "restoracio", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "vendejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "parko", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}]}
-{"lemma": "pano", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
-{"lemma": "pomo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
-{"lemma": "ovo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "fragility": ["fragila"], "state_of_matter": ["solida"]}}
-{"lemma": "akvo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
+{"lemma": "pano", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
+{"lemma": "pomo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
+{"lemma": "ovo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "fragility": ["fragila"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["manĝaĵo"]}
+{"lemma": "akvo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
 {"lemma": "vojo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["stone"]}}
-{"lemma": "relo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"]}}
-{"lemma": "lakto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
-{"lemma": "tablo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"]}}
-{"lemma": "seĝo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "sittable": ["yes"]}}
-{"lemma": "breto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"]}}
+{"lemma": "relo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["metalaĵo"]}
+{"lemma": "lakto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
+{"lemma": "tablo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["meblo", "lignaĵo"]}
+{"lemma": "seĝo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "sittable": ["yes"]}, "category": ["meblo", "lignaĵo"]}
+{"lemma": "breto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["meblo", "lignaĵo"]}
 {"lemma": "pordo", "entity_type": "artifact", "properties": {"openness": ["fermita"], "state_of_matter": ["solida"]}, "parts": [{"concept": "seruro"}]}
 {"lemma": "seruro", "entity_type": "artifact", "properties": {"lock_state": ["ŝlosita"], "lock_capable": ["yes"], "state_of_matter": ["solida"]}}
 {"lemma": "fenestro", "entity_type": "artifact", "properties": {"openness": ["fermita"], "fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
 {"lemma": "muro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}
-{"lemma": "glaso", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
-{"lemma": "botelo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "openness": ["fermita"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
+{"lemma": "glaso", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "fullness": ["malplena"]}}
+{"lemma": "botelo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "openness": ["fermita"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "fullness": ["malplena"]}}
 {"lemma": "korbo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "openness": ["malfermita"], "state_of_matter": ["solida"], "made_of": ["wicker"]}}
 {"lemma": "floro", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
 {"lemma": "arbo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"]}}
-{"lemma": "semo", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
+{"lemma": "semo", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}}
 {"lemma": "ligno", "entity_type": "substance", "properties": {"fragility": ["fortika"], "attachment": ["loza"], "state_of_matter": ["solida"], "made_of": ["wood"]}}
-{"lemma": "najlo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}
-{"lemma": "sofo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "sittable": ["yes"]}}
+{"lemma": "najlo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["metalaĵo"]}
+{"lemma": "sofo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "sittable": ["yes"], "lieable": ["yes"]}, "category": ["meblo"]}
 {"lemma": "libro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"]}}
-{"lemma": "papero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"]}}
+{"lemma": "papero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "count": ["1"]}}
 {"lemma": "pilko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["rubber"]}}
-{"lemma": "aŭto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "is_vehicle": ["yes"], "terrain": ["land"]}, "parts": [{"concept": "motoro"}, {"concept": "pordo"}]}
-{"lemma": "biciklo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "is_vehicle": ["yes"], "terrain": ["land"]}}
-{"lemma": "trajno", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "is_vehicle": ["yes"], "terrain": ["rail"]}, "parts": [{"concept": "motoro"}, {"concept": "pordo"}]}
-{"lemma": "kato", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "hundo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "birdo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "muso", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "papago", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "aŭto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_vehicle": ["yes"], "terrain": ["land"]}, "parts": [{"concept": "motoro"}, {"concept": "pordo"}], "category": ["vehiklo", "metalaĵo"]}
+{"lemma": "biciklo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_vehicle": ["yes"], "terrain": ["land"]}, "category": ["vehiklo", "metalaĵo"]}
+{"lemma": "trajno", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_vehicle": ["yes"], "terrain": ["rail"]}, "parts": [{"concept": "motoro"}, {"concept": "pordo"}], "category": ["vehiklo", "metalaĵo"]}
+{"lemma": "kato", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "hundo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "birdo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["besto"]}
+{"lemma": "muso", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "papago", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
 {"lemma": "vitropecetoj", "entity_type": "inanimate", "properties": {"hazard": ["akra"], "fragility": ["fortika"], "state_of_matter": ["solida"]}}
 {"lemma": "flako", "entity_type": "substance", "properties": {"hazard": ["glita"], "state_of_matter": ["likva"], "presence": ["ĉeesta"]}}
 {"lemma": "pluvo", "entity_type": "natural_object", "properties": {"state_of_matter": ["likva"]}}
 {"lemma": "mantelo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"]}}
 {"lemma": "ombrelo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"]}}
-{"lemma": "kuniklo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "ĉevalo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "bovo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "porko", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
+{"lemma": "kuniklo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "ĉevalo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "bovo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "porko", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
 {"lemma": "fiŝo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "lito", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "sittable": ["yes"]}}
-{"lemma": "ŝranko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"], "made_of": ["wood"]}}
-{"lemma": "viando", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["meat"]}}
-{"lemma": "fromaĝo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
-{"lemma": "legomo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
-{"lemma": "frukto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
-{"lemma": "kuko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
-{"lemma": "vino", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
-{"lemma": "kafo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
-{"lemma": "teo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
+{"lemma": "lito", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "lieable": ["yes"]}, "category": ["meblo", "lignaĵo"]}
+{"lemma": "ŝranko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"]}, "category": ["meblo", "lignaĵo"]}
+{"lemma": "viando", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["meat"]}, "category": ["manĝaĵo"]}
+{"lemma": "fromaĝo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
+{"lemma": "legomo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["manĝaĵo"]}
+{"lemma": "frukto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["manĝaĵo"]}
+{"lemma": "kuko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["manĝaĵo"]}
+{"lemma": "vino", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
+{"lemma": "kafo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
+{"lemma": "teo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
 {"lemma": "martelo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"]}}
 {"lemma": "forko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"]}}
 {"lemma": "kulero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"]}}
-{"lemma": "amiko", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "infano", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "frato", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "filo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "najbaro", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "amiko", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "infano", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "frato", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "filo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "najbaro", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
 {"lemma": "suno", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "luno", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "monto", "entity_type": "natural_object", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["stone"]}}
 {"lemma": "rivero", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "akvo"}]}
-{"lemma": "vulpo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "lupo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "leono", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "serpento", "entity_type": "animal", "properties": {"locomotion": ["slither"]}, "parts": [{"concept": "kapo"}, {"concept": "vosto"}]}
-{"lemma": "rato", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "kapro", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "azeno", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
+{"lemma": "vulpo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "lupo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "leono", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "serpento", "entity_type": "animal", "properties": {"locomotion": ["slither"]}, "parts": [{"concept": "kapo"}, {"concept": "vosto"}], "category": ["besto"]}
+{"lemma": "rato", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "kapro", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "azeno", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
 {"lemma": "koko", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "papilio", "entity_type": "animal", "properties": {}, "parts": [{"concept": "flugilo"}, {"concept": "kapo"}]}
-{"lemma": "rano", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "papilio", "entity_type": "animal", "properties": {}, "parts": [{"concept": "flugilo"}, {"concept": "kapo"}], "category": ["birdo"]}
+{"lemma": "rano", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["besto"]}
 {"lemma": "telero", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
-{"lemma": "taso", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
-{"lemma": "suko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
-{"lemma": "biero", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
-{"lemma": "kuseno", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "sittable": ["yes"]}}
+{"lemma": "taso", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "fullness": ["malplena"]}}
+{"lemma": "suko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
+{"lemma": "biero", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
+{"lemma": "kuseno", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "sittable": ["yes"], "lieable": ["yes"]}, "category": ["meblo"]}
 {"lemma": "matraco", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"]}}
 {"lemma": "herbo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["plant"]}}
 {"lemma": "arbusto", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"]}}
@@ -97,16 +97,16 @@
 {"lemma": "sako", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["malfermita"], "made_of": ["fabric"]}}
 {"lemma": "nubo", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
 {"lemma": "neĝo", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"], "made_of": ["water"]}}
-{"lemma": "ŝipo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "is_vehicle": ["yes"], "terrain": ["water"]}, "parts": [{"concept": "motoro"}, {"concept": "pordo"}]}
+{"lemma": "ŝipo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "is_vehicle": ["yes"], "terrain": ["water"]}, "parts": [{"concept": "motoro"}, {"concept": "pordo"}], "category": ["vehiklo"]}
 {"lemma": "aviadilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "is_vehicle": ["yes"], "terrain": ["land"]}, "parts": [{"concept": "motoro"}, {"concept": "pordo"}]}
 {"lemma": "spegulo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
 {"lemma": "lustro", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
-{"lemma": "vazo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
-{"lemma": "knabo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "knabino", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "doktoro", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "studento", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "gasto", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "vazo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "fullness": ["malplena"]}}
+{"lemma": "knabo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "knabino", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "doktoro", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "studento", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "gasto", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
 {"lemma": "oro", "entity_type": "substance", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "presence": ["ĉeesta"]}}
 {"lemma": "arĝento", "entity_type": "substance", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "presence": ["ĉeesta"]}}
 {"lemma": "fero", "entity_type": "substance", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "presence": ["ĉeesta"]}}
@@ -114,13 +114,13 @@
 {"lemma": "urbo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}, {"concept": "relo"}]}
 {"lemma": "valo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}]}
 {"lemma": "vilaĝo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}, {"concept": "relo"}]}
-{"lemma": "urso", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "cervo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
+{"lemma": "urso", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "cervo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
 {"lemma": "abelo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "flugilo"}, {"concept": "kapo"}]}
 {"lemma": "formiko", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}]}
-{"lemma": "simio", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}]}
-{"lemma": "gorilo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "ĉimpanzo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "simio", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "gorilo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "ĉimpanzo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
 {"lemma": "sapo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
 {"lemma": "vento", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
 {"lemma": "fulmo", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
@@ -134,3 +134,68 @@
 {"lemma": "okulo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "lampo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["neaktiva"], "lights_when_on": ["yes"]}}
 {"lemma": "motoro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["neaktiva"]}}
+{"lemma": "patro", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "patrino", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "avo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "avino", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "onklo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "kuzo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "edzo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "edzino", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "bebo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "homo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}]}
+{"lemma": "fingro", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "brako", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "dento", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "buŝo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "nazo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "orelo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "dorso", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "haro", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "banano", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
+{"lemma": "citrono", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
+{"lemma": "butero", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
+{"lemma": "cepo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["legomo"]}
+{"lemma": "karoto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["legomo"]}
+{"lemma": "ĉapelo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "ĉemizo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "jako", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "jupo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "ganto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "boto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "monero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "count": ["1"], "is_currency": ["yes"]}, "category": ["metalaĵo"]}
+{"lemma": "besto", "entity_type": "animal", "properties": {}, "is_category_stub": true}
+{"lemma": "meblo", "entity_type": "artifact", "properties": {}, "is_category_stub": true}
+{"lemma": "vehiklo", "entity_type": "artifact", "properties": {}, "is_category_stub": true}
+{"lemma": "lignaĵo", "entity_type": "artifact", "properties": {"made_of": ["wood"]}, "is_category_stub": true}
+{"lemma": "metalaĵo", "entity_type": "artifact", "properties": {"made_of": ["metal"]}, "is_category_stub": true}
+{"lemma": "benko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "sittable": ["yes"]}, "category": ["meblo", "lignaĵo"]}
+{"lemma": "fotelo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "sittable": ["yes"]}, "category": ["meblo"]}
+{"lemma": "tabureto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "sittable": ["yes"]}, "category": ["meblo", "lignaĵo"]}
+{"lemma": "ŝtono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["stone"], "sittable": ["yes"]}}
+{"lemma": "trunko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "sittable": ["yes"]}, "category": ["lignaĵo"]}
+{"lemma": "tomato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
+{"lemma": "oranĝo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
+{"lemma": "piro", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
+{"lemma": "ĉerizo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
+{"lemma": "fragoj", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
+{"lemma": "terpomo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["legomo"]}
+{"lemma": "kukumo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["legomo"]}
+{"lemma": "salato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["legomo"]}
+{"lemma": "fungo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["legomo"]}
+{"lemma": "rizo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
+{"lemma": "supo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["manĝaĵo"]}
+{"lemma": "ŝafo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "haro"}], "category": ["besto"]}
+{"lemma": "domo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "ĉambro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "koridoro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "balkono", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "etaĝo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "dentobroso", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["plastic"]}}
+{"lemma": "tuko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "functional_signature": ["sekigi"]}}
+{"lemma": "kombo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["plastic"]}}
+{"lemma": "genuo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "kubuto", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "ŝultro", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "koro", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "ventro", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}

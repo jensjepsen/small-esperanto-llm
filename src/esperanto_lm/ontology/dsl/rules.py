@@ -11,9 +11,10 @@ from __future__ import annotations
 from ..loader import Lexicon
 from .engine import Rule
 from . import (
-    add_relation, bind, caused_by, closure, create_entity, derive,
-    destroy_entity, emit, entity, event, has_concept_field, part,
-    past_event, property, rel, relation, remove_relation, rule, var,
+    add_relation, bind, caused_by, closure, consume_one, create_entity,
+    derive, destroy_entity, emit, entity, event, has_concept_field, part,
+    past_event, property, rel, relation, remove_relation, rule, transfer_n,
+    var,
 )
 
 
@@ -59,6 +60,20 @@ hungry_eats_sated = rule(
 )
 
 
+# Mirror of hungry_eats_sated for the thirst axis. Emits
+# `sensoifiĝi` (a coined transparent verb, sen- + soif- + -iĝ-i =
+# "become un-thirsty") rather than satiĝi so the regression
+# sampler's prop_pool — which keys off `action.effects[0].property`
+# — picks it up as a thirst-direct entry. Prose surfaces as "Maria
+# trinkis la akvon kaj sensoifiĝis."
+thirsty_drinks_quenched = rule(
+    when=event("trinki",
+               agent=entity(thirst="soifa") & bind(TQA := var("A"))),
+    then=emit("sensoifiĝi", theme=TQA).changing(TQA, "thirst", "satigita"),
+    name="thirsty_drinks_quenched",
+)
+
+
 # ---------- causal: manĝi_destroys_theme --------------------------------
 #
 # Eating destroys the food. The intrinsic effect on manĝi already
@@ -66,10 +81,21 @@ hungry_eats_sated = rule(
 # loop at the lifecycle level by marking the theme as destroyed from
 # that event onward. `entities_at(t)` stops returning the eaten thing.
 
-manĝi_destroys_theme = rule(
+manĝi_consumes_theme = rule(
     when=event("manĝi", theme=bind(TE := var("T"))),
-    then=destroy_entity(TE),
-    name="manĝi_destroys_theme",
+    then=consume_one(TE),
+    name="manĝi_consumes_theme",
+)
+
+
+# Drinking consumes the liquid the same way: countable liquids
+# (a stack of bottles, a bowl with multiple cups) decrement; single
+# liquids vanish. Closes the pre-existing gap where trinki left the
+# liquid intact in the trace.
+trinki_consumes_theme = rule(
+    when=event("trinki", theme=bind(TT := var("T"))),
+    then=consume_one(TT),
+    name="trinki_consumes_theme",
 )
 
 
@@ -150,6 +176,117 @@ wet_liquid_container_tips = rule(
         emit("aperi", theme=S_spill),
     ],
     name="wet_liquid_container_tips",
+)
+
+
+# ---------- causal: verŝi (pour) — agentive liquid transfer/spill -----
+#
+# Two outcomes split by destination type:
+#   - destination is a location (kuirejo, ĝardeno) → spill cascade.
+#     Emit `fali` on the liquid; existing
+#     `wet_liquid_container_tips` creates a flako and
+#     `person_slips_on_wet` propagates to nearby people.
+#   - destination is a non-location (glaso, botelo, vazo) → clean
+#     transfer. Move the liquid via `en` from its current container
+#     to the destination, no spill.
+# Agent loses `havi` on the poured liquid in both cases (parallel to
+# `ĵeti_releases_possession`).
+
+# ---------- causal: plenigi / malplenigi — container fill/empty --------
+#
+# `plenigi` fills a malplena container with a liquid the agent holds:
+# moves the liquid `en` the container and releases the agent's `havi`
+# of it. The fullness=plena state transition is on the action's
+# `effects` (so plan_to_achieve can target glaso.fullness=plena
+# directly). `malplenigi` empties a plena container by releasing its
+# liquid contents — emit `fali` so the existing wet_liquid_container_tips
+# cascade creates a flako on the floor.
+
+plenigi_transfers_contents = rule(
+    when=event("plenigi",
+               agent=bind(PLA := var("A")),
+               theme=bind(PLT := var("T")),
+               instrument=bind(PLI := var("I"))),
+    then=[
+        remove_relation("havi", PLA, PLI),
+        add_relation("en", PLI, PLT),
+    ],
+    name="plenigi_transfers_contents",
+)
+
+malplenigi_releases_contents = rule(
+    when=event("malplenigi",
+               theme=bind(MPT := var("T"))),
+    given=[
+        rel("en", contained=bind(MPL := var("L")), container=MPT),
+        entity(state_of_matter="likva") & MPL,
+    ],
+    then=[
+        remove_relation("en", MPL, MPT),
+        emit("fali", theme=MPL),
+    ],
+    name="malplenigi_releases_contents",
+)
+
+
+# ---------- causal: surmeti / demeti — clothing on/off ------------------
+#
+# `surmeti` (put on) adds `vestita(agent, theme)`; `demeti` (take off)
+# removes it. The vestita relation is distinct from `portas` (active
+# carrying) so the porti_drop_when_carrier_falls cascade doesn't
+# accidentally yank a worn hat off when the wearer trips. Worn
+# clothing also stays in the agent's possession (we don't remove
+# `havi`) — taking off a coat doesn't make it disappear from your
+# wardrobe.
+
+surmeti_dresses = rule(
+    when=event("surmeti",
+               agent=bind(SuA := var("A")),
+               theme=bind(SuT := var("T"))),
+    then=add_relation("vestita", SuA, SuT),
+    name="surmeti_dresses",
+)
+
+demeti_undresses = rule(
+    when=event("demeti",
+               agent=bind(DeA := var("A")),
+               theme=bind(DeT := var("T"))),
+    given=[rel("vestita", wearer=DeA, garment=DeT)],
+    then=remove_relation("vestita", DeA, DeT),
+    name="demeti_undresses",
+)
+
+
+verŝi_releases_possession = rule(
+    when=event("verŝi",
+               agent=bind(VRA := var("A")),
+               theme=bind(VRT := var("T"))),
+    given=[rel("havi", owner=VRA, theme=VRT)],
+    then=remove_relation("havi", VRA, VRT),
+    name="verŝi_releases_possession",
+)
+
+verŝi_into_location_emits_fali = rule(
+    when=event("verŝi",
+               theme=bind(VFT := var("T")),
+               destination=entity(type="location")
+                           & bind(VFD := var("D"))),
+    then=emit("fali", theme=VFT),
+    name="verŝi_into_location_emits_fali",
+)
+
+verŝi_into_container_transfers = rule(
+    when=event("verŝi",
+               theme=bind(VCT := var("T")),
+               destination=~entity(type="location")
+                           & bind(VCD := var("D"))),
+    given=[rel("en", contained=VCT,
+                container=bind(VCC := var("C")))],
+    then=[
+        remove_relation("en", VCT, VCC),
+        add_relation("en", VCT, VCD),
+    ],
+    name="verŝi_into_container_transfers",
 )
 
 
@@ -240,36 +377,18 @@ porti_drop_when_carrier_falls = rule(
 
 # ---------- causal: preni_transfers_ownership ---------------------------
 #
-# `preni` (take) covers both cases — same split as `kapti`:
-#   - from_nobody: pick up an unowned item (e.g. a key on a shelf).
-#                  Asserts havi(agent, theme); no removal needed.
-#   - transfers:   take from a current owner. Removes old havi, adds new.
-# Splitting keeps each case independently expressible and avoids the
-# match-fails-silently bug that previously left `preni` unable to
-# acquire unowned items.
-
-preni_acquires_unowned = rule(
-    when=event("preni",
-               agent=bind(TUA := var("A")),
-               theme=bind(TUT := var("T"))),
-    given=[
-        ~rel("havi", owner=bind(var("_any")), theme=TUT),
-    ],
-    then=add_relation("havi", TUA, TUT),
-    name="preni_acquires_unowned",
-)
+# `preni` (take) handles unowned and owned themes uniformly via
+# `transfer_n`: the engine looks up any current `havi` and either
+# - swaps the owner (full transfer), or
+# - splits the stack when the event's quantity < source.count.
+# Quantity defaults to 1 on the event; multi-unit themes still transfer
+# wholesale unless the planner sets an explicit quantity.
 
 preni_transfers_ownership = rule(
     when=event("preni",
                agent=bind(TA := var("A")),
                theme=bind(TT := var("T"))),
-    given=[
-        rel("havi", owner=bind(TM := var("M")), theme=TT),
-    ],
-    then=[
-        remove_relation("havi", TM, TT),
-        add_relation("havi", TA, TT),
-    ],
+    then=transfer_n(source=TT, target=TA),
     name="preni_transfers_ownership",
 )
 
@@ -296,58 +415,95 @@ preni_transfers_ownership = rule(
 
 # ---------- causal: kapti_takes_possession ------------------------------
 #
-# Catching is acquisition. Same shape as preni_transfers_ownership,
-# but no prior owner is required — the thing may be mid-flight (no
-# `havi` for it after a throw). Structurally split into two rules so
-# each case is independent: transfer from prior owner, or grant to
-# catcher when no one holds it.
+# Catching is acquisition. Same shape as preni — `transfer_n` handles
+# both the from-nobody (mid-flight) and from-prior-owner cases.
 
-kapti_takes_possession_from_nobody = rule(
+kapti_takes_possession = rule(
     when=event("kapti",
                agent=bind(KA := var("A")),
                theme=bind(KT := var("T"))),
-    given=[
-        ~rel("havi", owner=bind(var("_any")), theme=KT),
-    ],
-    then=add_relation("havi", KA, KT),
-    name="kapti_takes_possession_from_nobody",
-)
-
-kapti_takes_possession_from_owner = rule(
-    when=event("kapti",
-               agent=bind(KA2 := var("A")),
-               theme=bind(KT2 := var("T"))),
-    given=[
-        rel("havi", owner=bind(KM := var("M")), theme=KT2),
-    ],
-    then=[
-        remove_relation("havi", KM, KT2),
-        add_relation("havi", KA2, KT2),
-    ],
-    name="kapti_takes_possession_from_owner",
+    then=transfer_n(source=KT, target=KA),
+    name="kapti_takes_possession",
 )
 
 
 # ---------- causal: doni_transfers_ownership ----------------------------
 #
 # `doni` (give) is preni's mirror: the agent relinquishes `havi` and
-# the recipient receives. Same relation-swap shape. Requires the
-# agent to currently own the theme (you can't give what you don't
-# have).
+# the recipient receives. Action preconditions enforce the agent owns
+# the theme; transfer_n handles single-unit swap and partial-stack
+# split via the event's quantity.
 
 doni_transfers_ownership = rule(
     when=event("doni",
                agent=bind(DA := var("A")),
                theme=bind(DT := var("T")),
                recipient=bind(DR := var("R"))),
-    given=[
-        rel("havi", owner=DA, theme=DT),
-    ],
-    then=[
-        remove_relation("havi", DA, DT),
-        add_relation("havi", DR, DT),
-    ],
+    then=transfer_n(source=DT, target=DR),
     name="doni_transfers_ownership",
+)
+
+
+# ---------- causal: peti_transfers_ownership ----------------------------
+#
+# `peti` (request) is doni's cooperative inverse from the asker's
+# perspective: agent asks recipient for theme. The transfer happens
+# atomically — modeled as one event rather than the implied two
+# (peti + doni response), the way demandi atomizes ask-and-answer.
+# The action's preconditions enforce samloke(agent, recipient) and
+# havi(recipient, theme); transfer_n does the swap (or partial split
+# when the event carries quantity < the recipient's stack count).
+
+peti_transfers_ownership = rule(
+    when=event("peti",
+               agent=bind(PEA := var("A")),
+               theme=bind(PET := var("T")),
+               recipient=bind(PER := var("R"))),
+    then=transfer_n(source=PET, target=PEA),
+    name="peti_transfers_ownership",
+)
+
+
+# ---------- causal: aĉeti / vendi — bidirectional transfer --------------
+#
+# `aĉeti` (buy) and `vendi` (sell) are exchanges: goods flow one way,
+# money flows the other. Modeled as two `transfer_n` effects per rule;
+# both read `event.quantity` so the buyer pays N money for N goods
+# (1:1 economy — keeps the model simple while exercising partial-stack
+# transfer twice per event).
+#
+#   aĉeti(agent=buyer, theme=goods, recipient=seller, instrument=money)
+#     → buyer gets goods (theme), seller gets money (instrument).
+#   vendi(agent=seller, theme=goods, recipient=buyer, instrument=money)
+#     → buyer gets goods, seller gets money.
+#
+# Action preconditions enforce the right starting ownership in both
+# directions plus samloke(agent, recipient).
+
+aĉeti_transfers = rule(
+    when=event("aĉeti",
+               agent=bind(ABA := var("A")),
+               theme=bind(ABT := var("T")),
+               recipient=bind(ABR := var("R")),
+               instrument=bind(ABI := var("I"))),
+    then=[
+        transfer_n(source=ABT, target=ABA),
+        transfer_n(source=ABI, target=ABR),
+    ],
+    name="aĉeti_transfers",
+)
+
+vendi_transfers = rule(
+    when=event("vendi",
+               agent=bind(VSA := var("A")),
+               theme=bind(VST := var("T")),
+               recipient=bind(VSR := var("R")),
+               instrument=bind(VSI := var("I"))),
+    then=[
+        transfer_n(source=VST, target=VSR),
+        transfer_n(source=VSI, target=VSA),
+    ],
+    name="vendi_transfers",
 )
 
 
@@ -784,6 +940,48 @@ vidi_learns_en = rule(
     name="vidi_learns_en",
 )
 
+flari_learns_en = rule(
+    when=event("flari",
+               agent=bind(FEA := var("A")),
+               theme=bind(FET := var("T"))),
+    given=[
+        rel("en", contained=FET, container=bind(FEL := var("L"))),
+    ],
+    then=[
+        create_entity(
+            concept="fakto",
+            as_var=(FEF := var("F")),
+            id_parts=("en", FET, FEL),
+            initial_properties={"pri_relacio": "en"},
+        ),
+        add_relation("subjekto", FEF, FET),
+        add_relation("objekto", FEF, FEL),
+        add_relation("konas", FEA, FEF),
+    ],
+    name="flari_learns_en",
+)
+
+audi_learns_en = rule(
+    when=event("aŭdi",
+               agent=bind(AEA := var("A")),
+               theme=bind(AET := var("T"))),
+    given=[
+        rel("en", contained=AET, container=bind(AEL := var("L"))),
+    ],
+    then=[
+        create_entity(
+            concept="fakto",
+            as_var=(AEF := var("F")),
+            id_parts=("en", AET, AEL),
+            initial_properties={"pri_relacio": "en"},
+        ),
+        add_relation("subjekto", AEF, AET),
+        add_relation("objekto", AEF, AEL),
+        add_relation("konas", AEA, AEF),
+    ],
+    name="audi_learns_en",
+)
+
 vidi_learns_sur = rule(
     when=event("vidi",
                agent=bind(VSA := var("A")),
@@ -825,6 +1023,58 @@ vidi_learns_havi_owner = rule(
     ],
     name="vidi_learns_havi_owner",
 )
+
+# Vocalization broadcasts the speaker's location to nearby hearers.
+# Same shape for krii, flustri, bleki, boji, miaŭi — they all model
+# "agent makes sound, samloke + can_hear animates learn where the
+# agent is". Built via a helper to keep the five definitions
+# parallel and prevent drift.
+def _vocal_announce_rule(verb_name):
+    A = var(f"VC_{verb_name}_A")
+    L = var(f"VC_{verb_name}_L")
+    H = var(f"VC_{verb_name}_H")
+    F = var(f"VC_{verb_name}_F")
+    return rule(
+        when=event(verb_name, agent=bind(A)),
+        given=[
+            rel("en", contained=A, container=bind(L)),
+            entity(type="animate", can_hear="yes") & bind(H),
+            rel("samloke", a=A, b=H),
+        ],
+        then=[
+            create_entity(
+                concept="fakto", as_var=F,
+                id_parts=("en", A, L),
+                initial_properties={"pri_relacio": "en"}),
+            add_relation("subjekto", F, A),
+            add_relation("objekto", F, L),
+            add_relation("konas", H, F),
+        ],
+        name=f"{verb_name}_announces_speaker",
+    )
+
+
+krii_announces_speaker = _vocal_announce_rule("krii")
+flustri_announces_speaker = _vocal_announce_rule("flustri")
+bleki_announces_speaker = _vocal_announce_rule("bleki")
+boji_announces_speaker = _vocal_announce_rule("boji")
+miaui_announces_speaker = _vocal_announce_rule("miaŭi")
+
+
+# Forgetting is the inverse of perception/transfer: removes a konas
+# relation. Has no automatic trigger — the planner would need a
+# negative-knowledge drive ("X wants to NOT know Y") to invoke it,
+# which we don't currently model. Included so the verb is
+# available for ambient simulation and as scaffolding for future
+# memory-management drives.
+forgesi_removes_konas = rule(
+    when=event("forgesi",
+               agent=bind(FRA := var("A")),
+               theme=bind(FRT := var("T"))),
+    then=remove_relation("konas", FRA, FRT),
+    name="forgesi_removes_konas",
+)
+
 
 rakonti_transfers_fakto = rule(
     when=event("rakonti",
@@ -1032,6 +1282,36 @@ has_fins_can_swim = derive(
     ],
     implies=property(T_fin, "locomotion", "swim"),
     name="has_fins_can_swim",
+)
+
+# Nose → smell capability. Same shape as has_hands_can_use_tools.
+# Persons get nazo via the new body-part wiring; quadruped mammals
+# also get nazo. Birds/fish/insects/snakes lack nazo → can't be flari
+# agents → smell-based knowledge transfer is restricted to nosed
+# animates.
+has_nose_can_smell = derive(
+    when=entity() & bind(T_smell := var("T")),
+    given=[
+        rel("havas_parton",
+            tuto=T_smell,
+            parto=bind(P_smell := var("P"))),
+        entity(concept="nazo") & bind(P_smell),
+    ],
+    implies=property(T_smell, "can_smell", "yes"),
+    name="has_nose_can_smell",
+)
+
+# Ear → hear capability. Mirrors has_nose_can_smell.
+has_ear_can_hear = derive(
+    when=entity() & bind(T_hear := var("T")),
+    given=[
+        rel("havas_parton",
+            tuto=T_hear,
+            parto=bind(P_hear := var("P"))),
+        entity(concept="orelo") & bind(P_hear),
+    ],
+    implies=property(T_hear, "can_hear", "yes"),
+    name="has_ear_can_hear",
 )
 
 
@@ -1255,10 +1535,68 @@ animate_has_hunger = derive(
     name="animate_has_hunger",
 )
 
+animate_has_thirst = derive(
+    when=entity(type="animate") & bind(T_th := var("T")),
+    implies=property(T_th, "thirst", "satigita"),
+    name="animate_has_thirst",
+)
+
 animate_has_sleep_state = derive(
     when=entity(type="animate") & bind(T_sl := var("T")),
     implies=property(T_sl, "sleep_state", "vekita"),
     name="animate_has_sleep_state",
+)
+
+
+# ---------- posture: derived from spatial context ----------------------
+#
+# Posture used to be `varies: true` (uniformly randomized per instance),
+# which made roughly 2/3 of agents start out sitting or lying for no
+# scene-grounded reason — every locomotion plan then had to insert
+# `stari` to satisfy the `posture: staranta` precondition on iri/eniri/
+# kuri. Replaced with two derivations: a specific one that fires when
+# the agent is `sur` a sittable artifact (chair, sofa) → sidanta, and a
+# default that catches everyone else → staranta. First-write-wins on
+# scalar slots means the specific derivation must be listed first; the
+# default then skips for agents already seated.
+#
+# When a seeder explicitly places an agent on a chair, the resulting
+# scene reads "Maria sidis sur la seĝo… ŝi staris kaj iris…" — the
+# stari now has narrative motivation (she got up from the chair).
+
+animate_lying_when_on_lieable = derive(
+    when=entity(type="animate") & bind(T_lie := var("T")),
+    given=[
+        rel("sur", contained=T_lie,
+            container=entity(lieable="yes") & bind(B_lie := var("B"))),
+    ],
+    implies=[
+        property(T_lie, "posture", "kuŝanta"),
+        property(T_lie, "sleep_state", "dormanta"),
+    ],
+    name="animate_lying_when_on_lieable",
+)
+
+animate_sitting_when_on_sittable = derive(
+    when=entity(type="animate") & bind(T_sit := var("T")),
+    given=[
+        rel("sur", contained=T_sit,
+            container=entity(sittable="yes") & bind(S_sit := var("S"))),
+    ],
+    implies=property(T_sit, "posture", "sidanta"),
+    name="animate_sitting_when_on_sittable",
+)
+
+animate_default_standing = derive(
+    when=entity(type="animate") & bind(T_st := var("T")),
+    implies=property(T_st, "posture", "staranta"),
+    name="animate_default_standing",
+)
+
+animate_default_awake = derive(
+    when=entity(type="animate") & bind(T_aw := var("T")),
+    implies=property(T_aw, "sleep_state", "vekita"),
+    name="animate_default_awake",
 )
 
 physical_has_cleanliness = derive(
@@ -1283,6 +1621,66 @@ meat_is_edible = derive(
     when=entity(made_of="meat") & bind(T_m := var("T")),
     implies=property(T_m, "edibility", "manĝebla"),
     name="meat_is_edible",
+)
+
+
+# Edible things emit smell. Foods/drinks tagged manĝebla become
+# smellable, so a nosed animate samloke with bread/cheese/coffee can
+# learn of its presence via flari without needing line-of-sight.
+edible_emits_smell = derive(
+    when=entity(edibility="manĝebla") & bind(T_es := var("T")),
+    implies=property(T_es, "emits_smell", "yes"),
+    name="edible_emits_smell",
+)
+
+
+# Animates emit sound (footsteps, breathing, vocalizations). Lets
+# eared animates learn of someone else's presence via aŭdi.
+animate_emits_sound = derive(
+    when=entity(type="animate") & bind(T_as := var("T")),
+    implies=property(T_as, "emits_sound", "yes"),
+    name="animate_emits_sound",
+)
+
+
+# Vocal repertoire. Every animal can `bleki` (generic cry); dogs can
+# also `boji`, cats `miaŭi`. These derive into the multi-valued
+# `vocal_call` slot, which the verb's agent role checks. Adding
+# species-specific calls (muĝi for cattle, hii for horses, etc.) is
+# a one-line addition each. Persons aren't animals → don't get
+# vocal_call → use krii/flustri instead, which are animate-typed.
+animal_can_bleki = derive(
+    when=entity(type="animal") & bind(T_blek := var("T")),
+    implies=property(T_blek, "vocal_call", "bleki"),
+    name="animal_can_bleki",
+)
+
+dog_can_boji = derive(
+    when=entity(concept="hundo") & bind(T_boj := var("T")),
+    implies=property(T_boj, "vocal_call", "boji"),
+    name="dog_can_boji",
+)
+
+cat_can_miaui = derive(
+    when=entity(concept="kato") & bind(T_miau := var("T")),
+    implies=property(T_miau, "vocal_call", "miaŭi"),
+    name="cat_can_miaui",
+)
+
+
+# Vehicles with a running engine emit sound. Mirrors
+# vehicle_powered_from_active_motoro: keys off the host artifact
+# having a motoro part whose power_state is aktiva. Parked vehicles
+# (motoro neaktiva) and unmotorized vehicles (biciklo — no motoro)
+# are silent. Runtime derivation since power_state varies.
+vehicle_emits_sound = derive(
+    when=entity(type="artifact") & bind(VES := var("V")),
+    given=[
+        rel("havas_parton", tuto=VES, parto=bind(VESM := var("M"))),
+        entity(concept="motoro", power_state="aktiva") & bind(VESM),
+    ],
+    implies=property(VES, "emits_sound", "yes"),
+    name="vehicle_emits_sound",
 )
 
 
@@ -1685,6 +2083,14 @@ DEFAULT_DSL_DERIVATIONS = [
     has_paws_can_walk,
     has_wings_can_fly,
     has_fins_can_swim,
+    has_nose_can_smell,
+    has_ear_can_hear,
+    edible_emits_smell,
+    animate_emits_sound,
+    vehicle_emits_sound,
+    animal_can_bleki,
+    dog_can_boji,
+    cat_can_miaui,
     location_water_body_via_part,
     location_water_body_via_en,
     location_terrain_land_via_part,
@@ -1702,7 +2108,10 @@ DEFAULT_DSL_DERIVATIONS = [
     indoor_location_has_pordo,
     has_hands_can_use_tools,
     animate_has_hunger,
-    animate_has_sleep_state,
+    animate_has_thirst,
+    # animate_has_sleep_state moved to RUNTIME-only — bake would
+    # materialize `vekita` onto every animate concept, preempting the
+    # `lying_when_on_lieable` runtime override that sets dormanta.
     physical_has_cleanliness,
     physical_has_temperature,
     physical_has_wetness,
@@ -1749,6 +2158,18 @@ DEFAULT_DSL_DERIVATIONS = [
 # additions; new derivations default to RUNTIME unless explicitly
 # moved here.
 RUNTIME_DERIVATIONS = [
+    # Posture / sleep_state derivations are runtime-only (NOT in
+    # DEFAULT_DSL_DERIVATIONS): if the defaults were baked, every
+    # animate concept's properties would carry posture=staranta /
+    # sleep_state=vekita, and asserted-wins-on-scalar would block
+    # context overrides (sittable → sidanta, lieable → kuŝanta +
+    # dormanta) at trace-time. Order: most specific first
+    # (lieable beats sittable beats default — the engine's first-
+    # write-wins on derived state preserves the earlier value).
+    animate_lying_when_on_lieable,
+    animate_sitting_when_on_sittable,
+    animate_default_standing,
+    animate_default_awake,
     location_water_body_via_en,
     entity_in_water_from_water_body,
     shared_container_means_samloke,
@@ -1771,6 +2192,7 @@ RUNTIME_DERIVATIONS = [
     agent_illuminated,
     vehicle_powered_from_active_motoro,
     vehicle_unpowered_from_inactive_motoro,
+    vehicle_emits_sound,
 ]
 
 
@@ -1782,6 +2204,14 @@ DEFAULT_DSL_RULES: list[Rule] = [
     fragile_falls_breaks,
     bati_breaks_fragile,
     vidi_learns_en,
+    flari_learns_en,
+    audi_learns_en,
+    krii_announces_speaker,
+    flustri_announces_speaker,
+    bleki_announces_speaker,
+    boji_announces_speaker,
+    miaui_announces_speaker,
+    forgesi_removes_konas,
     vidi_learns_sur,
     vidi_learns_havi_owner,
     rakonti_transfers_fakto,
@@ -1791,7 +2221,9 @@ DEFAULT_DSL_RULES: list[Rule] = [
     instrui_transfers_fakto,
     legi_extracts_fakto,
     hungry_eats_sated,
-    manĝi_destroys_theme,
+    thirsty_drinks_quenched,
+    manĝi_consumes_theme,
+    trinki_consumes_theme,
     morti_destroys_self,
     mortigi_causes_morti,
     detrui_destroys_theme,
@@ -1802,9 +2234,11 @@ DEFAULT_DSL_RULES: list[Rule] = [
     rain_creates_puddle,
     porti_drop_when_carrier_falls,
     fire_spreads_to_adjacent_flammables,
-    preni_acquires_unowned,
     preni_transfers_ownership,
     doni_transfers_ownership,
+    peti_transfers_ownership,
+    aĉeti_transfers,
+    vendi_transfers,
     meti_places_in_location,
     meti_places_on_surface,
     iri_moves_agent,
@@ -1817,8 +2251,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     voki_summons_theme,
     veturi_moves_agent,
     ĵeti_releases_possession,
-    kapti_takes_possession_from_nobody,
-    kapti_takes_possession_from_owner,
+    kapti_takes_possession,
     skribi_creates_text,
     skribi_records_fakto,
     viŝi_destroys_skribaĵo,
@@ -1826,4 +2259,11 @@ DEFAULT_DSL_RULES: list[Rule] = [
     # Previously factory-produced; now plain values after Phase 2.
     broken_fragile_creates_shards,
     wet_liquid_container_tips,
+    verŝi_releases_possession,
+    surmeti_dresses,
+    demeti_undresses,
+    plenigi_transfers_contents,
+    malplenigi_releases_contents,
+    verŝi_into_location_emits_fali,
+    verŝi_into_container_transfers,
 ]

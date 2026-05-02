@@ -13,6 +13,32 @@ from typing import Optional
 
 from ..causal import Event, RelationAssertion, Trace
 from ..loader import Lexicon
+
+
+_VERB_META_CACHE: dict | None = None
+
+
+def _verb_metadata() -> dict:
+    """Lazily-built classification of verbs from the rule structure
+    (consumption / transfer / acquisition / instrument-quantified).
+    Replaces the hand-curated action-name lists this module used to
+    keep — any new verb whose rule uses `consume_one` or `transfer_n`
+    is automatically picked up. Cached on first call."""
+    global _VERB_META_CACHE
+    if _VERB_META_CACHE is None:
+        from ..dsl.introspect import (
+            acquisition_verbs, consumption_verbs,
+            instrument_quantified_verbs, transfer_verbs,
+        )
+        from ..dsl.rules import DEFAULT_DSL_RULES
+        rules = list(DEFAULT_DSL_RULES)
+        _VERB_META_CACHE = {
+            "consumption": consumption_verbs(rules),
+            "transfer": transfer_verbs(rules),
+            "acquisition": acquisition_verbs(rules),
+            "instrument_quantified": instrument_quantified_verbs(rules),
+        }
+    return _VERB_META_CACHE
 from .messages import (
     AppearanceMessage,
     CoordinatedMessage,
@@ -55,15 +81,72 @@ def past_tense(verb_lemma: str) -> str:
 
 
 def to_accusative(noun_form: str) -> str:
-    """Append -n. Handles 'la X' → 'la Xn' and pronouns (li → lin)."""
+    """Inflect a noun phrase for accusative. Multi-word phrases inflect
+    every nominal/adjectival element: 'la fragila pomo' → 'la fragilan
+    pomon', 'la du fragilaj pomoj' → 'la du fragilajn pomojn'. Articles
+    ('la') and numerals ('tri', 'dek') stay invariant; pronouns and
+    -o/-oj/-a/-aj endings get -n."""
     if " " in noun_form:
-        head, _, tail = noun_form.rpartition(" ")
-        return f"{head} {to_accusative(tail)}"
+        return " ".join(to_accusative(w) for w in noun_form.split(" "))
+    if noun_form == "la":
+        return noun_form
     if noun_form in _PRONOUNS_BASE:
         return noun_form + "n"
     if noun_form.endswith(("o", "oj", "a", "aj")):
         return noun_form + "n"
     return noun_form
+
+
+def to_plural(noun_form: str) -> str:
+    """Append plural -j to the head noun. 'pomo' → 'pomoj';
+    'la pomo' → 'la pomoj'. Plural article 'la' stays singular form
+    in Esperanto (la is invariant)."""
+    if " " in noun_form:
+        head, _, tail = noun_form.rpartition(" ")
+        return f"{head} {to_plural(tail)}"
+    if noun_form.endswith("o"):
+        return noun_form + "j"
+    if noun_form.endswith("a"):
+        return noun_form + "j"
+    return noun_form
+
+
+# Esperanto cardinals 1-99. For corpus purposes, scenes won't have
+# more than ~10 of anything, but the table covers wider just in case.
+_ESPERANTO_DIGIT = {
+    0: "nul", 1: "unu", 2: "du", 3: "tri", 4: "kvar", 5: "kvin",
+    6: "ses", 7: "sep", 8: "ok", 9: "naŭ",
+}
+_ESPERANTO_TEN = {
+    1: "dek", 2: "dudek", 3: "tridek", 4: "kvardek", 5: "kvindek",
+    6: "sesdek", 7: "sepdek", 8: "okdek", 9: "naŭdek",
+}
+
+
+def int_to_esperanto(n: int) -> str:
+    """Render an integer 0-99 as an Esperanto numeral. Falls back to
+    the digit string for out-of-range values (shouldn't happen for
+    our corpus)."""
+    if 0 <= n <= 9:
+        return _ESPERANTO_DIGIT[n]
+    if 10 <= n <= 99:
+        tens, ones = divmod(n, 10)
+        if ones == 0:
+            return _ESPERANTO_TEN[tens]
+        return _ESPERANTO_TEN[tens] + _ESPERANTO_DIGIT[ones]
+    return str(n)
+
+
+def _entity_count(entity) -> int:
+    """Read the count slot, defaulting to 1. Stored as a string in
+    properties (slot vocabulary is string-list)."""
+    raw = entity.properties.get("count", ["1"])
+    if not raw:
+        return 1
+    try:
+        return int(raw[0])
+    except (TypeError, ValueError):
+        return 1
 
 
 # =================== templates ==================
@@ -90,7 +173,7 @@ RELATION_TEMPLATES = {
 }
 
 CONNECTIVES = ["Tial", "Sekve", "Pro tio", ""]
-TENSES = ["is", "as"]
+TENSES = ["is", "as", "os"]
 
 
 def _pick(rng: Optional[random.Random], options: list):
@@ -115,11 +198,96 @@ def _pronoun_unambiguous(name: str, trace: Trace) -> bool:
     return True
 
 
+ADJECTIVE_RATE = 0.30  # per-mention probability of attaching an adjective
+ALIAS_RATE = 0.20      # per back-reference probability of using a category alias
+
+
+def _concept_aliases(concept_lemma: str, lex: Lexicon) -> list[str]:
+    """Transitively walk `concept.category` to collect superordinate
+    lemmas that can stand in for `concept_lemma` on a back-reference.
+    pomo → frukto → manĝaĵo: a `pomo` entity yields ["frukto", "manĝaĵo"].
+    Cycle-safe via a visit set (concepts shouldn't have cycles, but
+    cheap to defend). Returns lemmas in the order encountered (most-
+    specific parent first), so the caller's random choice naturally
+    surfaces both levels with similar frequency."""
+    out: list[str] = []
+    visited: set[str] = {concept_lemma}
+    frontier = [concept_lemma]
+    while frontier:
+        cur = frontier.pop(0)
+        concept = lex.concepts.get(cur)
+        if concept is None:
+            continue
+        for parent in getattr(concept, "category", ()):
+            if parent in visited:
+                continue
+            visited.add(parent)
+            out.append(parent)
+            frontier.append(parent)
+    return out
+
+
+def _pick_adjective(
+    entity, *, lexicon, rng: Optional[random.Random],
+    history: Optional[dict[str, set[str]]] = None,
+) -> Optional[str]:
+    """Return a slot value to render attributively for `entity`, or None.
+
+    Picks among slots flagged `adjectival: true` in the lexicon whose
+    value is set on this entity. Persons and entities without rng are
+    skipped — adjectives on bare names ("la malsata Maria") read
+    stilted. The `history` map lets the caller cycle through different
+    slots across multiple mentions of the same entity, so we don't get
+    "fragila pomo … fragila pomo" two clauses apart.
+    """
+    if rng is None or lexicon is None:
+        return None
+    if entity.entity_type == "person":
+        return None
+    if rng.random() >= ADJECTIVE_RATE:
+        return None
+    candidates: list[tuple[str, str]] = []   # (slot, value)
+    for slot_name, values in entity.properties.items():
+        slot_def = lexicon.slots.get(slot_name)
+        if slot_def is None or not getattr(slot_def, "adjectival", False):
+            continue
+        if not values:
+            continue
+        value = values[0]
+        # Skip unmarked / default values — saying "fortika lampo" or
+        # "luma valo" or "sata Maria" is noise. Only marked deviations
+        # (fragila, malluma, malsata) carry information worth surfacing.
+        if getattr(slot_def, "unmarked", None) == value:
+            continue
+        candidates.append((slot_name, value))
+    if not candidates:
+        return None
+    used = (history.get(entity.id, set())
+            if history is not None else set())
+    fresh = [(s, v) for (s, v) in candidates if s not in used]
+    pool = fresh if fresh else candidates
+    slot, value = rng.choice(pool)
+    if history is not None:
+        history.setdefault(entity.id, set()).add(slot)
+    return value
+
+
+def _inflect_adjective(adj: str, *, plural: bool) -> str:
+    """Apply -j for plural agreement. Accusative -n is added later by
+    `to_accusative` (called on the rendered phrase); we don't want to
+    double-decline if we add it here."""
+    return adj + "j" if plural else adj
+
+
 def _name_for(
     entity, mentioned: set[str], *,
     scene_location_id: Optional[str] = None,
     rng: Optional[random.Random] = None,
     trace: Optional[Trace] = None,
+    count_override: Optional[int] = None,
+    lexicon: Optional[Lexicon] = None,
+    adjective_history: Optional[dict[str, set[str]]] = None,
+    alias_history: Optional[dict[str, set[str]]] = None,
 ) -> str:
     if entity.entity_type == "person":
         name = entity.id
@@ -130,11 +298,62 @@ def _name_for(
             return PRONOUN_OF_NAME[name]
         return name.capitalize()
     lemma = entity.concept_lemma
-    if entity.id == scene_location_id:
-        return f"la {lemma}"
-    if entity.id in mentioned:
-        return f"la {lemma}"
-    return lemma
+    # On back-references, sometimes substitute a superordinate
+    # category alias for the bare lemma — "la pomo" → "la frukto".
+    # First mentions keep the specific lemma so the model gets a
+    # binding anchor; back-references vary so it learns the
+    # genus-species coreference. Cycle through the available
+    # parents per entity via `alias_history` so we don't repeat.
+    if (rng is not None and lexicon is not None
+            and entity.id in mentioned
+            and alias_history is not None
+            and rng.random() < ALIAS_RATE):
+        aliases = _concept_aliases(lemma, lexicon)
+        if aliases:
+            used = alias_history.get(entity.id, set())
+            fresh = [a for a in aliases if a not in used]
+            pool = fresh if fresh else aliases
+            chosen = rng.choice(pool)
+            alias_history.setdefault(entity.id, set()).add(chosen)
+            lemma = chosen
+    # `count_override` is set by event-rendering for consumption /
+    # transfer verbs that operate on N units of a stack: "Maria manĝis
+    # du pomojn" when Maria's stack of 5 is being decremented by 2.
+    # The override forces the rendering to use the action's quantity
+    # rather than the entity's full count. Override of 1 → singular
+    # ("la pomon"); override > 1 → plural with that numeral.
+    natural_count = _entity_count(entity)
+    count = (count_override
+             if count_override is not None
+             else natural_count)
+    # Partial-quantity transfers / consumptions render without "la":
+    # "Maria prenis du pomojn" reads better than "la du pomojn" when
+    # only 2 of a 4-stack move. Full-stack actions keep "la" via the
+    # mentioned/scene-location path.
+    is_partial = (
+        count_override is not None
+        and count_override < natural_count)
+    # Optional attributive adjective. Picked from the entity's
+    # adjectival-flagged slot values; rate-limited per call. Cycles
+    # slots across mentions via `adjective_history`. Skipped for
+    # persons inside `_pick_adjective`.
+    adj = _pick_adjective(
+        entity, lexicon=lexicon, rng=rng, history=adjective_history)
+    if count > 1:
+        plural_lemma = to_plural(lemma)
+        numeral = int_to_esperanto(count)
+        adj_part = (
+            f"{_inflect_adjective(adj, plural=True)} "
+            if adj else "")
+        if (not is_partial
+                and (entity.id == scene_location_id
+                     or entity.id in mentioned)):
+            return f"la {numeral} {adj_part}{plural_lemma}"
+        return f"{numeral} {adj_part}{plural_lemma}"
+    adj_part = f"{adj} " if adj else ""
+    if entity.id == scene_location_id or entity.id in mentioned:
+        return f"la {adj_part}{lemma}"
+    return f"{adj_part}{lemma}"
 
 
 # =================== context ==================
@@ -147,7 +366,8 @@ class _Ctx:
     mutates in place and we don't want accidental copies."""
     __slots__ = ("trace", "lexicon", "mentioned", "rng", "tense",
                  "scene_location_id", "rendered_event_ids",
-                 "last_nonperson")
+                 "last_nonperson", "adjective_history",
+                 "alias_history")
 
     def __init__(self, trace, lexicon, *, scene_location_id, rng, tense):
         self.trace = trace
@@ -162,26 +382,45 @@ class _Ctx:
         # so `ĝi`/`ĝin` substitution only fires when the referent is
         # unambiguous.
         self.last_nonperson: Optional[str] = None
+        # entity_id -> set of slot names already used as adjectives.
+        # `_pick_adjective` consults this to cycle slots across
+        # mentions instead of always picking the same one.
+        self.adjective_history: dict[str, set[str]] = {}
+        # entity_id -> set of category aliases already used in lemma
+        # substitution. Cycles parent aliases the same way so an
+        # entity tagged with category=["frukto"] and (transitively)
+        # "manĝaĵo" alternates between both.
+        self.alias_history: dict[str, set[str]] = {}
 
-    def name_for(self, entity) -> str:
+    def name_for(self, entity, *,
+                 count_override: Optional[int] = None) -> str:
         return _name_for(
             entity, self.mentioned,
             scene_location_id=self.scene_location_id,
-            rng=self.rng, trace=self.trace)
+            rng=self.rng, trace=self.trace,
+            count_override=count_override,
+            lexicon=self.lexicon,
+            adjective_history=self.adjective_history,
+            alias_history=self.alias_history)
 
-    def theme_form(self, entity) -> str:
+    def theme_form(self, entity, *,
+                   count_override: Optional[int] = None) -> str:
         """Render a theme-position entity, pronominalizing to `ĝin`
         when the entity is the currently-salient non-person referent
         AND it's been mentioned before. Only fires for non-persons;
         persons use the existing `li`/`ŝi` pathway via `name_for`.
-        """
+
+        `count_override` forces a specific count for the rendering
+        — used by event rendering when the verb operates on N units
+        of a stack (e.g. manĝi.quantity=2 → "du pomojn")."""
         if (entity.entity_type != "person"
                 and entity.id in self.mentioned
                 and self.last_nonperson == entity.id
                 and self.rng is not None
                 and self.rng.random() < NONPERSON_PRONOUN_RATE):
             return "ĝin"
-        return to_accusative(self.name_for(entity))
+        return to_accusative(self.name_for(
+            entity, count_override=count_override))
 
     def mark_nonperson_mention(self, entity) -> None:
         """Call whenever a non-person entity is mentioned in rendered
@@ -213,7 +452,7 @@ def _render_entity_quality(m, ctx: _Ctx) -> Optional[str]:
         return None
     form = ctx.name_for(ent)
     ctx.note_mention(ent)
-    copula = "estis" if ctx.tense == "is" else "estas"
+    copula = f"est{ctx.tense}"
     return f"{form} {copula} {m.quality_lemma}."
 
 
@@ -244,7 +483,31 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
         b_form = to_accusative(ctx.name_for(b))
         template = _pick(ctx.rng, RELATION_TEMPLATES["havi"])
         sent = template(a_form, b_form, ctx.tense)
-    elif rel.relation in ("en", "sur", "apud"):
+    elif rel.relation == "sur":
+        # `sur` with an animate `contained` (Petro on a chair) renders
+        # with a posture verb derived from the container's flags:
+        # sittable → "sidi", lieable → "kuŝi", else "stari". Inanimate
+        # themes (book on table) fall through to the generic templates.
+        b_form = ctx.name_for(b)
+        verb_root = None
+        if ctx.lexicon.types.is_subtype(a.entity_type, "animate"):
+            container_concept = ctx.lexicon.concepts.get(b.concept_lemma)
+            if container_concept is not None:
+                if "yes" in container_concept.properties.get(
+                        "lieable", []):
+                    verb_root = "kuŝ"
+                elif "yes" in container_concept.properties.get(
+                        "sittable", []):
+                    verb_root = "sid"
+        if verb_root is not None:
+            flip = ctx.rng.random() < 0.5 if ctx.rng is not None else False
+            sent = (f"{a_form} {verb_root}{ctx.tense} sur {b_form}."
+                    if flip
+                    else f"Sur {b_form} {verb_root}{ctx.tense} {a_form}.")
+        else:
+            template = _pick(ctx.rng, RELATION_TEMPLATES["sur"])
+            sent = template(a_form, b_form, ctx.tense)
+    elif rel.relation in ("en", "apud"):
         b_form = ctx.name_for(b)
         template = _pick(ctx.rng, RELATION_TEMPLATES[rel.relation])
         sent = template(a_form, b_form, ctx.tense)
@@ -272,7 +535,7 @@ def _append_precondition_clause(
     if ent is None:
         return sentence
     ent_form = ctx.name_for(ent)
-    copula = "estis" if ctx.tense == "is" else "estas"
+    copula = f"est{ctx.tense}"
     base = sentence[:-1] if sentence.endswith(".") else sentence
     return f"{base} ĉar {ent_form} {copula} {quality_lemma}."
 
@@ -325,7 +588,7 @@ def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
     ctx.note_mention(subj_ent)
     ctx.note_mention(obj_ent)
     if mode == "question":
-        copula = "estis" if ctx.tense == "is" else "estas"
+        copula = f"est{ctx.tense}"
         if rel in ("en", "sur"):
             return f"kie {copula} {subj_form}"
         if rel == "havi":
@@ -333,10 +596,10 @@ def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
             return f"kiu {verb} {to_accusative(subj_form)}"
         return None
     if rel == "en":
-        copula = "estis" if ctx.tense == "is" else "estas"
+        copula = f"est{ctx.tense}"
         return f"ke {subj_form} {copula} en {obj_form}"
     if rel == "sur":
-        copula = "estis" if ctx.tense == "is" else "estas"
+        copula = f"est{ctx.tense}"
         return f"ke {subj_form} {copula} sur {obj_form}"
     if rel == "havi":
         verb = "havis" if ctx.tense == "is" else "havas"
@@ -394,7 +657,31 @@ def _render_event_phrase(
     parts.append(inflect(ev.action, ctx.tense))
 
     recipient_handled = False
-    if subject_role_name == "agent" and ev.roles.get("theme") and not drop_theme:
+
+    # peti renders as "petis Petron pri pano" — recipient as accusative
+    # direct object, theme as `pri` prepositional phrase. The standard
+    # ditransitive shape ("petis la panon al Petro", parallel to doni)
+    # is grammatical but not idiomatic for asking-verbs in Esperanto.
+    # When the theme is elided in coordination (peti+manĝi sharing
+    # pano), drop the "pri theme" but keep the accusative recipient.
+    peti_handled = False
+    if (subject_role_name == "agent"
+            and ev.action == "peti"
+            and ev.roles.get("recipient")):
+        recip = ctx.trace.entity(ev.roles["recipient"])
+        if recip is not None:
+            parts.append(to_accusative(ctx.name_for(recip)))
+            ctx.note_mention(recip)
+            if ev.roles.get("theme") and not drop_theme:
+                theme = ctx.trace.entity(ev.roles["theme"])
+                if theme is not None:
+                    parts.append(f"pri {ctx.name_for(theme)}")
+                    ctx.note_mention(theme)
+                    ctx.mark_nonperson_mention(theme)
+            recipient_handled = True
+            peti_handled = True
+
+    if not peti_handled and subject_role_name == "agent" and ev.roles.get("theme") and not drop_theme:
         theme = ctx.trace.entity(ev.roles["theme"])
         if theme is not None:
             # Abstract themes (faktos) with a recipient unfold as a
@@ -417,7 +704,26 @@ def _render_event_phrase(
                     recipient_handled = True
                 parts.append(ke)
             else:
-                parts.append(ctx.theme_form(theme))
+                # Consumption verbs (rules using `consume_one`) always
+                # pass quantity as count_override — quantity=1 forces
+                # singular even when the source stack has count > 1
+                # ("Maria manĝis la pomon", not "la tri pomojn").
+                # Transfer verbs (rules using `transfer_n`) override on
+                # explicit qty > 1 set by the count-drive planner;
+                # default qty=1 keeps the natural-count rendering used
+                # by hunger drives etc. Both sets are derived from the
+                # rule structure — see dsl/introspect.
+                _ev_qty = getattr(ev, "quantity", 1)
+                _verb_meta = _verb_metadata()
+                if ev.action in _verb_meta["consumption"]:
+                    _count_override = _ev_qty
+                elif (ev.action in _verb_meta["transfer"]
+                        and _ev_qty > 1):
+                    _count_override = _ev_qty
+                else:
+                    _count_override = None
+                parts.append(ctx.theme_form(
+                    theme, count_override=_count_override))
                 ctx.note_mention(theme)
                 ctx.mark_nonperson_mention(theme)
                 if source_entity_id is not None:
@@ -430,14 +736,34 @@ def _render_event_phrase(
     if ev.roles.get("instrument"):
         instr = ctx.trace.entity(ev.roles["instrument"])
         if instr is not None:
-            parts.append(f"per {ctx.name_for(instr)}")
+            # When the verb's rule transfers the instrument as one of
+            # the moved stacks (aĉeti's coins go to the seller, vendi's
+            # come from the buyer), match the instrument's count to
+            # ev.quantity so "per tri moneroj" mirrors "tri pomojn".
+            _ev_qty = getattr(ev, "quantity", 1)
+            _verb_meta = _verb_metadata()
+            instr_count = (
+                _ev_qty
+                if (ev.action in _verb_meta["instrument_quantified"]
+                    and _ev_qty > 1)
+                else None)
+            parts.append(
+                f"per {ctx.name_for(instr, count_override=instr_count)}")
             ctx.note_mention(instr)
 
     if ev.roles.get("recipient") and not recipient_handled:
-        recip = ctx.trace.entity(ev.roles["recipient"])
-        if recip is not None:
-            parts.append(f"al {ctx.name_for(recip)}")
-            ctx.note_mention(recip)
+        recip_id = ev.roles["recipient"]
+        # When the recipient IS the prior owner narrated via
+        # source_entity_id ("de Petro" already on the event), suppress
+        # the "al recipient" tail so we don't duplicate the referent.
+        # This is what makes aĉeti read as "aĉetis du pomojn de Petro"
+        # without trailing "al Petro" — recipient and source coincide
+        # for acquisition verbs whose theme came from the recipient.
+        if recip_id != source_entity_id:
+            recip = ctx.trace.entity(recip_id)
+            if recip is not None:
+                parts.append(f"al {ctx.name_for(recip)}")
+                ctx.note_mention(recip)
 
     if ev.roles.get("location"):
         loc = ctx.trace.entity(ev.roles["location"])
@@ -545,24 +871,42 @@ def _render_coordinated(
         return None
     first_sent = _render_event_phrase(
         first.event, ctx, drop_subject=False,
-        drop_theme=elide_flags[0])
+        drop_theme=elide_flags[0],
+        source_entity_id=first.source_entity_id)
     if first_sent is None:
         return None
     first_body = first_sent.rstrip(".")
+    # Inline the first child's `ĉar` clause directly after its verb
+    # phrase rather than waiting until the end of the coordinated
+    # chain. Without this, the precondition reads as if it explained
+    # the LAST verb in the chain — e.g.
+    #   "malfermis la pordon kaj eniris kaj metis Annan ĉar la pordo
+    #    estis fermita"
+    # which attaches the reason to `metis`. Inlining gives:
+    #   "malfermis la pordon ĉar la pordo estis fermita kaj eniris
+    #    kaj metis Annan"
+    # — the reason now sits beside the verb it actually motivates.
+    if first.precondition is not None:
+        first_with_clause = _append_precondition_clause(
+            first_body + ".", first.precondition, ctx)
+        first_body = first_with_clause.rstrip(".")
     rest_bodies: list[str] = []
     for idx, child in enumerate(m.children[1:], start=1):
         if not isinstance(child, EventMessage):
             continue
         phrase = _render_event_phrase(
             child.event, ctx, drop_subject=True,
-            drop_theme=elide_flags[idx])
+            drop_theme=elide_flags[idx],
+            source_entity_id=child.source_entity_id)
         if phrase is None:
             continue
+        if isinstance(child, EventMessage) and child.precondition is not None:
+            phrase = _append_precondition_clause(
+                phrase + ".", child.precondition, ctx).rstrip(".")
         rest_bodies.append(phrase)
     if not rest_bodies:
-        return _append_precondition_clause(first_body + ".", first.precondition, ctx)
-    full = first_body + " kaj " + " kaj ".join(rest_bodies) + "."
-    return _append_precondition_clause(full, first.precondition, ctx)
+        return first_body + "."
+    return first_body + " kaj " + " kaj ".join(rest_bodies) + "."
 
 
 def _compute_theme_elision(children) -> list[bool]:

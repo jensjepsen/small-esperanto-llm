@@ -146,6 +146,46 @@ def _derive_concept_from_verb(
     )
 
 
+def _inherit_via_category(
+    concepts: dict[str, Concept],
+    slots: dict[str, PropertySlot],
+    spine: TypeSpine,
+) -> dict[str, Concept]:
+    """For each concept, collect properties from its `category` chain
+    transitively (BFS) and copy any slot the concept itself doesn't
+    author. Authored values win. Honors slot `applies_to`: skip a copy
+    if the child's entity_type isn't covered by the parent's slot.
+    Returns a new concepts dict; input is not mutated."""
+    out: dict[str, Concept] = dict(concepts)
+    for lemma, c in concepts.items():
+        if not c.category:
+            continue
+        seen = {lemma}
+        frontier = list(c.category)
+        merged: dict[str, list[str]] = dict(c.properties)
+        while frontier:
+            parent_lemma = frontier.pop(0)
+            if parent_lemma in seen:
+                continue
+            seen.add(parent_lemma)
+            parent = concepts.get(parent_lemma)
+            if parent is None:
+                continue
+            for slot_name, values in parent.properties.items():
+                if slot_name in merged:
+                    continue
+                slot = slots.get(slot_name)
+                if slot is not None and slot.applies_to:
+                    if not any(spine.is_subtype(c.entity_type, t)
+                               for t in slot.applies_to):
+                        continue
+                merged[slot_name] = list(values)
+            frontier.extend(parent.category)
+        if merged != c.properties:
+            out[lemma] = c.model_copy(update={"properties": merged})
+    return out
+
+
 def _derive_concept_from_concept(
     parent: Concept, affix: Affix,
     slots: dict[str, PropertySlot], spine: TypeSpine,
@@ -410,6 +450,18 @@ def load_lexicon(
             entity_type=c.entity_type, slots=slots, spine=spine,
         )
         concepts[c.lemma] = c
+
+    # Category-based property inheritance: a concept inherits any
+    # slot it doesn't author from its category parents, transitively.
+    # This is how `lignaĵo.made_of=wood` flows down to seĝo / lito /
+    # benko et al. without each concept repeating it. Authored values
+    # always win — concrete concepts can override the category default
+    # (e.g. a wooden shelf with metal trim could keep its own
+    # made_of=metal even if categorized under lignaĵo). Inheritance
+    # respects each slot's `applies_to`: copying made_of from an
+    # abstract parent into a child whose entity_type isn't physical
+    # would be a slot-validation violation, so skip those.
+    concepts = _inherit_via_category(concepts, slots, spine)
 
     relations: dict[str, Relation] = {}
     for d in _read_jsonl(data_dir / "relations.jsonl"):

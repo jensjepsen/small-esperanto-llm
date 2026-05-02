@@ -43,66 +43,253 @@ def plan_messages(
 ) -> list[Message]:
     """Build the flat list of messages for a trace.
 
-    Order: synthetic grounding → scene-setup relations → per-event
-    group (event + appearance lines + state-change narration for that
-    event). Entity destructions from `manĝi` etc. get a DestructionMessage
-    attached to the destroying event's group.
+    Layout: each event becomes a "group" — its grounding preamble
+    (scene-grounding / setup-relations / quality-grounding for entities
+    making their first appearance at this event), the EventMessage
+    itself, then per-event trailers (appearances, relation-change
+    narration, destructions). Grounding messages are anchored to the
+    event where their entity is first referenced, so "En la kuirejo
+    estis pomo" sits right before the event that touches the apple
+    instead of upfront with everything else. For traces with no events
+    (static description / tests), groundings emit upfront unchanged.
     """
-    messages: list[Message] = []
+    rel_changes_by_event, source_by_event = _attribute_relation_changes(
+        trace, setup_relations, lexicon)
 
-    # 1. Scene grounding — implicit "X estis en la SCENE." lines for
-    # non-person event participants without an explicit relation.
-    for eid in _synthetic_grounding_targets(
-            trace, scene_location_id, setup_relations):
-        messages.append(SceneGroundingMessage(entity_id=eid))
+    # Salience filter — see `_referenced_entity_ids` for details.
+    referenced = _referenced_entity_ids(
+        trace, scene_location_id, setup_relations, source_by_event)
 
-    # 1b. Compute event-attached preconditions (active causal triggers
-    # to fold into event sentences as "ĉar ..." clauses).
+    # Per-event preconditions for the ĉar-clause attachment.
     event_preconds = _event_preconditions(trace, lexicon)
-    # Entities whose precondition will be inlined — suppress separate
-    # quality grounding for those.
     inlined_entities = {eid for (eid, _) in event_preconds.values()}
 
-    # 1c. Quality grounding — surface CAUSALLY RELEVANT transient
-    # states as standalone sentences ("La pordo estas fermita."), but
-    # skip entities whose state will be folded into a `ĉar` clause.
-    for msg in _quality_grounding_messages(trace, lexicon, inlined_entities):
-        messages.append(msg)
+    # Compute first-event index per entity. Drives the lazy-grounding
+    # anchor: a grounding/setup-relation message attaches to the
+    # earliest event where its entity participates.
+    first_event_idx = _first_event_index(trace, source_by_event)
 
-    # 2. Scene-setup relations — from the snapshot if provided, else
-    # the (possibly mutated) current relations.
     relations_for_setup = (setup_relations if setup_relations is not None
                            else list(trace.relations))
+
+    # No-events fallback: emit groundings upfront in the original
+    # order. Static traces (Sara estis en kuirejo, no events) stay
+    # readable without any anchoring machinery.
+    if not trace.events:
+        messages: list[Message] = []
+        for eid in _synthetic_grounding_targets(
+                trace, scene_location_id, setup_relations):
+            if eid in referenced:
+                messages.append(SceneGroundingMessage(entity_id=eid))
+        for msg in _quality_grounding_messages(
+                trace, lexicon, inlined_entities):
+            if getattr(msg, "entity_id", None) in referenced:
+                messages.append(msg)
+        for rel in relations_for_setup:
+            if all(arg in referenced for arg in rel.args):
+                messages.append(RelationMessage(relation=rel))
+        return messages
+
+    # Bucket grounding messages by their anchor event index. Entities
+    # never referenced (anchor < 0) get dropped — already filtered by
+    # salience above; the `< 0` guard is belt-and-suspenders.
+    pre_event: dict[int, list[Message]] = {
+        i: [] for i in range(len(trace.events))}
+
+    # Show-not-tell motivation: each event's active precondition
+    # surfaces as an `EntityQualityMessage` rather than a `ĉar` clause.
+    # Anchor at the precondition entity's FIRST event (not the
+    # specific event that needs it) — the state is established once,
+    # upfront, and the action chain that follows uses it implicitly.
+    # Anchoring at the precondition event itself would mid-sentence
+    # interrupt action coordination ("Maria kuiris la panon. Maria
+    # estis malsata. Maria manĝis la panon" vs the cleaner "Maria
+    # estis malsata. Maria kuiris kaj manĝis la panon").
+    # `inlined_entities` then filters the generic quality-grounding
+    # pass so we don't double-emit.
+    seen_precond: set[tuple[str, str]] = set()
+    for ev_id, (entity_id, quality_lemma) in event_preconds.items():
+        if entity_id not in referenced:
+            continue
+        key = (entity_id, quality_lemma)
+        if key in seen_precond:
+            continue
+        seen_precond.add(key)
+        anchor = first_event_idx.get(entity_id, 0)
+        pre_event[anchor].append(EntityQualityMessage(
+            entity_id=entity_id, quality_lemma=quality_lemma))
+
+    for eid in _synthetic_grounding_targets(
+            trace, scene_location_id, setup_relations):
+        if eid not in referenced:
+            continue
+        anchor = first_event_idx.get(eid, 0)
+        pre_event[anchor].append(SceneGroundingMessage(entity_id=eid))
+
+    for msg in _quality_grounding_messages(
+            trace, lexicon, inlined_entities):
+        eid = getattr(msg, "entity_id", None)
+        if eid not in referenced:
+            continue
+        anchor = first_event_idx.get(eid, 0)
+        pre_event[anchor].append(msg)
+
     for rel in relations_for_setup:
-        messages.append(RelationMessage(relation=rel))
+        if not all(arg in referenced for arg in rel.args):
+            continue
+        anchor = _relation_anchor(rel, first_event_idx, trace)
+        pre_event[anchor].append(RelationMessage(relation=rel))
 
-    # 3. Relation changes between setup and final + source annotations
-    # for acquisition verbs. Both computed from the same diff pass.
-    rel_changes_by_event, source_by_event = _attribute_relation_changes(
-        trace, setup_relations)
-
-    # 4. Events, with per-event trailers.
-    for ev in trace.events:
+    messages = []
+    for idx, ev in enumerate(trace.events):
+        for m in pre_event[idx]:
+            messages.append(m)
+        # Precondition is now surfaced as a pre-event quality message
+        # (above); don't also pass it to the EventMessage so the
+        # renderer doesn't emit a ĉar clause.
         messages.append(EventMessage(
             event=ev,
             cause_event_id=(ev.caused_by[0] if ev.caused_by else None),
-            source_entity_id=source_by_event.get(ev.id),
-            precondition=event_preconds.get(ev.id)))
-
-        # Appearance lines for entities created by this event.
+            source_entity_id=source_by_event.get(ev.id)))
         for created in ev.creates:
             messages.append(AppearanceMessage(
                 entity_id=created.id, cause_event_id=ev.id))
-
-        # Relation changes attributed to this event.
         for msg in rel_changes_by_event.get(ev.id, []):
             messages.append(msg)
-
-        # Destructions whose destroyed_at_event index matches this event.
         for dmsg in _destruction_messages_for_event(trace, ev):
             messages.append(dmsg)
-
     return messages
+
+
+def _relation_anchor(
+    rel: RelationAssertion, first_event_idx: dict[str, int],
+    trace: Trace,
+) -> int:
+    """Pick the event index a setup relation should attach to.
+
+    Special case: `en(thing, location)` defers to the thing's first
+    event. The reader meets the thing on arrival ("Anna venis al la
+    valo. Estis ĉapelo en valo. Anna prenis la ĉapelon"). Anchoring
+    at the location's first event would render "Estis ĉapelo en valo"
+    upfront, before the agent has reason to care.
+
+    `en(contents, container)` for a non-location container falls back
+    to min — "akvo en glaso" matters from the start because the glass
+    is something that breaks (transformative event), not just an
+    arrival destination.
+
+    Other relations (havi, apud, sur, konas, havas_parton, …) anchor
+    at min over participants — both sides are narratively relevant
+    whenever either first appears."""
+    if rel.relation == "en" and len(rel.args) == 2:
+        contained, container = rel.args
+        container_ent = trace.entities.get(container)
+        if (container_ent is not None
+                and container_ent.entity_type == "location"
+                and contained in first_event_idx):
+            return first_event_idx[contained]
+    anchors = [first_event_idx[a] for a in rel.args
+               if a in first_event_idx]
+    return min(anchors) if anchors else 0
+
+
+def _first_event_index(
+    trace: Trace, source_by_event: dict[str, str],
+) -> dict[str, int]:
+    """For each entity that appears in the trace's events (as a role
+    value, property_change target, or source-attributed prior owner),
+    record the index of the earliest event that references it.
+    Entities only present in scene-setup relations get the index of
+    the earliest event that mentions any of their relation neighbors —
+    handled implicitly because the relation message itself anchors to
+    the min over its participants."""
+    out: dict[str, int] = {}
+    for idx, ev in enumerate(trace.events):
+        for v in ev.roles.values():
+            if isinstance(v, str) and v not in out:
+                out[v] = idx
+        for (eid, _slot), _val in ev.property_changes.items():
+            if isinstance(eid, str) and eid not in out:
+                out[eid] = idx
+    # Source-attributed prior owners anchor at the event that took
+    # from them — keeps "En la dormejo havis Maria la pomon" right
+    # before the take event.
+    for ev_id, src_eid in source_by_event.items():
+        if not isinstance(src_eid, str) or src_eid in out:
+            continue
+        for idx, ev in enumerate(trace.events):
+            if ev.id == ev_id:
+                out[src_eid] = idx
+                break
+    return out
+
+
+# -------------------- helpers: salience filter ----------------------
+
+def _referenced_entity_ids(
+    trace: Trace,
+    scene_location_id: Optional[str],
+    setup_relations: Optional[list[RelationAssertion]],
+    source_by_event: dict[str, str],
+) -> set[str]:
+    """Entity ids the action chain references, plus their 1-hop
+    relation neighbors and the scene location. Used to filter
+    background grounding so scenes only describe entities that
+    matter to the unfolding action.
+
+    Sources of "referenced":
+      - event roles (agent, theme, recipient, instrument, location, ...)
+      - event property_changes targets
+      - source attributions for acquisition verbs (prior owner)
+      - the scene location itself (always grounded)
+
+    1-hop expansion through scene-setup relations preserves narrative
+    context: if Maria is the prior owner of an apple Petro takes,
+    `havi(Maria, apple)` keeps Maria visible even though she has no
+    role in any event."""
+    # No events means the trace is pure scene description (a static
+    # snapshot for tests / appendix prose) — nothing to filter against,
+    # so keep everything visible.
+    if not trace.events:
+        return set(trace.entities.keys())
+    referenced: set[str] = set()
+    if scene_location_id is not None:
+        referenced.add(scene_location_id)
+    for ev in trace.events:
+        for v in ev.roles.values():
+            if isinstance(v, str):
+                referenced.add(v)
+        for (eid, _slot), _val in ev.property_changes.items():
+            if isinstance(eid, str):
+                referenced.add(eid)
+    for src in source_by_event.values():
+        if isinstance(src, str):
+            referenced.add(src)
+    # 1-hop expansion through setup relations — strict, single pass.
+    # For most relations expansion is symmetric: if either arg is in
+    # `seeds`, add both. This keeps prior owners (havi), parts
+    # (havas_parton), seating containers (sur), neighbors (apud)
+    # visible when any side is narratively referenced.
+    #
+    # `en` is asymmetric: a location collects unrelated bystanders, so
+    # symmetric expansion through it pulls in scene-mates (an aviadilo
+    # at the parko a Sara walks through). We expand `en` only in the
+    # contained → container direction: a referenced entity's location
+    # matters, but a referenced location doesn't make every other
+    # thing in it relevant.
+    rels = (setup_relations if setup_relations is not None
+            else list(trace.relations))
+    seeds = frozenset(referenced)
+    for r in rels:
+        args = tuple(r.args)
+        if r.relation == "en" and len(args) == 2:
+            contained, container = args
+            if contained in seeds:
+                referenced.add(container)
+            continue
+        if any(a in seeds for a in args):
+            referenced.update(args)
+    return referenced
 
 
 # -------------------- helpers: salience-driven quality grounding -----
@@ -390,6 +577,7 @@ def _synthetic_grounding_targets(
 def _attribute_relation_changes(
     trace: Trace,
     setup_relations: Optional[list[RelationAssertion]],
+    lexicon: Optional[Lexicon] = None,
 ) -> tuple[dict[str, list[Message]], dict[str, str]]:
     """Diff setup vs final `trace.relations` and attribute each add/
     remove to a plausible event.
@@ -431,24 +619,39 @@ def _attribute_relation_changes(
     # Transfer verbs already convey ownership change in the verb
     # itself. Acquisition verbs (a subset) can optionally narrate
     # the previous owner as "de <owner>" on the event itself.
-    TRANSFER_VERBS = {"doni", "preni", "ĵeti", "kapti"}
-    ACQUISITION_VERBS = {"preni", "kapti"}
+    # Transfer / acquisition verbs are derived from rule structure
+    # (see dsl/introspect.py): any verb whose rule fires `transfer_n`
+    # is a TRANSFER verb; the subset where theme moves to the agent
+    # are the ACQUISITION verbs (those get prior-owner attribution).
+    # ĵeti is hand-added because it's the one transfer verb whose
+    # rule uses remove_relation directly rather than transfer_n.
+    from ..dsl.introspect import (
+        acquisition_verbs as _acq_verbs,
+        transfer_verbs as _trans_verbs,
+        verb_relation_kinds as _verb_rel_kinds,
+    )
+    from ..dsl.rules import DEFAULT_DSL_RULES
+    _rules = list(DEFAULT_DSL_RULES)
+    TRANSFER_VERBS = set(_trans_verbs(_rules)) | {"ĵeti"}
+    ACQUISITION_VERBS = set(_acq_verbs(_rules))
     MOVEMENT_VERBS = {"iri", "veturi"}
     PLACEMENT_VERBS = {"meti"}
     candidate_actions = TRANSFER_VERBS | MOVEMENT_VERBS | PLACEMENT_VERBS
-    # Each verb only mutates its own relation kinds. Without this gate,
-    # iri(agent, destination) would claim a same-event havi(agent, item)
-    # add (because "agent" is in iri's role values) and narrate it as
-    # a side effect of going somewhere. The havi belongs to the
-    # adjacent preni event.
-    VERB_RELATION_KINDS: dict[str, frozenset[str]] = {
+    # Per-verb relation-kind gate. Without it, iri(agent, destination)
+    # would claim a same-event havi(agent, item) add (because "agent"
+    # is in iri's role values) and narrate it as a side effect of
+    # going somewhere. The havi belongs to the adjacent preni event.
+    # Movement / placement verbs use add_relation/remove_relation
+    # directly so they fall out of introspection — re-add them here.
+    _MANUAL_RELATION_KINDS: dict[str, frozenset[str]] = {
         "iri": frozenset({"en"}),
         "veturi": frozenset({"en"}),
-        "preni": frozenset({"havi"}),
-        "kapti": frozenset({"havi"}),
-        "doni": frozenset({"havi"}),
         "ĵeti": frozenset({"havi"}),
         "meti": frozenset({"en"}),
+    }
+    VERB_RELATION_KINDS: dict[str, frozenset[str]] = {
+        **_verb_rel_kinds(_rules),
+        **_MANUAL_RELATION_KINDS,
     }
 
     out: dict[str, list[Message]] = {}
@@ -479,14 +682,33 @@ def _attribute_relation_changes(
         # Acquisition verbs: if we consumed a havi-removal whose
         # owner differs from the event's agent, that owner is the
         # "source" to narrate via "de <source>" on the event itself.
+        # Fallback to the rule's precondition `havi(<role>, theme)`
+        # when no havi-removal surfaced — catches partial transfers
+        # (source keeps a smaller stack, so its havi isn't removed)
+        # and lets aĉeti read as "aĉetis ... de SELLER" even when
+        # only some of SELLER's goods moved.
         if ev.action in ACQUISITION_VERBS:
             agent = ev.roles.get("agent")
             theme = ev.roles.get("theme")
+            found_source = False
             for (rel, args) in claims_rem:
                 if (rel == "havi" and len(args) == 2
                         and args[1] == theme and args[0] != agent):
                     source_for_event[ev.id] = args[0]
+                    found_source = True
                     break
+            if not found_source and lexicon is not None:
+                action_def = lexicon.actions.get(ev.action)
+                if action_def is not None:
+                    for pc in action_def.preconditions:
+                        if (pc.kind == "relation" and pc.rel == "havi"
+                                and len(pc.roles) == 2
+                                and pc.roles[1] == "theme"
+                                and pc.roles[0] != "agent"):
+                            src_id = ev.roles.get(pc.roles[0])
+                            if src_id is not None:
+                                source_for_event[ev.id] = src_id
+                                break
 
         for (rel, args) in claims_rem:
             unattributed_removes.discard((rel, args))
@@ -668,9 +890,14 @@ def aggregate_relations(messages: list[Message]) -> list[Message]:
     """
     if not messages:
         return messages
-    # Find the leading run of RelationMessages (the setup phase).
+    # Find the leading run of setup-phase messages — the prefix before
+    # the first EventMessage. Scene grounding ("X estis en SCENE")
+    # semantically equals an `en(X, scene_location_id)` relation, so
+    # we treat both kinds as bucketable. EntityQualityMessage and
+    # other interstitials are kept in place via `leftover`.
     cut = 0
-    while cut < len(messages) and isinstance(messages[cut], RelationMessage):
+    while cut < len(messages) and not isinstance(
+            messages[cut], EventMessage):
         cut += 1
     if cut == 0:
         return messages
@@ -678,20 +905,57 @@ def aggregate_relations(messages: list[Message]) -> list[Message]:
     setup = messages[:cut]
     rest = messages[cut:]
 
+    # Find the implicit scene-location id from any SceneGroundingMessage.
+    scene_location_id: Optional[str] = None
+    for m in setup:
+        if isinstance(m, SceneGroundingMessage):
+            for r in messages:
+                # Walk other messages to find the scene id — it's
+                # stored implicitly via the trace in render time, but
+                # for grouping we need it explicit. SceneGrounding's
+                # entity is `en` the scene by definition; we infer the
+                # scene from any en-relation whose container appears
+                # repeatedly, OR fall back to ungrouped if ambiguous.
+                pass
+            break
+
     # Bucket by (relation, container). Track first-appearance order
     # so the output preserves the rough scene-introduction sequence.
     buckets: dict[tuple[str, str], list[str]] = {}
     bucket_order: list[tuple[str, str]] = []
-    leftover: list[RelationMessage] = []
+    leftover: list[Message] = []
+
+    # First pass: gather candidate scene container from RelationMessages.
+    # Most-frequent en-container wins as the inferred scene id for
+    # SceneGroundingMessage attachment.
+    container_counts: dict[str, int] = {}
+    for m in setup:
+        if isinstance(m, RelationMessage):
+            r = m.relation
+            if r.relation == "en" and len(r.args) == 2:
+                container_counts[r.args[1]] = (
+                    container_counts.get(r.args[1], 0) + 1)
+    inferred_scene = (
+        max(container_counts, key=container_counts.get)
+        if container_counts else None)
 
     for m in setup:
-        rel = m.relation
-        if rel.relation in ("en", "sur") and len(rel.args) == 2:
-            key = (rel.relation, rel.args[1])  # (relation, container)
+        if isinstance(m, RelationMessage):
+            rel = m.relation
+            if rel.relation in ("en", "sur") and len(rel.args) == 2:
+                key = (rel.relation, rel.args[1])
+                if key not in buckets:
+                    buckets[key] = []
+                    bucket_order.append(key)
+                buckets[key].append(rel.args[0])
+            else:
+                leftover.append(m)
+        elif isinstance(m, SceneGroundingMessage) and inferred_scene:
+            key = ("en", inferred_scene)
             if key not in buckets:
                 buckets[key] = []
                 bucket_order.append(key)
-            buckets[key].append(rel.args[0])
+            buckets[key].append(m.entity_id)
         else:
             leftover.append(m)
 

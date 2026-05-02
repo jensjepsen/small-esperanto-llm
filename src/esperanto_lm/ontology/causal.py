@@ -111,6 +111,12 @@ class Event:
     creates: list["EntityInstance"] = field(default_factory=list)
     property_changes: dict[tuple[str, str], Any] = field(default_factory=dict)
     trace_position: Optional[int] = None
+    # Number of units this event acts on. Default 1 (one bite, one
+    # transfer, one unlock). Consumption verbs (manĝi/trinki) and
+    # transfer verbs (doni/preni) read this to decrement/transfer
+    # the right amount in one event. The realizer surfaces it in
+    # prose: quantity > 1 → "Maria manĝis du pomojn".
+    quantity: int = 1
 
 
 def effect_changes(
@@ -143,28 +149,29 @@ def make_event(
     creates: Optional[Iterable["EntityInstance"]] = None,
     property_changes: Optional[dict[tuple[str, str], Any]] = None,
     trace_position: Optional[int] = None,
+    quantity: int = 1,
 ) -> Event:
     """Content-addressed event id so rules are idempotent.
 
-    Note: id is derived from action/roles/causes only. The new fields
-    (creates, property_changes, trace_position) intentionally do NOT
-    contribute to the id, because they're side effects of *what fired*,
-    not part of the event's identity. Two rules producing 'fragile_falls
-    on glaso at position 3' should be the same event regardless of
-    whether one of them attaches a property_change and the other doesn't.
-    The new engine's memoization (rule_name, arg_key, position) replaces
-    content hashing for re-firing prevention anyway.
+    Note: id is derived from action/roles/causes/quantity. Quantity is
+    part of the event's identity because two manĝi events with
+    different quantities are semantically distinct (one bite vs. two
+    bites) and should fire the consume cascade independently. Other
+    side-effect fields (creates, property_changes, trace_position) are
+    NOT in the id — they're outputs of what fired.
     """
     causes = tuple(sorted(caused_by))
     role_str = ",".join(f"{k}={v}" for k, v in sorted(roles.items()))
+    qty_str = "" if quantity == 1 else f"|q={quantity}"
     h = hashlib.sha1(
-        f"{action}|{role_str}|{','.join(causes)}".encode("utf-8")
+        f"{action}|{role_str}|{','.join(causes)}{qty_str}".encode("utf-8")
     ).hexdigest()[:12]
     return Event(
         id=h, action=action, roles=dict(roles), caused_by=causes,
         creates=list(creates or []),
         property_changes=dict(property_changes or {}),
         trace_position=trace_position,
+        quantity=quantity,
     )
 
 

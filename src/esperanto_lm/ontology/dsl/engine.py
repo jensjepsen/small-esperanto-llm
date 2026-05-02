@@ -29,8 +29,8 @@ from typing import Any, Iterator
 from ..causal import EntityInstance, Event, Trace, make_event
 from ..loader import Lexicon
 from .effects import (
-    AddRelation, Change, CreateEntity, DestroyEntity, Effect, Emit,
-    RemoveRelation,
+    AddRelation, Change, ConsumeOne, CreateEntity, DestroyEntity, Effect, Emit,
+    RemoveRelation, TransferN,
 )
 from .implications import (
     Implication, PartImplication, PropertyImplication, RelationImplication,
@@ -386,6 +386,15 @@ def _run_derivations_to_fixed_point(
                         if scalar:
                             if asserted is not None:
                                 continue
+                            # First-write-wins for scalar slots within
+                            # a derivation cycle: if another derivation
+                            # already set this (entity, slot), skip so
+                            # specific derivations (e.g. sittable →
+                            # sidanta) aren't clobbered by defaults
+                            # (animate → staranta) that fire later in
+                            # the same iteration.
+                            if derived.get(eid, imp.slot) is not None:
+                                continue
                         else:
                             asserted_list = (
                                 asserted if isinstance(asserted, list)
@@ -447,7 +456,11 @@ def _run_causal_phase(
             # create_entity, add_relation), which would crash the
             # still-running enumeration generator with "dictionary
             # changed size during iteration".
-            for bindings in list(enumerate_bindings(r.when, r.given, ctx)):
+            # Capture each binding by copy at materialization time —
+            # BindPattern.apply_to_value uses mutate-and-restore on a
+            # shared dict, so a bare `list(...)` would yield N refs to
+            # the same (now-empty) dict.
+            for bindings in [dict(b) for b in enumerate_bindings(r.when, r.given, ctx)]:
                 key = (r.name, ev.id, frozenset(bindings.items()))
                 if key in fired_bindings:
                     continue
@@ -526,6 +539,127 @@ def _apply_effects(
                 continue
             ent.destroyed_at_event = len(trace.events) - 1
             changed = True
+        elif isinstance(eff, ConsumeOne):
+            target = resolve(eff.target, b)
+            ent = trace.entities.get(target)
+            if ent is None or ent.destroyed_at_event is not None:
+                continue
+            current_raw = trace.property_at(
+                target, "count", len(trace.events))
+            # Read consumption quantity from the firing event. Defaults
+            # to 1 (one bite, one transfer); larger values come from
+            # explicit "Maria ate 3 apples" events.
+            qty = getattr(cause_event, "quantity", 1)
+            # No count slot → single-unit theme; destroy outright
+            # regardless of quantity (you can't eat 3 of something
+            # that has no notion of count).
+            if current_raw is None:
+                ent.destroyed_at_event = len(trace.events) - 1
+                changed = True
+                continue
+            if isinstance(current_raw, list):
+                current_raw = current_raw[0] if current_raw else "1"
+            try:
+                current = int(current_raw)
+            except (TypeError, ValueError):
+                ent.destroyed_at_event = len(trace.events) - 1
+                changed = True
+                continue
+            new = current - qty
+            if new <= 0:
+                ent.destroyed_at_event = len(trace.events) - 1
+                changed = True
+            else:
+                new_ev = make_event(
+                    "_change", roles={"theme": target},
+                    caused_by=[cause_event.id],
+                    property_changes={(target, "count"): str(new)})
+                if trace.add_event(new_ev):
+                    changed = True
+        elif isinstance(eff, TransferN):
+            source = resolve(eff.source, b)
+            target = resolve(eff.target, b)
+            src_ent = trace.entities.get(source)
+            if src_ent is None or src_ent.destroyed_at_event is not None:
+                continue
+            # Find current owner (if any) of source via havi.
+            prior_owner = None
+            for rl in trace.relations:
+                if rl.relation == "havi" and len(rl.args) == 2 \
+                        and rl.args[1] == source:
+                    prior_owner = rl.args[0]
+                    break
+            qty = getattr(cause_event, "quantity", 1)
+            current_raw = trace.property_at(
+                source, "count", len(trace.events))
+            # Single-unit theme (no count slot) → full ownership swap.
+            single_unit = current_raw is None
+            if not single_unit:
+                if isinstance(current_raw, list):
+                    current_raw = current_raw[0] if current_raw else "1"
+                try:
+                    current = int(current_raw)
+                except (TypeError, ValueError):
+                    current = 1
+                    single_unit = True
+            # Full transfer when single-unit OR qty covers the stack.
+            if single_unit or qty >= current:
+                if prior_owner is not None and prior_owner != target:
+                    new_rels = [
+                        rl for rl in trace.relations
+                        if not (rl.relation == "havi"
+                                and tuple(rl.args) == (prior_owner, source))
+                    ]
+                    if len(new_rels) != len(trace.relations):
+                        trace.relations = new_rels
+                        changed = True
+                already = any(
+                    rl.relation == "havi"
+                    and tuple(rl.args) == (target, source)
+                    for rl in trace.relations)
+                if not already:
+                    trace.assert_relation(
+                        "havi", (target, source), lexicon)
+                    changed = True
+                continue
+            # Partial split: source keeps current-qty units; target gets
+            # a new stack of qty units.
+            new_count = current - qty
+            new_eid = (
+                f"{src_ent.concept_lemma}_from_{cause_event.id[:12]}")
+            if new_eid not in trace.entities:
+                concept = lexicon.concepts.get(src_ent.concept_lemma)
+                props = (
+                    {k: list(v) for k, v in concept.properties.items()}
+                    if concept is not None
+                    else {k: list(v) for k, v in src_ent.properties.items()}
+                )
+                props["count"] = [str(qty)]
+                new_ent = EntityInstance(
+                    id=new_eid,
+                    concept_lemma=src_ent.concept_lemma,
+                    entity_type=src_ent.entity_type,
+                    properties=props,
+                    created_at_event=len(trace.events),
+                )
+                trace.entities[new_eid] = new_ent
+                changed = True
+            # Decrement source's count via synthetic _change.
+            decrement_ev = make_event(
+                "_change", roles={"theme": source},
+                caused_by=[cause_event.id],
+                property_changes={(source, "count"): str(new_count)})
+            if trace.add_event(decrement_ev):
+                changed = True
+            # Add havi(target, new_eid). Source's existing havi stays.
+            already = any(
+                rl.relation == "havi"
+                and tuple(rl.args) == (target, new_eid)
+                for rl in trace.relations)
+            if not already:
+                trace.assert_relation(
+                    "havi", (target, new_eid), lexicon)
+                changed = True
         elif isinstance(eff, Change):
             target = resolve(eff.entity, b)
             ent = trace.entities.get(target)

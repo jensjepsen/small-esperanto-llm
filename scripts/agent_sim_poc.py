@@ -31,7 +31,7 @@ from esperanto_lm.ontology import (
 )
 from esperanto_lm.ontology.dsl import compute_derived_state, run_dsl
 from esperanto_lm.ontology.dsl.effects import (
-    AddRelation, Change, CreateEntity, Emit,
+    AddRelation, Change, CreateEntity, Emit, TransferN,
 )
 from esperanto_lm.ontology.dsl.implications import (
     PropertyImplication, RelationImplication,
@@ -63,6 +63,7 @@ from esperanto_lm.ontology.dsl.rules import (
 # tight; the architecture supports the conditional version unchanged.
 SLOT_PREFERENCES = {
     "hunger":      "sata",
+    "thirst":      "satigita",
     "sleep_state": "vekita",
     "wetness":     "seka",
     "cleanliness": "pura",
@@ -445,12 +446,17 @@ def _find_relation_adders(rules, relation):
                     continue
                 var_to_given.setdefault(id(v), (g_pat, arg_name))
         for eff in effects:
-            if not isinstance(eff, AddRelation):
-                continue
-            if eff.relation != relation:
+            # TransferN(source=S, target=T) is equivalent to
+            # AddRelation("havi", T, S) for planning purposes — the
+            # engine resolves full-vs-partial transfer at firing time.
+            if isinstance(eff, TransferN) and relation == "havi":
+                args: tuple = (eff.target, eff.source)
+            elif isinstance(eff, AddRelation) and eff.relation == relation:
+                args = eff.args
+            else:
                 continue
             arg_sources = []
-            for arg in eff.args:
+            for arg in args:
                 if not isinstance(arg, Var):
                     arg_sources.append(None)
                     break
@@ -498,11 +504,51 @@ def _cached_compute_derived_state(trace, derivations, lex):
     return result
 
 
+_QUANTIFIABLE_TRANSFER_CACHE: dict[int, frozenset[str]] = {}
+
+
+def _quantifiable_transfer_verbs(rules) -> frozenset[str]:
+    """Verbs whose rule fires `transfer_n` — the count-drive planner
+    stamps explicit quantity onto these so partial-stack transfers
+    work. Cached by `id(rules)` since the rule set is stable for the
+    lifetime of a planning session."""
+    key = id(rules)
+    cached = _QUANTIFIABLE_TRANSFER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from esperanto_lm.ontology.dsl.introspect import transfer_verbs
+    cached = transfer_verbs(rules)
+    _QUANTIFIABLE_TRANSFER_CACHE[key] = cached
+    return cached
+
+
+def _unpack_step(step):
+    """Plan items are (verb, roles) by default; (verb, roles, quantity)
+    when the planner has set an explicit count for partial-stack
+    transfer or count-drive consumption. Returns (verb, roles, qty)
+    with qty=1 for the 2-tuple form."""
+    if len(step) == 3:
+        verb, roles, qty = step
+        return verb, roles, qty
+    verb, roles = step
+    return verb, roles, 1
+
+
+def _step_to_event(step, lex):
+    """Materialize a plan step as an Event, threading quantity onto
+    the event when the step carries one."""
+    verb, roles, qty = _unpack_step(step)
+    return make_event(
+        verb, roles=roles,
+        property_changes=effect_changes(verb, roles, lex),
+        quantity=qty)
+
+
 def _plan_cache_key(plan):
-    """Hashable key for a plan: tuple of (verb, sorted-role-pairs)."""
+    """Hashable key for a plan: tuple of (verb, sorted-role-pairs, qty)."""
     return tuple(
-        (verb, tuple(sorted(roles.items())))
-        for verb, roles in plan
+        (verb, tuple(sorted(roles.items())), qty)
+        for verb, roles, qty in (_unpack_step(s) for s in plan)
     )
 
 
@@ -663,10 +709,8 @@ def _simulate_from_scratch(base_trace, plan, lex, rules, derivations):
         _SIM_CACHE[cache_key] = result
         return result
     t = base_trace.fork()
-    for verb, roles in plan:
-        ev = make_event(
-            verb, roles=roles,
-            property_changes=effect_changes(verb, roles, lex))
+    for step in plan:
+        ev = _step_to_event(step, lex)
         t.events.append(ev)
         t._event_ids.add(ev.id)
     run_dsl(t, rules, derivs, lex)
@@ -971,7 +1015,22 @@ def _candidate_breaks_preserved(sub_plan, trace, lex, rules, derivations):
     """True if simulating `trace + sub_plan` would invalidate any
     constraint in the current `_PRESERVE_CONSTRAINTS`. Empty plans
     (no events to fire) trivially preserve, since they don't change
-    state."""
+    state.
+
+    Known limitation: this strict check rejects any candidate that
+    breaks a preserved constraint, even when the break is temporary
+    (e.g. `iri` away to fetch a tool breaks `samloke(agent, theme)`
+    momentarily; a return trip would re-establish it). Trying to
+    relax the check — either by removing it or by probing whether
+    the broken constraint is re-establishable — caused either
+    long-tail planner slowdowns or infinite recursion via the inner
+    plan-call. The proper fix is a STRIPS-with-re-establishment
+    planner that simulates the plan step-by-step and checks each
+    action's preconditions at firing time, then auto-inserts
+    restoration steps. That's a larger rewrite. For now, seeders
+    that hit this case (`regress_for_wet_sekigi`, `regress_for_dirty
+    _purigi`) place the required tool in the same room as the
+    target so no fetch-trip is needed."""
     preserve = _PRESERVE_CONSTRAINTS.get()
     if not preserve or not sub_plan:
         return False
@@ -984,6 +1043,123 @@ def _candidate_breaks_preserved(sub_plan, trace, lex, rules, derivations):
         if not _has_relation(rel_name, args, sim_trace, sim_derived, lex):
             return True
     return False
+
+
+def _count_owned(actor_id: str, concept_lemma: str, trace) -> int:
+    """Sum the `count` slot across all stacks of `concept_lemma` owned
+    by `actor_id`. Used by `plan_to_reach_count`'s progress check.
+    Stacks where count is unset default to 1."""
+    total = 0
+    for r in trace.relations:
+        if r.relation != "havi":
+            continue
+        if r.args[0] != actor_id:
+            continue
+        ent = trace.entities.get(r.args[1])
+        if ent is None or ent.concept_lemma != concept_lemma:
+            continue
+        if ent.destroyed_at_event is not None:
+            continue
+        try:
+            total += int(ent.properties.get("count", ["1"])[0])
+        except (TypeError, ValueError):
+            total += 1
+    return total
+
+
+def plan_to_reach_count(target_owner_id: str, concept_lemma: str,
+                        target_count: int, trace, lex, rules,
+                        *, planner_actor_id: Optional[str] = None,
+                        derived=None, derivations=None,
+                        max_depth=8):
+    """Plan for `target_owner_id` to own at least `target_count` units
+    of `concept_lemma`, summed across all stacks. Greedy across sources:
+    pick the largest unowned stack first, plan to acquire it via
+    `plan_to_establish_relation('havi', ...)`, simulate, repeat until
+    the target is reached or no more sources are available.
+
+    `planner_actor_id` is who's doing the planning (the entity bound
+    to `agent` in the chosen verb). Defaults to `target_owner_id` for
+    self-acquire; differs from it for altruism (donor planning to give
+    a recipient N units → planner_actor_id=donor, target_owner_id=
+    recipient — the planner picks doni since it's the verb where the
+    planner-actor binds to agent).
+
+    Returns a flat plan (concatenation of acquisition sub-plans) or
+    None if unreachable. Empty list if already satisfied."""
+    if planner_actor_id is None:
+        planner_actor_id = target_owner_id
+    current = _count_owned(target_owner_id, concept_lemma, trace)
+    if current >= target_count:
+        return []
+
+    # Find candidate source stacks: live entities of the right concept
+    # not currently owned by the target owner.
+    candidates = []
+    for eid, ent in trace.entities.items():
+        if ent.concept_lemma != concept_lemma:
+            continue
+        if ent.destroyed_at_event is not None:
+            continue
+        owned_by_target = any(
+            r.relation == "havi" and tuple(r.args) == (target_owner_id, eid)
+            for r in trace.relations)
+        if owned_by_target:
+            continue
+        candidates.append(eid)
+    if not candidates:
+        return None
+
+    # Largest stacks first — minimizes plan length.
+    def _stack_count(eid):
+        try:
+            return int(trace.entities[eid].properties.get("count", ["1"])[0])
+        except (TypeError, ValueError):
+            return 1
+    candidates.sort(key=_stack_count, reverse=True)
+
+    plan: list = []
+    cur_trace = trace
+    cur_derived = derived
+    # Cap candidates considered. Each acquisition's
+    # plan_to_establish_relation call is expensive (each spawns its own
+    # backward-chaining tree) and after the first acquisition the trace
+    # state is more complex (actor relocated, owns a stack), making
+    # subsequent calls even slower. Two acquisitions covers the
+    # split-source case; more would mostly be diminishing returns.
+    for cand in candidates[:2]:
+        # Use a shorter depth on the inner call. With max_depth=8 the
+        # planner explores deep alternatives that rarely help here;
+        # 5 is enough for "iri → eniri → preni"-style chains and
+        # caps explosion when the second acquisition kicks in from
+        # a complex post-first-acquisition state.
+        sub = plan_to_establish_relation(
+            "havi", (target_owner_id, cand), planner_actor_id,
+            cur_trace, lex, rules,
+            derived=cur_derived, derivations=derivations,
+            max_depth=min(5, max_depth))
+        if sub is None:
+            continue
+        # Stamp the acquisition step with explicit quantity = remaining
+        # need, capped by the source stack's count. TransferN reads
+        # `event.quantity` and either does a full ownership swap (when
+        # qty >= source.count) or a partial split (qty < source.count),
+        # leaving a smaller stack with the prior owner.
+        need = max(1, target_count - current)
+        cand_count = _stack_count(cand)
+        qty = min(need, cand_count)
+        if qty > 1 and sub:
+            last = sub[-1]
+            verb, roles, _ = _unpack_step(last)
+            if verb in _quantifiable_transfer_verbs(rules):
+                sub = sub[:-1] + [(verb, roles, qty)]
+        plan = plan + sub
+        cur_trace, cur_derived = _simulate_from_scratch(
+            trace, plan, lex, rules, derivations)
+        current = _count_owned(target_owner_id, concept_lemma, cur_trace)
+        if current >= target_count:
+            return plan
+    return None
 
 
 def plan_to_establish_relation(relation, target_args, actor_id,
@@ -2441,10 +2617,8 @@ def run_simulation(trace, lex, rules, derivations, max_ticks=8):
                 eid, trace, lex, rules, derived=derived)
             if not plan:
                 continue
-            for verb, roles in plan:
-                event = make_event(
-                    verb, roles=roles,
-                    property_changes=effect_changes(verb, roles, lex))
+            for step in plan:
+                event = _step_to_event(step, lex)
                 trace.events.append(event)
                 run_dsl(trace, rules, derivations, lex)
             fired = True
@@ -2846,7 +3020,8 @@ def _entity_pattern_type_for_var(patterns, target_var):
 
 def _build_relation_writability(lex, rules, derivations) -> set[str]:
     """Set of relation names reachable via at least one rule's
-    AddRelation or any derivation's RelationImplication."""
+    AddRelation, TransferN (writes "havi"), or any derivation's
+    RelationImplication."""
     out: set[str] = set()
     for rule in rules:
         effects = (rule.then if isinstance(rule.then, (list, tuple))
@@ -2854,6 +3029,8 @@ def _build_relation_writability(lex, rules, derivations) -> set[str]:
         for eff in effects:
             if isinstance(eff, AddRelation):
                 out.add(eff.relation)
+            elif isinstance(eff, TransferN):
+                out.add("havi")
     for d in derivations or []:
         for imp in d.implies:
             if isinstance(imp, RelationImplication):
@@ -3117,6 +3294,36 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
                 "konas", (knower, fakto_id), actor, t, lex, rules,
                 derived=derived, derivations=derivations,
                 max_depth=max_depth)
+        elif kind == "wearing":
+            _, actor, garment = drive
+            plan = plan_to_establish_relation(
+                "vestita", (actor, garment), actor, t, lex, rules,
+                derived=derived, derivations=derivations,
+                max_depth=max_depth)
+        elif kind == "count":
+            _, actor, concept_lemma, target_count = drive
+            plan = plan_to_reach_count(
+                actor, concept_lemma, target_count, t, lex, rules,
+                derived=derived, derivations=derivations,
+                max_depth=max_depth)
+        elif kind == "give_count":
+            _, donor, recipient, concept_lemma, target_count = drive
+            plan = plan_to_reach_count(
+                recipient, concept_lemma, target_count, t, lex, rules,
+                planner_actor_id=donor,
+                derived=derived, derivations=derivations,
+                max_depth=max_depth)
+        elif kind == "more_than":
+            _, actor, concept_lemma, reference_id = drive
+            # Resolve target from current state: one more than the
+            # reference's count. If reference holds nothing, target=1
+            # (one is "more than zero").
+            ref_count = _count_owned(reference_id, concept_lemma, t)
+            target_count = ref_count + 1
+            plan = plan_to_reach_count(
+                actor, concept_lemma, target_count, t, lex, rules,
+                derived=derived, derivations=derivations,
+                max_depth=max_depth)
         else:
             plan = None
         return _dedupe_adjacent_steps(plan) if plan else plan
@@ -3141,6 +3348,14 @@ def _drive_summary(drive):
         return f"{actor} wants {knower} to know fact {fakto_id}"
     if kind == "possession":
         return f"{drive[1]} wants to have {drive[2]}"
+    if kind == "wearing":
+        return f"{drive[1]} wants to be wearing {drive[2]}"
+    if kind == "count":
+        return f"{drive[1]} wants {drive[3]} {drive[2]}(s)"
+    if kind == "give_count":
+        return f"{drive[1]} wants {drive[2]} to have {drive[4]} {drive[3]}(s)"
+    if kind == "more_than":
+        return f"{drive[1]} wants more {drive[2]}(s) than {drive[3]}"
     return repr(drive)
 
 
@@ -3213,6 +3428,13 @@ def _concepts_matching_role(lex, role_spec) -> list[str]:
                 continue
             cvals = concept.properties.get(slot, [])
             if slot_def.varies:
+                # Pervasive slots (hunger, wetness, etc.) apply to every
+                # concept of the slot's applies_to type via a default
+                # derivation — no per-concept declaration needed.
+                # Opt-in slots (openness, lock_state) require the
+                # concept to declare them.
+                if getattr(slot_def, "pervasive", False):
+                    continue
                 if not cvals:
                     ok = False
                     break
@@ -3223,6 +3445,557 @@ def _concepts_matching_role(lex, role_spec) -> list[str]:
         if ok:
             out.append(lemma)
     return out
+
+
+# ----------------------- scene builder DSL ------------------------
+#
+# Fluent API for constructing regression scenes. Each `regress_for_X`
+# function shares the same ~40 lines of plumbing — pick locations,
+# place persons/targets, assert relations, build a fakto, return the
+# (trace, scene_id, drive) triple. The builder factors that out so
+# new seeders are ~10 lines of intent.
+#
+# Failure handling: any step that can't satisfy its constraints sets
+# `_failed = True`, subsequent calls become no-ops, and `build()`
+# returns `None`. Callers don't need to wrap each step in try/except.
+
+
+class SceneBuilder:
+    """Compose a regression scene by chaining location/person/target/
+    relation/fakto calls. Slot names are local labels (e.g. "actor",
+    "scene") that resolve to entity ids; pass slot names anywhere the
+    builder wants an entity reference."""
+
+    def __init__(self, lex, rng):
+        self.lex = lex
+        self.rng = rng
+        self.t = Trace()
+        self.slots: dict[str, str] = {}
+        self._scene_slot: Optional[str] = None
+        self._used_names: set[str] = set()
+        self._failed = False
+        self._drive: Optional[tuple] = None
+        # Auto-pose: build() runs maybe_seat / maybe_recline on every
+        # person in the scene. Seeders can disable via no_auto_pose()
+        # when posture/sleep_state matters for the test.
+        self._auto_pose = True
+
+    def _fail(self):
+        self._failed = True
+
+    def _resolve(self, slot_or_id) -> Optional[str]:
+        if isinstance(slot_or_id, str) and slot_or_id in self.slots:
+            return self.slots[slot_or_id]
+        return slot_or_id
+
+    def _unique_id(self, base: str) -> str:
+        if base not in self.t.entities:
+            return base
+        suffix = 1
+        while f"{base}_{suffix}" in self.t.entities:
+            suffix += 1
+        return f"{base}_{suffix}"
+
+    def _location_matches_terrain(self, loc_lemma, terrains) -> bool:
+        c = self.lex.concepts[loc_lemma]
+        for terr in terrains:
+            if terr == "land" and any(p.concept == "vojo" for p in c.parts):
+                return True
+            if terr == "rail" and any(p.concept == "relo" for p in c.parts):
+                return True
+            if terr == "water" and any(p.concept == "akvo" for p in c.parts):
+                return True
+            if terr == "air" and "ekstera" in c.properties.get(
+                    "indoor_outdoor", []):
+                return True
+        return False
+
+    def _add(self, concept_lemma, eid):
+        from esperanto_lm.ontology.sampler import _add_entity_randomized
+        try:
+            _add_entity_randomized(
+                self.t, concept_lemma, self.lex, self.rng, entity_id=eid)
+            return True
+        except (KeyError, ValueError):
+            return False
+
+    def _place(self, eid, container_slot):
+        if container_slot is None:
+            return True
+        container_id = self._resolve(container_slot)
+        if container_id is None:
+            return False
+        try:
+            self.t.assert_relation("en", (eid, container_id), self.lex)
+            return True
+        except (KeyError, ValueError):
+            return False
+
+    # ---------- placement ----------
+
+    def location(self, slot, *, is_scene=False, different_from=None,
+                 terrain_compatible_with=None):
+        """Pick a location concept and add it. `different_from` excludes
+        a previously-bound slot's id. `terrain_compatible_with` filters
+        to locations whose declared parts/properties match the terrains
+        of an already-placed vehicle."""
+        if self._failed:
+            return self
+        candidates = [
+            l for l, c in self.lex.concepts.items()
+            if self.lex.types.is_subtype(c.entity_type, "location")
+        ]
+        if different_from is not None:
+            other = self._resolve(different_from)
+            candidates = [l for l in candidates if l != other]
+        if terrain_compatible_with is not None:
+            veh_eid = self._resolve(terrain_compatible_with)
+            veh_ent = self.t.entities.get(veh_eid) if veh_eid else None
+            if veh_ent is None:
+                self._fail()
+                return self
+            terrains = veh_ent.properties.get("terrain", [])
+            candidates = [
+                l for l in candidates
+                if self._location_matches_terrain(l, terrains)
+            ]
+        if not candidates:
+            self._fail()
+            return self
+        lemma = self.rng.choice(candidates)
+        if not self._add(lemma, lemma):
+            self._fail()
+            return self
+        self.slots[slot] = lemma
+        if is_scene:
+            self._scene_slot = slot
+        return self
+
+    def _named_actor(self, slot, concept_pool, *, in_, name=None):
+        if self._failed:
+            return self
+        if not concept_pool:
+            self._fail()
+            return self
+        concept = self.rng.choice(concept_pool)
+        if name is None:
+            available = [n for n in PERSON_NAMES if n not in self._used_names]
+            if not available:
+                self._fail()
+                return self
+            name = self.rng.choice(available)
+        self._used_names.add(name)
+        if not self._add(concept, name):
+            self._fail()
+            return self
+        self.slots[slot] = name
+        if not self._place(name, in_):
+            self._fail()
+        return self
+
+    def person(self, slot, *, in_=None):
+        """Pick a person concept and bind it to `slot` with a name from
+        `PERSON_NAMES`. Names are unique within a build."""
+        persons = [
+            c.lemma for c in self.lex.concepts.values()
+            if c.entity_type == "person"
+        ]
+        return self._named_actor(slot, persons, in_=in_)
+
+    def animal(self, slot, *, in_=None):
+        """Pick a non-person animate concept; entity id is the lemma."""
+        if self._failed:
+            return self
+        animals = [
+            c.lemma for c in self.lex.concepts.values()
+            if self.lex.types.is_subtype(c.entity_type, "animate")
+            and not self.lex.types.is_subtype(c.entity_type, "person")
+        ]
+        if not animals:
+            self._fail()
+            return self
+        concept = self.rng.choice(animals)
+        eid = self._unique_id(concept)
+        if not self._add(concept, eid):
+            self._fail()
+            return self
+        self.slots[slot] = eid
+        if not self._place(eid, in_):
+            self._fail()
+        return self
+
+    def target(self, slot, *, in_=None, where=None, same_concept_as=None,
+               concept=None):
+        """Pick a `_standalone_target_concepts` concept (physical, non-
+        person, non-location, not-a-part). `where=lambda concept: ...`
+        narrows further (e.g. only foods, only readables).
+
+        `same_concept_as=<other_slot>`: reuse the concept lemma of the
+        entity bound to `<other_slot>` rather than picking randomly.
+        Useful when a scene needs multiple stacks of the same concept
+        (e.g. apples-stash + apples-stash-b for a count drive).
+
+        `concept=<lemma>`: skip random selection entirely and use the
+        literal concept lemma (e.g. concept="monero" for a coin stack)."""
+        if self._failed:
+            return self
+        if concept is not None:
+            if concept not in self.lex.concepts:
+                self._fail()
+                return self
+        elif same_concept_as is not None:
+            other_eid = self.slots.get(same_concept_as)
+            other_ent = self.t.entities.get(other_eid) if other_eid else None
+            if other_ent is None:
+                self._fail()
+                return self
+            concept = other_ent.concept_lemma
+        else:
+            candidates = _standalone_target_concepts(self.lex)
+            if where is not None:
+                candidates = [c for c in candidates
+                              if where(self.lex.concepts[c])]
+            if not candidates:
+                self._fail()
+                return self
+            concept = self.rng.choice(candidates)
+        eid = self._unique_id(concept)
+        if not self._add(concept, eid):
+            self._fail()
+            return self
+        self.slots[slot] = eid
+        if not self._place(eid, in_):
+            self._fail()
+        return self
+
+    def vehicle(self, slot, *, in_=None):
+        """Pick a vehicle concept (is_vehicle=yes)."""
+        if self._failed:
+            return self
+        vehicles = [
+            c.lemma for c in self.lex.concepts.values()
+            if "yes" in c.properties.get("is_vehicle", [])
+        ]
+        if not vehicles:
+            self._fail()
+            return self
+        concept = self.rng.choice(vehicles)
+        eid = self._unique_id(concept)
+        if not self._add(concept, eid):
+            self._fail()
+            return self
+        self.slots[slot] = eid
+        if not self._place(eid, in_):
+            self._fail()
+        return self
+
+    def readable(self, slot, *, in_=None):
+        """Pick a readable artifact (readability=legebla)."""
+        if self._failed:
+            return self
+        readables = [
+            c.lemma for c in self.lex.concepts.values()
+            if "legebla" in c.properties.get("readability", [])
+        ]
+        if not readables:
+            self._fail()
+            return self
+        concept = self.rng.choice(readables)
+        eid = self._unique_id(concept)
+        if not self._add(concept, eid):
+            self._fail()
+            return self
+        self.slots[slot] = eid
+        if not self._place(eid, in_):
+            self._fail()
+        return self
+
+    # ---------- relations ----------
+
+    def relation(self, name, *slot_args):
+        """Assert a generic relation between slot-bound entities."""
+        if self._failed:
+            return self
+        args = tuple(self._resolve(s) for s in slot_args)
+        if any(a is None for a in args):
+            self._fail()
+            return self
+        try:
+            self.t.assert_relation(name, args, self.lex)
+        except (KeyError, ValueError):
+            self._fail()
+        return self
+
+    def havi(self, owner_slot, theme_slot):
+        return self.relation("havi", owner_slot, theme_slot)
+
+    def _maybe_place_on(self, person_slot, *, probability, attribute):
+        """Shared core for maybe_seat / maybe_recline. Picks a concept
+        whose properties carry `attribute=yes`, materializes it at the
+        person's location, and asserts sur(person, concept). Skips if
+        the person is already `sur` something — the seat/recline calls
+        can be stacked in any order; only the first to fire takes."""
+        if self._failed:
+            return self
+        if self.rng.random() >= probability:
+            return self
+        person_eid = self._resolve(person_slot)
+        if person_eid is None:
+            return self
+        # Skip if actor is already on something (so adjacent
+        # maybe_seat / maybe_recline calls don't double-place).
+        if any(r.relation == "sur" and len(r.args) == 2
+                and r.args[0] == person_eid
+                for r in self.t.relations):
+            return self
+        person_loc = None
+        for r in self.t.relations:
+            if (r.relation == "en" and len(r.args) == 2
+                    and r.args[0] == person_eid):
+                person_loc = r.args[1]
+                break
+        if person_loc is None:
+            return self
+        candidates = [
+            c.lemma for c in self.lex.concepts.values()
+            if "yes" in c.properties.get(attribute, [])
+        ]
+        if not candidates:
+            return self
+        concept = self.rng.choice(candidates)
+        eid = self._unique_id(concept)
+        if not self._add(concept, eid):
+            return self
+        if not self._place(eid, person_loc):
+            return self
+        try:
+            self.t.assert_relation("sur", (person_eid, eid), self.lex)
+        except (KeyError, ValueError):
+            self._fail()
+        return self
+
+    def maybe_seat(self, person_slot, *, probability=0.25):
+        """With `probability`, place a sittable artifact at the person's
+        location and assert sur(person, sittable). The runtime posture
+        derivation then sets the person to sidanta — the planner's
+        locomotion needs to insert `stari`, but with narrative motivation
+        ("she got up from the chair") rather than the unprovenanced
+        `vekiĝi → stari` opening."""
+        return self._maybe_place_on(
+            person_slot, probability=probability, attribute="sittable")
+
+    def maybe_recline(self, person_slot, *, probability=0.10):
+        """With `probability`, place a lieable artifact (lito, sofo,
+        kuseno) and assert sur(person, lieable). The lying-derivation
+        sets posture=kuŝanta + sleep_state=dormanta, motivating the
+        `vekiĝi → stari` opening as a person waking from bed and
+        getting up before walking. Probability lower than seating
+        because lying-down framings should be uncommon."""
+        return self._maybe_place_on(
+            person_slot, probability=probability, attribute="lieable")
+
+    def konas(self, knower_slot, fakto_slot):
+        return self.relation("konas", knower_slot, fakto_slot)
+
+    def priskribas(self, text_slot, fakto_slot):
+        return self.relation("priskribas", text_slot, fakto_slot)
+
+    def fakto(self, slot, *, about):
+        """Pre-create a fakto entity. `about=(relation, target_slot,
+        location_slot)` makes the id mirror what `vidi_learns_en` would
+        synthesize, so the planner finds it by id rather than creating
+        a duplicate."""
+        if self._failed:
+            return self
+        rel_name, target_slot, loc_slot = about
+        target_eid = self._resolve(target_slot)
+        loc_eid = self._resolve(loc_slot)
+        if target_eid is None or loc_eid is None:
+            self._fail()
+            return self
+        fakto_concept = self.lex.concepts.get("fakto")
+        if fakto_concept is None:
+            self._fail()
+            return self
+        fakto_id = f"fakto_from_{rel_name}_{target_eid}_{loc_eid}"
+        if fakto_id not in self.t.entities:
+            from esperanto_lm.ontology.causal import EntityInstance
+            self.t.entities[fakto_id] = EntityInstance(
+                id=fakto_id, concept_lemma="fakto",
+                entity_type=fakto_concept.entity_type,
+                properties={"pri_relacio": [rel_name]},
+            )
+            try:
+                self.t.assert_relation(
+                    "subjekto", (fakto_id, target_eid), self.lex)
+                self.t.assert_relation(
+                    "objekto", (fakto_id, loc_eid), self.lex)
+            except (KeyError, ValueError):
+                self._fail()
+                return self
+        self.slots[slot] = fakto_id
+        return self
+
+    # ---------- drive + finalization ----------
+
+    def drive(self, kind, **slots):
+        """Build the drive tuple. Kwarg values are slot names that get
+        resolved to entity ids; literal strings (e.g. a slot name)
+        are looked up in `self.slots`."""
+        if self._failed:
+            return self
+        resolved = {}
+        for k, v in slots.items():
+            r = self._resolve(v)
+            if r is None:
+                self._fail()
+                return self
+            resolved[k] = r
+        if kind == "knowledge":
+            self._drive = (
+                "knowledge", resolved["actor"],
+                resolved["knower"], resolved["fakto"])
+        elif kind == "location":
+            self._drive = ("location", resolved["actor"], resolved["loc"])
+        elif kind == "possession":
+            self._drive = ("possession", resolved["actor"], resolved["item"])
+        elif kind == "wearing":
+            self._drive = (
+                "wearing", resolved["actor"], resolved["garment"])
+        elif kind == "count":
+            # `concept` may be a slot name (in which case we resolve
+            # to the bound entity's concept_lemma) OR a literal
+            # concept lemma string. `target` is the integer count goal.
+            actor_eid = resolved["actor"]
+            concept_arg = slots["concept"]
+            if concept_arg in self.slots:
+                eid = self.slots[concept_arg]
+                ent = self.t.entities.get(eid)
+                if ent is None:
+                    self._fail()
+                    return self
+                concept_lemma = ent.concept_lemma
+            else:
+                concept_lemma = concept_arg
+            try:
+                tgt = int(slots["target"])
+            except (TypeError, ValueError):
+                self._fail()
+                return self
+            self._drive = (
+                "count", actor_eid, concept_lemma, tgt)
+        elif kind == "give_count":
+            # Altruism count: planner-actor (donor) plans to bring
+            # recipient's count of `concept` to `target`. Surfaces doni
+            # via the planner's altruism preference; partial transfer
+            # kicks in when donor's stash > target.
+            donor_eid = resolved["donor"]
+            recipient_eid = resolved["recipient"]
+            concept_arg = slots["concept"]
+            if concept_arg in self.slots:
+                eid = self.slots[concept_arg]
+                ent = self.t.entities.get(eid)
+                if ent is None:
+                    self._fail()
+                    return self
+                concept_lemma = ent.concept_lemma
+            else:
+                concept_lemma = concept_arg
+            try:
+                tgt = int(slots["target"])
+            except (TypeError, ValueError):
+                self._fail()
+                return self
+            self._drive = (
+                "give_count", donor_eid, recipient_eid,
+                concept_lemma, tgt)
+        elif kind == "more_than":
+            # Comparative count: actor wants strictly more units of
+            # `concept` than `reference` has. Target resolves at plan
+            # time to count_owned(reference) + 1.
+            actor_eid = resolved["actor"]
+            reference_eid = resolved["reference"]
+            concept_arg = slots["concept"]
+            if concept_arg in self.slots:
+                eid = self.slots[concept_arg]
+                ent = self.t.entities.get(eid)
+                if ent is None:
+                    self._fail()
+                    return self
+                concept_lemma = ent.concept_lemma
+            else:
+                concept_lemma = concept_arg
+            self._drive = (
+                "more_than", actor_eid, concept_lemma, reference_eid)
+        elif kind == "self_slot":
+            self._drive = (
+                "self_slot", resolved["actor"],
+                resolved["slot"], resolved["value"])
+        elif kind == "entity_slot":
+            self._drive = (
+                "entity_slot", resolved["actor"], resolved["target"],
+                resolved["slot"], resolved["value"])
+        else:
+            self._fail()
+        return self
+
+    def set(self, slot_name, **props):
+        """Set scene-init property values on a placed entity. Useful
+        for forcing a varies=true slot (e.g. agent.thirst=soifa)."""
+        if self._failed:
+            return self
+        eid = self._resolve(slot_name)
+        ent = self.t.entities.get(eid) if eid else None
+        if ent is None:
+            self._fail()
+            return self
+        for prop, val in props.items():
+            ent.set_property(prop, val)
+        return self
+
+    def build(self):
+        if self._failed or self._scene_slot is None or self._drive is None:
+            return None
+        scene_id = self.slots.get(self._scene_slot)
+        if scene_id is None:
+            return None
+        if self._auto_pose:
+            self._apply_auto_pose()
+        return self.t, scene_id, self._drive
+
+    def no_auto_pose(self):
+        """Disable the build-time pass that randomly seats/reclines
+        persons in the scene. Useful for tests or seeders where exact
+        posture/sleep_state matters."""
+        self._auto_pose = False
+        return self
+
+    def _apply_auto_pose(self):
+        """Composable scene enrichment: for each person in the scene,
+        roll once for an `sur` placement on a sittable or lieable
+        artifact. Probabilities are low (most persons stay standing)
+        so locomotion chains usually don't pay the `stari` cost; when
+        they do, the prior `sur` gives the rendered scene narrative
+        motivation. No-op for persons who already have an `sur`
+        relation (e.g. an explicit `.maybe_seat()` already fired)."""
+        person_slots = [
+            slot for slot, eid in self.slots.items()
+            if (ent := self.t.entities.get(eid)) is not None
+            and self.lex.types.is_subtype(ent.entity_type, "person")
+        ]
+        for slot in person_slots:
+            # Per-person rolls. Recline is rarer than seat — lying
+            # down + asleep is a stronger framing.
+            self.maybe_recline(slot, probability=0.08)
+            self.maybe_seat(slot, probability=0.20)
+
+
+def scene(lex, rng) -> SceneBuilder:
+    """Start a regression scene. See `SceneBuilder`."""
+    return SceneBuilder(lex, rng)
+
+
+# ----------------------- scene seeders ------------------------------
 
 
 def regress_for_verb(verb_name, lex, rng):
@@ -3272,8 +4045,14 @@ def regress_for_verb(verb_name, lex, rng):
             # Effect target must declare the effect slot — otherwise
             # set_property writes a slot the concept doesn't claim and
             # nothing in the engine will treat it as state to flip.
-            candidates = [c for c in candidates
-                          if eff.property in lex.concepts[c].properties]
+            # Pervasive slots (hunger, wetness, ...) skip this check:
+            # their default-derivation makes the slot meaningful for
+            # every concept of the slot's applies_to type.
+            slot_def = lex.slots.get(eff.property)
+            if slot_def is None or not getattr(
+                    slot_def, "pervasive", False):
+                candidates = [c for c in candidates
+                              if eff.property in lex.concepts[c].properties]
             # Soft bias toward candidates that trigger a conditional
             # precondition: gate-able candidates collectively get ~half
             # the probability mass, the rest split the other half.
@@ -3465,6 +4244,10 @@ def _concept_satisfies_role_props(concept, role, lex) -> bool:
             continue
         cvals = concept.properties.get(slot, [])
         if slot_def.varies:
+            # Pervasive slots are always meaningful via default-derivation;
+            # opt-in slots require concept-level declaration.
+            if getattr(slot_def, "pervasive", False):
+                continue
             if not cvals:
                 return False
             continue
@@ -3712,7 +4495,9 @@ def _ensure_property_satisfiable(target_eid, slot, value, t, lex, rng,
                             slot_d = lex.slots.get(k)
                             cvals = concept.properties.get(k, [])
                             if slot_d is not None and slot_d.varies:
-                                if not cvals:
+                                if getattr(slot_d, "pervasive", False):
+                                    pass  # type alone suffices
+                                elif not cvals:
                                     match = False
                                     break
                             else:
@@ -3837,6 +4622,26 @@ def _seed_chain_dependencies(t, action, role_eids: dict, scene_id: str,
                 away_id=away_id, seen=seen)
 
 
+def _standalone_target_concepts(lex):
+    """Concepts eligible to be standalone fakto-targets in regression
+    scenes: physical, non-person, non-location, NOT a category stub
+    (meblo, lignaĵo, …), AND not appearing as some other concept's
+    part. The parts filter excludes body parts (haro, dento, fingro,
+    brako, …) which would otherwise produce incoherent prose like
+    'Dorso estis en salono'."""
+    parts_of_something = {
+        p.concept for c in lex.concepts.values() for p in (c.parts or [])
+    }
+    return [
+        c.lemma for c in lex.concepts.values()
+        if lex.types.is_subtype(c.entity_type, "physical")
+        and c.entity_type != "person"
+        and not lex.types.is_subtype(c.entity_type, "location")
+        and c.lemma not in parts_of_something
+        and not getattr(c, "is_category_stub", False)
+    ]
+
+
 def sample_regression_scene(lex, rng, *, rules=None):
     """Pick a verb uniformly from the lexicon-derived eligible pool and
     regress a scene for it. Retries up to a few times if a verb's
@@ -3871,6 +4676,82 @@ def sample_regression_scene(lex, rng, *, rules=None):
             result = regress_for_vehicle(lex, rng)
             if result is not None:
                 return result
+        # peti/preni/kapti chains for object acquisition. Standard
+        # regress_for_konas_verb scenes never assert havi, so peti
+        # has nothing to ask for; this seeder fills the gap.
+        if rng.random() < 0.12:
+            result = regress_for_peti(lex, rng)
+            if result is not None:
+                return result
+        # thirst/hunger-driven scenes: cascade verbs (sensoifiĝi,
+        # satiĝi) have no agent role so regress_for_verb can't seed
+        # them. Drive via self_slot directly.
+        if rng.random() < 0.10:
+            result = regress_for_thirst(lex, rng)
+            if result is not None:
+                return result
+        if rng.random() < 0.10:
+            result = regress_for_hunger(lex, rng)
+            if result is not None:
+                return result
+        # Clothing chains: surmeti / demeti. Drive: actor wants to
+        # be wearing a specific garment located elsewhere.
+        if rng.random() < 0.08:
+            result = regress_for_clothing(lex, rng)
+            if result is not None:
+                return result
+        # Stimulus-response: rain in scene → fetch umbrella. Targets
+        # the probe gap on `Pluvis, do li alportis ___`.
+        if rng.random() < 0.06:
+            result = regress_for_rain_umbrella(lex, rng)
+            if result is not None:
+                return result
+        # Stimulus-response: dark room → activate lampo.
+        if rng.random() < 0.05:
+            result = regress_for_dark_lampo(lex, rng)
+            if result is not None:
+                return result
+        # Stimulus-response: wet object → fetch tuko + sekigi.
+        if rng.random() < 0.05:
+            result = regress_for_wet_sekigi(lex, rng)
+            if result is not None:
+                return result
+        # Stimulus-response: dirty object → fetch purigilo + purigi.
+        if rng.random() < 0.05:
+            result = regress_for_dirty_purigi(lex, rng)
+            if result is not None:
+                return result
+        # Count-target chains: actor wants N units of a stack.
+        # Forces preni or peti from a stack-owner.
+        if rng.random() < 0.08:
+            result = regress_for_count(lex, rng)
+            if result is not None:
+                return result
+        # Generosity count chain: donor gives the recipient N units.
+        # Surfaces doni with quantity-aware partial transfer.
+        if rng.random() < 0.06:
+            result = regress_for_give_count(lex, rng)
+            if result is not None:
+                return result
+        # Comparative count: actor wants strictly more units than a
+        # reference person has. Target resolves to ref.count + 1 at
+        # plan time.
+        if rng.random() < 0.06:
+            result = regress_for_more_than(lex, rng)
+            if result is not None:
+                return result
+        # Buy: buyer with money, seller with goods elsewhere. Same
+        # count drive, but money in scope unlocks aĉeti.
+        if rng.random() < 0.06:
+            result = regress_for_buy(lex, rng)
+            if result is not None:
+                return result
+        # Sell: seller with goods, buyer with money elsewhere. Uses
+        # give_count drive to surface vendi via altruism path.
+        if rng.random() < 0.06:
+            result = regress_for_sell(lex, rng)
+            if result is not None:
+                return result
         verb = rng.choice(pool)
         if verb == "demandi":
             result = regress_for_demandi(lex, rng)
@@ -3886,214 +4767,38 @@ def sample_regression_scene(lex, rng, *, rules=None):
 
 
 def regress_for_demandi(lex, rng):
-    """Build a scene where the actor wants to know a fakto and a
-    knower (already konas-asserted) is the natural source. Drive is
-    `("knowledge", actor, actor, fakto)` — the planner picks demandi
-    when there's a viable recipient who knows; falls back to vidi
-    otherwise. Pre-asserting konas(knower, fakto) lets demandi clear
-    its precondition without needing the knower to chain through
-    vidi themselves.
-
-    Target entity is placed in a different location AND not in the
-    actor's scene, so vidi(actor, target) would require iri while
-    demandi only needs samloke with the knower (often shorter).
-    Together with a forced agent-recipient gap, the planner usually
-    produces an `iri → demandi` chain."""
-    from esperanto_lm.ontology.sampler import _add_entity_randomized
-    from esperanto_lm.ontology.causal import EntityInstance
-
-    locations = [l for l, c in lex.concepts.items()
-                 if lex.types.is_subtype(c.entity_type, "location")]
-    if not locations:
-        return None
-    scene_lemma = rng.choice(locations)
-    away_pool = [l for l in locations if l != scene_lemma]
-    away_lemma = rng.choice(away_pool) if away_pool else scene_lemma
-
-    t = Trace()
-    try:
-        _add_entity_randomized(t, scene_lemma, lex, rng,
-                                entity_id=scene_lemma)
-        if away_lemma != scene_lemma:
-            _add_entity_randomized(t, away_lemma, lex, rng,
-                                    entity_id=away_lemma)
-    except (KeyError, ValueError):
-        return None
-    scene_id = scene_lemma
-
-    persons = [c.lemma for c in lex.concepts.values()
-               if c.entity_type == "person"]
-    if len(persons) < 2:
-        return None
-    actor_concept = rng.choice(persons)
-    knower_concept = rng.choice([p for p in persons if p != actor_concept])
-    name_pool = rng.sample(PERSON_NAMES, 2)
-    actor_eid, knower_eid = name_pool[0], name_pool[1]
-    try:
-        _add_entity_randomized(t, actor_concept, lex, rng,
-                                entity_id=actor_eid)
-        _add_entity_randomized(t, knower_concept, lex, rng,
-                                entity_id=knower_eid)
-    except (KeyError, ValueError):
-        return None
-    # Knower starts in away_lemma so the planner needs iri to reach
-    # them — surfaces "go to ask" chains rather than zero-step demandi.
-    try:
-        t.assert_relation("en", (actor_eid, scene_id), lex)
-        t.assert_relation("en", (knower_eid, away_lemma), lex)
-    except (KeyError, ValueError):
-        return None
-
-    # Pick a target entity (the fakto's subjekto) and place it
-    # arbitrarily — it won't be used by demandi planning, just exists
-    # so the fakto has a coherent referent.
-    physical_concepts = [
-        c.lemma for c in lex.concepts.values()
-        if lex.types.is_subtype(c.entity_type, "physical")
-        and c.entity_type != "person"
-        and not lex.types.is_subtype(c.entity_type, "location")
-    ]
-    if not physical_concepts:
-        return None
-    target_concept = rng.choice(physical_concepts)
-    target_eid = target_concept
-    suffix = 0
-    while target_eid in t.entities:
-        suffix += 1
-        target_eid = f"{target_concept}_{suffix}"
-    target_loc = away_lemma
-    try:
-        _add_entity_randomized(t, target_concept, lex, rng,
-                                entity_id=target_eid)
-        t.assert_relation("en", (target_eid, target_loc), lex)
-    except (KeyError, ValueError):
-        return None
-
-    fakto_concept = lex.concepts.get("fakto")
-    if fakto_concept is None:
-        return None
-    fakto_id = f"fakto_from_en_{target_eid}_{target_loc}"
-    if fakto_id not in t.entities:
-        t.entities[fakto_id] = EntityInstance(
-            id=fakto_id, concept_lemma="fakto",
-            entity_type=fakto_concept.entity_type,
-            properties={"pri_relacio": ["en"]},
-        )
-        try:
-            t.assert_relation("subjekto", (fakto_id, target_eid), lex)
-            t.assert_relation("objekto", (fakto_id, target_loc), lex)
-        except (KeyError, ValueError):
-            return None
-    # Pre-assert that the knower already konas the fakto, so demandi's
-    # precondition `konas(recipient, theme)` is satisfied without
-    # needing the knower to vidi the target themselves.
-    try:
-        t.assert_relation("konas", (knower_eid, fakto_id), lex)
-    except (KeyError, ValueError):
-        return None
-
-    drive = ("knowledge", actor_eid, actor_eid, fakto_id)
-    return t, scene_id, drive
+    """Actor wants to know a fakto; a knower (pre-konas-asserted) sits
+    in a different location. Drive is `("knowledge", actor, actor,
+    fakto)` — planner picks demandi when there's a viable recipient
+    who knows, falls back to vidi otherwise. The forced actor/knower
+    location gap surfaces `iri → demandi` chains."""
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("actor", in_="here")
+        .person("knower", in_="there")
+        .target("item", in_="there")
+        .fakto("fact", about=("en", "item", "there"))
+        .konas("knower", "fact")
+        .drive("knowledge", actor="actor", knower="actor", fakto="fact")
+        .build())
 
 
 def regress_for_vehicle(lex, rng):
-    """Person actor + vehicle scene, location drive. veturi never
-    surfaces from the verb pool (no effects → not in prop_pool, no
-    konas → not in konas_pool, animal-only movement seeder excludes
-    persons → no person-actor location drives anywhere). This seeder
-    closes the gap.
-
-    Motorized vehicles (aŭto/trajno/ŝipo) start with motoro.power_state
-    =neaktiva, so the planner naturally chains ŝalti(motoro) before
-    veturi via the if_property precondition. Biciklo bypasses the
-    chain — surfaces shorter veturi-only plans for variety."""
-    from esperanto_lm.ontology.sampler import _add_entity_randomized
-
-    vehicles = [
-        c.lemma for c in lex.concepts.values()
-        if "yes" in c.properties.get("is_vehicle", [])
-    ]
-    if not vehicles:
-        return None
-
-    # Group locations by which terrain affordance their declared
-    # parts produce. Filters scenes/destinations to the vehicle's
-    # habitat — keeps the planner from generating "trajno en
-    # salono" or "ŝipo al kuirejo". MatchPrecondition (deferred) will
-    # enforce the same constraint at the planner level; for now this
-    # seeder bias plus the existing role.properties machinery is
-    # enough to clean up the prose.
-    def _locations_with_part(part_concept):
-        return [l for l, c in lex.concepts.items()
-                if lex.types.is_subtype(c.entity_type, "location")
-                and any(p.concept == part_concept for p in c.parts)]
-    terrain_to_locs = {
-        "land": _locations_with_part("vojo"),
-        "rail": _locations_with_part("relo"),
-        "water": [l for l, c in lex.concepts.items()
-                  if lex.types.is_subtype(c.entity_type, "location")
-                  and any(p.concept == "akvo" for p in c.parts)],
-        "air": [l for l, c in lex.concepts.items()
-                if lex.types.is_subtype(c.entity_type, "location")
-                and "ekstera" in c.properties.get("indoor_outdoor", [])],
-    }
-
-    # Pick vehicle first, then constrain locations to its habitat.
-    vehicle_concept = rng.choice(vehicles)
-    veh_terrain = (lex.concepts[vehicle_concept]
-                   .properties.get("terrain", []))
-    compatible_locs: list[str] = []
-    for terr in veh_terrain:
-        compatible_locs.extend(terrain_to_locs.get(terr, []))
-    # Vehicles without a terrain tag (none currently, but defensive)
-    # fall back to any location.
-    if not compatible_locs:
-        compatible_locs = [
-            l for l, c in lex.concepts.items()
-            if lex.types.is_subtype(c.entity_type, "location")]
-    compatible_locs = list(set(compatible_locs))
-    if len(compatible_locs) < 2:
-        return None
-    scene_lemma = rng.choice(compatible_locs)
-    away_lemma = rng.choice([l for l in compatible_locs if l != scene_lemma])
-
-    t = Trace()
-    try:
-        _add_entity_randomized(t, scene_lemma, lex, rng,
-                                entity_id=scene_lemma)
-        _add_entity_randomized(t, away_lemma, lex, rng,
-                                entity_id=away_lemma)
-    except (KeyError, ValueError):
-        return None
-    scene_id = scene_lemma
-
-    persons = [c.lemma for c in lex.concepts.values()
-               if c.entity_type == "person"]
-    if not persons:
-        return None
-    actor_concept = rng.choice(persons)
-    actor_eid = rng.choice(PERSON_NAMES)
-    try:
-        _add_entity_randomized(t, actor_concept, lex, rng,
-                                entity_id=actor_eid)
-        t.assert_relation("en", (actor_eid, scene_id), lex)
-    except (KeyError, ValueError):
-        return None
-
-    vehicle_eid = vehicle_concept
-    suffix = 0
-    while vehicle_eid in t.entities:
-        suffix += 1
-        vehicle_eid = f"{vehicle_concept}_{suffix}"
-    try:
-        _add_entity_randomized(t, vehicle_concept, lex, rng,
-                                entity_id=vehicle_eid)
-        t.assert_relation("en", (vehicle_eid, scene_id), lex)
-    except (KeyError, ValueError):
-        return None
-
-    drive = ("location", actor_eid, away_lemma)
-    return t, scene_id, drive
+    """Person actor + vehicle in scene, location drive. veturi never
+    surfaces from the verb pool (no effects, no konas, animal-only
+    movement seeder excludes persons), so this seeder closes the gap.
+    Motorized vehicles bring motoro.power_state=neaktiva so the
+    planner naturally chains ŝalti before veturi."""
+    return (scene(lex, rng)
+        .vehicle("car")
+        .location("here", is_scene=True, terrain_compatible_with="car")
+        .location("there", different_from="here",
+                  terrain_compatible_with="car")
+        .relation("en", "car", "here")
+        .person("actor", in_="here")
+        .drive("location", actor="actor", loc="there")
+        .build())
 
 
 def regress_for_movement(lex, rng):
@@ -4102,275 +4807,390 @@ def regress_for_movement(lex, rng):
     and property-effect seeders never reach because those pick
     persons (for konas) or pick the actor implicitly via a verb's
     role pool (which is usually any-animate but skewed to persons
-    by sheer concept count).
+    by sheer concept count)."""
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .animal("actor", in_="here")
+        .drive("location", actor="actor", loc="there")
+        .build())
 
-    No locomotion-aware destination filtering: the planner will
-    drop the candidate verb when its role.properties don't match
-    the actor (e.g. naĝi requires destination=likva). If no plan
-    can be built, the outer loop retries with a different verb."""
-    from esperanto_lm.ontology.sampler import _add_entity_randomized
 
-    animals = [
-        c.lemma for c in lex.concepts.values()
-        if lex.types.is_subtype(c.entity_type, "animate")
-        and not lex.types.is_subtype(c.entity_type, "person")
-    ]
-    if not animals:
+def regress_for_peti(lex, rng):
+    """Actor in one location; owner + edible target in another. Drive:
+    actor wants to have the target. The planner has to chain
+    locomotion before peti / preni / kapti can fire. Without this
+    seeder, peti's `havi(recipient, theme)` precondition never
+    matches in standard konas scenes."""
+    edible_solid = lambda c: (
+        "manĝebla" in c.properties.get("edibility", [])
+        and "solida" in c.properties.get("state_of_matter", []))
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("actor", in_="here")
+        .person("owner", in_="there")
+        .target("item", in_="there", where=edible_solid)
+        .havi("owner", "item")
+        .drive("possession", actor="actor", item="item")
+        .build())
+
+
+def regress_for_count(lex, rng):
+    """Place actor in scene with one or two stacks of a countable food
+    elsewhere — sometimes a single surplus stack (5 apples for a
+    target of 3), sometimes two stacks split across two owners that
+    must both be acquired to reach the target. Drive: actor wants
+    target_count units; planner loops over sources via preni/peti.
+
+    Three setup variants for variety:
+      A. Single source with exactly target_count.
+      B. Single source with count > target_count (surplus).
+      C. Two sources owned by different persons, each with a partial
+         count, summing to >= target_count."""
+    countable_food = lambda c: (
+        "manĝebla" in c.properties.get("edibility", [])
+        and "1" in c.properties.get("count", []))
+    target = rng.choice([2, 3, 4, 5])
+    surplus = rng.random() < 0.50    # 50% exact, 50% surplus
+    stash_count = (target + rng.randint(1, 3)) if surplus else target
+
+    builder = (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("actor", in_="here")
+        .person("owner", in_="there")
+        .target("stash", in_="there", where=countable_food)
+        .havi("owner", "stash")
+        .set("stash", count=str(stash_count)))
+
+    # Two-source split (acquire from two owners) was prototyped but
+    # caused planner blowups (>60s per scene) — the second
+    # acquisition's plan_to_establish_relation call from a post-first-
+    # acquisition state is much more expensive than from scratch.
+    # Surplus alone gives the user the "more than needed" variety
+    # without the planner cost.
+
+    return (builder
+        .drive("count", actor="actor", concept="stash", target=target)
+        .build())
+
+
+def regress_for_give_count(lex, rng):
+    """Generosity scene: donor in scene with a stash; recipient
+    elsewhere. Drive: recipient should have target_count units.
+    Planner picks doni — donor is the planner-actor and binds to
+    agent; recipient receives. Surplus stashes (count > target)
+    surface partial transfer ("Maria donis du el siaj kvin pomoj
+    al Petro")."""
+    countable_food = lambda c: (
+        "manĝebla" in c.properties.get("edibility", [])
+        and "1" in c.properties.get("count", []))
+    target = rng.choice([2, 3, 4, 5])
+    surplus = rng.random() < 0.50
+    stash_count = (target + rng.randint(1, 3)) if surplus else target
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("donor", in_="here")
+        .person("recipient", in_="there")
+        .target("stash", in_="here", where=countable_food)
+        .havi("donor", "stash")
+        .set("stash", count=str(stash_count))
+        .drive("give_count", donor="donor", recipient="recipient",
+               concept="stash", target=target)
+        .build())
+
+
+def regress_for_more_than(lex, rng):
+    """Comparative count: actor wants strictly more units of a
+    concept than `reference` has. Setup: reference already owns a
+    small stash; a third stash sits with a neutral owner elsewhere.
+    Target is computed at plan time (reference.count + 1), so the
+    planner adapts to whatever count the reference happens to hold."""
+    countable_food = lambda c: (
+        "manĝebla" in c.properties.get("edibility", [])
+        and "1" in c.properties.get("count", []))
+    ref_count = rng.choice([1, 2, 3])
+    # Source stash must have at least ref_count + 1 to be reachable.
+    source_count = ref_count + rng.choice([1, 2, 3])
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("actor", in_="here")
+        .person("reference", in_="here")
+        .person("owner", in_="there")
+        .target("source_stash", in_="there", where=countable_food)
+        .havi("owner", "source_stash")
+        .set("source_stash", count=str(source_count))
+        .target("ref_stash", in_="here",
+                same_concept_as="source_stash")
+        .havi("reference", "ref_stash")
+        .set("ref_stash", count=str(ref_count))
+        .drive("more_than", actor="actor", concept="source_stash",
+               reference="reference")
+        .build())
+
+
+def regress_for_buy(lex, rng):
+    """Buyer in scene with money; seller elsewhere with countable goods.
+    Drive: buyer wants `target_count` units of the goods. Planner picks
+    aĉeti naturally (chain-richness weighting prefers verbs with more
+    preconditions — aĉeti needs samloke + havi(seller, goods) + havi
+    (buyer, money), strictly more than preni/peti). 1:1 economy: N
+    money units pay for N goods units."""
+    countable_food = lambda c: (
+        "manĝebla" in c.properties.get("edibility", [])
+        and "1" in c.properties.get("count", []))
+    target = rng.choice([2, 3, 4, 5])
+    surplus = rng.random() < 0.50
+    stash_count = (target + rng.randint(1, 3)) if surplus else target
+    money_count = target + rng.randint(0, 3)
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("buyer", in_="here")
+        .person("seller", in_="there")
+        .target("goods", in_="there", where=countable_food)
+        .havi("seller", "goods")
+        .set("goods", count=str(stash_count))
+        .target("money", in_="here", concept="monero")
+        .havi("buyer", "money")
+        .set("money", count=str(money_count))
+        .drive("count", actor="buyer", concept="goods", target=target)
+        .build())
+
+
+def regress_for_sell(lex, rng):
+    """Seller in scene with countable goods; buyer elsewhere with
+    money. Drive: buyer should end up with `target_count` units of the
+    goods. Planner-actor is the seller (altruism flavor: drive's
+    target_owner is buyer, planner-actor is seller), so vendi —
+    where the seller binds to agent — surfaces over doni/preni."""
+    countable_food = lambda c: (
+        "manĝebla" in c.properties.get("edibility", [])
+        and "1" in c.properties.get("count", []))
+    target = rng.choice([2, 3, 4, 5])
+    surplus = rng.random() < 0.50
+    stash_count = (target + rng.randint(1, 3)) if surplus else target
+    money_count = target + rng.randint(0, 3)
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("seller", in_="here")
+        .person("buyer", in_="there")
+        .target("goods", in_="here", where=countable_food)
+        .havi("seller", "goods")
+        .set("goods", count=str(stash_count))
+        .target("money", in_="there", concept="monero")
+        .havi("buyer", "money")
+        .set("money", count=str(money_count))
+        .drive("give_count", donor="seller", recipient="buyer",
+               concept="goods", target=target)
+        .build())
+
+
+def regress_for_clothing(lex, rng):
+    """Place actor in scene; clothing item in another location.
+    Drive: actor wants vestita(actor, garment). Planner chains
+    locomotion → preni → surmeti."""
+    is_clothing = lambda c: "yes" in c.properties.get("is_clothing", [])
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("actor", in_="here")
+        .target("garment", in_="there", where=is_clothing)
+        .drive("wearing", actor="actor", garment="garment")
+        .build())
+
+
+def regress_for_rain_umbrella(lex, rng):
+    """Stimulus-response: it rains in an outdoor scene, umbrella sits
+    in a sheltered location. Drive: actor wants the umbrella. Targets
+    the probe gap on `Pluvis, do li alportis ___`.
+
+    The seeder injects a `pluvi(location=scene)` event at trace start
+    so the realizer opens with `Pluvis en la X.` (or just `Pluvis.`),
+    then the action chain ending in `prenis la ombrelon` follows. The
+    rain-umbrella adjacency is what teaches the binding.
+
+    Returns None for indoor scenes (pluvi requires outdoor location);
+    the dispatcher retries another seeder."""
+    builder = (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("actor", in_="here")
+        .target("ombrelo", in_="there", concept="ombrelo")
+        .drive("possession", actor="actor", item="ombrelo")
+        .build())
+    if builder is None:
         return None
-
-    locations = [l for l, c in lex.concepts.items()
-                 if lex.types.is_subtype(c.entity_type, "location")]
-    if len(locations) < 2:
+    t, scene_id, drive = builder
+    scene_ent = t.entities.get(scene_id)
+    if scene_ent is None:
         return None
-    scene_lemma = rng.choice(locations)
-    away_lemma = rng.choice([l for l in locations if l != scene_lemma])
-
-    t = Trace()
-    try:
-        _add_entity_randomized(t, scene_lemma, lex, rng,
-                                entity_id=scene_lemma)
-        _add_entity_randomized(t, away_lemma, lex, rng,
-                                entity_id=away_lemma)
-    except (KeyError, ValueError):
+    if "ekstera" not in scene_ent.properties.get("indoor_outdoor", []):
         return None
-    scene_id = scene_lemma
-
-    actor_concept = rng.choice(animals)
-    actor_eid = actor_concept
-    try:
-        _add_entity_randomized(t, actor_concept, lex, rng,
-                                entity_id=actor_eid)
-        t.assert_relation("en", (actor_eid, scene_id), lex)
-    except (KeyError, ValueError):
-        return None
-
-    drive = ("location", actor_eid, away_lemma)
+    pluvi_roles = {"location": scene_id}
+    pluvi_ev = make_event(
+        "pluvi", roles=pluvi_roles,
+        property_changes=effect_changes("pluvi", pluvi_roles, lex))
+    t.events.append(pluvi_ev)
+    t._event_ids.add(pluvi_ev.id)
     return t, scene_id, drive
+
+
+def regress_for_dark_lampo(lex, rng):
+    """Stimulus-response: indoor scene with a switched-off lampo.
+    Drive: actor wants `lampo.power_state=aktiva`. Planner walks to
+    the lampo (or finds it co-located) and ŝaltas it. Indoor only —
+    `indoor_dark_without_active_lamp` derivation makes the room read
+    as malluma until the lamp's on."""
+    builder = (scene(lex, rng)
+        .location("here", is_scene=True)
+        .person("actor", in_="here")
+        .target("lampo", in_="here", concept="lampo")
+        .set("lampo", power_state="neaktiva")
+        .drive("entity_slot", actor="actor", target="lampo",
+               slot="power_state", value="aktiva")
+        .build())
+    if builder is None:
+        return None
+    t, scene_id, drive = builder
+    scene_ent = t.entities.get(scene_id)
+    if scene_ent is None:
+        return None
+    if "interna" not in scene_ent.properties.get("indoor_outdoor", []):
+        return None
+    return t, scene_id, drive
+
+
+def regress_for_wet_sekigi(lex, rng):
+    """Stimulus-response: a wet object in scene with a tuko nearby.
+    Drive: actor wants the wet thing dry. Planner: preni(tuko) →
+    sekigi(theme, instrument=tuko).
+
+    Tool placed in same room as the wet thing because the planner's
+    preserve mechanism doesn't support fetch-and-return — sekigi
+    requires samloke(actor, theme), and walking to fetch the tool in
+    another room would break that. See `_candidate_breaks_preserved`
+    docstring."""
+    physical = (lambda c:
+        lex.types.is_subtype(c.entity_type, "physical")
+        and c.entity_type != "person"
+        and not lex.types.is_subtype(c.entity_type, "location"))
+    builder = (scene(lex, rng)
+        .location("here", is_scene=True)
+        .person("actor", in_="here")
+        .target("wet_thing", in_="here", where=physical)
+        .target("towel", in_="here", concept="tuko")
+        .set("wet_thing", wetness="malseka")
+        .drive("entity_slot", actor="actor", target="wet_thing",
+               slot="wetness", value="seka")
+        .build())
+    return builder
+
+
+def regress_for_dirty_purigi(lex, rng):
+    """Stimulus-response: a dirty object in scene with purigilo nearby.
+    Drive: actor wants the dirty thing clean. Planner:
+    preni(purigilo) → purigi(theme, instrument).
+
+    Tool placed in same room as the dirty thing — see
+    `regress_for_wet_sekigi` for the planner-limitation reason."""
+    physical = (lambda c:
+        lex.types.is_subtype(c.entity_type, "physical")
+        and c.entity_type != "person"
+        and not lex.types.is_subtype(c.entity_type, "location"))
+    builder = (scene(lex, rng)
+        .location("here", is_scene=True)
+        .person("actor", in_="here")
+        .target("dirty_thing", in_="here", where=physical)
+        .target("cleaning_tool", in_="here", concept="purigilo")
+        .set("dirty_thing", cleanliness="malpura")
+        .drive("entity_slot", actor="actor", target="dirty_thing",
+               slot="cleanliness", value="pura")
+        .build())
+    return builder
+
+
+def regress_for_hunger(lex, rng):
+    """Place a hungry actor in scene, edible solid in a different
+    location. Drive: actor wants hunger=sata. Cascade rule
+    `hungry_eats_sated` fires when actor manĝi the food; the planner
+    has to chain locomotion + havi (preni) before manĝi can fire.
+    Mirrors regress_for_thirst — satiĝi has no agent role so
+    regress_for_verb can't seed it directly."""
+    edible_solid = lambda c: (
+        "manĝebla" in c.properties.get("edibility", [])
+        and "solida" in c.properties.get("state_of_matter", []))
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("actor", in_="here")
+        .target("food", in_="there", where=edible_solid)
+        .set("actor", hunger="malsata")
+        .drive("self_slot", actor="actor", slot="hunger", value="sata")
+        .build())
+
+
+def regress_for_thirst(lex, rng):
+    """Place a thirsty actor in scene, drinkable liquid in a different
+    location. Drive: actor wants thirst=satigita. The cascade rule
+    `thirsty_drinks_quenched` fires when actor trinki the liquid; the
+    planner has to chain locomotion + havi (preni) before trinki can
+    fire. Without this seeder, satiĝi-style cascade verbs never get
+    a regression scene because they have no agent role."""
+    edible_liquid = lambda c: (
+        "manĝebla" in c.properties.get("edibility", [])
+        and "likva" in c.properties.get("state_of_matter", []))
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("actor", in_="here")
+        .target("water", in_="there", where=edible_liquid)
+        .set("actor", thirst="soifa")
+        .drive("self_slot", actor="actor", slot="thirst", value="satigita")
+        .build())
 
 
 def regress_for_legi(lex, rng):
-    """Build a scene where the actor wants to know a fakto and a
-    readable artifact (libro / papero) sits in the scene with a
-    pre-asserted `priskribas` link to that fakto. Drive is
-    `("knowledge", actor, actor, fakto)` — the planner picks legi
-    because the text is samloke and the priskribas relation makes
-    legi's rule applicable.
-
-    Mirrors the regress_for_demandi structure: actor placed in scene,
-    target physical entity placed elsewhere, fakto pre-created from
-    (en, target, target_loc), readable text seeded with priskribas →
-    fakto. Iri-to-text isn't needed since the text starts samloke."""
-    from esperanto_lm.ontology.sampler import _add_entity_randomized
-    from esperanto_lm.ontology.causal import EntityInstance
-
-    readables = [
-        c.lemma for c in lex.concepts.values()
-        if "legebla" in c.properties.get("readability", [])
-    ]
-    if not readables:
-        return None
-
-    locations = [l for l, c in lex.concepts.items()
-                 if lex.types.is_subtype(c.entity_type, "location")]
-    if not locations:
-        return None
-    scene_lemma = rng.choice(locations)
-    away_pool = [l for l in locations if l != scene_lemma]
-    away_lemma = rng.choice(away_pool) if away_pool else scene_lemma
-
-    t = Trace()
-    try:
-        _add_entity_randomized(t, scene_lemma, lex, rng,
-                                entity_id=scene_lemma)
-        if away_lemma != scene_lemma:
-            _add_entity_randomized(t, away_lemma, lex, rng,
-                                    entity_id=away_lemma)
-    except (KeyError, ValueError):
-        return None
-    scene_id = scene_lemma
-
-    persons = [c.lemma for c in lex.concepts.values()
-               if c.entity_type == "person"]
-    if not persons:
-        return None
-    actor_concept = rng.choice(persons)
-    actor_eid = rng.choice(PERSON_NAMES)
-    try:
-        _add_entity_randomized(t, actor_concept, lex, rng,
-                                entity_id=actor_eid)
-        t.assert_relation("en", (actor_eid, scene_id), lex)
-    except (KeyError, ValueError):
-        return None
-
-    text_concept = rng.choice(readables)
-    text_eid = text_concept
-    suffix = 0
-    while text_eid in t.entities:
-        suffix += 1
-        text_eid = f"{text_concept}_{suffix}"
-    # Half the time, place the text in `away_lemma` so the planner
-    # has to chain iri → legi (and possibly iri-back → instrui /
-    # rakonti). Same coin-flip pattern the demandi seeder uses to
-    # force locomotion in front of the knowledge verb.
-    text_loc = (away_lemma if (away_lemma != scene_id and rng.random() < 0.5)
-                else scene_id)
-    try:
-        _add_entity_randomized(t, text_concept, lex, rng,
-                                entity_id=text_eid)
-        t.assert_relation("en", (text_eid, text_loc), lex)
-    except (KeyError, ValueError):
-        return None
-
-    physical_concepts = [
-        c.lemma for c in lex.concepts.values()
-        if lex.types.is_subtype(c.entity_type, "physical")
-        and c.entity_type != "person"
-        and not lex.types.is_subtype(c.entity_type, "location")
-    ]
-    if not physical_concepts:
-        return None
-    target_concept = rng.choice(physical_concepts)
-    target_eid = target_concept
-    while target_eid in t.entities:
-        suffix += 1
-        target_eid = f"{target_concept}_{suffix}"
-    target_loc = away_lemma
-    try:
-        _add_entity_randomized(t, target_concept, lex, rng,
-                                entity_id=target_eid)
-        t.assert_relation("en", (target_eid, target_loc), lex)
-    except (KeyError, ValueError):
-        return None
-
-    fakto_concept = lex.concepts.get("fakto")
-    if fakto_concept is None:
-        return None
-    fakto_id = f"fakto_from_en_{target_eid}_{target_loc}"
-    if fakto_id not in t.entities:
-        t.entities[fakto_id] = EntityInstance(
-            id=fakto_id, concept_lemma="fakto",
-            entity_type=fakto_concept.entity_type,
-            properties={"pri_relacio": ["en"]},
-        )
-        try:
-            t.assert_relation("subjekto", (fakto_id, target_eid), lex)
-            t.assert_relation("objekto", (fakto_id, target_loc), lex)
-        except (KeyError, ValueError):
-            return None
-    try:
-        t.assert_relation("priskribas", (text_eid, fakto_id), lex)
-    except (KeyError, ValueError):
-        return None
-
-    drive = ("knowledge", actor_eid, actor_eid, fakto_id)
-    return t, scene_id, drive
+    """Actor wants to know a fakto; a readable artifact (libro / papero)
+    with a pre-asserted `priskribas` → fakto link is in the scene
+    (sometimes elsewhere, forcing iri → legi)."""
+    # Coin-flip: text in scene (samloke, no locomotion) or in away
+    # (forces iri → legi → iri-back → instrui chain).
+    text_loc = "there" if rng.random() < 0.5 else "here"
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("actor", in_="here")
+        .readable("text", in_=text_loc)
+        .target("item", in_="there")
+        .fakto("fact", about=("en", "item", "there"))
+        .priskribas("text", "fact")
+        .drive("knowledge", actor="actor", knower="actor", fakto="fact")
+        .build())
 
 
 def regress_for_konas_verb(verb_name, lex, rng):
     """Build a scene targeting a verb whose rule adds konas. The drive
-    is `("knowledge", actor, knower, fakto_id)` — the planner finds
-    the verb (rakonti or vidi) and chains backward as needed.
-
-    For rakonti specifically: places agent + recipient + a target
-    entity whose location becomes the subject of a pre-created fakto.
-    The agent doesn't initially know the fakto, so the planner
-    subgoals konas(agent, fakto) → vidi → rakonti."""
-    from esperanto_lm.ontology.sampler import _add_entity_randomized
-    from esperanto_lm.ontology.causal import EntityInstance
-    action = lex.actions.get(verb_name)
-    if action is None:
+    is `("knowledge", agent, recipient, fakto)` — the planner picks
+    the konas-adding verb (rakonti, montri, instrui, vidi-then-rakonti,
+    ...) and chains backward as needed. The agent doesn't initially
+    know the fakto, so the planner subgoals konas(agent, fakto) → vidi
+    → ... → konas(recipient, fakto)."""
+    if lex.actions.get(verb_name) is None:
         return None
-
-    locations = [l for l, c in lex.concepts.items()
-                 if lex.types.is_subtype(c.entity_type, "location")]
-    if not locations:
-        return None
-    scene_lemma = rng.choice(locations)
-    away_pool = [l for l in locations if l != scene_lemma]
-    away_lemma = rng.choice(away_pool) if away_pool else scene_lemma
-
-    t = Trace()
-    try:
-        _add_entity_randomized(t, scene_lemma, lex, rng,
-                                entity_id=scene_lemma)
-        if away_lemma != scene_lemma:
-            _add_entity_randomized(t, away_lemma, lex, rng,
-                                    entity_id=away_lemma)
-    except (KeyError, ValueError):
-        return None
-    scene_id = scene_lemma
-
-    # Pick agent + recipient from distinct person concepts.
-    persons = [c.lemma for c in lex.concepts.values()
-               if c.entity_type == "person"]
-    if len(persons) < 2:
-        return None
-    agent_concept = rng.choice(persons)
-    recipient_concept = rng.choice([p for p in persons
-                                     if p != agent_concept])
-    # Reuse PERSON_NAMES so realized prose gets human-styled names
-    # (Petro, Maria, ...) rather than raw concept-prefixed ids.
-    name_pool = rng.sample(PERSON_NAMES, 2)
-    agent_eid, recipient_eid = name_pool[0], name_pool[1]
-    try:
-        _add_entity_randomized(t, agent_concept, lex, rng,
-                                entity_id=agent_eid)
-        _add_entity_randomized(t, recipient_concept, lex, rng,
-                                entity_id=recipient_eid)
-    except (KeyError, ValueError):
-        return None
-    try:
-        t.assert_relation("en", (agent_eid, scene_id), lex)
-        t.assert_relation("en", (recipient_eid, scene_id), lex)
-    except (KeyError, ValueError):
-        return None
-
-    # Pick a target entity whose location becomes the fakto's content.
-    # Prefer placing it in `away_lemma` so the chain includes locomotion.
-    physical_concepts = [
-        c.lemma for c in lex.concepts.values()
-        if lex.types.is_subtype(c.entity_type, "physical")
-        and c.entity_type != "person"
-        and not lex.types.is_subtype(c.entity_type, "location")
-    ]
-    if not physical_concepts:
-        return None
-    target_concept = rng.choice(physical_concepts)
-    target_eid = target_concept
-    suffix = 0
-    while target_eid in t.entities:
-        suffix += 1
-        target_eid = f"{target_concept}_{suffix}"
-    target_loc = away_lemma
-    try:
-        _add_entity_randomized(t, target_concept, lex, rng,
-                                entity_id=target_eid)
-        t.assert_relation("en", (target_eid, target_loc), lex)
-    except (KeyError, ValueError):
-        return None
-
-    # Pre-create the fakto the planner will reference. Mirrors the id
-    # vidi_learns_en would synthesize for (en, target, target_loc),
-    # so the planner's konas-via-vidi back-derivation matches by id
-    # and uses the existing fakto rather than creating a new one.
-    fakto_concept = lex.concepts.get("fakto")
-    if fakto_concept is None:
-        return None
-    fakto_id = f"fakto_from_en_{target_eid}_{target_loc}"
-    if fakto_id not in t.entities:
-        t.entities[fakto_id] = EntityInstance(
-            id=fakto_id, concept_lemma="fakto",
-            entity_type=fakto_concept.entity_type,
-            properties={"pri_relacio": ["en"]},
-        )
-        try:
-            t.assert_relation("subjekto", (fakto_id, target_eid), lex)
-            t.assert_relation("objekto", (fakto_id, target_loc), lex)
-        except (KeyError, ValueError):
-            return None
-
-    drive = ("knowledge", agent_eid, recipient_eid, fakto_id)
-    return t, scene_id, drive
+    return (scene(lex, rng)
+        .location("here", is_scene=True)
+        .location("there", different_from="here")
+        .person("agent", in_="here")
+        .person("recipient", in_="here")
+        .target("item", in_="there")
+        .fakto("fact", about=("en", "item", "there"))
+        .drive("knowledge", actor="agent", knower="recipient", fakto="fact")
+        .build())
 
 
 def run_coverage_regression(lex, rules, derivations, *, n_scenes=50, seed=0,
@@ -4405,10 +5225,8 @@ def run_coverage_regression(lex, rules, derivations, *, n_scenes=50, seed=0,
             idle += 1
             continue
         try:
-            for verb, roles in plan:
-                event = make_event(
-                    verb, roles=roles,
-                    property_changes=effect_changes(verb, roles, lex))
+            for step in plan:
+                event = _step_to_event(step, lex)
                 t.events.append(event)
                 run_dsl(t, rules, derivations, lex)
         except Exception:
@@ -4521,10 +5339,8 @@ def run_coverage(lex, rules, derivations, *, n_scenes=50, seed=0,
             idle += 1
             continue
         try:
-            for verb, roles in plan:
-                event = make_event(
-                    verb, roles=roles,
-                    property_changes=effect_changes(verb, roles, lex))
+            for step in plan:
+                event = _step_to_event(step, lex)
                 t.events.append(event)
                 run_dsl(t, rules, derivations, lex)
         except Exception:
@@ -4881,10 +5697,8 @@ def main():
             if plan is None:
                 print("  -> no plan found")
             else:
-                for verb, roles in plan:
-                    event = make_event(
-                        verb, roles=roles,
-                        property_changes=effect_changes(verb, roles, lex))
+                for step in plan:
+                    event = _step_to_event(step, lex)
                     t.events.append(event)
                     run_dsl(t, rules, derivations, lex)
                 print(f"  -> {len(t.events)} events from explicit plan")

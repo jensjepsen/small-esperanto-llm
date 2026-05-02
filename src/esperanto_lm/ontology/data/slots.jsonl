@@ -1,37 +1,48 @@
-{"name": "fragility", "vocabulary": ["fragila", "fortika"], "applies_to": ["inanimate"], "scalar": true}
-{"name": "integrity", "vocabulary": ["tuta", "tranĉita", "rompita"], "applies_to": ["physical"], "scalar": true}
-{"name": "temperature", "vocabulary": ["malvarma", "varma", "varmega"], "applies_to": ["physical"], "scalar": true, "varies": true}
-{"name": "lock_state", "vocabulary": ["ŝlosita", "malŝlosita"], "applies_to": ["artifact"], "scalar": true, "varies": true}
-{"name": "edibility", "vocabulary": ["manĝebla", "nemanĝebla"], "applies_to": ["physical"], "scalar": true}
+{"name": "fragility", "vocabulary": ["fragila", "fortika"], "applies_to": ["inanimate"], "scalar": true, "adjectival": true, "unmarked": "fortika"}
+{"name": "integrity", "vocabulary": ["tuta", "tranĉita", "rompita"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "unmarked": "tuta"}
+{"name": "temperature", "vocabulary": ["malvarma", "varma", "varmega"], "applies_to": ["physical"], "scalar": true, "varies": true, "pervasive": true, "adjectival": true, "unmarked": "varma"}
+{"name": "lock_state", "vocabulary": ["ŝlosita", "malŝlosita"], "applies_to": ["artifact"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "malŝlosita"}
+{"name": "edibility", "vocabulary": ["manĝebla", "nemanĝebla"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "unmarked": "manĝebla"}
 {"name": "functional_signature", "vocabulary": null, "applies_to": ["artifact"], "scalar": true}
-{"name": "hunger", "vocabulary": ["malsata", "sata"], "applies_to": ["animate"], "scalar": true, "varies": true}
+{"name": "hunger", "vocabulary": ["malsata", "sata"], "applies_to": ["animate"], "scalar": true, "varies": true, "pervasive": true, "adjectival": true, "unmarked": "sata"}
 {"name": "presence", "vocabulary": ["ĉeesta", "manĝita"], "applies_to": ["physical"], "scalar": true}
-{"name": "openness", "vocabulary": ["malfermita", "fermita"], "applies_to": ["physical"], "scalar": true, "varies": true}
-{"name": "water_state", "vocabulary": ["soifa", "akvumita"], "applies_to": ["physical"], "scalar": true, "varies": true}
-{"name": "cleanliness", "vocabulary": ["malpura", "pura"], "applies_to": ["physical"], "scalar": true, "varies": true}
+{"name": "openness", "vocabulary": ["malfermita", "fermita"], "applies_to": ["physical"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "fermita"}
+{"name": "water_state", "vocabulary": ["soifa", "akvumita"], "applies_to": ["physical"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "akvumita"}
+{"name": "cleanliness", "vocabulary": ["malpura", "pura"], "applies_to": ["physical"], "scalar": true, "varies": true, "pervasive": true, "adjectival": true, "unmarked": "pura"}
 {"name": "indoor_outdoor", "vocabulary": ["interna", "ekstera"], "applies_to": ["location"], "scalar": true}
-{"name": "attachment", "vocabulary": ["loza", "fiksita"], "applies_to": ["physical"], "scalar": true, "varies": true}
+{"name": "attachment", "vocabulary": ["loza", "fiksita"], "applies_to": ["physical"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "fiksita"}
 {"name": "state_of_matter", "vocabulary": ["solida", "likva", "gasa"], "applies_to": ["physical"], "scalar": true}
-{"name": "hazard", "vocabulary": ["akra", "glita"], "applies_to": ["inanimate"], "scalar": true}
+{"name": "hazard", "vocabulary": ["akra", "glita"], "applies_to": ["inanimate"], "scalar": true, "adjectival": true}
 {"name": "transforms_on_break", "vocabulary": null, "applies_to": ["inanimate"], "scalar": true}
 {"name": "transforms_on_spill", "vocabulary": null, "applies_to": ["inanimate"], "scalar": true}
-{"name": "flammability", "vocabulary": ["brulebla", "nebrulebla"], "applies_to": ["inanimate"], "scalar": true}
+{"name": "flammability", "vocabulary": ["brulebla", "nebrulebla"], "applies_to": ["inanimate"], "scalar": true, "adjectival": true}
 {"name": "made_of", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
-{"name": "wetness", "vocabulary": ["seka", "malseka"], "applies_to": ["physical"], "scalar": true, "varies": true}
-{"name": "sleep_state", "vocabulary": ["vekita", "dormanta"], "applies_to": ["animate"], "scalar": true, "varies": true}
+{"name": "wetness", "vocabulary": ["seka", "malseka"], "applies_to": ["physical"], "scalar": true, "varies": true, "pervasive": true, "adjectival": true, "unmarked": "seka"}
+{"name": "sleep_state", "vocabulary": ["vekita", "dormanta"], "applies_to": ["animate"], "scalar": true, "pervasive": true, "adjectival": true, "unmarked": "vekita"}
 {"name": "readability", "vocabulary": ["legebla"], "applies_to": ["physical"], "scalar": true}
 {"name": "locomotion", "vocabulary": ["walk", "fly", "swim", "slither"], "applies_to": ["animate"], "scalar": false}
 {"name": "is_vehicle", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
 {"name": "can_use_tools", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
 {"name": "pri_relacio", "vocabulary": null, "applies_to": ["abstract"], "scalar": true}
 {"name": "lock_capable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
-{"name": "posture", "vocabulary": ["staranta", "sidanta", "kuŝanta"], "applies_to": ["animate"], "scalar": true, "varies": true}
+{"name": "posture", "vocabulary": ["staranta", "sidanta", "kuŝanta"], "applies_to": ["animate"], "scalar": true, "pervasive": true, "adjectival": true, "unmarked": "staranta"}
 {"name": "sittable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
-{"name": "power_state", "vocabulary": ["aktiva", "neaktiva"], "applies_to": ["artifact"], "scalar": true, "varies": true}
+{"name": "lieable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
+{"name": "power_state", "vocabulary": ["aktiva", "neaktiva"], "applies_to": ["artifact"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "neaktiva"}
 {"name": "lights_when_on", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
-{"name": "lit_state", "vocabulary": ["luma", "malluma"], "applies_to": ["location"], "scalar": true}
+{"name": "lit_state", "vocabulary": ["luma", "malluma"], "applies_to": ["location"], "scalar": true, "adjectival": true, "unmarked": "luma"}
 {"name": "illuminated", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
 {"name": "motorized", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
 {"name": "in_water", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
 {"name": "water_body", "vocabulary": ["yes"], "applies_to": ["location"], "scalar": true}
 {"name": "terrain", "vocabulary": ["land", "rail", "water", "indoor", "air"], "applies_to": ["physical"], "scalar": false}
+{"name": "can_smell", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
+{"name": "emits_smell", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "can_hear", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
+{"name": "emits_sound", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "vocal_call", "vocabulary": ["bleki", "boji", "miaŭi"], "applies_to": ["animal"], "scalar": false}
+{"name": "thirst", "vocabulary": ["soifa", "satigita"], "applies_to": ["animate"], "scalar": true, "varies": true, "pervasive": true, "adjectival": true, "unmarked": "satigita"}
+{"name": "is_clothing", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
+{"name": "fullness", "vocabulary": ["plena", "malplena"], "applies_to": ["artifact"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "malplena"}
+{"name": "count", "vocabulary": ["1", "2", "3", "4", "5"], "applies_to": ["physical"], "scalar": true, "varies": true}
+{"name": "is_currency", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
