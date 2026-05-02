@@ -364,6 +364,28 @@ def _build_use_recipes(lex: Lexicon) -> list[Recipe]:
 
 _RECIPES_CACHE: dict[int, list[Recipe]] = {}
 
+# Cache: (id(lex), id(rules)) -> recipe names (verb lemmas) whose verb
+# is a no-op — emits an event but writes no state. Computed by
+# introspecting DSL rules + action.effects via `state_modifying_verbs`.
+_NO_OP_RECIPE_NAMES_CACHE: dict[tuple[int, int], frozenset[str]] = {}
+
+
+def _no_op_recipe_names(lex: Lexicon, rules) -> frozenset[str]:
+    """Recipe names (= verb lemmas) for verbs whose firing has no
+    downstream state effect. `use_for_<verb>` recipes always wrap an
+    instrument-deriving verb (which writes state via its intrinsic
+    effects), so they're never in this set."""
+    key = (id(lex), id(rules))
+    cached = _NO_OP_RECIPE_NAMES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from .dsl.introspect import state_modifying_verbs
+    smv = state_modifying_verbs(rules, lex)
+    no_ops = frozenset(
+        a.lemma for a in lex.actions.values() if a.lemma not in smv)
+    _NO_OP_RECIPE_NAMES_CACHE[key] = no_ops
+    return no_ops
+
 
 # Verbs intentionally excluded from the auto-generic recipe pool.
 # Movement verbs (iri/veni/veturi) used to be skipped here because their
@@ -555,6 +577,7 @@ _STRUCTURAL_SURFACES = ["tablo", "breto", "korbo", "sofo"]
 
 def sample_scene(
     lex: Lexicon, rng: random.Random, *, scene: str = "kuirejo",
+    rules=None, drop_no_ops: bool = False,
 ) -> tuple[Trace, SceneInfo]:
     if scene not in lex.concepts:
         raise ValueError(f"unknown scene concept: {scene!r}")
@@ -588,7 +611,11 @@ def sample_scene(
         _ensure_placed(t, lex, idx, scene, s, rng)
 
     # Pick eligible recipe (recipe pool is generated from the lexicon).
-    eligible = [r for r in recipes_for(lex)
+    recipe_pool = recipes_for(lex)
+    if drop_no_ops and rules is not None:
+        no_ops = _no_op_recipe_names(lex, rules)
+        recipe_pool = [r for r in recipe_pool if r.name not in no_ops]
+    eligible = [r for r in recipe_pool
                 if _recipe_eligible(r, t, lex, reachable)]
     if not eligible:
         raise RuntimeError(
@@ -725,6 +752,8 @@ def sample_chained_scene(
     derivations,
     max_events: int = 4,
     chain_p: float = 0.5,
+    drop_no_ops: bool = True,
+    touched_window: int = 3,
 ):
     """Sample a scene + initial event, then iteratively extend with
     sequels.
@@ -754,7 +783,8 @@ def sample_chained_scene(
     """
     from .dsl import run_dsl
 
-    trace, info = sample_scene(lex, rng, scene=scene)
+    trace, info = sample_scene(
+        lex, rng, scene=scene, rules=rules, drop_no_ops=drop_no_ops)
     setup_relations = trace.snapshot_relations()
     seed_event_indices: list[int] = [len(trace.events) - 1]
     run_dsl(trace, rules, derivations, lex)
@@ -762,25 +792,30 @@ def sample_chained_scene(
     idx = resolve_containment(lex)
     reachable = reachable_from(scene, idx, lex) - {scene}
     all_recipes = recipes_for(lex)
+    if drop_no_ops:
+        no_ops = _no_op_recipe_names(lex, rules)
+        all_recipes = [r for r in all_recipes if r.name not in no_ops]
 
     while len(seed_event_indices) < max_events:
         if rng.random() > chain_p:
             break
-        last_seed = trace.events[seed_event_indices[-1]]
-        # Touched = entities the last seed event referenced as roles
-        # AND that still exist in the trace (destroyed entities can't
-        # be reused — entities_at(t) would filter them out anyway).
+        # Touched = entities referenced as roles by any of the last
+        # `touched_window` seed events AND still alive. Window > 1 lets
+        # the chain survive single-role self-destroying verbs (morti,
+        # bruli) by falling back to the protagonist from prior steps.
+        recent = seed_event_indices[-touched_window:]
         touched: set[str] = set()
-        for v in last_seed.roles.values():
-            if not isinstance(v, str):
-                continue
-            ent = trace.entities.get(v)
-            if ent is None:
-                continue
-            if (ent.destroyed_at_event is not None
-                    and ent.destroyed_at_event < len(trace.events)):
-                continue
-            touched.add(v)
+        for ev_idx in recent:
+            for v in trace.events[ev_idx].roles.values():
+                if not isinstance(v, str):
+                    continue
+                ent = trace.entities.get(v)
+                if ent is None:
+                    continue
+                if (ent.destroyed_at_event is not None
+                        and ent.destroyed_at_event < len(trace.events)):
+                    continue
+                touched.add(v)
         if not touched:
             break
 

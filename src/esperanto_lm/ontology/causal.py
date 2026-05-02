@@ -35,6 +35,8 @@ from typing import Any, Iterable, Optional
 
 from .loader import Lexicon
 
+_MISS = object()  # property_at cache sentinel — None is a valid stored value
+
 
 # ----------------------------- entities -----------------------------
 
@@ -184,6 +186,11 @@ class Trace:
     events: list[Event] = field(default_factory=list)
     _event_ids: set[str] = field(default_factory=set)
     _next_entity_id: int = 1
+    # property_at memo, valid only between add_event calls. Engine
+    # fixpoint passes hammer property_at on a stable events list — the
+    # cache turns the inner O(t) walk into O(1) for repeat queries
+    # within a single pass. Profiled at ~9% self-time pre-cache.
+    _property_at_cache: dict = field(default_factory=dict)
 
     def snapshot_relations(self) -> list[RelationAssertion]:
         """Shallow copy of the current relations. Useful before running
@@ -211,6 +218,7 @@ class Trace:
         new.events = list(self.events)
         new._event_ids = set(self._event_ids)
         new._next_entity_id = self._next_entity_id
+        new._property_at_cache = {}
         return new
 
     # ---------- entity helpers ----------
@@ -266,6 +274,8 @@ class Trace:
             return False
         self.events.append(event)
         self._event_ids.add(event.id)
+        if self._property_at_cache:
+            self._property_at_cache.clear()
         return True
 
     # ---------- event-calculus queries (Step 2) ----------
@@ -316,15 +326,25 @@ class Trace:
         if ent.created_at_event is not None and ent.created_at_event >= t:
             return None
 
+        cache_key = (entity_id, prop, t)
+        cache = self._property_at_cache
+        cached = cache.get(cache_key, _MISS)
+        if cached is not _MISS:
+            return cached
+
         key = (entity_id, prop)
         # Walk backward from events[t-1] down to events[0].
         last_idx = min(t, len(self.events)) - 1
         for i in range(last_idx, -1, -1):
             ev = self.events[i]
             if key in ev.property_changes:
-                return ev.property_changes[key]
+                val = ev.property_changes[key]
+                cache[cache_key] = val
+                return val
 
-        return ent.properties.get(prop)
+        val = ent.properties.get(prop)
+        cache[cache_key] = val
+        return val
 
 
 # The imperative `run_to_fixed_point` engine and its `Rule =

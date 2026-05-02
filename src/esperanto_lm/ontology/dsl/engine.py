@@ -42,6 +42,13 @@ from .unifier import (
     DerivedState, MatchContext, enumerate_bindings, resolve,
 )
 
+import os as _os
+
+# Codegen toggle — set ESPLLM_DSL_COMPILE=0 to force the interpreted
+# match path (used for parity testing and bisecting suspected codegen
+# bugs). Read once at import time.
+_DSL_COMPILE_ENABLED = _os.environ.get("ESPLLM_DSL_COMPILE", "1") != "0"
+
 
 # ---------------------------- rules --------------------------------
 
@@ -360,10 +367,16 @@ def _run_derivations_to_fixed_point(
     relative to the naive "re-run everything until stable" loop —
     a derivation whose inputs didn't change can't produce new
     output. Saves ~70% of re-evaluation work on typical scenes."""
+    from .compile import get_compiled_deriv_enum
+
     derived.clear()
     ctx = MatchContext(
         trace=trace, lexicon=lexicon, derived=derived, focus_event=None)
     deps = [_derivation_dependencies(d) for d in derivations]
+    # Pre-resolve compiled enums (or None for fall-back) once per call.
+    compiled_enums = (
+        [get_compiled_deriv_enum(d) for d in derivations]
+        if _DSL_COMPILE_ENABLED else [None] * len(derivations))
     # Iteration 1: evaluate all derivations.
     pending = list(range(len(derivations)))
     for cycle in range(max_subcycles):
@@ -371,7 +384,11 @@ def _run_derivations_to_fixed_point(
         delta_slots: set[str] = set()
         for i in pending:
             d = derivations[i]
-            for bindings in enumerate_bindings(d.when, d.given, ctx):
+            enum_fn = compiled_enums[i]
+            binding_iter = (
+                enum_fn(ctx) if enum_fn is not None
+                else enumerate_bindings(d.when, d.given, ctx))
+            for bindings in binding_iter:
                 for imp in d.implies:
                     if isinstance(imp, PropertyImplication):
                         eid = bindings.get(imp.entity)
@@ -440,11 +457,15 @@ def _run_causal_phase(
 ) -> bool:
     """Fire each rule on each pending event, once per matching binding.
     Returns True if any new event/entity/relation was added."""
+    from .compile import get_compiled_enum
+
     changed = False
     for r in rules:
         # when is an EventPattern (validated at construction). Early-
         # skip on action mismatch to avoid pointless enumeration.
         assert isinstance(r.when, EventPattern)
+        compiled_enum = (
+            get_compiled_enum(r) if _DSL_COMPILE_ENABLED else None)
         for ev in list(trace.events):
             if ev.action != r.when.action:
                 continue
@@ -459,8 +480,13 @@ def _run_causal_phase(
             # Capture each binding by copy at materialization time —
             # BindPattern.apply_to_value uses mutate-and-restore on a
             # shared dict, so a bare `list(...)` would yield N refs to
-            # the same (now-empty) dict.
-            for bindings in [dict(b) for b in enumerate_bindings(r.when, r.given, ctx)]:
+            # the same (now-empty) dict. Compiled enums yield fresh
+            # dicts already; the dict(b) is then redundant but cheap.
+            if compiled_enum is not None:
+                binding_iter = compiled_enum(ev, ctx)
+            else:
+                binding_iter = enumerate_bindings(r.when, r.given, ctx)
+            for bindings in [dict(b) for b in binding_iter]:
                 key = (r.name, ev.id, frozenset(bindings.items()))
                 if key in fired_bindings:
                     continue

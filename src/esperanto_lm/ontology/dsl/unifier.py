@@ -41,11 +41,18 @@ class DerivedState:
     back to derived (see `effective_property` /
     `effective_has_relation` on MatchContext)."""
     properties: dict[tuple[str, str], Any] = field(default_factory=dict)
-    relations: set[tuple[str, tuple[str, ...]]] = field(default_factory=set)
+    # Ordered list of (name, args) — primary store. Insertion order is
+    # stable, len() gives a monotonic version for incremental cache
+    # consumers like `MatchContext.relations_of`. The parallel
+    # `_relation_set` is the O(1) dedup index.
+    relations: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+    _relation_set: set[tuple[str, tuple[str, ...]]] = field(
+        default_factory=set)
 
     def clear(self) -> None:
         self.properties.clear()
         self.relations.clear()
+        self._relation_set.clear()
 
     def get(self, eid: str, slot: str) -> Any:
         return self.properties.get((eid, slot))
@@ -84,13 +91,14 @@ class DerivedState:
     def add_relation(self, name: str, args: tuple[str, ...]) -> bool:
         """Assert a derived relation. Returns True if it's new."""
         key = (name, tuple(args))
-        if key in self.relations:
+        if key in self._relation_set:
             return False
-        self.relations.add(key)
+        self._relation_set.add(key)
+        self.relations.append(key)
         return True
 
     def has_relation(self, name: str, args: tuple[str, ...]) -> bool:
-        return (name, tuple(args)) in self.relations
+        return (name, tuple(args)) in self._relation_set
 
     def snapshot(self) -> dict[tuple[str, str], Any]:
         return dict(self.properties)
@@ -183,22 +191,27 @@ class MatchContext:
 
     def relations_of(self, relation_name: str) -> list:
         """Return [args_tuple] for asserted + derived relations with
-        the given name. Cached, but the cache is invalidated when
-        `derived.relations` grows — derivations chain (e.g. samloke
-        propagates through parts after shared_container fires) and
-        later derivations within the same cycle must see earlier ones'
-        relation outputs."""
-        derived_version = len(self.derived.relations)
-        if (self._relations_by_name_cache is None
-                or getattr(self, "_relations_cache_version", None)
-                != derived_version):
+        the given name. Incrementally maintained: built once with the
+        full asserted+derived state, then appended-to as new derived
+        relations land within the same fixpoint. `derived.relations`
+        is now an ordered list (see `DerivedState`), so we can index
+        the delta by length and avoid the O(N) rebuild on every
+        invalidation. This was the leader at 2.1s self-time before."""
+        target_version = len(self.derived.relations)
+        if self._relations_by_name_cache is None:
             buckets: dict[str, list] = {}
             for r in self.trace.relations:
                 buckets.setdefault(r.relation, []).append(r.args)
             for (name, args) in self.derived.relations:
                 buckets.setdefault(name, []).append(args)
             self._relations_by_name_cache = buckets
-            self._relations_cache_version = derived_version
+            self._relations_cache_version = target_version
+        elif self._relations_cache_version != target_version:
+            buckets = self._relations_by_name_cache
+            for i in range(self._relations_cache_version, target_version):
+                name, args = self.derived.relations[i]
+                buckets.setdefault(name, []).append(args)
+            self._relations_cache_version = target_version
         return self._relations_by_name_cache.get(relation_name, [])
 
 

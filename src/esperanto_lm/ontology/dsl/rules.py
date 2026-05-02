@@ -1939,23 +1939,24 @@ host_samloke_with_part = derive(
 )
 
 samloke_propagates_through_artifact_parts = derive(
-    when=rel("samloke",
-             a=bind(SPTPA := var("A")),
-             b=bind(SPTPB := var("B"))),
+    # Iterate sparse side first: havas_parton (~30 facts) drives
+    # iteration, then narrow to artifact hosts, then look up the
+    # samloke pairs whose `b` is the host. Same closure as the
+    # samloke-driven version (B and P are both bound from havas_parton,
+    # and A from samloke), but cuts the call count by ~10× because
+    # samloke pairs are hundreds in a typical scene.
+    #
+    # Only propagate through artifact hosts. Without this gate,
+    # samloke would cascade across every animate's body parts
+    # (samloke(maria, petro) → samloke(maria, petro_piedo) →
+    # samloke(maria, petro_mano) → ...) — semantically wrong AND
+    # non-terminating.
+    when=rel("havas_parton",
+             tuto=bind(SPTPB := var("B")),
+             parto=bind(SPTPP := var("P"))),
     given=[
-        # Only propagate through artifact hosts. Without this gate,
-        # samloke cascades across every animate's body parts
-        # (samloke(maria, petro) → samloke(maria, petro_piedo) →
-        # samloke(maria, petro_mano) → ...) which doesn't terminate
-        # in reasonable time. Body parts are samloke with their own
-        # host (host_samloke_with_part) but not with arbitrary
-        # observers — which is also more semantically right ("Maria
-        # is in the same place as Petro's hand" is technically true
-        # but not what we mean by samloke for verb planning).
         entity(type="artifact") & bind(SPTPB),
-        rel("havas_parton",
-            tuto=SPTPB,
-            parto=bind(SPTPP := var("P"))),
+        rel("samloke", a=bind(SPTPA := var("A")), b=SPTPB),
     ],
     implies=relation("samloke", SPTPA, SPTPP),
     name="samloke_propagates_through_artifact_parts",
@@ -1966,16 +1967,15 @@ samloke_propagates_through_artifact_parts = derive(
 # (vojo, relo, akvo, pordo) — anyone samloke with the location is
 # samloke with those parts. Without this, malfermi(actor, kuirejo_pordo)
 # can never satisfy its samloke(actor, pordo) precondition, since
-# pordo isn't `en` anything (it's a part).
+# pordo isn't `en` anything (it's a part). Same iteration-flip as
+# the artifact-parts variant — drive off havas_parton, not samloke.
 samloke_propagates_through_location_parts = derive(
-    when=rel("samloke",
-             a=bind(SPLPA := var("A")),
-             b=bind(SPLPB := var("B"))),
+    when=rel("havas_parton",
+             tuto=bind(SPLPB := var("B")),
+             parto=bind(SPLPP := var("P"))),
     given=[
         entity(type="location") & bind(SPLPB),
-        rel("havas_parton",
-            tuto=SPLPB,
-            parto=bind(SPLPP := var("P"))),
+        rel("samloke", a=bind(SPLPA := var("A")), b=SPLPB),
     ],
     implies=relation("samloke", SPLPA, SPLPP),
     name="samloke_propagates_through_location_parts",
