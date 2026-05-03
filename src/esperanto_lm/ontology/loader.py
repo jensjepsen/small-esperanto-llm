@@ -610,7 +610,18 @@ def load_lexicon(
                     raise ValueError(
                         f"containment[{idx}]: set exactly one of "
                         f"'contained' or 'contained_pattern', got both")
-            if "container_pattern" not in d or d["container_pattern"] is None:
+            # Universal slot-overlap requirements (rules that apply
+            # to every (contained, container) pair for a relation,
+            # gated only by the slot_overlap check) skip the
+            # container/contained mandatory presence — the row's
+            # constraint is purely the overlap, not a pattern match.
+            is_universal_overlap = (
+                d.get("required") is True
+                and d.get("slot_overlap")
+                and "container" not in d and "container_pattern" not in d
+                and "contained" not in d and "contained_pattern" not in d)
+            if not is_universal_overlap and (
+                    "container_pattern" not in d or d["container_pattern"] is None):
                 raise ValueError(
                     f"containment[{idx}]: missing container/container_pattern")
             fact = ContainmentFact(**d)
@@ -635,15 +646,29 @@ def _validate_containment_fact(
     spine: TypeSpine,
 ) -> None:
     """Loud-fail validation for one ContainmentFact."""
+    # Universal slot-overlap requirements have no container_pattern
+    # by design — see the loader's `is_universal_overlap` check above.
+    if fact.required and fact.slot_overlap and fact.container_pattern is None:
+        # Validate slot names exist; nothing else to check.
+        for slot in fact.slot_overlap:
+            if slot not in slots:
+                raise ValueError(
+                    f"containment[{index}]: slot_overlap references "
+                    f"unknown slot {slot!r}")
+        return
     pat = fact.container_pattern
     if pat is None:
         raise ValueError(f"containment[{index}]: no container_pattern")
     # At least one pattern field must be set.
     if not any((pat.sense_id, pat.entity_type, pat.suffix,
-                pat.property, pat.contains)):
+                pat.property, pat.contains, pat.category)):
         raise ValueError(
             f"containment[{index}]: container_pattern must set at least one "
-            f"of sense_id/entity_type/suffix/property/contains")
+            f"of sense_id/entity_type/suffix/property/contains/category")
+    if pat.category is not None and pat.category not in concepts:
+        raise ValueError(
+            f"containment[{index}]: pattern.category {pat.category!r} is not "
+            f"a known concept (categories must be authored as concept stubs)")
     if pat.sense_id is not None and pat.sense_id not in concepts:
         raise ValueError(
             f"containment[{index}]: pattern.sense_id {pat.sense_id!r} is not "
@@ -681,10 +706,15 @@ def _validate_containment_fact(
                 f"neither a known concept nor a known entity type")
     if fact.contained_pattern is not None:
         cp = fact.contained_pattern
-        if not any((cp.sense_id, cp.entity_type, cp.suffix, cp.property)):
+        if not any((cp.sense_id, cp.entity_type, cp.suffix,
+                    cp.property, cp.category)):
             raise ValueError(
                 f"containment[{index}]: contained_pattern must set at least "
-                f"one of sense_id/entity_type/suffix/property")
+                f"one of sense_id/entity_type/suffix/property/category")
+        if cp.category is not None and cp.category not in concepts:
+            raise ValueError(
+                f"containment[{index}]: contained_pattern.category "
+                f"{cp.category!r} is not a known concept")
         if cp.sense_id is not None and cp.sense_id not in concepts:
             raise ValueError(
                 f"containment[{index}]: contained_pattern.sense_id "

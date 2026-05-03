@@ -23,8 +23,10 @@ from typing import Callable, Optional
 
 from .causal import Trace, effect_changes, make_event
 from .containment import (
+    containers_for,
     containment_relation_for,
     reachable_from,
+    required_fact_violations,
     resolve_containment,
 )
 from .loader import Lexicon
@@ -432,10 +434,21 @@ def recipes_for(lex: Lexicon) -> list[Recipe]:
 def _ensure_placed(
     trace: Trace, lex: Lexicon, idx, scene: str,
     entity_lemma: str, rng: random.Random,
+    *, _depth: int = 0,
 ) -> None:
     """Add `entity_lemma` to the trace and assert a containment relation
     placing it under some entity already in the trace. Prefers non-scene
-    containers for more specific placement."""
+    containers for more specific placement.
+
+    Lazy-materialization fallback: if no in-scene container fits, look
+    up containment.jsonl for a concept-level container that COULD hold
+    `entity_lemma`, materialize it (recursively `_ensure_placed` for
+    that container), then place the original entity on/in it. This
+    surfaces "butter on a table" and "books on a shelf" placements
+    instead of "butter directly in the kitchen" when no surface was
+    pre-placed by structural-surface seeding. Capped depth to keep
+    chains finite (a container needing a container needing… could
+    cycle in pathological lex setups)."""
     if entity_lemma in trace.entities:
         return
 
@@ -445,8 +458,48 @@ def _ensure_placed(
         if container_ent is None or container_ent.entity_type == "person":
             continue
         rel = containment_relation_for(container_lemma, entity_lemma, idx, lex)
-        if rel is not None:
-            candidates.append((container_lemma, rel))
+        if rel is None:
+            continue
+        # Skip if this placement would violate a required-fact rule
+        # (e.g., liquid in a non-liquid_holder). Requirements are the
+        # restrictive layer that narrows broad affordances.
+        if required_fact_violations(
+                container_ent.concept_lemma, entity_lemma, rel, idx, lex):
+            continue
+        candidates.append((container_lemma, rel))
+
+    # Prefer a more specific container than any room. If no in-scene
+    # candidate is a non-location (i.e., only rooms qualify), look up
+    # containment.jsonl for a non-location container concept that
+    # COULD hold this entity, materialize it (recursively
+    # `_ensure_placed`), then place the original on/in it. Surfaces
+    # "butter on a table" instead of "butter en kuirejo" — and
+    # generalizes to multi-room scenes (prefers materializing a
+    # tablo over picking any sub-room as container).
+    has_non_location = any(
+        lex.concepts[c].entity_type != "location"
+        for c, _ in candidates
+        if c in lex.concepts
+    )
+    if not has_non_location and _depth < 2:
+        reach = reachable_from(scene, idx, lex)
+        in_scene = set(trace.entities.keys())
+        possible = [
+            (c, r) for c, r in containers_for(entity_lemma, idx, lex)
+            if c != scene
+            and c in reach
+            and c not in in_scene
+            and c in lex.concepts
+            and lex.concepts[c].entity_type != "person"
+            and not required_fact_violations(c, entity_lemma, r, idx, lex)
+        ]
+        if possible:
+            container_lemma, rel = rng.choice(possible)
+            _ensure_placed(
+                trace, lex, idx, scene, container_lemma, rng,
+                _depth=_depth + 1)
+            if container_lemma in trace.entities:
+                candidates.append((container_lemma, rel))
 
     if not candidates:
         try:
@@ -456,8 +509,18 @@ def _ensure_placed(
             pass
         return
 
+    # Prefer non-location containers (artifacts like tablo / korbo)
+    # over any room. Falls through to "non-scene location" then "scene"
+    # as last resorts.
+    non_location = [
+        c for c in candidates
+        if c[0] in lex.concepts
+        and lex.concepts[c[0]].entity_type != "location"
+    ]
     non_scene = [c for c in candidates if c[0] != scene]
-    pick = rng.choice(non_scene) if non_scene else rng.choice(candidates)
+    pick = (rng.choice(non_location) if non_location
+            else rng.choice(non_scene) if non_scene
+            else rng.choice(candidates))
     _add_entity_randomized(
         trace, entity_lemma, lex, rng, entity_id=entity_lemma)
     trace.assert_relation(pick[1], (entity_lemma, pick[0]), lex)
@@ -609,6 +672,30 @@ def sample_scene(
     n_struct = rng.randint(0, len(surface_pool))
     for s in rng.sample(surface_pool, n_struct):
         _ensure_placed(t, lex, idx, scene, s, rng)
+
+    # Optional sibling sub-rooms — create a small spatial graph so
+    # multi-room movements and "actor needs to leave the room"
+    # subgoals surface naturally. Matched by indoor/outdoor so we
+    # don't pair kuirejo with lago. Persons stay in the main scene
+    # for now; sub-rooms get populated by the lazy materialization
+    # path when entities need a non-scene container.
+    scene_io = lex.concepts[scene].properties.get("indoor_outdoor", [])
+    if scene_io:
+        sibling_pool = [
+            c for c in lex.concepts
+            if c != scene
+            and lex.concepts[c].entity_type == "location"
+            and not getattr(lex.concepts[c], "is_category_stub", False)
+            and lex.concepts[c].properties.get(
+                "indoor_outdoor", []) == scene_io
+        ]
+        n_sub = rng.choices([0, 1, 2], weights=[2, 3, 1], k=1)[0]
+        for sub in rng.sample(sibling_pool, min(n_sub, len(sibling_pool))):
+            try:
+                t.add_entity(sub, lex, entity_id=sub)
+                t.assert_relation("apud", (sub, scene), lex)
+            except Exception:
+                pass
 
     # Pick eligible recipe (recipe pool is generated from the lexicon).
     recipe_pool = recipes_for(lex)

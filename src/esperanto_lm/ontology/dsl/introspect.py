@@ -1,0 +1,498 @@
+"""Introspect causal rules to recover verb-level classification used
+by the planner and realizer. Avoids hand-curated action-name lists
+that drift as new verbs (aĉeti, vendi, …) get added.
+
+Each helper takes a list of `Rule` and returns a frozenset of action
+lemmas with the property in question. Computed once per rule set.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from .effects import (
+    AddRelation, Change, ConsumeOne, CreateEntity, DestroyEntity, Emit,
+    RemoveRelation, TransferN,
+)
+from .engine import Derivation, Rule
+from .implications import PropertyImplication
+from .patterns import (
+    AndPattern, BindPattern, EntityPattern, EventPattern, NotPattern,
+    OrPattern, Var,
+)
+
+
+def _bind_var_in_pattern(patt) -> Var | None:
+    """First Var bound by a BindPattern reachable from `patt`. Mirrors
+    the planner's helper of the same name; pulled out to keep this
+    module self-contained."""
+    if isinstance(patt, BindPattern):
+        return patt.target
+    if isinstance(patt, AndPattern):
+        return (_bind_var_in_pattern(patt.left)
+                or _bind_var_in_pattern(patt.right))
+    if isinstance(patt, (OrPattern, NotPattern)):
+        return None
+    return None
+
+
+def _role_vars(event_pat: EventPattern) -> dict[str, Var]:
+    """{role_name: Var} for each role pattern that binds a Var."""
+    out: dict[str, Var] = {}
+    for name, patt in event_pat.role_patterns.items():
+        v = _bind_var_in_pattern(patt)
+        if v is not None:
+            out[name] = v
+    return out
+
+
+def _effects(rule: Rule):
+    """Normalize rule.then to an iterable."""
+    return (rule.then if isinstance(rule.then, (list, tuple))
+            else [rule.then])
+
+
+def consumption_verbs(rules: list[Rule]) -> frozenset[str]:
+    """Verbs whose rule fires `consume_one` — the realizer always
+    quantity-overrides the theme for these (manĝi, trinki et al.)."""
+    out: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        for eff in _effects(rule):
+            if isinstance(eff, ConsumeOne):
+                out.add(rule.when.action)
+                break
+    return frozenset(out)
+
+
+def transfer_verbs(rules: list[Rule]) -> frozenset[str]:
+    """Verbs whose rule fires `transfer_n` — possession changes are
+    inherent to the verb (suppress redundant ownership narration;
+    quantity-override theme when ev.quantity > 1)."""
+    out: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        for eff in _effects(rule):
+            if isinstance(eff, TransferN):
+                out.add(rule.when.action)
+                break
+    return frozenset(out)
+
+
+def acquisition_verbs(rules: list[Rule]) -> frozenset[str]:
+    """Verbs whose theme-transfer ends at the agent (preni, kapti,
+    aĉeti). The realizer attributes "de PRIOR_OWNER" to these via
+    relation-change source tracking."""
+    out: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        rvars = _role_vars(rule.when)
+        agent_v = rvars.get("agent")
+        theme_v = rvars.get("theme")
+        if agent_v is None or theme_v is None:
+            continue
+        for eff in _effects(rule):
+            if not isinstance(eff, TransferN):
+                continue
+            src, tgt = eff.source, eff.target
+            if (isinstance(src, Var) and id(src) == id(theme_v)
+                    and isinstance(tgt, Var) and id(tgt) == id(agent_v)):
+                out.add(rule.when.action)
+                break
+    return frozenset(out)
+
+
+def instrument_quantified_verbs(rules: list[Rule]) -> frozenset[str]:
+    """Verbs whose rule transfers the instrument as one of the moved
+    stacks (aĉeti pays with money, vendi receives money). The realizer
+    matches the instrument's count to ev.quantity for these."""
+    out: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        rvars = _role_vars(rule.when)
+        instr_v = rvars.get("instrument")
+        if instr_v is None:
+            continue
+        for eff in _effects(rule):
+            if not isinstance(eff, TransferN):
+                continue
+            if isinstance(eff.source, Var) and id(eff.source) == id(instr_v):
+                out.add(rule.when.action)
+                break
+    return frozenset(out)
+
+
+def state_modifying_verbs(rules: list[Rule], lex) -> frozenset[str]:
+    """Verbs whose firing writes any state — either via the action's
+    intrinsic `effects` (baked into the seed event by `effect_changes`)
+    or via a rule keyed on the verb that asserts/changes/transfers/
+    creates/destroys. The complement is the no-op set: verbs whose
+    event has no downstream consequence (kanti, danci, plori, ami,
+    timi, ridi, helpi, ludi, vivi, labori, ripozi …). Vocal verbs
+    (bleki, boji, miaŭi, krii, flustri) are state-modifying — their
+    announce rules create fakto + add konas — so they stay in.
+    Computed once per (rules, lex); cheap fixpoint over Emit edges."""
+    out: set[str] = {a.lemma for a in lex.actions.values() if a.effects}
+
+    direct = (AddRelation, Change, ConsumeOne, CreateEntity, DestroyEntity,
+              RemoveRelation, TransferN)
+    # verb -> set of action names it Emits (without baked changes), used
+    # for the fixpoint: emitting a state-modifier transitively counts.
+    emit_edges: dict[str, set[str]] = {}
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        verb = rule.when.action
+        for eff in _effects(rule):
+            if isinstance(eff, direct):
+                out.add(verb)
+                continue
+            if isinstance(eff, Emit):
+                if eff.property_changes:
+                    out.add(verb)
+                else:
+                    emit_edges.setdefault(verb, set()).add(eff.action)
+
+    changed = True
+    while changed:
+        changed = False
+        for verb, emitted in emit_edges.items():
+            if verb in out:
+                continue
+            if any(target in out for target in emitted):
+                out.add(verb)
+                changed = True
+    return frozenset(out)
+
+
+@dataclass(frozen=True)
+class BackgroundSatisfier:
+    """One way to make a scene location have a target property value
+    via the derivation graph. Naming a concept (`lampo`) plus the
+    `varies=true` properties to set on the materialized instance
+    (`{power_state: aktiva}`). The static side of the entity-pattern
+    constraints is what concept selection already filtered on.
+
+    Used by `SceneBuilder.apply_scene_preferences` to pre-place
+    ambient entities — the table says "indoor rooms usually
+    `lit_state=luma`", introspection finds `indoor_lit_by_active_lamp`,
+    and this returns `(lampo, {power_state: aktiva})`. The scatter
+    primitive places the lamp; `set` flips power_state."""
+    concept: str
+    set_properties: dict
+
+
+def background_satisfiers(
+    slot: str, target_value, scene_concept,
+    derivations: list[Derivation], lex,
+) -> list[BackgroundSatisfier]:
+    """Enumerate ways to make `scene_concept` (a `Concept`) acquire
+    property (slot, target_value) by adding ONE entity to the scene.
+
+    Algorithm: walk derivations whose `implies` is
+    `property(?, slot, target_value)` and whose `when` admits
+    `scene_concept` (entity-pattern constraints satisfied by the
+    concept's static properties). For each such derivation, find an
+    entity-pattern in `given` not bound to the scene var; enumerate
+    concepts whose static properties satisfy the entity-pattern.
+    Yield (concept, varies-properties-to-set) pairs.
+
+    "Static" means non-`varies` slots — those are pinned by the
+    concept declaration. `varies=true` slots like `power_state` get
+    a value at instance time; the satisfier carries the target value
+    (`aktiva`) so the materializer knows what to set.
+
+    Excludes cascade-emerged concepts (flako, skribaĵo) — pre-placing
+    them preempts the cascade that would otherwise introduce them."""
+    transient = cascade_emerged_concepts_for(derivations, lex)
+    out: list[BackgroundSatisfier] = []
+    for d in derivations:
+        for imp in d.implies:
+            if not (isinstance(imp, PropertyImplication)
+                    and imp.slot == slot
+                    and imp.value == target_value
+                    and isinstance(imp.entity, Var)):
+                continue
+            scene_var = imp.entity
+            when_ep = _entity_pattern_for_var(d.when, scene_var)
+            if when_ep is not None and not _concept_satisfies_constraints(
+                    scene_concept, when_ep.constraints, lex):
+                continue
+            for given_pat in d.given:
+                ent_patt = _entity_pattern_in(given_pat)
+                bv = _bind_var_in_pattern(given_pat)
+                if ent_patt is None:
+                    continue
+                if bv is not None and bv is scene_var:
+                    continue
+                static, varies = _split_constraints_by_varies(
+                    ent_patt.constraints, lex)
+                for lemma, concept in lex.concepts.items():
+                    if lemma in transient:
+                        continue
+                    if _concept_satisfies_constraints(concept, static, lex):
+                        out.append(BackgroundSatisfier(lemma, varies))
+    return out
+
+
+def _entity_pattern_for_var(pattern, target_var) -> EntityPattern | None:
+    """Find an EntityPattern in `pattern` that's bound (via And/Bind
+    composition) to `target_var`. Returns None if `target_var` isn't
+    bound by any reachable EntityPattern. Used to recover the static
+    constraints on a particular var — `outdoor_is_luma`'s `when`
+    binds L to `entity(type=location, indoor_outdoor=ekstera)`, so
+    asking for var L returns those constraints."""
+    if isinstance(pattern, AndPattern):
+        bv_left = _bind_var_in_pattern(pattern.left)
+        bv_right = _bind_var_in_pattern(pattern.right)
+        ep_left = (pattern.left if isinstance(pattern.left, EntityPattern)
+                   else None)
+        ep_right = (pattern.right if isinstance(pattern.right, EntityPattern)
+                    else None)
+        if bv_left is target_var and ep_right is not None:
+            return ep_right
+        if bv_right is target_var and ep_left is not None:
+            return ep_left
+        for sub in (pattern.left, pattern.right):
+            r = _entity_pattern_for_var(sub, target_var)
+            if r is not None:
+                return r
+    return None
+
+
+def _split_constraints_by_varies(constraints: dict, lex) -> tuple[dict, dict]:
+    """Partition entity-pattern constraints into (static, varies). A
+    constraint key is `varies` if its slot definition declares
+    `varies=True`. Static keys (`type`, `concept`, `category`,
+    `has_suffix`, plus non-varies slots) gate concept selection;
+    varies keys get applied via `entity.set_property` after
+    materialization."""
+    static: dict = {}
+    varies: dict = {}
+    for k, v in constraints.items():
+        if k in ("type", "concept", "category", "has_suffix"):
+            static[k] = v
+            continue
+        slot_def = lex.slots.get(k)
+        if slot_def is not None and getattr(slot_def, "varies", False):
+            varies[k] = v
+        else:
+            static[k] = v
+    return static, varies
+
+
+def _concept_satisfies_constraints(concept, constraints: dict, lex) -> bool:
+    """True iff `concept` satisfies every static EntityPattern
+    constraint. Mirrors the runtime matcher in `patterns._entity_matches`
+    but at the concept (lex) level — no trace, no derived state."""
+    from ..containment import _concept_in_category
+    for key, expected in constraints.items():
+        if key == "type":
+            if not lex.types.is_subtype(concept.entity_type, expected):
+                return False
+        elif key == "concept":
+            if concept.lemma != expected:
+                return False
+        elif key == "category":
+            if not _concept_in_category(concept, expected, lex):
+                return False
+        elif key == "has_suffix":
+            if not concept.lemma.endswith(expected):
+                return False
+        else:
+            vals = concept.properties.get(key, [])
+            if expected not in vals:
+                return False
+    return True
+
+
+def cascade_emerged_concepts_for(
+    derivations: list[Derivation], lex,
+) -> frozenset[str]:
+    """Backwards-compat shim: callers that already had a Rule list
+    use `cascade_emerged_concepts(rules)`. Background-satisfier callers
+    only have derivations on hand, so we re-walk the canonical rule
+    set via the lexicon's reach. Returns the same set when the
+    canonical DEFAULT_DSL_RULES is what's loaded."""
+    # Re-use the rule-walking version by importing rules lazily.
+    # background_satisfiers is called from scene-build paths that
+    # already have the canonical rule set in scope; this avoids a
+    # circular import at module load.
+    from .rules import DEFAULT_DSL_RULES
+    return cascade_emerged_concepts(DEFAULT_DSL_RULES)
+
+
+def cascade_emerged_concepts(rules: list[Rule]) -> frozenset[str]:
+    """Concepts introduced by a `create_entity` effect in some rule's
+    `then`. These are "transient" — they appear via cascade (flako from
+    rain/spill, vitropecetoj from breakage, fakto from learning) rather
+    than being authored into a scene.
+
+    Regression seeders (and lazy materialization) should skip these
+    when picking a container or placing a target — pre-placing a flako
+    in a scene preempts the cascade that would otherwise introduce it,
+    and "actor walks to a fresh puddle of beer" is narratively
+    incoherent. Only literal `concept=<lemma>` writes count; Var-valued
+    concepts (e.g. `concept=K_spill` that resolves at firing time) are
+    skipped here since they're driven by the bound concept slot.
+
+    Pure introspection — no curated list, so a new cascade rule (e.g.
+    `tornado_creates_debris`) automatically excludes its emitted
+    concept from pre-placement."""
+    out: set[str] = set()
+    for rule in rules:
+        for eff in _effects(rule):
+            if isinstance(eff, CreateEntity) and isinstance(eff.concept, str):
+                out.add(eff.concept)
+    return frozenset(out)
+
+
+@dataclass(frozen=True)
+class KonasVerbSpec:
+    """How a single verb adds `konas`. Drives the procedural knowledge
+    seeder: the seeder reads `knower_role` to decide drive shape
+    (self-learn if `agent`, altruistic-teach if `recipient`) and
+    walks the rule's `given` clauses for any pre-relations to set
+    up (priskribas for legi, en/sur/havi for vidi/flari/audi)."""
+    verb: str
+    rule_name: str
+    knower_role: str  # "agent" or "recipient"
+    given_rels: tuple  # tuple of RelPattern objects from rule.given
+
+
+def konas_adding_verbs(rules: list[Rule]) -> list[KonasVerbSpec]:
+    """Walk rules to find verbs whose `then` adds the `konas` relation.
+    Returns one spec per (rule, verb) pair, with the role name that
+    binds the konas's first arg (the knower). Used by the procedural
+    knowledge-drive seeder to pick a target verb and infer the
+    scaffolding it needs."""
+    out: list[KonasVerbSpec] = []
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        # Build var → role map
+        var_to_role: dict[int, str] = {}
+        for role_name, role_pat in rule.when.role_patterns.items():
+            v = _bind_var_in_pattern(role_pat)
+            if v is not None:
+                var_to_role[id(v)] = role_name
+        for eff in _effects(rule):
+            if not isinstance(eff, AddRelation):
+                continue
+            if eff.relation != "konas" or len(eff.args) != 2:
+                continue
+            knower = eff.args[0]
+            if not isinstance(knower, Var):
+                continue
+            knower_role = var_to_role.get(id(knower))
+            if knower_role is None:
+                continue
+            out.append(KonasVerbSpec(
+                verb=rule.when.action,
+                rule_name=rule.name,
+                knower_role=knower_role,
+                given_rels=tuple(rule.given),
+            ))
+    return out
+
+
+@dataclass(frozen=True)
+class CascadeSpec:
+    """One way to procedurally satisfy a `("self_slot", actor, slot,
+    target_value)` drive. The cascade rule fires when `actor` (bound
+    to `agent_role` of `verb`) has `slot=pre_state` AND does `verb`;
+    its `.changing(actor, slot, target_value)` flips the slot.
+
+    Seeders consume these to build "actor needs X → planner finds verb"
+    scenes without hardcoding the verb. See
+    `esperanto_lm.ontology.regression.seeders.regress_for_self_slot`."""
+    verb: str
+    agent_role: str
+    pre_state: Any
+
+
+def _entity_pattern_in(patt) -> EntityPattern | None:
+    """First EntityPattern reachable from `patt`. Mirrors
+    `_bind_var_in_pattern` shape — used to recover the slot constraints
+    on a role pattern of the form `entity(slot=val) & bind(VAR)`."""
+    if isinstance(patt, EntityPattern):
+        return patt
+    if isinstance(patt, AndPattern):
+        return (_entity_pattern_in(patt.left)
+                or _entity_pattern_in(patt.right))
+    return None
+
+
+def self_slot_cascades(rules: list[Rule]) -> dict[tuple[str, Any], list[CascadeSpec]]:
+    """Index of cascade rules keyed by their (slot, target_value) outcome.
+
+    A cascade rule has the shape::
+
+        when=event(VERB, ROLE=entity(SLOT=PRE) & bind(VAR))
+        then=emit(...).changing(VAR, SLOT, POST)   # or change(VAR, SLOT, POST)
+
+    The output maps `(SLOT, POST)` → list of `CascadeSpec(VERB, ROLE,
+    PRE)`. Used by procedural seeders to build a scene satisfying a
+    `self_slot` drive — pick a cascade, place the actor in PRE state,
+    let the planner chain into VERB."""
+    out: dict[tuple[str, Any], list[CascadeSpec]] = {}
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        verb = rule.when.action
+
+        # Recover {var → role_name} so we can attribute a Change/Emit's
+        # entity-var back to the role that bound it.
+        var_to_role: dict[int, str] = {}
+        for role_name, role_patt in rule.when.role_patterns.items():
+            v = _bind_var_in_pattern(role_patt)
+            if v is not None:
+                var_to_role[id(v)] = role_name
+
+        # Walk effects: collect Change(VAR, slot, val) plus Emit's
+        # property_changes which encode the same shape.
+        changes: list[tuple[Var, str, Any]] = []
+        for eff in _effects(rule):
+            if isinstance(eff, Change):
+                if isinstance(eff.entity, Var):
+                    changes.append((eff.entity, eff.slot, eff.value))
+            elif isinstance(eff, Emit):
+                for (ent, slot), val in eff.property_changes.items():
+                    if isinstance(ent, Var):
+                        changes.append((ent, slot, val))
+
+        for var, slot, val in changes:
+            role_name = var_to_role.get(id(var))
+            if role_name is None:
+                continue
+            ent_patt = _entity_pattern_in(rule.when.role_patterns[role_name])
+            pre_state = None
+            if ent_patt is not None:
+                pre = ent_patt.constraints.get(slot)
+                if pre is not None and not isinstance(pre, Var):
+                    pre_state = pre
+            spec = CascadeSpec(verb, role_name, pre_state)
+            out.setdefault((slot, val), []).append(spec)
+    return out
+
+
+def verb_relation_kinds(rules: list[Rule]) -> dict[str, frozenset[str]]:
+    """Per-verb set of relation names the rule mutates — used by the
+    realizer's relation-change attribution to gate which havi/en
+    diff-entries an event can claim."""
+    out: dict[str, set[str]] = {}
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        action = rule.when.action
+        from .effects import AddRelation, RemoveRelation
+        for eff in _effects(rule):
+            if isinstance(eff, TransferN):
+                out.setdefault(action, set()).add("havi")
+            elif isinstance(eff, (AddRelation, RemoveRelation)):
+                out.setdefault(action, set()).add(eff.relation)
+    return {k: frozenset(v) for k, v in out.items()}

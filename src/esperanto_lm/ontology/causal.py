@@ -37,6 +37,38 @@ from .loader import Lexicon
 
 _MISS = object()  # property_at cache sentinel — None is a valid stored value
 
+# Containment-index cache for `assert_relation`'s en/sur validation.
+# Keyed by id(lex). Resolves once per lexicon — the index is the same
+# data the sampler uses (see `containment.resolve_containment`), so
+# this just deduplicates work between scene placement and assertion
+# validation. Set ESPLLM_CONTAINMENT_VALIDATION=0 to disable the
+# check (useful for synthetic test fixtures that don't populate
+# containment.jsonl for their ad-hoc concepts).
+import os as _os
+_CONTAINMENT_IDX_CACHE: dict[int, dict] = {}
+# Three modes, set via ESPLLM_CONTAINMENT_VALIDATION:
+#   "off"  — no check (legacy behavior).
+#   "warn" — log to _CONTAINMENT_VIOLATIONS list, allow assertion.
+#   "raise" — reject the assertion (strict; hardest mode).
+# Default is "warn" so the unification audit can surface gaps without
+# breaking existing sampler paths. Flip to "raise" once containment.jsonl
+# is comprehensive enough.
+_CONTAINMENT_VALIDATE = _os.environ.get(
+    "ESPLLM_CONTAINMENT_VALIDATION", "warn").lower()
+# Collected violations in warn mode — callers (audit scripts, tests)
+# can read this to see what's missing. Reset by tooling between runs.
+_CONTAINMENT_VIOLATIONS: list[tuple[str, str, str]] = []
+
+
+def _containment_index_for(lex):
+    key = id(lex)
+    cached = _CONTAINMENT_IDX_CACHE.get(key)
+    if cached is None:
+        from .containment import resolve_containment
+        cached = resolve_containment(lex)
+        _CONTAINMENT_IDX_CACHE[key] = cached
+    return cached
+
 
 # ----------------------------- entities -----------------------------
 
@@ -191,6 +223,23 @@ class Trace:
     # cache turns the inner O(t) walk into O(1) for repeat queries
     # within a single pass. Profiled at ~9% self-time pre-cache.
     _property_at_cache: dict = field(default_factory=dict)
+    # Set of eids that appear as the `parto` (args[1]) of any
+    # `havas_parton` assertion. Maintained inline by `assert_relation`
+    # so the relation schema's `arg_not_part` check is O(1) per
+    # assertion instead of an O(relations) scan. Forks copy by value.
+    _parts_index: set[str] = field(default_factory=set)
+    # Current-state cache for `property_at` at `t == len(events)`.
+    # Maps (entity_id, prop) → last-seen value, materialized lazily.
+    # Empirically every property_at call queries current state; the
+    # prior per-(eid,prop,t) cache wiped itself on every add_event,
+    # negating the benefit when many events fire in a planning loop.
+    # `_current_props_version` records `len(events)` at last sync;
+    # `property_at` resyncs by walking the unincorporated tail before
+    # serving a current-state query, so direct `events.append(...)`
+    # paths (the engine has several) stay correct without going
+    # through `add_event`. Forks copy both by value.
+    _current_props: dict[tuple[str, str], Any] = field(default_factory=dict)
+    _current_props_version: int = 0
 
     def snapshot_relations(self) -> list[RelationAssertion]:
         """Shallow copy of the current relations. Useful before running
@@ -219,6 +268,9 @@ class Trace:
         new._event_ids = set(self._event_ids)
         new._next_entity_id = self._next_entity_id
         new._property_at_cache = {}
+        new._parts_index = set(self._parts_index)
+        new._current_props = dict(self._current_props)
+        new._current_props_version = self._current_props_version
         return new
 
     # ---------- entity helpers ----------
@@ -262,8 +314,89 @@ class Trace:
                 raise ValueError(
                     f"relation {name!r}: entity {arg!r} type "
                     f"{ent.entity_type!r} not a {expected_type!r}")
+        # Per-arg subtype exclusions: arg_types declares the broadest
+        # admissible type; arg_excludes carves out narrower forbidden
+        # subtypes. havi.theme=physical excludes location/person so
+        # the planner can't even hypothesize `havi(petro, dormejo)`.
+        if rel.arg_excludes:
+            for i, arg in enumerate(args):
+                if i >= len(rel.arg_excludes):
+                    continue
+                forbidden_list = rel.arg_excludes[i]
+                if not forbidden_list:
+                    continue
+                ent = self.entities[arg]
+                for forbidden in forbidden_list:
+                    if lexicon.types.is_subtype(
+                            ent.entity_type, forbidden):
+                        raise ValueError(
+                            f"relation {name!r}: arg {i} ({arg!r} type "
+                            f"{ent.entity_type!r}) is excluded subtype "
+                            f"{forbidden!r}")
+        # Per-arg "not a part" check: havi.theme can't be an entity
+        # that's already a `parto` of another (Mikael's mano can't be
+        # owned separately from Mikael). O(1) via _parts_index, which
+        # `assert_relation` maintains inline below.
+        if rel.arg_not_part:
+            for i, arg in enumerate(args):
+                if i >= len(rel.arg_not_part) or not rel.arg_not_part[i]:
+                    continue
+                if arg in self._parts_index:
+                    raise ValueError(
+                        f"relation {name!r}: arg {i} ({arg!r}) is a "
+                        f"part of another entity, can't appear here")
+        # Containment registry validation for en/sur. The containment
+        # index (containment.jsonl) is the source of truth for what
+        # can plausibly be in/on what. Assertions outside the registry
+        # are rejected so the sampler, the engine, and any test
+        # fixture stay in sync — no more "akvo en kuirejo" sneaking in
+        # because the type system is too permissive. Bypassed by env
+        # var for test fixtures that don't extend containment.jsonl.
+        if (_CONTAINMENT_VALIDATE != "off"
+                and name in ("en", "sur") and len(args) == 2):
+            from .containment import (
+                containment_relations_for, required_fact_violations,
+            )
+            contained_ent = self.entities.get(args[0])
+            container_ent = self.entities.get(args[1])
+            if (contained_ent is not None and container_ent is not None
+                    and contained_ent.concept_lemma in lexicon.concepts
+                    and container_ent.concept_lemma in lexicon.concepts):
+                idx = _containment_index_for(lexicon)
+                contained_lemma = contained_ent.concept_lemma
+                container_lemma = container_ent.concept_lemma
+                # Two-tier check, both must pass:
+                #   1. No required-entry violation (every applicable
+                #      requirement's container_pattern must match).
+                #   2. At least one entry (required or affordance)
+                #      permits the (contained, container, relation).
+                req_violations = required_fact_violations(
+                    container_lemma, contained_lemma, name, idx, lexicon)
+                allowed = containment_relations_for(
+                    container_lemma, contained_lemma, idx, lexicon)
+                bad = req_violations or (name not in allowed)
+                if bad:
+                    if _CONTAINMENT_VALIDATE == "raise":
+                        if req_violations:
+                            raise ValueError(
+                                f"containment requirement violation: "
+                                f"{contained_lemma} {name} {container_lemma} "
+                                f"violates {len(req_violations)} required "
+                                f"entr{'y' if len(req_violations)==1 else 'ies'} "
+                                f"in containment.jsonl")
+                        raise ValueError(
+                            f"containment violation: "
+                            f"{contained_lemma} {name} {container_lemma} "
+                            f"not declared in containment.jsonl "
+                            f"(allowed: {sorted(allowed) or 'none'})")
+                    _CONTAINMENT_VIOLATIONS.append(
+                        (contained_lemma, name, container_lemma))
         ra = RelationAssertion(relation=name, args=args)
         self.relations.append(ra)
+        # Maintain the parts index for the arg_not_part check above.
+        # Only havas_parton(host, parto) feeds it.
+        if name == "havas_parton" and len(args) == 2:
+            self._parts_index.add(args[1])
         return ra
 
     # ---------- event helpers ----------
@@ -316,9 +449,11 @@ class Trace:
         the cat ate it?" returns the last recorded values (e.g.
         presence=consumed); use `entities_at(t)` for liveness queries.
 
-        Naive O(t) per call. Acceptable for traces under ~20 events;
-        cache as a sorted (position, value) list per (entity_id, prop)
-        if it becomes a bottleneck.
+        Current-state queries (t == len(events)) hit the incrementally-
+        maintained `_current_props` map in O(1); the version sync
+        below brings it up to date if anything appended events
+        outside `add_event`. Historical queries fall through to the
+        per-(eid, prop, t) cache + backward walk.
         """
         ent = self.entities.get(entity_id)
         if ent is None:
@@ -326,6 +461,31 @@ class Trace:
         if ent.created_at_event is not None and ent.created_at_event >= t:
             return None
 
+        n_events = len(self.events)
+        # Fast path: current-state (every observed call site queries
+        # this position exclusively).
+        if t == n_events:
+            if self._current_props_version != n_events:
+                # Direct events.append callers (engine, samplers) bypass
+                # add_event; resync by folding any unincorporated tail.
+                # Cheap when nothing's pending — usually a length check.
+                cur = self._current_props
+                for i in range(self._current_props_version, n_events):
+                    for k, v in self.events[i].property_changes.items():
+                        cur[k] = v
+                self._current_props_version = n_events
+            key = (entity_id, prop)
+            cur = self._current_props
+            if key in cur:
+                return cur[key]
+            # First lookup for this (eid, prop): no event has touched
+            # it, so the value is the entity's scene-init property.
+            # Cache for repeat lookups.
+            val = ent.properties.get(prop)
+            cur[key] = val
+            return val
+
+        # Historical-query path: keep the original (eid, prop, t) cache.
         cache_key = (entity_id, prop, t)
         cache = self._property_at_cache
         cached = cache.get(cache_key, _MISS)
@@ -333,8 +493,7 @@ class Trace:
             return cached
 
         key = (entity_id, prop)
-        # Walk backward from events[t-1] down to events[0].
-        last_idx = min(t, len(self.events)) - 1
+        last_idx = min(t, n_events) - 1
         for i in range(last_idx, -1, -1):
             ev = self.events[i]
             if key in ev.property_changes:

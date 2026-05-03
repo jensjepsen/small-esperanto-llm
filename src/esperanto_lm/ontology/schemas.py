@@ -163,6 +163,19 @@ class Relation(_Frozen):
     arg_names: list[str]
     inverse: Optional[str] = None
     symmetric: bool = False
+    # Per-arg-position list of forbidden subtypes. `arg_types` declares
+    # the broadest allowed type (e.g. `havi.theme = physical`); this
+    # carves out narrower exceptions that would otherwise pass the
+    # subtype check (you can't `havi` a `location` or `person` even
+    # though both are physical). Empty/omitted = no exclusions.
+    # Validated at `Trace.assert_relation`.
+    arg_excludes: list[list[str]] = Field(default_factory=list)
+    # Per-arg-position flag: when True, the arg cannot be a `parto`
+    # of any other entity (no `havas_parton` edge ending at it).
+    # Used by `havi.theme` to forbid owning body parts separately
+    # from their host (Petro can't `havi` Mikael's mano). The check
+    # at `assert_relation` is O(1) via Trace._parts_index.
+    arg_not_part: list[bool] = Field(default_factory=list)
 
 
 class RoleSpec(_Frozen):
@@ -270,6 +283,13 @@ class Action(_Frozen):
     derives_thing: bool = False
     derives_place: bool = False
     derives_quality: bool = False
+    # When True, the planner permits agent==theme bindings for this
+    # action (sekigi/lavi/vesti — actions one can plausibly do to
+    # oneself). The realizer renders the theme as the reflexive
+    # pronoun "sin" instead of repeating the agent's name. Default
+    # False rejects same-entity bindings (preni/doni/sekvi/etc., where
+    # reflexive doesn't make semantic sense).
+    reflexive_ok: bool = False
 
     @model_validator(mode="after")
     def _check_precondition_roles(self):
@@ -317,6 +337,13 @@ class ContainmentPattern(_Frozen):
     suffix: Optional[str] = None
     property: Optional[dict[str, str]] = None
     contains: Optional[str] = None
+    # Match if the concept's transitive `category` chain includes this
+    # lemma. Walks up via `concept.category` to follow supertypes
+    # (papago → birdo → besto). Lets containment rules classify by
+    # the existing taxonomy without inventing parallel marker slots —
+    # adding a concept to a category automatically extends its
+    # placement affordances.
+    category: Optional[str] = None
 
 
 class ContainmentFact(_Frozen):
@@ -342,6 +369,27 @@ class ContainmentFact(_Frozen):
     contained: Optional[str] = None
     contained_pattern: Optional[ContainmentPattern] = None
     relation: str
+    # Two-tier semantics:
+    #   `required: false` (default) — affordance. "This combination is
+    #     permitted." Multiple affordances combine via OR; placement is
+    #     legal if at least one entry permits the pair.
+    #   `required: true` — constraint. "If contained matches the
+    #     contained_pattern, container MUST match the container_pattern."
+    #     Compose by AND (every applicable requirement must hold). A
+    #     required entry ALSO doubles as an affordance (it permits its
+    #     own pattern), so you don't need a sibling affordance for the
+    #     same pair.
+    required: bool = False
+    # Slot-overlap requirement. For each slot S in this list, the
+    # contained's values for S and the container's values for S must
+    # intersect (set overlap ≠ ∅). Vacuously satisfied if either side
+    # lacks the slot — so terrain-bearing entities (fish, vehicles)
+    # are constrained to terrain-matching containers, but
+    # terrain-free entities (books, hammers) aren't restricted.
+    # Combines naturally with `required: true` (the intersection check
+    # is the requirement); the contained_pattern / container_pattern
+    # fields, if set, gate which pairs the rule applies to.
+    slot_overlap: list[str] = Field(default_factory=list)
 
 
 class Affix(_Frozen):

@@ -174,6 +174,13 @@ wet_liquid_container_tips = rule(
         create_entity(concept=K_spill, as_var=(S_spill := var("S")),
                       from_=T_spill),
         emit("aperi", theme=S_spill),
+        # The spilled liquid is now contained by the puddle (the
+        # depression that formed). Preserves narrative distinction
+        # (biero-puddle vs akvo-puddle) and satisfies the
+        # liquid-must-be-in-liquid_holder requirement: flako has
+        # liquid_holder=yes, so the contained liquid is properly
+        # held even after spilling.
+        add_relation("en", T_spill, S_spill),
     ],
     name="wet_liquid_container_tips",
 )
@@ -278,7 +285,13 @@ verŝi_into_location_emits_fali = rule(
 verŝi_into_container_transfers = rule(
     when=event("verŝi",
                theme=bind(VCT := var("T")),
-               destination=~entity(type="location")
+               # Destination must be a real liquid container — the
+               # `fullness` slot is the marker (it applies_to=artifact
+               # in slots.jsonl and is set on glaso/botelo/taso/vazo).
+               # Without this gate the rule fired with animals,
+               # body parts, and lumber as destinations, producing
+               # nonsense `en(akvo, lupo)` assertions.
+               destination=entity(fullness=...)
                            & bind(VCD := var("D"))),
     given=[rel("en", contained=VCT,
                 container=bind(VCC := var("C")))],
@@ -528,7 +541,13 @@ meti_places_on_surface = rule(
     when=event("meti",
                agent=bind(MSA := var("A")),
                theme=bind(MST := var("T")),
-               location=~entity(type="location") & bind(MSL := var("L"))),
+               # Destination must be a real surface (tablo/breto/sofo,
+               # category=surfaco). Without this gate, meti(theme,
+               # body_part) would emit nonsense `sur(forko, buŝo)`.
+               # Containers (category=ujo) get the en-rule fallback
+               # below; we don't double-fire here.
+               location=entity(category="surfaco")
+                        & bind(MSL := var("L"))),
     then=add_relation("sur", MST, MSL),
     name="meti_places_on_surface",
 )
@@ -774,7 +793,10 @@ fire_spreads_to_adjacent_flammables = rule(
 rain_wets_contents = rule(
     when=event("pluvi", location=bind(RL := var("L"))),
     given=[
-        rel("en", contained=bind(RX := var("X")), container=RL),
+        # samloke (not direct `en`) so an actor sitting on a sofa or
+        # standing on a balcony in the rain still gets wet — the
+        # samloke chain rules close en/sur composition for us.
+        rel("samloke", a=RL, b=bind(RX := var("X"))),
         # Anyone carrying an umbrella stays dry. `has_suffix` matches
         # the concept's lemma so this is a single concept-level guard
         # rather than a whole new slot.
@@ -794,6 +816,13 @@ rain_creates_puddle = rule(
         create_entity(concept="flako", as_var=(RPF := var("F")), from_=RPL),
         emit("aperi", theme=RPF),
         add_relation("en", RPF, RPL),
+        # Rain produces water inside the puddle. flako is the
+        # depression (liquid_holder), akvo the water it holds.
+        # Without this, the puddle would be an empty container,
+        # and downstream "drink the puddle water" reasoning
+        # would have nothing to act on.
+        create_entity(concept="akvo", as_var=(RPW := var("W")), from_=RPF),
+        add_relation("en", RPW, RPF),
     ],
     name="rain_creates_puddle",
 )
@@ -1001,6 +1030,58 @@ vidi_learns_sur = rule(
         add_relation("konas", VSA, VSF),
     ],
     name="vidi_learns_sur",
+)
+
+
+# Smell and sound also locate `sur`-placed targets. Mirrors
+# `vidi_learns_sur` so the planner can establish konas/scias_lokon
+# for a target placed `sur` something without depending on
+# illumination — vidi requires the agent be illuminated, which
+# fails in indoor scenes without an active lamp. flari/audi only
+# need samloke + the perceptual capacity (smell/hearing). Without
+# these, an actor in a dark indoor room can never plan preni for
+# a snack on a table.
+flari_learns_sur = rule(
+    when=event("flari",
+               agent=bind(FSA := var("A")),
+               theme=bind(FST := var("T"))),
+    given=[
+        rel("sur", contained=FST, container=bind(FSL := var("L"))),
+    ],
+    then=[
+        create_entity(
+            concept="fakto",
+            as_var=(FSF := var("F")),
+            id_parts=("sur", FST, FSL),
+            initial_properties={"pri_relacio": "sur"},
+        ),
+        add_relation("subjekto", FSF, FST),
+        add_relation("objekto", FSF, FSL),
+        add_relation("konas", FSA, FSF),
+    ],
+    name="flari_learns_sur",
+)
+
+
+audi_learns_sur = rule(
+    when=event("aŭdi",
+               agent=bind(ASA := var("A")),
+               theme=bind(AST := var("T"))),
+    given=[
+        rel("sur", contained=AST, container=bind(ASL := var("L"))),
+    ],
+    then=[
+        create_entity(
+            concept="fakto",
+            as_var=(ASF := var("F")),
+            id_parts=("sur", AST, ASL),
+            initial_properties={"pri_relacio": "sur"},
+        ),
+        add_relation("subjekto", ASF, AST),
+        add_relation("objekto", ASF, ASL),
+        add_relation("konas", ASA, ASF),
+    ],
+    name="audi_learns_sur",
 )
 
 vidi_learns_havi_owner = rule(
@@ -1732,32 +1813,49 @@ outdoor_is_luma = derive(
     name="outdoor_is_luma",
 )
 
+# Light propagates through co-location: a lamp counts as lighting any
+# room it's `samloke` with, which by the en/sur chain rules covers
+# direct (lampo en koridoro), surface-mounted (lampo sur tablo en
+# koridoro), and any deeper nesting. Without samloke, a lamp on a
+# table failed to light the room, leaving most indoor regression
+# scenes pitch-dark and blocking vidi-gated planning. Same shape as
+# the samloke-chain fix — let the existing co-location closure do
+# the work instead of repeating en/sur enumeration here.
 indoor_lit_by_active_lamp = derive(
     when=entity(type="location", indoor_outdoor="interna") & bind(ILL := var("L")),
     given=[
-        rel("en", contained=bind(ILD := var("D")), container=ILL),
+        rel("samloke", a=ILL, b=bind(ILD := var("D"))),
         entity(power_state="aktiva", lights_when_on="yes") & bind(ILD),
     ],
     implies=property(ILL, "lit_state", "luma"),
     name="indoor_lit_by_active_lamp",
 )
 
+# Mirror semantics: a room is dark iff no active lamp is co-located
+# with it (under the same samloke closure). Without the matching
+# update, a `sur`-mounted lamp would make the room luma via the lit
+# rule AND malluma via the dark rule — first-write-wins on scalar
+# state would leave it inconsistent depending on derivation order.
 indoor_dark_without_active_lamp = derive(
     when=entity(type="location", indoor_outdoor="interna") & bind(IDL := var("L")),
     given=[
-        ~rel("en",
-             contained=entity(power_state="aktiva", lights_when_on="yes"),
-             container=IDL),
+        ~rel("samloke",
+             a=IDL,
+             b=entity(power_state="aktiva", lights_when_on="yes")),
     ],
     implies=property(IDL, "lit_state", "malluma"),
     name="indoor_dark_without_active_lamp",
 )
 
+# Agent is illuminated when co-located with a luma location. Was
+# `en` only; switched to samloke so an actor sitting on a sofa
+# (sur sofo en koridoro, no direct en(actor, koridoro)) is still
+# illuminated by the room's light.
 agent_illuminated = derive(
     when=entity(type="animate") & bind(AIA := var("A")),
     given=[
-        rel("en", contained=AIA, container=bind(AIL := var("L"))),
-        entity(lit_state="luma") & bind(AIL),
+        rel("samloke", a=AIA, b=bind(AIL := var("L"))),
+        entity(type="location", lit_state="luma") & bind(AIL),
     ],
     implies=property(AIA, "illuminated", "yes"),
     name="agent_illuminated",
@@ -2072,6 +2170,59 @@ mixed_en_apud_means_samloke = derive(
 )
 
 
+# A entity is `samloke` with whatever it sits ON, mirror of
+# `en_implies_samloke_with_container`. Without this, a glaso sur
+# tablo doesn't derive samloke(glaso, tablo) — and the chain rules
+# below have no seed to propagate. Keeps the same composition as
+# the en variant so the closure of {en, sur} → samloke holds.
+sur_implies_samloke_with_supporter = derive(
+    when=rel("sur",
+             contained=bind(SISA := var("A")),
+             container=bind(SISB := var("B"))),
+    implies=relation("samloke", SISA, SISB),
+    name="sur_implies_samloke_with_supporter",
+)
+
+
+# Transitive samloke through nested `en`. Without this, the
+# planner can't reach a liquid pre-placed in a vessel: lakto en
+# botelo, botelo sur tablo, tablo en kuirejo → samloke(actor,
+# lakto) wouldn't derive even when actor is in the kitchen,
+# because the existing `shared_container` rule needs the two
+# entities to share the SAME container directly.
+#
+# `A en B AND samloke(B, C)` → A is samloke with C — the engine's
+# fixed-point loop closes the chain across arbitrary depth (lakto
+# en botelo, samloke(botelo, tablo), samloke(tablo, kuirejo),
+# samloke(kuirejo, actor) all derive in order).
+samloke_chains_through_en = derive(
+    when=rel("en",
+             contained=bind(SCEA := var("A")),
+             container=bind(SCEB := var("B"))),
+    given=[
+        rel("samloke", a=SCEB, b=bind(SCEC := var("C"))),
+    ],
+    implies=relation("samloke", SCEA, SCEC),
+    name="samloke_chains_through_en",
+)
+
+
+# Mirror for `sur`. Together with `samloke_chains_through_en` and
+# the `*_implies_samloke_with_*` seeds, this closes co-location
+# under any en/sur path — co-location is what physical adjacency
+# means in this model, and adjacency should compose.
+samloke_chains_through_sur = derive(
+    when=rel("sur",
+             contained=bind(SCSA := var("A")),
+             container=bind(SCSB := var("B"))),
+    given=[
+        rel("samloke", a=SCSB, b=bind(SCSC := var("C"))),
+    ],
+    implies=relation("samloke", SCSA, SCSC),
+    name="samloke_chains_through_sur",
+)
+
+
 # Convenience bundle: every derivation the library ships with.
 # Callers assemble explicitly (as they do for rules) — no hidden
 # auto-registration. Pass to `run_dsl(..., derivations=...)`.
@@ -2122,6 +2273,9 @@ DEFAULT_DSL_DERIVATIONS = [
     samloke_propagates_through_artifact_parts,
     samloke_propagates_through_location_parts,
     en_implies_samloke_with_container,
+    sur_implies_samloke_with_supporter,
+    samloke_chains_through_en,
+    samloke_chains_through_sur,
     apud_implies_samloke_with_neighbor,
     host_lock_state_locked_from_seruro,
     host_lock_state_unlocked_from_seruro,
@@ -2178,6 +2332,9 @@ RUNTIME_DERIVATIONS = [
     samloke_propagates_through_artifact_parts,
     samloke_propagates_through_location_parts,
     en_implies_samloke_with_container,
+    sur_implies_samloke_with_supporter,
+    samloke_chains_through_en,
+    samloke_chains_through_sur,
     apud_implies_samloke_with_neighbor,
     host_lock_state_locked_from_seruro,
     host_lock_state_unlocked_from_seruro,
@@ -2213,6 +2370,8 @@ DEFAULT_DSL_RULES: list[Rule] = [
     miaui_announces_speaker,
     forgesi_removes_konas,
     vidi_learns_sur,
+    flari_learns_sur,
+    audi_learns_sur,
     vidi_learns_havi_owner,
     rakonti_transfers_fakto,
     demandi_extracts_fakto,

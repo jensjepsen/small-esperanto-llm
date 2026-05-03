@@ -46,3 +46,4 @@
 {"name": "fullness", "vocabulary": ["plena", "malplena"], "applies_to": ["artifact"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "malplena"}
 {"name": "count", "vocabulary": ["1", "2", "3", "4", "5"], "applies_to": ["physical"], "scalar": true, "varies": true}
 {"name": "is_currency", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "liquid_holder", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}

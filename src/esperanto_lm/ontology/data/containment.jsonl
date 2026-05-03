@@ -1,81 +1,46 @@
 {"container_pattern": {"entity_type": "location"}, "contained": "pordo", "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "purigilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "tuko", "relation": "en"}
+{"container_pattern": {"category": "surfaco"}, "contained": "tuko", "relation": "sur"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "sekigilo", "relation": "en"}
 {"container_pattern": {"contains": "pordo"}, "contained": "ŝlosilo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "muro", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "fenestro", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "tablo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "seĝo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained_pattern": {"category": "meblo"}, "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "libro", "relation": "en"}
-{"container_pattern": {"entity_type": "location"}, "contained": "animal", "relation": "en"}
+{"container_pattern": {"entity_type": "location"}, "contained": "animate", "relation": "en"}
 {"container": "kuirejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "manĝejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "salono", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "tablo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "sur"}
 {"container": "tablo", "contained": "glaso", "relation": "sur"}
 {"container": "tablo", "contained": "botelo", "relation": "sur"}
-{"container": "tablo", "contained": "korbo", "relation": "sur"}
-{"container": "tablo", "contained": "libro", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "libro", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "korbo", "relation": "sur"}
 {"container": "breto", "contained": "tranĉilo", "relation": "sur"}
 {"container": "breto", "contained": "purigilo", "relation": "sur"}
 {"container": "breto", "contained": "najlilo", "relation": "sur"}
 {"container": "breto", "contained": "ligno", "relation": "sur"}
 {"container": "breto", "contained": "najlo", "relation": "sur"}
-{"container": "breto", "contained": "libro", "relation": "sur"}
-{"container": "sofo", "contained": "libro", "relation": "sur"}
-{"container": "sofo", "contained": "korbo", "relation": "sur"}
 {"container": "glaso", "contained_pattern": {"property": {"state_of_matter": "likva"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "botelo", "contained_pattern": {"property": {"state_of_matter": "likva"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "korbo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "kuirejo", "contained": "tranĉilo", "relation": "en"}
-{"container": "kuirejo", "contained": "glaso", "relation": "en"}
-{"container": "kuirejo", "contained": "botelo", "relation": "en"}
-{"container": "kuirejo", "contained": "korbo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained_pattern": {"category": "ujo"}, "relation": "en"}
 {"container": "laborejo", "contained": "tranĉilo", "relation": "en"}
 {"container": "laborejo", "contained": "najlilo", "relation": "en"}
 {"container": "laborejo", "contained": "ligno", "relation": "en"}
 {"container": "laborejo", "contained": "najlo", "relation": "en"}
 {"container": "laborejo", "contained": "breto", "relation": "en"}
-{"container": "ĝardeno", "contained": "floro", "relation": "en"}
-{"container": "ĝardeno", "contained": "arbo", "relation": "en"}
-{"container": "ĝardeno", "contained": "semo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained_pattern": {"category": "planto"}, "relation": "en"}
 {"container": "ĝardeno", "contained": "akvo", "relation": "en"}
-{"container": "manĝejo", "contained": "glaso", "relation": "en"}
-{"container": "manĝejo", "contained": "botelo", "relation": "en"}
-{"container": "manĝejo", "contained": "korbo", "relation": "en"}
-{"container": "salono", "contained": "sofo", "relation": "en"}
-{"container": "salono", "contained": "korbo", "relation": "en"}
-{"container": "salono", "contained": "glaso", "relation": "en"}
-{"container": "salono", "contained": "botelo", "relation": "en"}
 {"container": "oficejo", "contained": "tranĉilo", "relation": "en"}
-{"container": "oficejo", "contained": "korbo", "relation": "en"}
-{"container": "oficejo", "contained": "glaso", "relation": "en"}
-{"container": "oficejo", "contained": "breto", "relation": "en"}
-{"container": "oficejo", "contained": "papero", "relation": "en"}
-{"container": "salono", "contained": "papero", "relation": "en"}
-{"container": "tablo", "contained": "papero", "relation": "sur"}
-{"container": "breto", "contained": "papero", "relation": "sur"}
-{"container": "biblioteko", "contained": "breto", "relation": "en"}
-{"container": "biblioteko", "contained": "libro", "relation": "en"}
-{"container": "biblioteko", "contained": "tablo", "relation": "en"}
-{"container": "biblioteko", "contained": "seĝo", "relation": "en"}
-{"container": "lernejo", "contained": "libro", "relation": "en"}
-{"container": "lernejo", "contained": "papero", "relation": "en"}
-{"container": "lernejo", "contained": "tablo", "relation": "en"}
-{"container": "lernejo", "contained": "seĝo", "relation": "en"}
-{"container": "hospitalo", "contained": "tablo", "relation": "en"}
-{"container": "hospitalo", "contained": "seĝo", "relation": "en"}
-{"container": "restoracio", "contained": "tablo", "relation": "en"}
-{"container": "restoracio", "contained": "seĝo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "papero", "relation": "en"}
+{"container_pattern": {"category": "surfaco"}, "contained": "papero", "relation": "sur"}
 {"container": "restoracio", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
-{"container": "vendejo", "contained": "breto", "relation": "en"}
-{"container": "vendejo", "contained": "korbo", "relation": "en"}
-{"container": "parko", "contained": "arbo", "relation": "en"}
-{"container": "parko", "contained": "floro", "relation": "en"}
 {"container": "parko", "contained": "seĝo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lito", "relation": "en"}
 {"container": "lito", "contained": "kuseno", "relation": "sur"}
 {"container": "lito", "contained": "matraco", "relation": "sur"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "ŝranko", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "telero", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "taso", "relation": "en"}
 {"container": "tablo", "contained": "telero", "relation": "sur"}
@@ -88,25 +53,19 @@
 {"container": "laborejo", "contained": "martelo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "spegulo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lustro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lampo", "relation": "en"}
+{"container_pattern": {"category": "surfaco"}, "contained": "lampo", "relation": "sur"}
 {"container": "lavejo", "contained": "sapo", "relation": "en"}
 {"container": "lavejo", "contained": "spegulo", "relation": "en"}
-{"container": "ĝardeno", "contained": "herbo", "relation": "en"}
-{"container": "ĝardeno", "contained": "arbusto", "relation": "en"}
-{"container": "parko", "contained": "herbo", "relation": "en"}
-{"container": "parko", "contained": "arbusto", "relation": "en"}
-{"container": "kampo", "contained": "herbo", "relation": "en"}
-{"container": "valo", "contained": "herbo", "relation": "en"}
-{"container": "lago", "contained": "fiŝo", "relation": "en"}
-{"container": "maro", "contained": "fiŝo", "relation": "en"}
-{"container": "rivero", "contained": "fiŝo", "relation": "en"}
-{"container": "lago", "contained": "ŝipo", "relation": "en"}
-{"container": "maro", "contained": "ŝipo", "relation": "en"}
+{"container_pattern": {"property": {"terrain": "water"}, "entity_type": "location"}, "contained_pattern": {"property": {"terrain": "water"}}, "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "ombrelo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "mantelo", "relation": "en"}
 {"container": "parko", "contained": "pilko", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "pilko", "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "skatolo", "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "sako", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "aŭto", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "biciklo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "trajno", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained_pattern": {"category": "vehiklo"}, "relation": "en"}
+{"container_pattern": {"entity_type": "location"}, "contained": "flako", "relation": "en"}
+{"container_pattern": {"entity_type": "physical"}, "contained": "skribaĵo", "relation": "sur"}
+{"container_pattern": {"property": {"liquid_holder": "yes"}}, "contained_pattern": {"property": {"state_of_matter": "likva"}}, "relation": "en", "required": true}
+{"relation": "en", "required": true, "slot_overlap": ["terrain"]}

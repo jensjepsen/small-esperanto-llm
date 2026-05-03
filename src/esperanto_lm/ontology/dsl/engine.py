@@ -644,9 +644,16 @@ def _apply_effects(
                     and tuple(rl.args) == (target, source)
                     for rl in trace.relations)
                 if not already:
-                    trace.assert_relation(
-                        "havi", (target, source), lexicon)
-                    changed = True
+                    # Relation schema may reject (location/person/part
+                    # exclusions on havi.theme) — sampler-fired events
+                    # with invalid theme bindings shouldn't crash the
+                    # engine. Treat as no-op for that rule firing.
+                    try:
+                        trace.assert_relation(
+                            "havi", (target, source), lexicon)
+                        changed = True
+                    except (ValueError, KeyError):
+                        pass
                 continue
             # Partial split: source keeps current-qty units; target gets
             # a new stack of qty units.
@@ -683,9 +690,12 @@ def _apply_effects(
                 and tuple(rl.args) == (target, new_eid)
                 for rl in trace.relations)
             if not already:
-                trace.assert_relation(
-                    "havi", (target, new_eid), lexicon)
-                changed = True
+                try:
+                    trace.assert_relation(
+                        "havi", (target, new_eid), lexicon)
+                    changed = True
+                except (ValueError, KeyError):
+                    pass
         elif isinstance(eff, Change):
             target = resolve(eff.entity, b)
             ent = trace.entities.get(target)
@@ -707,8 +717,11 @@ def _apply_effects(
                 rl.relation == eff.relation and tuple(rl.args) == args
                 for rl in trace.relations)
             if not existing:
-                trace.assert_relation(eff.relation, args, lexicon)
-                changed = True
+                try:
+                    trace.assert_relation(eff.relation, args, lexicon)
+                    changed = True
+                except (ValueError, KeyError):
+                    pass
         elif isinstance(eff, RemoveRelation):
             args = tuple(resolve(a, b) for a in eff.args)
             new_rels = [

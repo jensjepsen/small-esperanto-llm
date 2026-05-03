@@ -37,6 +37,28 @@ def _is_first_order(pattern: ContainmentPattern) -> bool:
     return pattern.contains is None
 
 
+def _concept_in_category(
+    concept: Concept, category_lemma: str, lexicon: Lexicon,
+    visited: set[str] | None = None,
+) -> bool:
+    """True iff concept's transitive `category` chain contains
+    `category_lemma`. Walks up through `concept.category` ↦
+    `<parent>.category`, cycle-safe via `visited`."""
+    if visited is None:
+        visited = set()
+    if concept.lemma in visited:
+        return False
+    visited.add(concept.lemma)
+    for cat in concept.category:
+        if cat == category_lemma:
+            return True
+        cat_concept = lexicon.concepts.get(cat)
+        if cat_concept is not None and _concept_in_category(
+                cat_concept, category_lemma, lexicon, visited):
+            return True
+    return False
+
+
 def _concept_matches_intrinsic(
     concept: Concept, pattern: ContainmentPattern,
     lexicon: Lexicon, parser: MorphParser,
@@ -59,6 +81,9 @@ def _concept_matches_intrinsic(
         for slot_name, value in pattern.property.items():
             if value not in concept.properties.get(slot_name, []):
                 return False
+    if pattern.category is not None:
+        if not _concept_in_category(concept, pattern.category, lexicon):
+            return False
     return True
 
 
@@ -132,6 +157,15 @@ def resolve_containment(
     return dict(out)
 
 
+# `expand_contained` is called hundreds of thousands of times during
+# planning and scene construction; its inputs (a frozen ContainmentFact
+# + a treated-as-immutable Lexicon) never vary across a process. Cache
+# the result lemmas. Keyed by `(id(lexicon), id(fact))`; bounded by
+# the number of facts × the number of lexicon instances loaded (≤2
+# in practice). Memo is process-global so workers share it.
+_EXPAND_CONTAINED_CACHE: dict[tuple[int, int], list[str]] = {}
+
+
 def expand_contained(
     fact: ContainmentFact, lexicon: Lexicon,
     parser: MorphParser | None = None,
@@ -143,23 +177,31 @@ def expand_contained(
       - contained = type name → all concepts whose entity_type is-a this
       - contained_pattern → all concepts matching the pattern
     """
+    cache_key = (id(lexicon), id(fact))
+    cached = _EXPAND_CONTAINED_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     parser = parser or DefaultMorphParser()
     if fact.contained is not None:
         if fact.contained in lexicon.concepts:
-            return [fact.contained]
-        if lexicon.types.known(fact.contained):
-            return [
+            result = [fact.contained]
+        elif lexicon.types.known(fact.contained):
+            result = [
                 lemma for lemma, c in lexicon.concepts.items()
                 if lexicon.types.is_subtype(c.entity_type, fact.contained)
             ]
-        return []
-    if fact.contained_pattern is not None:
-        return [
+        else:
+            result = []
+    elif fact.contained_pattern is not None:
+        result = [
             lemma for lemma, c in lexicon.concepts.items()
             if _concept_matches_pattern(c, fact.contained_pattern,
                                         lexicon, parser)
         ]
-    return []
+    else:
+        result = []
+    _EXPAND_CONTAINED_CACHE[cache_key] = result
+    return result
 
 
 def reachable_from(
@@ -186,6 +228,149 @@ def reachable_from(
                 if lemma not in visited:
                     frontier.append(lemma)
     return visited
+
+
+def containers_for(
+    contained_lemma: str,
+    containment_index: dict[str, list[ContainmentFact]],
+    lexicon: Lexicon, parser: MorphParser | None = None,
+) -> list[tuple[str, str]]:
+    """Inverse of `containment_relation_for`: given a contained lemma,
+    return [(container_lemma, relation)] pairs where the contained
+    could be placed. Walks every container's facts looking for ones
+    whose `expand_contained` includes our lemma. Used by the sampler
+    to lazily materialize a plausible container when nothing already
+    in the scene fits — e.g. butero needs a tablo or korbo, neither
+    in scene → look up "what could hold butero?" → pick tablo →
+    materialize it (recursively place IT in scene), then put butero
+    on it. Without this, butero would fall back to placement
+    directly under the scene location, missing the natural
+    'on a table' / 'in a basket' framing."""
+    parser = parser or DefaultMorphParser()
+    out: list[tuple[str, str]] = []
+    for container_lemma, facts in containment_index.items():
+        for fact in facts:
+            if contained_lemma in expand_contained(fact, lexicon, parser):
+                out.append((container_lemma, fact.relation))
+                break
+    return out
+
+
+def _concept_matches_fact_container(
+    concept_lemma: str, fact: ContainmentFact,
+    lexicon: Lexicon, parser: MorphParser,
+) -> bool:
+    """True iff concept_lemma satisfies fact's container side."""
+    concept = lexicon.concepts.get(concept_lemma)
+    if concept is None:
+        return False
+    if fact.container is not None:
+        return fact.container == concept_lemma
+    if fact.container_pattern is not None:
+        return _concept_matches_intrinsic(
+            concept, fact.container_pattern, lexicon, parser)
+    return False
+
+
+def _concept_matches_fact_contained(
+    concept_lemma: str, fact: ContainmentFact,
+    lexicon: Lexicon, parser: MorphParser,
+) -> bool:
+    """True iff concept_lemma satisfies fact's contained side."""
+    concept = lexicon.concepts.get(concept_lemma)
+    if concept is None:
+        return False
+    if fact.contained is not None:
+        target = fact.contained
+        if target == concept_lemma:
+            return True
+        if lexicon.types.known(target):
+            return lexicon.types.is_subtype(concept.entity_type, target)
+        return False
+    if fact.contained_pattern is not None:
+        return _concept_matches_intrinsic(
+            concept, fact.contained_pattern, lexicon, parser)
+    return False
+
+
+def required_fact_violations(
+    container_lemma: str, contained_lemma: str, relation: str,
+    containment_index: dict[str, list[ContainmentFact]],
+    lexicon: Lexicon, parser: MorphParser | None = None,
+) -> list[ContainmentFact]:
+    """Return required ContainmentFact entries violated by this
+    (contained, relation, container) triple. Empty list = all
+    applicable requirements satisfied.
+
+    Two requirement kinds:
+      - Pattern requirement (default): "if contained matches
+        contained_pattern, container MUST match container_pattern."
+        Composes by AND.
+      - Slot-overlap requirement (`slot_overlap`): "for each named
+        slot, contained's values must intersect container's values
+        for that slot, or one side must lack the slot entirely."
+        Used for terrain (fish→water, vehicle→matching ground) where
+        we want set-intersection, not value-equality."""
+    parser = parser or DefaultMorphParser()
+    violations: list[ContainmentFact] = []
+    contained_concept = lexicon.concepts.get(contained_lemma)
+    container_concept = lexicon.concepts.get(container_lemma)
+    # Walk lexicon.containment directly — covers both pattern-anchored
+    # required facts AND universal slot-overlap facts (which have no
+    # container_pattern and so don't appear in `containment_index`).
+    for fact in lexicon.containment:
+        if not fact.required:
+            continue
+        if fact.relation != relation:
+            continue
+        # Optional gates: if patterns are set, both sides must
+        # match before the requirement applies. Empty patterns
+        # mean "applies to all".
+        if (fact.contained is not None
+                or fact.contained_pattern is not None):
+            if not _concept_matches_fact_contained(
+                    contained_lemma, fact, lexicon, parser):
+                continue
+        if (fact.container is not None
+                or fact.container_pattern is not None):
+            if not _concept_matches_fact_container(
+                    container_lemma, fact, lexicon, parser):
+                violations.append(fact)
+                continue
+        # Slot-overlap check: for each named slot, vacuously
+        # satisfied if either side lacks values; otherwise must
+        # intersect. Only run if the fact opted into it.
+        if fact.slot_overlap and contained_concept and container_concept:
+            bad = False
+            for slot in fact.slot_overlap:
+                cv = set(contained_concept.properties.get(slot, []))
+                bv = set(container_concept.properties.get(slot, []))
+                if cv and bv and not (cv & bv):
+                    bad = True
+                    break
+            if bad:
+                violations.append(fact)
+    return violations
+
+
+def containment_relations_for(
+    container_lemma: str, contained_lemma: str,
+    containment_index: dict[str, list[ContainmentFact]],
+    lexicon: Lexicon, parser: MorphParser | None = None,
+) -> set[str]:
+    """All relations declared between this specific container and
+    contained pair. Used by `Trace.assert_relation` to validate that a
+    relation assertion is permitted by the containment registry: e.g.
+    `en(tablo, sofo)` is rejected if no entry in containment.jsonl
+    permits a tablo to be `en` a sofo. Returns a set so the same pair
+    can have multiple relations declared (rare but legal — `tablo`
+    could be both `en` and `sur` something)."""
+    parser = parser or DefaultMorphParser()
+    out: set[str] = set()
+    for fact in containment_index.get(container_lemma, []):
+        if contained_lemma in expand_contained(fact, lexicon, parser):
+            out.add(fact.relation)
+    return out
 
 
 def containment_relation_for(

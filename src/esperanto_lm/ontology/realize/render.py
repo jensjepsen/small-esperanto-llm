@@ -477,6 +477,15 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
     b = ctx.trace.entity(rel.args[1]) if len(rel.args) > 1 else None
     if a is None or b is None:
         return None
+    # Renderable-relation gate. Without this, non-renderable
+    # relations (havas_parton, subjekto, objekto, ...) still triggered
+    # name_for + note_mention as a side effect, marking entities as
+    # "already mentioned" before any prose actually named them. That
+    # caused first-reference pronominalization: "Ŝi estos en la
+    # koridoro" before "Sara" had ever surfaced. Bail early so
+    # mentions only happen when the message produces text.
+    if rel.relation not in ("havi", "sur", "en", "apud"):
+        return None
     a_form = ctx.name_for(a)
     ctx.note_mention(a)
     if rel.relation == "havi":
@@ -682,7 +691,23 @@ def _render_event_phrase(
             peti_handled = True
 
     if not peti_handled and subject_role_name == "agent" and ev.roles.get("theme") and not drop_theme:
-        theme = ctx.trace.entity(ev.roles["theme"])
+        # Reflexive shortcut: agent == theme on a `reflexive_ok` verb
+        # renders as "sin" (third-person reflexive accusative). Avoids
+        # "Maria sekigis Marian" — Esperanto reads that as Maria
+        # drying a different person named Marian, not herself. The
+        # planner only proposes agent==theme bindings for verbs that
+        # opt in via the schema flag, so this gate is sufficient.
+        _action_def = ctx.lexicon.actions.get(ev.action)
+        is_reflexive = (
+            ev.roles.get("agent") == ev.roles.get("theme")
+            and _action_def is not None
+            and getattr(_action_def, "reflexive_ok", False))
+        if is_reflexive:
+            parts.append("sin")
+            ctx.note_mention(ctx.trace.entity(ev.roles["theme"]))
+            theme = None  # already rendered
+        else:
+            theme = ctx.trace.entity(ev.roles["theme"])
         if theme is not None:
             # Abstract themes (faktos) with a recipient unfold as a
             # `al RECIP ke ...` clause: "rakontis al Petro ke la

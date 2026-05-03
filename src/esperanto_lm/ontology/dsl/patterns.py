@@ -234,6 +234,18 @@ def _entity_matches(ent, constraints: dict[str, Any], ctx, bindings) -> bool:
             # physical thing).
             if ent.concept_lemma != expected:
                 return False
+        elif key == "category":
+            # Transitive `concept.category` chain match. Walks
+            # supertypes via `category` field — "is_a" classification.
+            # e.g. `entity(category="surfaco")` matches tablo, breto,
+            # sofo (all categorized as surfaco). Mirrors the
+            # `containment.jsonl` `category` pattern field.
+            from ..containment import _concept_in_category
+            concept = ctx.lexicon.concepts.get(ent.concept_lemma)
+            if concept is None:
+                return False
+            if not _concept_in_category(concept, expected, ctx.lexicon):
+                return False
         else:
             # Slot lookup: check effective property (asserted | derived).
             actual = ctx.effective_property(ent.id, key)
@@ -311,32 +323,31 @@ class RelPattern(Pattern):
         # asserted + derived relations per pattern call. Symmetric
         # relations yield matches for both arg orderings —
         # `samloke(A, B)` should also satisfy a query for
-        # `rel("samloke", a=B, b=A)`.
+        # `rel("samloke", a=B, b=A)`. We expand swaps BEFORE filtering
+        # by arg_filters: otherwise an asserted `apud(koridoro, kuirejo)`
+        # would be dropped when querying for `neighbor=koridoro`, since
+        # only the swap matches the filter.
         seen: set[tuple[str, ...]] = set()
         candidates: list[tuple[str, ...]] = []
         for args in ctx.relations_of(self.relation):
             if len(args) != len(rel_def.arg_names):
                 continue
-            if arg_filters and not all(
-                    args[i] == v for i, v in arg_filters):
-                continue
-            if args not in seen:
-                seen.add(args)
-                candidates.append(args)
+            for cand in (
+                    (args, (args[1], args[0]))
+                    if rel_def.symmetric and len(args) == 2
+                    and args[0] != args[1]
+                    else (args,)):
+                if cand in seen:
+                    continue
+                if arg_filters and not all(
+                        cand[i] == v for i, v in arg_filters):
+                    continue
+                seen.add(cand)
+                candidates.append(cand)
 
         for args in candidates:
             yield from _apply_args(
                 self.arg_patterns, rel_def.arg_names, args, ctx, bindings)
-            if rel_def.symmetric and len(args) == 2 and args[0] != args[1]:
-                swapped = (args[1], args[0])
-                if swapped not in seen:
-                    if arg_filters and not all(
-                            swapped[i] == v for i, v in arg_filters):
-                        continue
-                    seen.add(swapped)
-                    yield from _apply_args(
-                        self.arg_patterns, rel_def.arg_names, swapped,
-                        ctx, bindings)
 
 
     def apply_to_value(self, value, ctx, bindings):

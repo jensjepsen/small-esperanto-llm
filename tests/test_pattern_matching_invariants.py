@@ -23,7 +23,13 @@ def lex():
 
 @pytest.fixture(scope="module")
 def derivations(lex):
-    return collect_rules(R)[1]
+    # Use the explicit DEFAULT_DSL_DERIVATIONS list rather than
+    # `collect_rules` — the latter returns source-definition order,
+    # which is fragile when adding new derivations (e.g. samloke
+    # chain rules added at the bottom of the source must run BEFORE
+    # the lighting rules they feed). The runtime uses the explicit
+    # list for exactly this reason.
+    return R.DEFAULT_DSL_DERIVATIONS
 
 
 def _make_trace(lex, entities: list[tuple[str, str]],
