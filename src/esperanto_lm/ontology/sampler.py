@@ -195,7 +195,6 @@ _DIRECT_SEEDERS: dict[str, Callable] = {
     "manĝi":    None,           # assigned below once _seed_* are defined
     "fali":     None,
     "akvumi":   None,
-    "planti":   None,
     "malfermi": None,
     "fermi":    None,
     "kuiri":    None,
@@ -247,7 +246,6 @@ _DIRECT_SEEDERS = {
     "manĝi":    _seed_eat,
     "fali":     _seed_fali,
     "akvumi":   _seed_akvumi,
-    "planti":   _seed_planti,
     "malfermi": _seed_malfermi,
     "fermi":    _seed_fermi,
     "kuiri":    _seed_kuiri,
@@ -744,6 +742,7 @@ def sample_scene(
 
     label = recipe.seed_fn(t, lex, bindings, rng)
 
+    _emit_weather_events(t, lex)
     n_objects = sum(
         1 for eid, e in t.entities.items()
         if e.entity_type != "person" and eid != scene)
@@ -783,8 +782,90 @@ def _randomize_state(entity, lex: Lexicon, rng: random.Random) -> None:
             continue
         if not slot.varies:
             continue
-        choice = rng.choice(slot.vocabulary)
+        # Honor optional per-slot sampling weights (e.g. tempo_de_tago
+        # biased 30/30/30/10 toward day; nokto rare). Defaults to
+        # uniform when no weights set.
+        if (slot.weights is not None
+                and len(slot.weights) == len(slot.vocabulary)):
+            choice = rng.choices(slot.vocabulary, weights=slot.weights, k=1)[0]
+        else:
+            choice = rng.choice(slot.vocabulary)
         entity.set_property(slot_name, choice)
+
+
+def _ensure_world(trace: Trace, lex: Lexicon, rng: random.Random) -> None:
+    """Materialize the trace-wide `mondo` singleton (one per scene)
+    holding shared metadata like `tempo_de_tago`. Idempotent: skips
+    if already present. Other entry points (regression scene-builder,
+    forward sampler) call this so every scene has a consistent
+    world-state to consult.
+
+    `_add_entity_randomized` triggers `_randomize_state` on the
+    singleton, which honors the slot's `weights` (30/30/30/10
+    mateno/tago/vespero/nokto for tempo_de_tago)."""
+    if "mondo" in trace.entities or "mondo" not in lex.concepts:
+        return
+    try:
+        _add_entity_randomized(trace, "mondo", lex, rng, entity_id="mondo")
+    except (KeyError, ValueError):
+        pass
+
+
+def _emit_weather_events(trace: Trace, lex: Lexicon) -> None:
+    """Fire the weather verb corresponding to `mondo.weather` for each
+    eligible location.
+
+    Adjective→verb derivation: strip a trailing `-a` from the weather
+    value and append `-i` (`pluva` → `pluvi`, `neĝa` → `neĝi`) — the
+    standard Esperanto adjective↔verb relationship. Lookup is silent:
+    a weather value with no matching action still surfaces in the
+    preamble, just without cascade.
+
+    Eligibility comes from the action's own location-typed role spec
+    (`pluvi.location.indoor_outdoor=ekstera` filters indoor places
+    automatically). No per-verb literals here — adding a `neĝi` action
+    immediately gets snow cascading on whatever locations its role
+    accepts.
+
+    Idempotent: event ids are content-hashed and `add_event` dedupes."""
+    mondo = trace.entities.get("mondo")
+    if mondo is None:
+        return
+    weather = mondo.properties.get("weather")
+    if isinstance(weather, list):
+        weather = weather[0] if weather else None
+    if weather is None:
+        return
+    slot_def = lex.slots.get("weather")
+    unmarked = slot_def.unmarked if slot_def is not None else None
+    if weather == unmarked:
+        return
+    root = weather[:-1] if weather.endswith("a") else weather
+    verb = f"{root}i"
+    action = lex.actions.get(verb)
+    if action is None:
+        return
+    location_role = next(
+        (r for r in action.roles if r.type == "location"), None)
+    if location_role is None:
+        return
+    for eid, ent in list(trace.entities.items()):
+        if ent.entity_type != "location":
+            continue
+        ok = True
+        for slot, vals in location_role.properties.items():
+            if not (set(ent.properties.get(slot, [])) & set(vals)):
+                ok = False
+                break
+        if not ok:
+            continue
+        try:
+            ev = make_event(verb, roles={location_role.name: eid},
+                            property_changes=effect_changes(
+                                verb, {location_role.name: eid}, lex))
+            trace.add_event(ev)
+        except (KeyError, ValueError):
+            continue
 
 
 def _add_entity_randomized(

@@ -33,13 +33,13 @@ from ..dsl.implications import PropertyImplication, RelationImplication
 from ..dsl.patterns import Var
 from ..sampler import (
     PERSON_NAMES, _STRUCTURAL_SURFACES, _add_entity_randomized,
-    _ensure_placed, _person_concepts,
+    _ensure_placed, _ensure_world, _person_concepts,
 )
 from .planner import (
     _container_of, _entity_property_values, _has_relation,
     _walk_for_entity_patterns_binding,
 )
-from .preferences import SLOT_PREFERENCES
+from .preferences import SLOT_PREFERENCES, effective_preferences
 
 
 
@@ -58,6 +58,10 @@ def sample_scene(lex, rng, *, max_objects=4):
     reachable = reachable_from(scene, idx, lex) - {scene}
 
     t = Trace()
+    # Trace-wide singleton (tempo_de_tago etc.). Per-trace, picked
+    # before any other state so derivations and prefs see consistent
+    # world-state from t=0.
+    _ensure_world(t, lex, rng)
     t.add_entity(scene, lex, entity_id=scene)
 
     # 2. 1-2 persons. Slight bias to 2 so altruistic / inter-agent
@@ -457,12 +461,15 @@ def sample_drive(t, lex, rng, *, derivations=None, rules=None,
                             continue
                     if target_eid == actor:
                         # Self-drive only counts when goal is the
-                        # SLOT_PREFERENCES preferred value (otherwise
+                        # context-effective preferred value (otherwise
                         # we'd model self-harm — "Maria wants to be
                         # malsata", which is fine mechanically but
-                        # noise for coverage).
-                        if (slot_name in SLOT_PREFERENCES
-                                and SLOT_PREFERENCES[slot_name] == goal):
+                        # noise for coverage). At nokto, sleep_state's
+                        # preferred flips to dormanta, so self-drives
+                        # toward sleeping become valid.
+                        prefs_now = effective_preferences(t)
+                        if (slot_name in prefs_now
+                                and prefs_now[slot_name] == goal):
                             candidates["self_slot"].append(
                                 ("self_slot", actor, slot_name, goal))
                     else:

@@ -215,6 +215,7 @@ class MatchContext:
         return self._relations_by_name_cache.get(relation_name, [])
 
 
+
 # --------------------- enumerate bindings -------------------------
 
 def enumerate_bindings(

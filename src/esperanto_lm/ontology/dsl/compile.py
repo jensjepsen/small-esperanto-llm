@@ -878,7 +878,16 @@ class _Compiler:
         in the lexicon (apud, samloke), the interpreter yields BOTH arg
         orderings. We mirror that by generating an inner loop that
         feeds each tuple twice — once as-asserted, once swapped — when
-        the relation is symmetric and arity is 2."""
+        the relation is symmetric and arity is 2.
+
+        Indexed-lookup optimization: if any arg's BindPattern targets
+        a Var already in `var_to_local`, that arg is effectively a
+        pre-known value. Use `ctx.relations_with_arg(name, idx, val)`
+        to fetch only matching relations, instead of iterating every
+        relation and post-filtering. Cuts O(N_rels) → O(matching).
+        Skipped for symmetric relations (the swap-yielding inner loop
+        complicates which arg-index actually carries the join key).
+        """
         rel_name = clause.relation
         argnames_local, _ = self._ensure_rel_argnames(rel_name)
         sym_local = self._sym_local_for(rel_name)

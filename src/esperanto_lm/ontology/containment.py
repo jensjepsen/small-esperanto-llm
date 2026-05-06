@@ -92,6 +92,9 @@ def _concept_matches_intrinsic(
 _concept_matches_pattern = _concept_matches_intrinsic
 
 
+_RESOLVE_CONTAINMENT_CACHE_ATTR = "_resolve_containment_cache"
+
+
 def resolve_containment(
     lexicon: Lexicon, parser: MorphParser | None = None,
 ) -> dict[str, list[ContainmentFact]]:
@@ -110,7 +113,15 @@ def resolve_containment(
     and keeps the schema's reasoning easy to follow. A future relational
     field (`affords:`, `instance_of:`) follows the same two-pass
     structure rather than introducing nested second-order semantics.
+
+    Result is cached per-lexicon-id: the lexicon is treated as immutable
+    after load, and the seeders/planner call this hundreds of times per
+    scene under containers_for/_place_respecting_containment. Without
+    the cache the quadratic walk dominates regression sample time.
     """
+    cached = getattr(lexicon, _RESOLVE_CONTAINMENT_CACHE_ATTR, None)
+    if cached is not None:
+        return cached
     parser = parser or DefaultMorphParser()
     out: dict[str, list[ContainmentFact]] = defaultdict(list)
 
@@ -133,7 +144,12 @@ def resolve_containment(
                 out[lemma].append(fact)
 
     if not second_order:
-        return dict(out)
+        result = dict(out)
+        try:
+            setattr(lexicon, _RESOLVE_CONTAINMENT_CACHE_ATTR, result)
+        except (AttributeError, TypeError):
+            pass
+        return result
 
     # Pre-compute pass-1 reachability per concept once.
     pass1_index = dict(out)
@@ -154,7 +170,12 @@ def resolve_containment(
                     continue
             out[lemma].append(fact)
 
-    return dict(out)
+    result = dict(out)
+    try:
+        setattr(lexicon, _RESOLVE_CONTAINMENT_CACHE_ATTR, result)
+    except (AttributeError, TypeError):
+        pass
+    return result
 
 
 # `expand_contained` is called hundreds of thousands of times during

@@ -25,7 +25,7 @@
 {"name": "can_use_tools", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
 {"name": "pri_relacio", "vocabulary": null, "applies_to": ["abstract"], "scalar": true}
 {"name": "lock_capable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
-{"name": "posture", "vocabulary": ["staranta", "sidanta", "kuŝanta"], "applies_to": ["animate"], "scalar": true, "pervasive": true, "adjectival": true, "unmarked": "staranta"}
+{"name": "posture", "vocabulary": ["staranta", "sidanta", "kuŝanta", "naĝanta", "penda"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "unmarked": "staranta"}
 {"name": "sittable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
 {"name": "lieable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
 {"name": "power_state", "vocabulary": ["aktiva", "neaktiva"], "applies_to": ["artifact"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "neaktiva"}
@@ -47,3 +47,10 @@
 {"name": "count", "vocabulary": ["1", "2", "3", "4", "5"], "applies_to": ["physical"], "scalar": true, "varies": true}
 {"name": "is_currency", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
 {"name": "liquid_holder", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
+{"name": "tempo_de_tago", "vocabulary": ["mateno", "tago", "vespero", "nokto"], "applies_to": ["abstract"], "scalar": true, "varies": true, "adjectival": false, "unmarked": "tago", "weights": [0.3, 0.3, 0.3, 0.1]}
+{"name": "weather", "vocabulary": ["serena", "pluva", "neĝa"], "applies_to": ["abstract"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "serena", "weights": [0.6, 0.3, 0.1]}
+{"name": "cooking_state", "vocabulary": ["kruda", "kuirita"], "applies_to": ["physical"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "kuirita", "weights": [0.6, 0.4]}
+{"name": "requires_cooking", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "plantable", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "planted_state", "vocabulary": ["neplantita", "plantita"], "applies_to": ["physical"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "neplantita", "weights": [0.7, 0.3]}
+{"name": "imposes_pose", "vocabulary": ["staranta", "sidanta", "kuŝanta", "penda"], "applies_to": ["physical"], "scalar": true}

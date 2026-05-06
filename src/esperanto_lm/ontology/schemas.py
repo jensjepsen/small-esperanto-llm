@@ -77,6 +77,12 @@ class PropertySlot(_Frozen):
     # malsata) still render. None means every value is potentially
     # marked (e.g. hazard: akra and glita are both noteworthy).
     unmarked: Optional[str] = None
+    # Optional sampling weights aligned 1:1 with `vocabulary`. When
+    # set, `_randomize_state` uses `rng.choices(vocabulary, weights)`
+    # instead of uniform `rng.choice`. Lets the world bias toward
+    # narratively-common values (e.g. nokto rare relative to tago)
+    # without inventing parallel mechanisms. None = uniform.
+    weights: Optional[list[float]] = None
 
 
 class ConceptPart(_Frozen):

@@ -13,7 +13,7 @@ drive shape.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from ..causal import EntityInstance, Trace, effect_changes, make_event
 from ..dsl.effects import AddRelation
@@ -137,6 +137,11 @@ def regress_for_verb(verb_name, lex, rng):
     if away_id != scene_id:
         try:
             _add_entity_randomized(t, away_lemma, lex, rng, entity_id=away_id)
+            # Anchor as a sibling so the realizer's en-only chain can
+            # surface it (otherwise the away location floats with no
+            # spatial relation to the scene; later Tier 3 reuse would
+            # find it pre-placed and skip adding the apud link).
+            t.assert_relation("apud", (away_id, scene_id), lex)
         except (KeyError, ValueError):
             away_id = scene_id
 
@@ -185,6 +190,14 @@ def regress_for_verb(verb_name, lex, rng):
     # Placing the target away forces samloke(agent, theme) preconditions
     # to subgoal via iri, surfacing locomotion chains for verbs like
     # kuiri/akvumi/fermi that don't otherwise need to move the agent.
+    #
+    # Within the chosen scene location, route through any non-location
+    # container the concept affords (vestaĵo en valizo, manĝebla en
+    # korbo, surfaco-affordable thing sur tablo). The lazy-place helper
+    # materializes the intermediate container and asserts its location
+    # placement. Falls back to direct under the scene location when no
+    # affordance fits — keeping non-routed concepts (animates, plain
+    # ingredients) behaving as before.
     for role_name, eid in role_eids.items():
         if (role_name == eff.target_role
                 and away_id != scene_id
@@ -192,10 +205,14 @@ def regress_for_verb(verb_name, lex, rng):
             placement = away_id
         else:
             placement = scene_id
-        try:
-            t.assert_relation("en", (eid, placement), lex)
-        except (KeyError, ValueError):
-            return None
+        ent = t.entities.get(eid)
+        concept_lemma = ent.concept_lemma if ent is not None else None
+        if not _route_through_container(
+                t, eid, concept_lemma, placement, lex, rng):
+            try:
+                t.assert_relation("en", (eid, placement), lex)
+            except (KeyError, ValueError):
+                return None
 
     # Set theme's effect-slot to a non-target value so the verb has
     # work to do. Other role.properties are deliberately NOT preset —
@@ -234,6 +251,14 @@ def regress_for_verb(verb_name, lex, rng):
     if _action_might_need_light(action):
         _seed_indoor_lamp(t, scene_id, away_id, lex, rng)
 
+    # Probabilistic priskribas scaffolding: places a readable text
+    # describing the theme's en-location somewhere in the scene.
+    # The planner may pick legi(text) as a way to satisfy
+    # scias_lokon when direct vidi isn't viable (theme in another
+    # room). Surfaces "iri to text → legi → iri to theme" chains.
+    if target_eid is not None and rng.random() < 0.15:
+        _seed_priskribas_about_theme(t, target_eid, lex, rng)
+
     agent_eid = role_eids.get("agent")
     if agent_eid is None:
         return None
@@ -270,6 +295,76 @@ def _candidate_weights(
         return None   # uniform either way
     boost = n_other / n_gate
     return [boost if c in gate_able else 1.0 for c in candidates]
+
+
+def _seed_priskribas_about_theme(t, theme_eid, lex, rng) -> None:
+    """Place a readable text in some trace location with priskribas →
+    a fakto about the theme's `en` location. The planner can then
+    route scias_lokon(actor, theme) through legi(text) when direct
+    vidi isn't viable (theme in another room, scene unilluminated).
+
+    Design:
+      - Reuses an existing fakto entity for (theme, theme_loc, en) if
+        one is already present (e.g. seeded by another helper);
+        creates a fresh one otherwise. The pri_relacio/subjekto/objekto
+        shape mirrors `vidi_learns_en` so `scias_lokon_via_en` derives
+        correctly.
+      - Picks a readable concept by walking the lexicon for
+        readability=legebla — auto-includes any future readable
+        without per-concept logic here.
+      - Picks a random in-trace location for the text. Could be the
+        agent's room, the theme's room, or an unrelated sibling —
+        the planner figures out the locomotion. Variety in placement
+        produces multi-hop chains naturally.
+
+    No-op if the theme isn't `en` something or no readables exist."""
+    from ..causal import EntityInstance
+    from ..sampler import _add_entity_randomized
+    if theme_eid not in t.entities:
+        return
+    theme_loc = None
+    for r in t.relations:
+        if r.relation == "en" and r.args[0] == theme_eid:
+            theme_loc = r.args[1]
+            break
+    if theme_loc is None:
+        return
+    fakto_concept = lex.concepts.get("fakto")
+    if fakto_concept is None:
+        return
+    fakto_id = f"fakto_from_en_{theme_eid}_{theme_loc}"
+    if fakto_id not in t.entities:
+        t.entities[fakto_id] = EntityInstance(
+            id=fakto_id, concept_lemma="fakto",
+            entity_type=fakto_concept.entity_type,
+            properties={"pri_relacio": ["en"]},
+        )
+        try:
+            t.assert_relation("subjekto", (fakto_id, theme_eid), lex)
+            t.assert_relation("objekto", (fakto_id, theme_loc), lex)
+        except (KeyError, ValueError):
+            return
+    readables = [c.lemma for c in lex.concepts.values()
+                 if "legebla" in c.properties.get("readability", [])]
+    if not readables:
+        return
+    text_lemma = rng.choice(readables)
+    locations = [eid for eid, e in t.entities.items()
+                 if lex.types.is_subtype(e.entity_type, "location")]
+    if not locations:
+        return
+    text_loc_eid = rng.choice(locations)
+    text_id = text_lemma
+    sfx = 0
+    while text_id in t.entities:
+        sfx += 1
+        text_id = f"{text_lemma}_priskribas{sfx if sfx > 1 else ''}"
+    try:
+        _add_entity_randomized(t, text_lemma, lex, rng, entity_id=text_id)
+        t.assert_relation("en", (text_id, text_loc_eid), lex)
+        t.assert_relation("priskribas", (text_id, fakto_id), lex)
+    except (KeyError, ValueError):
+        return
 
 
 def _seed_agent_knowledge(t, agent_eid, lex) -> None:
@@ -653,6 +748,295 @@ def _walk_entity_patterns_with_binds(pattern):
             yield from _walk_entity_patterns_with_binds(pattern.right)
 
 
+_NON_LOCATION_CONTAINERS_ATTR = "_non_location_containers_by_concept"
+
+
+def _non_location_containers_for(
+    concept_lemma: str, lex,
+) -> list[tuple[str, str]]:
+    """Cached lookup of (container_lemma, relation) pairs for non-location
+    containers the concept is afforded into. Most concepts have no such
+    affordance (animates, locations, plain ingredients placed directly
+    in rooms) — caching the lookup prevents re-walking the containment
+    graph per role-entity. Result attached to the lexicon (immutable
+    after load) so workers share via copy-on-fork."""
+    cache = getattr(lex, _NON_LOCATION_CONTAINERS_ATTR, None)
+    if cache is None:
+        from ..containment import containers_for, resolve_containment
+        idx = resolve_containment(lex)
+        cache = {}
+        for c_lemma in lex.concepts:
+            non_loc = []
+            for cont_lemma, rel in containers_for(c_lemma, idx, lex):
+                cont_concept = lex.concepts.get(cont_lemma)
+                if cont_concept is None or cont_concept.entity_type == "location":
+                    continue
+                non_loc.append((cont_lemma, rel))
+            if non_loc:
+                cache[c_lemma] = non_loc
+        try:
+            setattr(lex, _NON_LOCATION_CONTAINERS_ATTR, cache)
+        except (AttributeError, TypeError):
+            pass
+    return cache.get(concept_lemma, [])
+
+
+def _route_through_container(
+    t, eid: str, concept_lemma: str | None, scene_id: str,
+    lex, rng,
+) -> bool:
+    """Route an existing role-entity through any non-location container
+    the concept affords (vestaĵo → valizo/ŝranko, surfaco-able → tablo,
+    etc). Materializes the intermediate container under `scene_id` via
+    the recursive placer so the chain `eid (rel) container, container en
+    location` is fully linked.
+
+    Returns True iff routing succeeded (eid placed). False means no
+    non-location affordance fits and the caller should fall back to
+    direct placement under scene_id. Caller-friendly: never raises;
+    failed asserts roll back via try/except so the trace stays clean.
+
+    Picking among multiple affordances is uniform — both en and sur
+    cascade the same way (a clothing item lands `en` valizo, a glaso
+    `sur` tablo)."""
+    if concept_lemma is None:
+        return False
+    candidates = _non_location_containers_for(concept_lemma, lex)
+    if not candidates:
+        return False
+    candidates = list(candidates)
+    rng.shuffle(candidates)
+    for cont_lemma, rel in candidates:
+        cont_eid = _place_respecting_containment(
+            t, lex, scene_id, cont_lemma, rng, preferred_id=scene_id)
+        if cont_eid is None:
+            continue
+        if not t.is_relation_permitted(rel, (eid, cont_eid), lex):
+            continue
+        try:
+            t.assert_relation(rel, (eid, cont_eid), lex)
+            return True
+        except (KeyError, ValueError):
+            continue
+    return False
+
+
+def _place_respecting_containment(
+    t, lex, scene_id, concept_lemma, rng, *, preferred_id=None,
+    _depth: int = 0,
+):
+    """Place a fresh `concept_lemma` instance under a container that
+    `Trace.is_relation_permitted` accepts on both axes — afforded by
+    containment.jsonl AND no `required` entry violated. Mirrors
+    `assert_relation`'s strict check so seeders can't smuggle in
+    placements that would silently fail under raise mode.
+
+    Resolution:
+      1. Already in trace → return that eid (caller reuses it).
+      2. `preferred_id` (typically scene_id or away_id) — if a relation
+         is permitted, place there.
+      3. Any other in-trace entity — first valid container wins.
+      4. Walk `containers_for(concept_lemma)` and recursively place a
+         valid container, then put the entity inside it. Recursion
+         climbs the containment graph (forno → kuirejo → domo) until
+         it bottoms out at a top-level location, which gets placed
+         apud the scene via Tier 5.
+      5. Top-level location with no further container → place apud
+         the scene (sibling). Only fires for location concepts; non-
+         location orphans are rejected so the trace stays clean.
+      6. None — every option failed; caller skips this producer.
+
+    Uses `concept_lemma` as the eid (no suffix) since the cases that
+    need this helper are unique-per-scene appliances/instruments —
+    multiple fornoj in one scene have no narrative use.
+
+    `_depth` guards recursion (caps at 4) under cyclic containment."""
+    if _depth > 4:
+        return None
+    from ..containment import containers_for, resolve_containment
+    from ..sampler import _add_entity_randomized
+    if concept_lemma in t.entities:
+        return concept_lemma
+
+    def _try_relation(container_eid: str):
+        for rel in ("en", "sur"):
+            if t.is_relation_permitted(
+                    rel, (concept_lemma, container_eid), lex):
+                return rel
+        return None
+
+    # Need to add the entity before checking permission (validation
+    # looks up entity types in trace). Add, attempt placements, then
+    # roll back on total failure.
+    _add_entity_randomized(t, concept_lemma, lex, rng,
+                            entity_id=concept_lemma)
+
+    # Tier 1: preferred container.
+    if preferred_id is not None and preferred_id in t.entities:
+        rel = _try_relation(preferred_id)
+        if rel is not None:
+            try:
+                t.assert_relation(rel, (concept_lemma, preferred_id), lex)
+                return concept_lemma
+            except (KeyError, ValueError):
+                pass
+
+    # Tier 2: any other in-trace entity.
+    for eid in list(t.entities.keys()):
+        if eid in (concept_lemma, preferred_id):
+            continue
+        rel = _try_relation(eid)
+        if rel is None:
+            continue
+        try:
+            t.assert_relation(rel, (concept_lemma, eid), lex)
+            return concept_lemma
+        except (KeyError, ValueError):
+            continue
+
+    # Tier 3: materialize a container, then place inside.
+    # Pre-filter at the lemma level (containers_for is broad — it
+    # returns every concept with an affordance entry, so requirement-
+    # only kuirejo gets buried among 9+ generic-room siblings). Without
+    # the pre-filter we'd materialize each one as a sibling before
+    # discovering only one survives the required-fact check.
+    #
+    # The container itself is placed via a RECURSIVE call. Walks the
+    # containment graph to find a valid host for it (kuirejo → domo;
+    # domo → no containers, so falls to Tier 4 which places it apud
+    # the scene). Generalizes one-off "sibling apud scene" to arbitrary
+    # depth: forno → kuirejo → domo → apud scene.
+    from ..containment import (
+        containment_relations_for, required_fact_violations,
+    )
+    idx = resolve_containment(lex)
+    for cont_lemma, _afforded_rel in containers_for(
+            concept_lemma, idx, lex):
+        cont_concept = lex.concepts.get(cont_lemma)
+        if cont_concept is None or cont_concept.entity_type != "location":
+            continue
+        valid_rel: Optional[str] = None
+        for candidate_rel in containment_relations_for(
+                cont_lemma, concept_lemma, idx, lex):
+            if not required_fact_violations(
+                    cont_lemma, concept_lemma, candidate_rel, idx, lex):
+                valid_rel = candidate_rel
+                break
+        if valid_rel is None:
+            continue
+        cont_eid = _place_respecting_containment(
+            t, lex, scene_id, cont_lemma, rng, preferred_id=scene_id,
+            _depth=_depth + 1)
+        if cont_eid is None:
+            continue
+        try:
+            t.assert_relation(valid_rel, (concept_lemma, cont_eid), lex)
+            return concept_lemma
+        except (KeyError, ValueError):
+            continue
+
+    # Tier 4: top-level location with no valid container of its own
+    # (e.g. domo) → place as a sibling apud the scene. Only fires for
+    # location concepts; non-locations without a container are
+    # genuinely orphan-prone and we'd rather skip the producer than
+    # smuggle them into the scene without containment.
+    concept_def = lex.concepts.get(concept_lemma)
+    if (concept_def is not None
+            and concept_def.entity_type == "location"
+            and concept_lemma != scene_id):
+        try:
+            t.assert_relation("apud", (concept_lemma, scene_id), lex)
+            return concept_lemma
+        except (KeyError, ValueError):
+            pass
+
+    # Roll back: no valid placement found. Removing the orphan keeps
+    # the trace clean (no entity floating without a container).
+    t.entities.pop(concept_lemma, None)
+    return None
+
+
+def _seed_role_chain_dependencies(t, action, role_eids: dict,
+                                    scene_id: str, lex, rng, *,
+                                    away_id: str | None = None,
+                                    seen: set | None = None) -> None:
+    """For each role.property the role-entity doesn't satisfy, find
+    verbs that write (slot, value) and seed their missing roles into
+    the scene so the planner can subgoal the producer.
+
+    Mirrors `_seed_chain_dependencies`, which handles
+    IfPropertyPreconditions; this one handles role.properties on the
+    target action — the case where dormi.agent requires posture=
+    kuŝanta and the planner would subgoal kuŝi, which itself needs a
+    lieable support in scene. Recursive: producer's own role.properties
+    get covered too. `seen` tracks visited verbs to bound recursion.
+
+    Reuses the actor (agent eid) for any agent-role on the producer,
+    since the actor is the one trying to satisfy their own role
+    requirement (kuŝi's agent IS the dormi agent)."""
+    from ..sampler import _add_entity_randomized
+    seen = (seen or set()) | {action.lemma}
+    placement_id = away_id if (away_id and away_id != scene_id) else scene_id
+
+    for role in action.roles:
+        if not role.properties:
+            continue
+        eid = role_eids.get(role.name)
+        if eid is None:
+            continue
+        ent = t.entities.get(eid)
+        if ent is None:
+            continue
+        for slot, vals in role.properties.items():
+            for value in vals:
+                if value in ent.properties.get(slot, []):
+                    continue
+                for producer in _verbs_producing(lex, slot, value):
+                    if producer.lemma in seen:
+                        continue
+                    prod_role_eids = dict(role_eids)
+                    # When the property target is the producer's effect
+                    # target, bind that role to the eid we're satisfying
+                    # (kuŝi's agent IS dormi's agent).
+                    for eff in producer.effects:
+                        if (eff.property == slot and eff.value == value
+                                and eff.target_role not in prod_role_eids):
+                            prod_role_eids[eff.target_role] = eid
+                    ok = True
+                    for p_role in producer.roles:
+                        existing = prod_role_eids.get(p_role.name)
+                        if existing is not None:
+                            ent_p = t.entities.get(existing)
+                            role_concept = (
+                                lex.concepts.get(ent_p.concept_lemma)
+                                if ent_p else None)
+                            if (ent_p is not None
+                                    and lex.types.is_subtype(
+                                        ent_p.entity_type, p_role.type)
+                                    and role_concept is not None
+                                    and _concept_satisfies_role_props(
+                                        role_concept, p_role, lex)):
+                                continue
+                        cands = _concepts_matching_role(lex, p_role)
+                        if not cands:
+                            ok = False
+                            break
+                        concept_lemma = rng.choice(cands)
+                        eid_new = _place_respecting_containment(
+                            t, lex, scene_id, concept_lemma, rng,
+                            preferred_id=placement_id)
+                        if eid_new is None:
+                            ok = False
+                            break
+                        prod_role_eids[p_role.name] = eid_new
+                    if not ok:
+                        continue
+                    _seed_role_chain_dependencies(
+                        t, producer, prod_role_eids, scene_id, lex, rng,
+                        away_id=away_id, seen=seen)
+                    break
+
+
 def _seed_chain_dependencies(t, action, role_eids: dict, scene_id: str,
                               lex, rng, *, away_id: str | None = None,
                               seen: set | None = None) -> None:
@@ -708,17 +1092,10 @@ def _seed_chain_dependencies(t, action, role_eids: dict, scene_id: str,
                 if not cands:
                     continue
                 concept_lemma = rng.choice(cands)
-                eid = concept_lemma
-                suffix = 0
-                while eid in t.entities:
-                    suffix += 1
-                    eid = f"{concept_lemma}_{p_role.name}" + (
-                        str(suffix) if suffix > 1 else "")
-                try:
-                    _add_entity_randomized(
-                        t, concept_lemma, lex, rng, entity_id=eid)
-                    t.assert_relation("en", (eid, placement_id), lex)
-                except (KeyError, ValueError):
+                eid = _place_respecting_containment(
+                    t, lex, scene_id, concept_lemma, rng,
+                    preferred_id=placement_id)
+                if eid is None:
                     continue
                 prod_role_eids[p_role.name] = eid
             _seed_chain_dependencies(
@@ -1097,7 +1474,7 @@ def regress_for_clothing(lex, rng):
 def _self_slot_drive_pairs(rules, lex) -> list[tuple[str, Any]]:
     """(slot, target_value) pairs eligible for `regress_for_self_slot`.
 
-    Two sources:
+    Three sources:
       1. Cascade rules where the AGENT-role's slot flips (hungry_eats_sated:
          agent.hunger=sata via manĝi). Theme-targeting cascades (fali →
          integrity=rompita on the falling theme) excluded — no entity
@@ -1106,7 +1483,12 @@ def _self_slot_drive_pairs(rules, lex) -> list[tuple[str, Any]]:
          the THEME's slot (sekigi: theme.wetness=seka, reflexive_ok=True).
          The actor binds to both agent and theme, "Maria sekigis sin."
          Lets a wet actor naturally drive the self-drying chain when
-         a tuko is reachable."""
+         a tuko is reachable.
+      3. Direct-effect verbs whose effect writes the AGENT's own slot
+         (dormi: agent.sleep_state=dormanta; sidi: agent.posture=sidanta).
+         No theme to scatter — just an actor with the opposite pre-state
+         flipping themselves via the verb. Picks up displeased self-drives
+         that depend on context, like sleep at night."""
     from ..dsl.introspect import self_slot_cascades
     out: set[tuple[str, Any]] = set()
     for key, specs in self_slot_cascades(rules).items():
@@ -1119,13 +1501,19 @@ def _self_slot_drive_pairs(rules, lex) -> list[tuple[str, Any]]:
         for eff in action.effects:
             if eff.target_role == "theme":
                 out.add((eff.property, eff.value))
+    for action in lex.actions.values():
+        if "agent" not in {r.name for r in action.roles}:
+            continue
+        for eff in action.effects:
+            if eff.target_role == "agent":
+                out.add((eff.property, eff.value))
     return list(out)
 
 
 def regress_for_self_slot(slot, target_value, lex, rng, rules):
     """Procedural seeder for `("self_slot", actor, slot, target_value)`.
 
-    Two satisfaction paths:
+    Three satisfaction paths:
       1. Cascade verb (hunger=sata via manĝi, thirst=satigita via
          trinki). The cascade rule's `then` flips the agent's slot;
          the seeder sets the actor's pre-state from the `when`
@@ -1136,10 +1524,16 @@ def regress_for_self_slot(slot, target_value, lex, rng, rules):
          theme==agent==actor and scatters the required INSTRUMENT
          (tuko) in "near" pressure (sekigi can't fetch-and-return).
          Actor's pre-state comes from the theme role's properties.
+      3. Direct agent-slot verb (sleep_state=dormanta via dormi,
+         posture=sidanta via sidi). No theme to place — the verb's
+         effect writes the agent itself; the seeder builds an actor
+         with the opposite slot value and lets the planner satisfy
+         the drive in one step. Forces the world into the state where
+         this slot's preference matches the target (e.g. mondo.
+         tempo_de_tago=nokto for sleep_state=dormanta) so context
+         drive-coupling is consistent.
 
-    The cascade path is tried first. Falls back to the reflexive
-    path when no cascade matches and an action with reflexive_ok +
-    matching theme effect exists."""
+    Tried in order; first match wins."""
     from ..dsl.introspect import self_slot_cascades
 
     cascades = self_slot_cascades(rules).get((slot, target_value), [])
@@ -1162,6 +1556,19 @@ def regress_for_self_slot(slot, target_value, lex, rng, rules):
     if refl_actions:
         return _seed_reflexive_self_slot(
             rng.choice(refl_actions), slot, target_value, lex, rng)
+
+    # Agent-direct fallback: find an action whose effect writes the
+    # agent's own slot to the target value (dormi → sleep_state=dormanta).
+    agent_actions = [
+        a for a in lex.actions.values()
+        if "agent" in {r.name for r in a.roles}
+        and any(eff.target_role == "agent"
+                and eff.property == slot and eff.value == target_value
+                for eff in a.effects)
+    ]
+    if agent_actions:
+        return _seed_agent_self_slot(
+            rng.choice(agent_actions), slot, target_value, lex, rng)
     return None
 
 
@@ -1232,4 +1639,84 @@ def _seed_reflexive_self_slot(action, slot, target_value, lex, rng):
         .set("actor", **{slot: pre_state})
         .drive("self_slot", actor="actor", slot=slot, value=target_value)
         .build())
+
+
+def _seed_agent_self_slot(action, slot, target_value, lex, rng):
+    """Build a scene where actor (in opposite pre-state) wants to flip
+    their own slot via a verb whose effect writes the AGENT directly
+    (dormi → sleep_state=dormanta). Pre-state is sampled from the
+    slot's vocabulary minus the target.
+
+    Calls `_nudge_world_for_pref` after build to align the trace-wide
+    `mondo` state with the drive (e.g. force tempo_de_tago=nokto for
+    sleep_state=dormanta) so the rendered scene reads as causally
+    motivated. The drive itself doesn't depend on the nudge — the
+    planner satisfies it regardless of mondo state."""
+    slot_def = lex.slots.get(slot)
+    if slot_def is None or not slot_def.vocabulary:
+        return None
+    pre_values = [v for v in slot_def.vocabulary if v != target_value]
+    if not pre_values:
+        return None
+    pre_state = rng.choice(pre_values)
+
+    builder = (scene(lex, rng)
+        .location("here", is_scene=True)
+        .person("actor", in_="here"))
+    for role in action.roles:
+        if role.name == "agent":
+            continue
+        candidates = set(_concepts_matching_role(lex, role))
+        if not candidates:
+            return None
+        builder = builder.scatter(
+            role.name, where=lambda c, allowed=candidates: c.lemma in allowed,
+            pressure="near")
+    result = (builder
+        .set("actor", **{slot: pre_state})
+        .drive("self_slot", actor="actor", slot=slot, value=target_value)
+        .build())
+    if result is None:
+        return None
+    trace, scene_id, drive = result
+    actor_eid = drive[1]
+    # Seed chain ingredients for any agent role.properties the actor
+    # doesn't satisfy (dormi.agent.posture=kuŝanta → seed a lieable
+    # support so the planner can subgoal kuŝi). Without this, plans
+    # for sleep almost never fire because random scenes don't contain
+    # a lito/sofo/kuseno.
+    _seed_role_chain_dependencies(
+        trace, action, {"agent": actor_eid}, scene_id, lex, rng)
+    _nudge_world_for_pref(trace, slot, target_value, lex)
+    return trace, scene_id, drive
+
+
+def _nudge_world_for_pref(trace, slot, target_value, lex) -> None:
+    """Mutate `mondo`'s scalar slots so that
+    `effective_preferences(trace)[slot] == target_value`. No-op when
+    no mondo entity, no slot/value combo achieves it, or already
+    matching. Used by the agent-direct self-slot seeder to align the
+    world with the drive (e.g. force nokto for sleep_state=dormanta).
+
+    Introspection-only: no per-slot special cases. Adding a new
+    preference override in `effective_preferences` automatically
+    becomes a possible nudge target here."""
+    from ..agent.preferences import effective_preferences
+    if effective_preferences(trace).get(slot) == target_value:
+        return
+    mondo = trace.entities.get("mondo")
+    if mondo is None:
+        return
+    for prop in list(mondo.properties.keys()):
+        slot_def = lex.slots.get(prop)
+        if (slot_def is None or not slot_def.vocabulary
+                or not slot_def.scalar):
+            continue
+        original = list(mondo.properties.get(prop, []))
+        for v in slot_def.vocabulary:
+            mondo.set_property(prop, v)
+            if effective_preferences(trace).get(slot) == target_value:
+                return
+        if original:
+            mondo.properties[prop] = original
 

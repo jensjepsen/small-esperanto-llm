@@ -51,15 +51,20 @@ from ..dsl.patterns import (
 from ..dsl.rules import (
     DEFAULT_DSL_DERIVATIONS, DEFAULT_DSL_RULES, RUNTIME_DERIVATIONS,
 )
-from .preferences import SLOT_PREFERENCES
+from .preferences import SLOT_PREFERENCES, effective_preferences
 
 
 def displeased_slots(entity, trace=None, derived=None) -> list[tuple[str, str]]:
     """Return [(slot, preferred_value)] for slots where the entity's
     CURRENT values do not include the preferred. Membership semantics
-    so multi-valued slots work."""
+    so multi-valued slots work.
+
+    Reads the *effective* preferences (trace-context-aware), so e.g.
+    a sleep_state of vekita at night counts as displeased relative
+    to the night-time preference of dormanta."""
     out = []
-    for slot, pref in SLOT_PREFERENCES.items():
+    prefs = effective_preferences(trace)
+    for slot, pref in prefs.items():
         values = _entity_property_values(entity, slot, trace, derived)
         if values and pref not in values:
             out.append((slot, pref))
@@ -786,7 +791,8 @@ def _filter_candidates_by_slots(candidates, fv_id, slots_to_subgoal,
         if ent is None:
             continue
         ok = True
-        for v_local, slot, value in slots_to_subgoal:
+        for entry in slots_to_subgoal:
+            v_local, slot, value, sign = entry
             if id(v_local) != fv_id:
                 continue
             slot_def = lex.slots.get(slot)
@@ -795,17 +801,76 @@ def _filter_candidates_by_slots(candidates, fv_id, slots_to_subgoal,
                     lex.types.is_subtype(ent.entity_type, t)
                     for t in slot_def.applies_to)
                 if not applies:
+                    # Slot doesn't apply to this entity type. For
+                    # positive constraints, the candidate is dead.
+                    # For negative ("not fermita"), candidates with
+                    # no openness slot at all vacuously satisfy the
+                    # negation — keep them.
+                    if sign == "pos":
+                        ok = False
+                        break
+                    continue
+            actual = ent.properties.get(slot, [])
+            if sign == "pos":
+                if value in actual:
+                    continue
+                if not _slot_value_producible(slot, value, lex):
                     ok = False
                     break
-            actual = ent.properties.get(slot, [])
-            if value in actual:
-                continue
-            if not _slot_value_producible(slot, value, lex):
-                ok = False
-                break
+            else:  # sign == "neg"
+                if value not in actual:
+                    continue
+                # Need to flip away from `value`. Viable iff some
+                # alternate value in slot.vocabulary is producible.
+                alts = [v for v in (slot_def.vocabulary if slot_def else [])
+                        if v != value]
+                if not any(_slot_value_producible(slot, alt, lex)
+                           for alt in alts):
+                    ok = False
+                    break
         if ok:
             out.append(cand)
     return out
+
+
+def _plan_slot_subgoal(target_eid, slot, value, sign, actual,
+                        actor_id, trace, lex, rules, derived,
+                        derivations, max_depth, depth, seen):
+    """Subgoal a slot constraint with sign. Returns a list of plan
+    steps (possibly empty if already satisfied) or None if unreachable.
+
+    sign="pos": want slot=value. Already satisfied iff value in actual.
+    Otherwise plan_to_achieve(target_eid, slot, value).
+
+    sign="neg": want slot != value. Already satisfied iff value not
+    in actual. Otherwise iterate slot.vocabulary, try plan_to_achieve
+    for each non-forbidden alternate; first one that resolves wins.
+    Used by entity NotPattern subgoaling — `~entity(openness="fermita")`
+    on a closed valizo subgoals plan_to_achieve(valizo, openness,
+    malfermita), which finds malfermi."""
+    if sign == "pos":
+        if value in actual:
+            return []
+        return plan_to_achieve(
+            target_eid, slot, value, actor_id, trace, lex, rules,
+            derived=derived, derivations=derivations,
+            max_depth=max_depth, _depth=depth, _seen=seen)
+    # sign == "neg"
+    if value not in actual:
+        return []
+    slot_def = lex.slots.get(slot)
+    if slot_def is None or not slot_def.vocabulary:
+        return None
+    for alt in slot_def.vocabulary:
+        if alt == value:
+            continue
+        sub = plan_to_achieve(
+            target_eid, slot, alt, actor_id, trace, lex, rules,
+            derived=derived, derivations=derivations,
+            max_depth=max_depth, _depth=depth, _seen=seen)
+        if sub is not None:
+            return sub
+    return None
 
 
 def _simulate_from_scratch(base_trace, plan, lex, rules, derivations):
@@ -1754,13 +1819,55 @@ def _notpatterns_violated(when, given, var_bindings, trace, derived,
                           lex) -> bool:
     """True if any NotPattern in when+given currently holds with the
     given bindings — meaning the derivation can't fire even if its
-    positive subgoals are achieved."""
+    positive subgoals are achieved.
+
+    Two flavors of NotPattern:
+      (a) `~rel(...)`: inner is a RelPattern. Check via existing
+          `_notpattern_inner_holds`.
+      (b) `~entity(type=..., concept=..., slot=...)` inside an And
+          that binds a var. Identity constraints (type/concept/has_suffix)
+          are immutable, so a violation here means the rule can't fire
+          under this binding — reject. Slot constraints are flippable
+          and handled separately via slots_to_subgoal; we leave those
+          to the planner's subgoal loop and don't reject here.
+    """
     for pat in [when] + list(given):
         for np in _walk_for_not_patterns(pat):
             if _notpattern_inner_holds(np.inner, var_bindings,
                                         trace, derived, lex):
                 return True
+        for var, ep in _walk_negated_entity_patterns_with_vars(pat):
+            if id(var) not in var_bindings:
+                continue
+            ent = trace.entities.get(var_bindings[id(var)])
+            if ent is None:
+                continue
+            identity = {k: v for k, v in ep.constraints.items()
+                        if k in ("type", "concept", "has_suffix")
+                        and not isinstance(v, Var)}
+            if identity and _entity_matches_literal_constraints(
+                    ent, identity, lex):
+                return True
     return False
+
+
+def _walk_negated_entity_patterns_with_vars(pattern):
+    """Yield (var, EntityPattern) pairs for each NotPattern(EntityPattern)
+    inside an AndPattern that binds `var`. Pairs the inner identity
+    constraints with their target binding so `_notpatterns_violated`
+    can evaluate them. Recurses into RelPattern arg_patterns so
+    inline rel-arg negations (samloke_chains_through_en's container)
+    are picked up."""
+    if isinstance(pattern, AndPattern):
+        bound = _bind_var_in_pattern(pattern)
+        if bound is not None:
+            for ep in _yield_negated_entity_patterns(pattern):
+                yield (bound, ep)
+        yield from _walk_negated_entity_patterns_with_vars(pattern.left)
+        yield from _walk_negated_entity_patterns_with_vars(pattern.right)
+    elif isinstance(pattern, RelPattern):
+        for arg_pat in pattern.arg_patterns.values():
+            yield from _walk_negated_entity_patterns_with_vars(arg_pat)
 
 
 def _entity_matches_literal_constraints(ent, constraints, lex) -> bool:
@@ -1792,21 +1899,70 @@ def _entity_matches_literal_constraints(ent, constraints, lex) -> bool:
 
 
 def _walk_for_entity_patterns_binding(pattern, target_var):
-    """Yield EntityPatterns that bind `target_var` (via an And-wrapped
-    BindPattern in the same conjunction). Used to discover literal
-    constraints on a free Var so candidate enumeration can pre-filter
-    instead of relying on rel-pattern subgoaling to fail wrong picks."""
+    """Yield EntityPatterns that constrain `target_var` (anywhere inside
+    an AndPattern subtree whose conjunction binds it). Used to discover
+    literal constraints on a free Var so candidate enumeration can
+    pre-filter instead of relying on rel-pattern subgoaling to fail
+    wrong picks.
+
+    Recurses into RelPattern arg_patterns: a constraint can sit
+    inline as `rel("en", container=(entity(...) & bind(B)))` rather
+    than at top level. Also recurses through nested AndPatterns once
+    the binding-And is found, so multi-conjunct shapes like
+    `(c1 & c2 & bind(B))` yield both c1 and c2."""
     if isinstance(pattern, AndPattern):
-        # Check if either side is an EntityPattern AND the conjunction
-        # binds target_var.
-        bound = _bind_var_in_pattern(pattern)
-        if bound is target_var:
-            if isinstance(pattern.left, EntityPattern):
-                yield pattern.left
-            if isinstance(pattern.right, EntityPattern):
-                yield pattern.right
+        if _bind_var_in_pattern(pattern) is target_var:
+            yield from _yield_positive_entity_patterns(pattern)
+            return
         yield from _walk_for_entity_patterns_binding(pattern.left, target_var)
         yield from _walk_for_entity_patterns_binding(pattern.right, target_var)
+    elif isinstance(pattern, RelPattern):
+        for arg_pat in pattern.arg_patterns.values():
+            yield from _walk_for_entity_patterns_binding(
+                arg_pat, target_var)
+
+
+def _walk_for_negated_entity_patterns_binding(pattern, target_var):
+    """Yield EntityPatterns nested inside NotPatterns within any And
+    subtree that binds `target_var`. Mirrors the positive walker but
+    for negated constraints — `container = ~entity(openness="fermita")
+    & bind(B)` yields the inner `entity(openness="fermita")`. The
+    planner inverts these: instead of "make slot=value hold," subgoal
+    "make slot != value" (typically by flipping the slot to another
+    vocabulary value)."""
+    if isinstance(pattern, AndPattern):
+        if _bind_var_in_pattern(pattern) is target_var:
+            yield from _yield_negated_entity_patterns(pattern)
+            return
+        yield from _walk_for_negated_entity_patterns_binding(
+            pattern.left, target_var)
+        yield from _walk_for_negated_entity_patterns_binding(
+            pattern.right, target_var)
+    elif isinstance(pattern, RelPattern):
+        for arg_pat in pattern.arg_patterns.values():
+            yield from _walk_for_negated_entity_patterns_binding(
+                arg_pat, target_var)
+
+
+def _yield_positive_entity_patterns(pattern):
+    """Recursively yield EntityPatterns from inside an AndPattern
+    subtree (skipping NotPatterns)."""
+    if isinstance(pattern, EntityPattern):
+        yield pattern
+    elif isinstance(pattern, AndPattern):
+        yield from _yield_positive_entity_patterns(pattern.left)
+        yield from _yield_positive_entity_patterns(pattern.right)
+
+
+def _yield_negated_entity_patterns(pattern):
+    """Recursively yield EntityPatterns nested inside NotPatterns
+    from within an AndPattern subtree."""
+    if isinstance(pattern, NotPattern):
+        if isinstance(pattern.inner, EntityPattern):
+            yield pattern.inner
+    elif isinstance(pattern, AndPattern):
+        yield from _yield_negated_entity_patterns(pattern.left)
+        yield from _yield_negated_entity_patterns(pattern.right)
 
 
 def _bind_var_in_pattern(pattern):
@@ -1836,17 +1992,34 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
     Currently handles ≤1 free var per derivation — covers samloke and
     similar 'shared X' shapes. Multi-free-var derivations are rare
     enough to defer."""
-    for d in derivations:
+    # Symmetric relations (samloke, apud) zip with target_args in both
+    # orders — picking one direction silently skips derivations that
+    # match the other. e.g. samloke_chains_through_en's `en(A, B) ∧
+    # samloke(B, C) → samloke(A, C)` only resolves cleanly with A bound
+    # to whichever target has an `en` container chain. Iterating both
+    # orders lets the planner find the working assignment without
+    # needing per-derivation symmetry.
+    is_symmetric = (
+        relation in lex.relations
+        and lex.relations[relation].symmetric
+        and len(target_args) == 2
+        and target_args[0] != target_args[1])
+    binding_orders = [tuple(target_args)]
+    if is_symmetric:
+        binding_orders.append((target_args[1], target_args[0]))
+
+    for cur_targets in binding_orders:
+      for d in derivations:
         for imp in d.implies:
             if not isinstance(imp, RelationImplication):
                 continue
-            if imp.name != relation or len(imp.args) != len(target_args):
+            if imp.name != relation or len(imp.args) != len(cur_targets):
                 continue
-            # Bind imp.args ↔ target_args. Var-args record bindings;
+            # Bind imp.args ↔ cur_targets. Var-args record bindings;
             # literal-args must equal the corresponding target.
             var_bindings: dict[int, str] = {}
             mismatch = False
-            for arg, target in zip(imp.args, target_args):
+            for arg, target in zip(imp.args, cur_targets):
                 if isinstance(arg, Var):
                     if id(arg) in var_bindings and var_bindings[id(arg)] != target:
                         mismatch = True
@@ -2007,8 +2180,14 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
                 # Subgoal entity-pattern slot constraints (lock_state=
                 # malŝlosita on the seruro, etc.). The bound entity
                 # might already satisfy; otherwise plan_to_achieve.
+                # Sign="pos" → make slot=value; sign="neg" → flip
+                # away from value (try each non-forbidden vocab value
+                # until one resolves).
                 if free_vars:
-                    for fv_var_local, slot, value in slots_to_subgoal:
+                    for entry in slots_to_subgoal:
+                        if not sub_ok:
+                            break
+                        fv_var_local, slot, value, sign = entry
                         if id(fv_var_local) != fv_id:
                             continue
                         target_eid = assignment[fv_id]
@@ -2018,13 +2197,10 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
                             break
                         actual = _entity_property_values(
                             target_ent, slot, trace, derived)
-                        if value in actual:
-                            continue
-                        sub = plan_to_achieve(
-                            target_eid, slot, value, actor_id,
-                            trace, lex, rules,
-                            derived=derived, derivations=derivations,
-                            max_depth=max_depth, _depth=depth, _seen=seen)
+                        sub = _plan_slot_subgoal(
+                            target_eid, slot, value, sign, actual,
+                            actor_id, trace, lex, rules, derived,
+                            derivations, max_depth, depth, seen)
                         if sub is None:
                             sub_ok = False
                             break
@@ -2264,13 +2440,19 @@ def _split_entity_constraints(when, given, target_var):
     their constraints into:
       identity: concept/type/has_suffix — these define what KIND of
         entity it is, used to filter candidates.
-      slots: ordinary property slots — these define current STATE,
-        which can be subgoaled via plan_to_achieve when the candidate
-        doesn't already satisfy.
+      slots: ordinary property slots — these define current STATE.
+        Each entry is (var, slot, value, sign) where sign is "pos"
+        (must equal value) or "neg" (must NOT equal value).
+        Positive slots come from `entity(...)` patterns; negative
+        slots come from `~entity(...)` patterns inside the same
+        conjunction. Both can be subgoaled via plan_to_achieve when
+        the candidate currently violates them — the negative case
+        picks any non-forbidden value from slot.vocabulary.
+
     Returns (identity_dict, slot_subgoal_list).
     """
     identity: dict[str, Any] = {}
-    slots: list[tuple[Var, str, Any]] = []
+    slots: list[tuple[Var, str, Any, str]] = []
     for pat in [when] + list(given):
         for ep in _walk_for_entity_patterns_binding(pat, target_var):
             for k, val in ep.constraints.items():
@@ -2279,7 +2461,18 @@ def _split_entity_constraints(when, given, target_var):
                 if k in ("type", "concept", "has_suffix"):
                     identity[k] = val
                 else:
-                    slots.append((target_var, k, val))
+                    slots.append((target_var, k, val, "pos"))
+        for ep in _walk_for_negated_entity_patterns_binding(
+                pat, target_var):
+            for k, val in ep.constraints.items():
+                if isinstance(val, Var):
+                    continue
+                if k in ("type", "concept", "has_suffix"):
+                    # Negative identity ("not a location") — no
+                    # standard channel to subgoal a type change, so
+                    # let candidate enumeration handle it elsewhere.
+                    continue
+                slots.append((target_var, k, val, "neg"))
     return identity, slots
 
 
@@ -2651,9 +2844,10 @@ def _plan_property_via_derivation(entity_id, slot, value, actor_id,
                 _, imp_entity_slots = _split_entity_constraints(
                     d.when, d.given, imp.entity)
                 imp_ent = trace.entities.get(entity_id)
-                for es_var, es_slot, es_value in imp_entity_slots:
+                for entry in imp_entity_slots:
                     if not sub_ok:
                         break
+                    es_var, es_slot, es_value, es_sign = entry
                     if es_var is not imp.entity:
                         continue
                     if imp_ent is None:
@@ -2661,19 +2855,19 @@ def _plan_property_via_derivation(entity_id, slot, value, actor_id,
                         break
                     actual = _entity_property_values(
                         imp_ent, es_slot, trace, derived)
-                    if es_value in actual:
-                        continue
-                    sub = plan_to_achieve(
-                        entity_id, es_slot, es_value, actor_id,
-                        trace, lex, rules,
-                        derived=derived, derivations=derivations,
-                        max_depth=max_depth, _depth=depth, _seen=seen)
+                    sub = _plan_slot_subgoal(
+                        entity_id, es_slot, es_value, es_sign, actual,
+                        actor_id, trace, lex, rules, derived,
+                        derivations, max_depth, depth, seen)
                     if sub is None:
                         sub_ok = False
                         break
                     sub_plans.extend(sub)
                 if sub_ok and free_vars:
-                    for fv_var_local, fv_slot, fv_value in slots_to_subgoal:
+                    for entry in slots_to_subgoal:
+                        if not sub_ok:
+                            break
+                        fv_var_local, fv_slot, fv_value, fv_sign = entry
                         if id(fv_var_local) != fv_id:
                             continue
                         target_eid = assignment[fv_id]
@@ -2683,13 +2877,10 @@ def _plan_property_via_derivation(entity_id, slot, value, actor_id,
                             break
                         actual = _entity_property_values(
                             target_ent, fv_slot, trace, derived)
-                        if fv_value in actual:
-                            continue
-                        sub = plan_to_achieve(
-                            target_eid, fv_slot, fv_value, actor_id,
-                            trace, lex, rules,
-                            derived=derived, derivations=derivations,
-                            max_depth=max_depth, _depth=depth, _seen=seen)
+                        sub = _plan_slot_subgoal(
+                            target_eid, fv_slot, fv_value, fv_sign, actual,
+                            actor_id, trace, lex, rules, derived,
+                            derivations, max_depth, depth, seen)
                         if sub is None:
                             sub_ok = False
                             break

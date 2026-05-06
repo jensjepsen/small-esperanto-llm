@@ -537,6 +537,51 @@ meti_places_in_location = rule(
     name="meti_places_in_location",
 )
 
+# `planti` (plant) puts a held theme into the plantable location
+# (tero in a garden, tero in a florpoto). Removes possession and
+# adds en-containment — same shape as plenigi_transfers_contents.
+# Action schema enforces havi(agent, theme) + samloke(agent, location)
+# and constrains theme to category=planto, location to plantable=yes.
+
+planti_plants_theme = rule(
+    when=event("planti",
+               agent=bind(PtA := var("A")),
+               theme=bind(PtT := var("T")),
+               location=bind(PtL := var("L"))),
+    then=[
+        remove_relation("havi", PtA, PtT),
+        add_relation("en", PtT, PtL),
+    ],
+    name="planti_plants_theme",
+)
+
+
+# ---------- causal: ami / timi as relational state ----------------------
+#
+# `ami` (love) and `timi` (fear) describe a persistent emotional bond
+# between an animate and a target. Modelled as relations rather than
+# slot values: the truth lives in the link, not in either endpoint.
+# The verb fires once and the relation persists, available to future
+# planning (love-drives-co-location, fear-drives-avoidance) without
+# the verb having to re-fire.
+
+ami_creates_amas = rule(
+    when=event("ami",
+               agent=bind(AmA := var("A")),
+               theme=bind(AmT := var("T"))),
+    then=add_relation("amas", AmA, AmT),
+    name="ami_creates_amas",
+)
+
+timi_creates_timas = rule(
+    when=event("timi",
+               agent=bind(TiA := var("A")),
+               theme=bind(TiT := var("T"))),
+    then=add_relation("timas", TiA, TiT),
+    name="timi_creates_timas",
+)
+
+
 meti_places_on_surface = rule(
     when=event("meti",
                agent=bind(MSA := var("A")),
@@ -1142,6 +1187,39 @@ boji_announces_speaker = _vocal_announce_rule("boji")
 miaui_announces_speaker = _vocal_announce_rule("miaŭi")
 
 
+# Playing an instrument is also a sound-broadcast: the player's
+# location becomes known to samloke can_hear animates. Same shape
+# as the vocal rules, just with `theme` (the instrument) bound too
+# in the trigger event so it doesn't matter for the outgoing fakto
+# — what propagates is the player's location.
+def _ludi_announce_rule():
+    A = var("LU_A")
+    T = var("LU_T")
+    L = var("LU_L")
+    H = var("LU_H")
+    F = var("LU_F")
+    return rule(
+        when=event("ludi", agent=bind(A), theme=bind(T)),
+        given=[
+            rel("en", contained=A, container=bind(L)),
+            entity(type="animate", can_hear="yes") & bind(H),
+            rel("samloke", a=A, b=H),
+        ],
+        then=[
+            create_entity(
+                concept="fakto", as_var=F,
+                id_parts=("en", A, L),
+                initial_properties={"pri_relacio": "en"}),
+            add_relation("subjekto", F, A),
+            add_relation("objekto", F, L),
+            add_relation("konas", H, F),
+        ],
+        name="ludi_announces_player",
+    )
+
+ludi_announces_player = _ludi_announce_rule()
+
+
 # Forgetting is the inverse of perception/transfer: removes a konas
 # relation. Has no automatic trigger — the planner would need a
 # negative-knowledge drive ("X wants to NOT know Y") to invoke it,
@@ -1668,6 +1746,41 @@ animate_sitting_when_on_sittable = derive(
     name="animate_sitting_when_on_sittable",
 )
 
+# Animate `en` a water_body location is swimming. Listed BEFORE
+# `animate_default_standing` so first-write-wins gives `naĝanta`,
+# the default never overrides it. The animate-only gate lives in
+# the `when` (entity type=animate) and the water_body gate in the
+# `given` — no per-pose render-time gating needed; the realizer
+# just reads the agent's posture.
+animate_swimming_when_in_water_body = derive(
+    when=entity(type="animate") & bind(T_swim := var("T")),
+    given=[
+        rel("en", contained=T_swim,
+            container=entity(water_body="yes") & bind(L_swim := var("L"))),
+    ],
+    implies=property(T_swim, "posture", "naĝanta"),
+    name="animate_swimming_when_in_water_body",
+)
+
+
+# Containers can impose a posture on their contents — the
+# `imposes_pose` slot. This derivation propagates that for `penda`,
+# the only currently-used value not already covered by the
+# sittable/lieable affordance pattern (those have their own
+# specific derivations). Fruits sur a pomarbo (imposes_pose=penda)
+# get posture=penda, rendering as "pendas sur la pomarbo".
+# The animate-only constraints from the swimming/sitting/lying
+# derivations don't apply here: a piece of fruit hanging is fine.
+container_imposes_penda_on_contents = derive(
+    when=entity() & bind(C_imp := var("C")),
+    given=[
+        rel("sur", contained=C_imp,
+            container=entity(imposes_pose="penda") & bind(H_imp := var("H"))),
+    ],
+    implies=property(C_imp, "posture", "penda"),
+    name="container_imposes_penda_on_contents",
+)
+
 animate_default_standing = derive(
     when=entity(type="animate") & bind(T_st := var("T")),
     implies=property(T_st, "posture", "staranta"),
@@ -1807,28 +1920,44 @@ animate_knows_self_object = derive(
 # `illuminated=yes`, so dark-room scenes naturally chain through
 # `ŝalti(lamp)` before any visual interaction.
 
-outdoor_is_luma = derive(
+# Outdoor light depends on the trace-wide `mondo` singleton's
+# `tempo_de_tago`. Day/morning/evening leave the location luma;
+# night flips it to malluma. Mutually exclusive on the night
+# condition so first-write-wins on `lit_state` doesn't cross-fire.
+outdoor_luma_during_day = derive(
     when=entity(type="location", indoor_outdoor="ekstera") & bind(OIL := var("L")),
+    given=[
+        ~(entity(concept="mondo", tempo_de_tago="nokto")),
+    ],
     implies=property(OIL, "lit_state", "luma"),
-    name="outdoor_is_luma",
+    name="outdoor_luma_during_day",
+)
+
+
+outdoor_dark_at_night = derive(
+    when=entity(type="location", indoor_outdoor="ekstera") & bind(ODN := var("L")),
+    given=[
+        entity(concept="mondo", tempo_de_tago="nokto"),
+    ],
+    implies=property(ODN, "lit_state", "malluma"),
+    name="outdoor_dark_at_night",
 )
 
 # Light propagates through co-location: a lamp counts as lighting any
-# room it's `samloke` with, which by the en/sur chain rules covers
-# direct (lampo en koridoro), surface-mounted (lampo sur tablo en
-# koridoro), and any deeper nesting. Without samloke, a lamp on a
-# table failed to light the room, leaving most indoor regression
-# scenes pitch-dark and blocking vidi-gated planning. Same shape as
-# the samloke-chain fix — let the existing co-location closure do
-# the work instead of repeating en/sur enumeration here.
-indoor_lit_by_active_lamp = derive(
-    when=entity(type="location", indoor_outdoor="interna") & bind(ILL := var("L")),
+# location (indoor room OR outdoor space) it's `samloke` with, which
+# by the en/sur chain rules covers direct (lampo en koridoro),
+# surface-mounted (lampo sur tablo en koridoro), and any deeper
+# nesting. The location_lit rule fires BEFORE outdoor_dark_at_night
+# in RUNTIME_DERIVATIONS so a torch in a park at night beats the
+# default night darkness — first-write-wins on the scalar slot.
+location_lit_by_active_lamp = derive(
+    when=entity(type="location") & bind(ILL := var("L")),
     given=[
         rel("samloke", a=ILL, b=bind(ILD := var("D"))),
         entity(power_state="aktiva", lights_when_on="yes") & bind(ILD),
     ],
     implies=property(ILL, "lit_state", "luma"),
-    name="indoor_lit_by_active_lamp",
+    name="location_lit_by_active_lamp",
 )
 
 # Mirror semantics: a room is dark iff no active lamp is co-located
@@ -2096,13 +2225,32 @@ en_implies_samloke_with_container = derive(
 )
 
 
-apud_implies_samloke_with_neighbor = derive(
-    when=rel("apud",
-             subject=bind(AISA := var("A")),
-             neighbor=bind(AISN := var("N"))),
-    implies=relation("samloke", AISA, AISN),
-    name="apud_implies_samloke_with_neighbor",
+# A carried object travels with its carrier — samloke with the owner.
+# Without this, a planner that moves the carrier (kuzo iri kuirejo)
+# breaks samloke(kuzo, viando) because viando's `en` relation pins
+# it to wherever preni was performed; samloke would only re-derive
+# via shared-container, which fails until the carrier and the carried
+# happen to land in the same room. With it, a freshly-prena'd theme
+# stays samloke through any number of locomotion steps — the planner
+# can chain preni → iri → eniri → kuiri without the goal slipping.
+# Mirrors host_samloke_with_part: ownership ≈ "in personal space".
+havi_implies_samloke_with_carried = derive(
+    when=rel("havi",
+             owner=bind(HISCO := var("O")),
+             theme=bind(HISCT := var("T"))),
+    implies=relation("samloke", HISCO, HISCT),
+    name="havi_implies_samloke_with_carried",
 )
+
+
+# `apud_implies_samloke_with_neighbor` was removed: it leaked
+# location-to-location samloke through the seeder's sibling-room
+# placement (e.g. forno en kuirejo, kuirejo apud maro → samloke(forno,
+# anyone-in-maro) via samloke_chains_through_en). Justified originally
+# by "iri-then-vidi" (actor at the doorstep sees into the room) but
+# the realistic chain is iri→eniri→vidi anyway. Dropping it forces
+# the planner to subgoal eniri before perceptual/instrument actions
+# in another room — slightly longer chains, more grounded prose.
 
 
 # ---------- derivation: samloke from shared `en` container -------------
@@ -2150,24 +2298,14 @@ shared_apud_means_samloke = derive(
 )
 
 
-# Mixed: one entity en a location, another apud the same location
-# → samloke. Bridges the en/apud split — Petro inside the kuirejo
-# and Klara just arrived (apud) are at the same place. Without this
-# derivation the model would treat "follower at the door" and
-# "followed inside" as not co-located, breaking samloke-gated
-# verbs like rakonti.
-mixed_en_apud_means_samloke = derive(
-    when=rel("en",
-             contained=bind(MEA := var("A")),
-             container=bind(MEL := var("L"))),
-    given=[
-        rel("apud",
-            subject=bind(MEB := var("B")),
-            neighbor=MEL),
-    ],
-    implies=relation("samloke", MEA, MEB),
-    name="mixed_en_apud_means_samloke",
-)
+# `mixed_en_apud_means_samloke` was removed alongside
+# `apud_implies_samloke_with_neighbor`. Same leak: with
+# `en(forno, kuirejo)` + `apud(kuirejo, maro)` + `en(Avino, maro)`
+# this rule derives `samloke(Avino, kuirejo)`, which then chains
+# through `samloke_chains_through_en` to make Avino samloke with
+# the forno across rooms. Original motivation (door-gated rakonti
+# between en-the-room + apud-at-doorstep persons) is thin enough
+# that the cleaner narrative — eniri before interacting — wins.
 
 
 # A entity is `samloke` with whatever it sits ON, mirror of
@@ -2198,7 +2336,23 @@ sur_implies_samloke_with_supporter = derive(
 samloke_chains_through_en = derive(
     when=rel("en",
              contained=bind(SCEA := var("A")),
-             container=bind(SCEB := var("B"))),
+             # Container must NOT be a location: chaining through a
+             # location-container would propagate samloke across room
+             # boundaries (forno en kuirejo, kuirejo en domo,
+             # oficejo en domo → samloke(forno, anyone-in-oficejo)).
+             # Restricting to non-location containers preserves the
+             # intended use (lakto en botelo en tablo: artifact-only
+             # transit) while making physical room-to-room separation
+             # actually mean something.
+             #
+             # Closed containers also block transit: a juvelo en a
+             # fermita kofro is isolated from anyone outside the kofro
+             # until malfermi flips the openness. Lifts perception
+             # (vidi → fakto), reach (preni samloke check), and any
+             # other samloke-gated verb without per-verb modification.
+             container=(~entity(type="location") &
+                        ~entity(openness="fermita") &
+                        bind(SCEB := var("B")))),
     given=[
         rel("samloke", a=SCEB, b=bind(SCEC := var("C"))),
     ],
@@ -2210,11 +2364,15 @@ samloke_chains_through_en = derive(
 # Mirror for `sur`. Together with `samloke_chains_through_en` and
 # the `*_implies_samloke_with_*` seeds, this closes co-location
 # under any en/sur path — co-location is what physical adjacency
-# means in this model, and adjacency should compose.
+# means in this model, and adjacency should compose. Same
+# location-boundary restriction as the en variant: a thing sur a
+# tablo en kuirejo is samloke with whoever's en kuirejo, but a
+# thing sur a kuirejo (rare; conceptually "on top of the kitchen")
+# wouldn't transit further.
 samloke_chains_through_sur = derive(
     when=rel("sur",
              contained=bind(SCSA := var("A")),
-             container=bind(SCSB := var("B"))),
+             container=~entity(type="location") & bind(SCSB := var("B"))),
     given=[
         rel("samloke", a=SCSB, b=bind(SCSC := var("C"))),
     ],
@@ -2268,15 +2426,14 @@ DEFAULT_DSL_DERIVATIONS = [
     physical_has_wetness,
     shared_container_means_samloke,
     shared_apud_means_samloke,
-    mixed_en_apud_means_samloke,
     host_samloke_with_part,
     samloke_propagates_through_artifact_parts,
     samloke_propagates_through_location_parts,
     en_implies_samloke_with_container,
+    havi_implies_samloke_with_carried,
     sur_implies_samloke_with_supporter,
     samloke_chains_through_en,
     samloke_chains_through_sur,
-    apud_implies_samloke_with_neighbor,
     host_lock_state_locked_from_seruro,
     host_lock_state_unlocked_from_seruro,
     host_lock_capable_from_seruro,
@@ -2286,8 +2443,10 @@ DEFAULT_DSL_DERIVATIONS = [
     animate_knows_self_object,
     scias_lokon_via_en,
     scias_lokon_via_sur,
-    outdoor_is_luma,
-    indoor_lit_by_active_lamp,
+    # Outdoor light is now conditional on mondo.tempo_de_tago — that's
+    # a varies=true slot, so the rule is RUNTIME-only and removed from
+    # the bake list. The runtime list below carries it.
+    location_lit_by_active_lamp,
     indoor_dark_without_active_lamp,
     agent_illuminated,
     vehicle_powered_from_active_motoro,
@@ -2322,20 +2481,21 @@ RUNTIME_DERIVATIONS = [
     # write-wins on derived state preserves the earlier value).
     animate_lying_when_on_lieable,
     animate_sitting_when_on_sittable,
+    animate_swimming_when_in_water_body,
+    container_imposes_penda_on_contents,
     animate_default_standing,
     animate_default_awake,
     location_water_body_via_en,
     entity_in_water_from_water_body,
     shared_container_means_samloke,
     shared_apud_means_samloke,
-    mixed_en_apud_means_samloke,
     samloke_propagates_through_artifact_parts,
     samloke_propagates_through_location_parts,
     en_implies_samloke_with_container,
+    havi_implies_samloke_with_carried,
     sur_implies_samloke_with_supporter,
     samloke_chains_through_en,
     samloke_chains_through_sur,
-    apud_implies_samloke_with_neighbor,
     host_lock_state_locked_from_seruro,
     host_lock_state_unlocked_from_seruro,
     host_openness_closed_from_pordo,
@@ -2344,7 +2504,12 @@ RUNTIME_DERIVATIONS = [
     animate_knows_self_object,
     scias_lokon_via_en,
     scias_lokon_via_sur,
-    indoor_lit_by_active_lamp,
+    # Lamp-lit fires BEFORE the outdoor day/night rules so an active
+    # lamp wins over outdoor_dark_at_night (first-write-wins on the
+    # scalar lit_state) — a torch in a park at night lights it.
+    location_lit_by_active_lamp,
+    outdoor_luma_during_day,
+    outdoor_dark_at_night,
     indoor_dark_without_active_lamp,
     agent_illuminated,
     vehicle_powered_from_active_motoro,
@@ -2364,6 +2529,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     flari_learns_en,
     audi_learns_en,
     krii_announces_speaker,
+    ludi_announces_player,
     flustri_announces_speaker,
     bleki_announces_speaker,
     boji_announces_speaker,
@@ -2399,6 +2565,9 @@ DEFAULT_DSL_RULES: list[Rule] = [
     aĉeti_transfers,
     vendi_transfers,
     meti_places_in_location,
+    planti_plants_theme,
+    ami_creates_amas,
+    timi_creates_timas,
     meti_places_on_surface,
     iri_moves_agent,
     veni_moves_agent,

@@ -67,6 +67,19 @@ def realize_trace(
         tense). None makes the realizer fully deterministic.
       `tense` — explicit override ('is' past, 'as' present).
     """
+    # Compute derived state once for the whole render pass. The render
+    # consults it for context-dependent surface forms — e.g. an animate
+    # `en` a water_body has posture=naĝanta via the
+    # `animate_swimming_when_in_water_body` derivation, and the
+    # realizer renders "Lidia naĝas en la lago" rather than the bland
+    # "Lidia estas en la lago". No optional fallback: the truth of an
+    # entity's posture is the derived state; rendering without it would
+    # produce inconsistent prose depending on caller plumbing.
+    from ..dsl import compute_derived_state
+    from ..dsl.rules import DEFAULT_DSL_DERIVATIONS, RUNTIME_DERIVATIONS
+    derived = compute_derived_state(
+        trace, list(DEFAULT_DSL_DERIVATIONS) + list(RUNTIME_DERIVATIONS),
+        lexicon)
     messages = plan_messages(
         trace, lexicon,
         scene_location_id=scene_location_id,
@@ -76,7 +89,8 @@ def realize_trace(
     messages = subordinate_creations(messages)
     return render_messages(
         messages, trace, lexicon,
-        scene_location_id=scene_location_id, rng=rng, tense=tense)
+        scene_location_id=scene_location_id, rng=rng, tense=tense,
+        derived=derived)
 
 
 __all__ = [

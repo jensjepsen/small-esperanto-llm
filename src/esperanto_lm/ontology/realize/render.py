@@ -367,15 +367,17 @@ class _Ctx:
     __slots__ = ("trace", "lexicon", "mentioned", "rng", "tense",
                  "scene_location_id", "rendered_event_ids",
                  "last_nonperson", "adjective_history",
-                 "alias_history")
+                 "alias_history", "derived")
 
-    def __init__(self, trace, lexicon, *, scene_location_id, rng, tense):
+    def __init__(self, trace, lexicon, *, scene_location_id, rng, tense,
+                 derived=None):
         self.trace = trace
         self.lexicon = lexicon
         self.mentioned: set[str] = set()
         self.rng = rng
         self.tense = tense
         self.scene_location_id = scene_location_id
+        self.derived = derived
         self.rendered_event_ids: set[str] = set()
         # Tracks the most recently mentioned non-person entity id.
         # Cleared to None whenever a *different* non-person is mentioned,
@@ -493,21 +495,12 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
         template = _pick(ctx.rng, RELATION_TEMPLATES["havi"])
         sent = template(a_form, b_form, ctx.tense)
     elif rel.relation == "sur":
-        # `sur` with an animate `contained` (Petro on a chair) renders
-        # with a posture verb derived from the container's flags:
-        # sittable → "sidi", lieable → "kuŝi", else "stari". Inanimate
-        # themes (book on table) fall through to the generic templates.
+        # Read the contained's posture: intrinsic (glaso=staranta,
+        # libro=kuŝanta) or derived (sittable/lieable/imposes_pose
+        # all write to posture via derivations). One uniform path —
+        # no per-relation lookup logic, the data layer carries it.
         b_form = ctx.name_for(b)
-        verb_root = None
-        if ctx.lexicon.types.is_subtype(a.entity_type, "animate"):
-            container_concept = ctx.lexicon.concepts.get(b.concept_lemma)
-            if container_concept is not None:
-                if "yes" in container_concept.properties.get(
-                        "lieable", []):
-                    verb_root = "kuŝ"
-                elif "yes" in container_concept.properties.get(
-                        "sittable", []):
-                    verb_root = "sid"
+        verb_root = _contextual_posture_verb_root(a, ctx)
         if verb_root is not None:
             flip = ctx.rng.random() < 0.5 if ctx.rng is not None else False
             sent = (f"{a_form} {verb_root}{ctx.tense} sur {b_form}."
@@ -518,8 +511,22 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
             sent = template(a_form, b_form, ctx.tense)
     elif rel.relation in ("en", "apud"):
         b_form = ctx.name_for(b)
-        template = _pick(ctx.rng, RELATION_TEMPLATES[rel.relation])
-        sent = template(a_form, b_form, ctx.tense)
+        # If the contained has a derived posture other than the slot's
+        # unmarked default, render with that posture's verb — gives
+        # "Lidia naĝas en la lago" via `animate_swimming_when_in_water_body`.
+        # Apud-cases naturally fall through: the only derivations that
+        # set posture fire on `sur`/`en` containment, not `apud`, so
+        # an animate apud the lake stays at the unmarked posture and
+        # we render the bland template. No relation-literal gating here.
+        verb_root = _contextual_posture_verb_root(a, ctx)
+        if verb_root is not None:
+            flip = ctx.rng.random() < 0.5 if ctx.rng is not None else False
+            sent = (f"{a_form} {verb_root}{ctx.tense} {rel.relation} {b_form}."
+                    if flip
+                    else f"{rel.relation.capitalize()} {b_form} {verb_root}{ctx.tense} {a_form}.")
+        else:
+            template = _pick(ctx.rng, RELATION_TEMPLATES[rel.relation])
+            sent = template(a_form, b_form, ctx.tense)
     else:
         return None
     ctx.note_mention(b)
@@ -616,6 +623,249 @@ def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
     return None
 
 
+# Surface forms for direct quotation. Picked uniformly per direct-
+# quote event so trace prose mixes all three styles. All three are
+# attested in Esperanto literature; em-dash is the most common in
+# narrative dialogue, guillemets in printed prose, single quotes
+# come from translated/colloquial texts. Keeping them all gives
+# the trainer richer formatting cues.
+_QUOTE_STYLES = ("single", "em_dash", "guillemets")
+# Probability per speech-act event of choosing direct quote over the
+# default ke-/kie-clause indirect form. Tuned to keep roughly one in
+# three speech events as direct quote — enough to be a clear signal
+# without crowding out the indirect form.
+_DIRECT_QUOTE_PROB = 0.30
+
+
+def _render_fakto_as_quote_body(fakto_ent, ctx: _Ctx,
+                                *, mode: str = "assertion") -> Optional[str]:
+    """Standalone utterance form of a fakto, suitable for embedding in
+    a direct-quote frame ("Maria diris al Petro: '...'").
+
+    Same semantic content as `_render_fakto_as_ke_clause` but:
+      - no leading `ke`/`kie`/`kiu` subordinator
+      - first letter capitalized
+      - terminal `.` (assertion) or `?` (question)
+      - tense is always present (`estas`/`havas`) — direct speech is
+        in-the-moment from the speaker's perspective, regardless of
+        the surrounding narrative's past-tense framing.
+
+    Returns None for fakto shapes we don't know how to surface yet
+    (caller falls back to the ke-clause path)."""
+    def _unwrap_property(slot):
+        v = fakto_ent.properties.get(slot, [None])
+        return v[0] if isinstance(v, list) and v else v
+    rel = _unwrap_property("pri_relacio")
+    subj_id = None
+    obj_id = None
+    for r in ctx.trace.relations:
+        if r.args[0] != fakto_ent.id:
+            continue
+        if r.relation == "subjekto":
+            subj_id = r.args[1]
+        elif r.relation == "objekto":
+            obj_id = r.args[1]
+    if rel is None or subj_id is None or obj_id is None:
+        return None
+    subj_ent = ctx.trace.entity(subj_id)
+    obj_ent = ctx.trace.entity(obj_id)
+    if subj_ent is None or obj_ent is None:
+        return None
+    subj_form = ctx.name_for(subj_ent)
+    obj_form = ctx.name_for(obj_ent)
+    ctx.note_mention(subj_ent)
+    ctx.note_mention(obj_ent)
+
+    def _cap(s: str) -> str:
+        return s[0].upper() + s[1:] if s else s
+
+    if mode == "question":
+        if rel in ("en", "sur"):
+            return f"Kie estas {subj_form}?"
+        if rel == "havi":
+            return f"Kiu havas {to_accusative(subj_form)}?"
+        return None
+    # assertion
+    if rel == "en":
+        return f"{_cap(subj_form)} estas en {obj_form}."
+    if rel == "sur":
+        return f"{_cap(subj_form)} estas sur {obj_form}."
+    if rel == "havi":
+        return f"{_cap(subj_form)} havas {to_accusative(obj_form)}."
+    return None
+
+
+def _render_peti_request_body(theme_ent, ctx: _Ctx) -> Optional[str]:
+    """Standalone imperative request for `peti`. Returns "Donu al mi
+    la libron." (give-me + accusative theme). Tense is invariant —
+    Esperanto imperative uses the -u suffix regardless of the
+    surrounding narrative tense."""
+    if theme_ent is None:
+        return None
+    theme_form = ctx.name_for(theme_ent)
+    return f"Donu al mi {to_accusative(theme_form)}."
+
+
+def _render_voki_call_body(theme_ent, ctx: _Ctx) -> Optional[str]:
+    """Standalone vocative call for `voki`. Returns "Petro!" — just
+    the called entity's name with terminal exclamation. The optional
+    "venu!" follow-up isn't included; the bare vocative reads more
+    natural for a single-event call."""
+    if theme_ent is None:
+        return None
+    return f"{ctx.name_for(theme_ent)}!"
+
+
+def _wrap_direct_quote(body: str, style: str) -> str:
+    """Apply one of three Esperanto dialog conventions to `body`. The
+    leading `:` glues onto the preceding recipient phrase so the join
+    lands as `al Maria: 'X'` / `al Maria: — X` / `al Maria: «X»`."""
+    if style == "single":
+        return f": '{body}'"
+    if style == "em_dash":
+        return f": — {body}"
+    if style == "guillemets":
+        return f": «{body}»"
+    return f": {body}"
+
+
+_VERB_LOCATION_PREP_CACHE: dict[int, dict[str, str]] = {}
+
+
+_POSE_VERB_ROOT_CACHE: dict[str, str] = {}
+
+
+def _contextual_posture_verb_root(entity, ctx) -> Optional[str]:
+    """Verb root for an entity's posture, picking the more specific
+    verb over the bland `estas` template when the posture is
+    informative.
+
+    Resolution:
+      1. Intrinsic posture (declared in concept.properties — glaso=
+         staranta, libro=kuŝanta, fork=kuŝanta). These are explicit
+         opt-ins; the verb is always informative even if it's the
+         slot's unmarked value, so we render with it unconditionally.
+      2. Derived posture (computed by derivations — naĝanta for an
+         animate en water_body, penda for a fruit sur arbo, sidanta
+         for an animate sur sittable). Render with the verb unless
+         it's the slot's unmarked default, since `animate_default_
+         standing` writes staranta to every animate's derived state
+         to satisfy iri's posture precondition — that derived
+         default isn't worth rendering as "X staras en Y" everywhere.
+      3. None — caller falls back to the bland `estas` template."""
+    intrinsic = entity.properties.get("posture", [])
+    if intrinsic:
+        return _pose_verb_root(intrinsic[0])
+    if ctx.derived is None:
+        return None
+    posture = ctx.derived.properties.get((entity.id, "posture"))
+    if not posture:
+        return None
+    slot = ctx.lexicon.slots.get("posture")
+    unmarked = slot.unmarked if slot is not None else None
+    if posture == unmarked:
+        return None
+    return _pose_verb_root(posture)
+
+
+def _pose_verb_root(pose: str) -> str:
+    """Verb root for an Esperanto pose adjective/participle. `staranta`
+    → `star`, `penda` → `pend`. Uses the morph parser so adding a new
+    pose value (e.g. `kaŭranta` → `kaŭr`) needs no realizer edit.
+    Cached since the slot vocab is small and bounded."""
+    cached = _POSE_VERB_ROOT_CACHE.get(pose)
+    if cached is not None:
+        return cached
+    from ..morph import DefaultMorphParser
+    root = DefaultMorphParser().parse(pose).root
+    _POSE_VERB_ROOT_CACHE[pose] = root
+    return root
+
+
+def _verb_location_preposition(action_lemma: str, lex) -> Optional[str]:
+    """Return 'en' or 'sur' if some DSL rule fires on this action and
+    adds an en/sur relation between vars bound to the action's theme
+    and location roles. None when no rule adds either — caller falls
+    back to the entity-type heuristic.
+
+    Cached per-lexicon so we don't walk DEFAULT_DSL_RULES on every
+    event render. Cache invalidates with the lex object identity."""
+    cached = _VERB_LOCATION_PREP_CACHE.get(id(lex))
+    if cached is None:
+        from ..dsl.rules import DEFAULT_DSL_RULES
+        from ..dsl.effects import AddRelation
+        from ..dsl.patterns import EventPattern, BindPattern, Var
+        cached = {}
+        for rule in DEFAULT_DSL_RULES:
+            if not isinstance(rule.when, EventPattern):
+                continue
+            verb = rule.when.action
+            theme_var = rule.when.role_patterns.get("theme")
+            loc_var = rule.when.role_patterns.get("location")
+            theme_id = id(_extract_var(theme_var)) if theme_var else None
+            loc_id_var = id(_extract_var(loc_var)) if loc_var else None
+            if theme_id is None or loc_id_var is None:
+                continue
+            effects = (rule.then if isinstance(rule.then, (list, tuple))
+                       else [rule.then])
+            for eff in effects:
+                if not isinstance(eff, AddRelation):
+                    continue
+                if eff.relation not in ("en", "sur"):
+                    continue
+                if (len(eff.args) >= 2
+                        and isinstance(eff.args[0], Var)
+                        and isinstance(eff.args[1], Var)
+                        and id(eff.args[0]) == theme_id
+                        and id(eff.args[1]) == loc_id_var):
+                    cached[verb] = eff.relation
+                    break
+        _VERB_LOCATION_PREP_CACHE[id(lex)] = cached
+    return cached.get(action_lemma)
+
+
+def _extract_var(pattern):
+    """Pull the underlying Var out of a possibly-bound pattern.
+    Returns the Var or None if pattern doesn't carry one."""
+    from ..dsl.patterns import BindPattern, Var
+    if isinstance(pattern, Var):
+        return pattern
+    if isinstance(pattern, BindPattern):
+        return pattern.target
+    return None
+
+
+def _render_learned_fakto(ev, ctx) -> Optional[str]:
+    """If the event's theme is a text linked via priskribas to a fakto,
+    render `kaj eksciis ke <fakto>` as a tail clause. The reader sees
+    what information was extracted from reading. Verb-agnostic: any
+    event whose theme is a priskribas-source qualifies, but in practice
+    fires for legi (the only knowledge-extraction-from-text verb).
+
+    No-op when:
+      - The theme isn't in the trace, or has no priskribas link.
+      - The agent already konas the fakto pre-event (no new learning
+        to narrate)."""
+    theme_id = ev.roles.get("theme")
+    agent_id = ev.roles.get("agent")
+    if theme_id is None or agent_id is None:
+        return None
+    fakto_id = None
+    for r in ctx.trace.relations:
+        if r.relation == "priskribas" and r.args[0] == theme_id:
+            fakto_id = r.args[1]
+            break
+    if fakto_id is None:
+        return None
+    fakto = ctx.trace.entities.get(fakto_id)
+    if fakto is None:
+        return None
+    ke_clause = _render_fakto_as_ke_clause(fakto, ctx, mode="assertion")
+    if ke_clause is None:
+        return None
+    return f"kaj eksci{ctx.tense} {ke_clause}"
+
+
 def _render_event_phrase(
     ev: Event, ctx: _Ctx, *, drop_subject: bool,
     drop_theme: bool = False,
@@ -679,14 +929,37 @@ def _render_event_phrase(
             and ev.roles.get("recipient")):
         recip = ctx.trace.entity(ev.roles["recipient"])
         if recip is not None:
-            parts.append(to_accusative(ctx.name_for(recip)))
-            ctx.note_mention(recip)
-            if ev.roles.get("theme") and not drop_theme:
-                theme = ctx.trace.entity(ev.roles["theme"])
-                if theme is not None:
-                    parts.append(f"pri {ctx.name_for(theme)}")
-                    ctx.note_mention(theme)
-                    ctx.mark_nonperson_mention(theme)
+            # Direct-quote variant: "petis Petron: «Donu al mi la
+            # libron.»". Same per-event probability + style choice
+            # as the rakonti/demandi quote path. Falls back to the
+            # default "petis Petron pri X" form on coin-low or when
+            # the theme isn't unfoldable.
+            theme_ent_for_quote = (ctx.trace.entity(ev.roles["theme"])
+                                   if ev.roles.get("theme")
+                                   and not drop_theme else None)
+            quote_phrase = None
+            if (theme_ent_for_quote is not None
+                    and ctx.rng is not None
+                    and ctx.rng.random() < _DIRECT_QUOTE_PROB):
+                body = _render_peti_request_body(theme_ent_for_quote, ctx)
+                if body is not None:
+                    style = ctx.rng.choice(_QUOTE_STYLES)
+                    quote_phrase = _wrap_direct_quote(body, style)
+            if quote_phrase is not None:
+                parts.append(
+                    f"{to_accusative(ctx.name_for(recip))}{quote_phrase}")
+                ctx.note_mention(recip)
+                ctx.note_mention(theme_ent_for_quote)
+                ctx.mark_nonperson_mention(theme_ent_for_quote)
+            else:
+                parts.append(to_accusative(ctx.name_for(recip)))
+                ctx.note_mention(recip)
+                if ev.roles.get("theme") and not drop_theme:
+                    theme = ctx.trace.entity(ev.roles["theme"])
+                    if theme is not None:
+                        parts.append(f"pri {ctx.name_for(theme)}")
+                        ctx.note_mention(theme)
+                        ctx.mark_nonperson_mention(theme)
             recipient_handled = True
             peti_handled = True
 
@@ -709,19 +982,62 @@ def _render_event_phrase(
         else:
             theme = ctx.trace.entity(ev.roles["theme"])
         if theme is not None:
+            # voki: theme is the called person; render as vocative
+            # ("vokis: «Petro!»") instead of the bare accusative
+            # ("vokis Petron"). Same per-event probability + style
+            # choice as the rakonti/peti quote paths.
+            if ev.action == "voki":
+                quote_phrase = None
+                if (ctx.rng is not None
+                        and ctx.rng.random() < _DIRECT_QUOTE_PROB):
+                    body = _render_voki_call_body(theme, ctx)
+                    if body is not None:
+                        style = ctx.rng.choice(_QUOTE_STYLES)
+                        quote_phrase = _wrap_direct_quote(body, style)
+                if quote_phrase is not None:
+                    # Strip the leading ": " — voki has no recipient
+                    # to anchor it onto, so the call follows the verb
+                    # directly: "vokis — Petro!" / "vokis 'Petro!'".
+                    parts.append(quote_phrase[2:])
+                    ctx.note_mention(theme)
+                    theme = None
+        if theme is not None:
             # Abstract themes (faktos) with a recipient unfold as a
             # `al RECIP ke ...` clause: "rakontis al Petro ke la
             # libro estas en la breto" instead of the literal "la
             # fakton" accusative. The fakto's pri_* properties give
             # us the underlying relation.
             ke = None
+            quote_phrase = None
             if (theme.entity_type == "abstract"
                     and ev.roles.get("recipient")):
                 # demandi (ask) renders the fakto as a question
                 # (kie/kiu) rather than an assertion (ke ...).
                 mode = "question" if ev.action == "demandi" else "assertion"
-                ke = _render_fakto_as_ke_clause(theme, ctx, mode=mode)
-            if ke is not None:
+                # Per-event coin flip: with `_DIRECT_QUOTE_PROB`,
+                # render as direct quote ("Maria diris al Petro:
+                # 'La libro estas en la breto.'") instead of the
+                # default ke-clause indirect form. Surface form
+                # picked uniformly from `_QUOTE_STYLES` so traces
+                # mix all three Esperanto dialog conventions.
+                if (ctx.rng is not None
+                        and ctx.rng.random() < _DIRECT_QUOTE_PROB):
+                    body = _render_fakto_as_quote_body(
+                        theme, ctx, mode=mode)
+                    if body is not None:
+                        style = ctx.rng.choice(_QUOTE_STYLES)
+                        quote_phrase = _wrap_direct_quote(body, style)
+                if quote_phrase is None:
+                    ke = _render_fakto_as_ke_clause(theme, ctx, mode=mode)
+            if quote_phrase is not None:
+                recip = ctx.trace.entity(ev.roles["recipient"])
+                if recip is not None:
+                    parts.append(f"al {ctx.name_for(recip)}{quote_phrase}")
+                    ctx.note_mention(recip)
+                    recipient_handled = True
+                else:
+                    parts.append(quote_phrase)
+            elif ke is not None:
                 recip = ctx.trace.entity(ev.roles["recipient"])
                 if recip is not None:
                     parts.append(f"al {ctx.name_for(recip)}")
@@ -791,9 +1107,22 @@ def _render_event_phrase(
                 ctx.note_mention(recip)
 
     if ev.roles.get("location"):
-        loc = ctx.trace.entity(ev.roles["location"])
+        loc_id = ev.roles["location"]
+        loc = ctx.trace.entity(loc_id)
         if loc is not None:
-            prep = "en" if loc.entity_type == "location" else "sur"
+            # Pick the preposition by looking at what the rule that
+            # fires on this verb actually adds — declarative source
+            # of truth that works regardless of whether DSL has been
+            # run on the trace yet. Falls back to the entity-type
+            # heuristic ("location → en, else sur") when no rule
+            # explicitly adds en/sur for this verb's theme/location.
+            #
+            # Without this, planti(theme=semo, location=tero) would
+            # render "sur tero" because tero is a substance — but the
+            # planti_plants_theme rule actually adds en(theme, tero).
+            prep = _verb_location_preposition(ev.action, ctx.lexicon)
+            if prep is None:
+                prep = "en" if loc.entity_type == "location" else "sur"
             parts.append(f"{prep} {ctx.name_for(loc)}")
             ctx.note_mention(loc)
 
@@ -803,9 +1132,23 @@ def _render_event_phrase(
             parts.append(f"al {ctx.name_for(dest)}")
             ctx.note_mention(dest)
 
+    # `legi` and other text-extraction verbs: append the discovered
+    # fakto as a "kaj eksciis ke ..." tail clause so the prose tells
+    # the reader WHAT was learned, not just that something was read.
+    # Driven by priskribas(theme, fakto) in the trace — verb-agnostic;
+    # any verb with a text theme that has a priskribas link gets this.
+    learned = _render_learned_fakto(ev, ctx)
+    if learned is not None:
+        parts.append(learned)
+
     # Strip trailing period for coordination (caller adds one).
     sent = " ".join(parts)
-    if not drop_subject:
+    if not drop_subject and not sent.endswith((".", "?", "!", "'", "»")):
+        # Direct-quote events end with the embedded utterance's own
+        # terminal punctuation (`?`, `!`, `.`) plus an optional quote
+        # closer (`'`, `»`). Skipping `.` here avoids `?.` / `'.` /
+        # `».` artifacts; the quote closer serves as the sentence
+        # terminator visually.
         sent += "."
     return sent
 
@@ -1018,7 +1361,19 @@ def _render_grouped_relation(
         list_str = f"{head}, kaj {contained_forms[-1]}"
 
     prep = "En" if m.relation == "en" else "Sur"
+    # Single-contained animates with a derived posture → use that
+    # posture's verb ("En la lago naĝas Lidia") instead of the bland
+    # "estas" copula. Mirrors the contextual-posture path in
+    # `_render_relation`. Multi-contained groups stay on "estas" —
+    # you can't conjugate a single posture verb across mixed contents.
     verb = "est" + ctx.tense
+    if len(m.contained_ids) == 1:
+        only = ctx.trace.entities.get(m.contained_ids[0])
+        if only is not None and ctx.lexicon.types.is_subtype(
+                only.entity_type, "animate"):
+            posture_root = _contextual_posture_verb_root(only, ctx)
+            if posture_root is not None:
+                verb = f"{posture_root}{ctx.tense}"
     return f"{prep} {container_form} {verb} {list_str}."
 
 
@@ -1081,18 +1436,77 @@ _DISPATCH = {
 }
 
 
+def _render_world_preamble(ctx: _Ctx) -> Optional[str]:
+    """Surface the trace-wide `mondo` singleton's marked state as one
+    or more sentences at the trace opening.
+
+    Emits time-of-day when marked (mateno/vespero/nokto) and weather
+    when marked (pluva/neĝa). Unmarked values (tempo_de_tago=tago,
+    weather=serena) stay silent, since speakers don't say "estis tago"
+    any more than they say "the room had four walls".
+
+    Tempo_de_tago renders as a copular noun ("Estis nokto.").
+    Weather renders as an impersonal verb derived from the adjective
+    root ("Pluvis." from `pluva`, "Neĝis." from `neĝa`) — natural
+    Esperanto for atmospheric conditions. Tense matches the trace's
+    narrative tense throughout."""
+    mondo = ctx.trace.entities.get("mondo")
+    if mondo is None:
+        return None
+    parts: list[str] = []
+
+    val = mondo.properties.get("tempo_de_tago")
+    if isinstance(val, list):
+        val = val[0] if val else None
+    if val is not None:
+        slot_def = ctx.lexicon.slots.get("tempo_de_tago")
+        unmarked = slot_def.unmarked if slot_def is not None else "tago"
+        if val != unmarked:
+            copula = f"est{ctx.tense}"
+            parts.append(f"{copula.capitalize()} {val}.")
+
+    weather = mondo.properties.get("weather")
+    if isinstance(weather, list):
+        weather = weather[0] if weather else None
+    if weather is not None:
+        slot_def = ctx.lexicon.slots.get("weather")
+        unmarked = slot_def.unmarked if slot_def is not None else "serena"
+        if weather != unmarked:
+            # Adjective root → impersonal verb. `pluva` → `pluv` →
+            # `pluvis`/`pluvas`/`pluvos`. Trim a trailing -a only;
+            # other endings are left to fail loudly so a typo in the
+            # vocabulary doesn't silently produce ungrammatical output.
+            root = weather[:-1] if weather.endswith("a") else weather
+            parts.append(f"{root.capitalize()}{ctx.tense}.")
+
+    if not parts:
+        return None
+    return " ".join(parts)
+
+
 def render_messages(
     messages: list[Message], trace: Trace, lexicon: Lexicon, *,
     scene_location_id: Optional[str] = None,
     rng: Optional[random.Random] = None,
     tense: Optional[str] = None,
+    derived=None,
 ) -> str:
     if tense is None:
         tense = _pick_tense(rng)
     ctx = _Ctx(trace, lexicon,
-               scene_location_id=scene_location_id, rng=rng, tense=tense)
+               scene_location_id=scene_location_id, rng=rng, tense=tense,
+               derived=derived)
 
     raw: list[tuple[str, bool]] = []   # (text, has_cause_in_prose)
+    # Trace-wide preamble from the `mondo` singleton (currently just
+    # tempo_de_tago). Appears once at the trace opening when the
+    # value is marked (mateno/vespero/nokto) — `tago` is the unmarked
+    # default and stays silent. cause=False since it's setting, not
+    # consequence.
+    preamble = _render_world_preamble(ctx)
+    if preamble is not None:
+        raw.append((preamble, False))
+
     for msg in messages:
         render_fn = _DISPATCH.get(type(msg))
         if render_fn is None:

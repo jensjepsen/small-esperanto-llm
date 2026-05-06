@@ -7,7 +7,7 @@
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "muro", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "fenestro", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained_pattern": {"category": "meblo"}, "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "libro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained_pattern": {"property": {"readability": "legebla"}}, "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "animate", "relation": "en"}
 {"container": "kuirejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "manĝejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
@@ -15,7 +15,7 @@
 {"container": "tablo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "sur"}
 {"container": "tablo", "contained": "glaso", "relation": "sur"}
 {"container": "tablo", "contained": "botelo", "relation": "sur"}
-{"container_pattern": {"category": "surfaco"}, "contained": "libro", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained_pattern": {"property": {"readability": "legebla"}}, "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "korbo", "relation": "sur"}
 {"container": "breto", "contained": "tranĉilo", "relation": "sur"}
 {"container": "breto", "contained": "purigilo", "relation": "sur"}
@@ -48,6 +48,23 @@
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "vazo", "relation": "en"}
 {"container": "kuirejo", "contained": "forko", "relation": "en"}
 {"container": "kuirejo", "contained": "kulero", "relation": "en"}
+{"container": "kuirejo", "contained": "forno", "relation": "en", "required": true}
+{"container": "domo", "contained": "kuirejo", "relation": "en"}
+{"container": "domo", "contained": "dormejo", "relation": "en"}
+{"container": "domo", "contained": "salono", "relation": "en"}
+{"container": "domo", "contained": "lavejo", "relation": "en"}
+{"container": "domo", "contained": "ĉambro", "relation": "en"}
+{"container": "domo", "contained": "koridoro", "relation": "en"}
+{"container": "domo", "contained": "manĝejo", "relation": "en"}
+{"container": "domo", "contained": "biblioteko", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "florpoto", "relation": "en"}
+{"container": "florpoto", "contained": "tero", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "tero", "relation": "en"}
+{"container": "pomarbo", "contained": "pomo", "relation": "sur"}
+{"container": "oranĝarbo", "contained": "oranĝo", "relation": "sur"}
+{"container": "citronarbo", "contained": "citrono", "relation": "sur"}
+{"container": "ĉerizarbo", "contained": "ĉerizo", "relation": "sur"}
+{"container": "pirarbo", "contained": "piro", "relation": "sur"}
 {"container": "manĝejo", "contained": "forko", "relation": "en"}
 {"container": "manĝejo", "contained": "kulero", "relation": "en"}
 {"container": "laborejo", "contained": "martelo", "relation": "en"}
@@ -69,3 +86,7 @@
 {"container_pattern": {"entity_type": "physical"}, "contained": "skribaĵo", "relation": "sur"}
 {"container_pattern": {"property": {"liquid_holder": "yes"}}, "contained_pattern": {"property": {"state_of_matter": "likva"}}, "relation": "en", "required": true}
 {"relation": "en", "required": true, "slot_overlap": ["terrain"]}
+{"container": "valizo", "contained_pattern": {"category": "vestaĵo"}, "relation": "en"}
+{"container": "ŝranko", "contained_pattern": {"category": "vestaĵo"}, "relation": "en"}
+{"container": "kofro", "contained_pattern": {"property": {"is_currency": "yes"}}, "relation": "en"}
+{"container": "skatolo", "contained_pattern": {"property": {"is_currency": "yes"}}, "relation": "en"}

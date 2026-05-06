@@ -265,30 +265,38 @@ def _referenced_entity_ids(
     for src in source_by_event.values():
         if isinstance(src, str):
             referenced.add(src)
-    # 1-hop expansion through setup relations — strict, single pass.
-    # For most relations expansion is symmetric: if either arg is in
-    # `seeds`, add both. This keeps prior owners (havi), parts
-    # (havas_parton), seating containers (sur), neighbors (apud)
-    # visible when any side is narratively referenced.
+    # Expansion through setup relations.
+    # For most relations expansion is symmetric and SINGLE-PASS: if
+    # either arg is in `seeds`, add both. This keeps prior owners
+    # (havi), parts (havas_parton), seating containers (sur),
+    # neighbors (apud) visible when any side is narratively referenced.
     #
-    # `en` is asymmetric: a location collects unrelated bystanders, so
-    # symmetric expansion through it pulls in scene-mates (an aviadilo
-    # at the parko a Sara walks through). We expand `en` only in the
-    # contained → container direction: a referenced entity's location
-    # matters, but a referenced location doesn't make every other
-    # thing in it relevant.
+    # `en` is asymmetric AND iterated to fixed point: a referenced
+    # entity's container matters (forno → kuirejo → domo), but a
+    # referenced location doesn't make every other thing in it
+    # relevant (a location collects unrelated bystanders). The
+    # contained→container direction is iterated so multi-level
+    # containment hierarchies (forno en kuirejo en domo) all stay
+    # in scope — one pass would only catch the immediate container.
     rels = (setup_relations if setup_relations is not None
             else list(trace.relations))
     seeds = frozenset(referenced)
     for r in rels:
         args = tuple(r.args)
-        if r.relation == "en" and len(args) == 2:
-            contained, container = args
-            if contained in seeds:
-                referenced.add(container)
+        if r.relation == "en":
             continue
         if any(a in seeds for a in args):
             referenced.update(args)
+    en_rels = [r for r in rels if r.relation == "en" and len(r.args) == 2]
+    while True:
+        added = False
+        for r in en_rels:
+            contained, container = r.args
+            if contained in referenced and container not in referenced:
+                referenced.add(container)
+                added = True
+        if not added:
+            break
     return referenced
 
 

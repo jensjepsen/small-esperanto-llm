@@ -22,6 +22,7 @@ from ..dsl import run_dsl
 from ..dsl.rules import (
     DEFAULT_DSL_DERIVATIONS, DEFAULT_DSL_RULES, RUNTIME_DERIVATIONS,
 )
+from ..sampler import _ensure_world
 
 
 # Background scene preferences. Two flavors:
@@ -103,6 +104,11 @@ class SceneBuilder:
         # via no_ownership() for seeders that need actor-only havi
         # bindings (count drives where actor's stash matters).
         self._ownership = True
+        # Materialize the trace-wide `mondo` singleton (one per scene)
+        # holding shared state like `tempo_de_tago`. Light derivations
+        # consult it to make outdoor scenes go dark at night. Future
+        # trace-wide state (weather, season) lives on the same entity.
+        _ensure_world(self.t, self.lex, self.rng)
 
     def _fail(self):
         self._failed = True
@@ -149,6 +155,12 @@ class SceneBuilder:
         container_id = self._resolve(container_slot)
         if container_id is None:
             return False
+        from .seeders import _route_through_container
+        ent = self.t.entities.get(eid)
+        concept_lemma = ent.concept_lemma if ent is not None else None
+        if _route_through_container(
+                self.t, eid, concept_lemma, container_id, self.lex, self.rng):
+            return True
         try:
             self.t.assert_relation("en", (eid, container_id), self.lex)
             return True
@@ -816,6 +828,8 @@ class SceneBuilder:
             self._apply_auto_pose()
         if self._ownership:
             self._distribute_ownership()
+        from ..sampler import _emit_weather_events
+        _emit_weather_events(self.t, self.lex)
         return self.t, scene_id, self._drive
 
     def no_auto_pose(self):

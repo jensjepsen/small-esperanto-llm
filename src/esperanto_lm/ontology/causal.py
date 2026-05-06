@@ -297,27 +297,32 @@ class Trace:
         return self.entities.get(eid)
 
     # ---------- relation helpers ----------
-    def assert_relation(
+    def validate_relation(
         self, name: str, args: tuple[str, ...], lexicon: Lexicon,
-    ) -> RelationAssertion:
+        *, strict_containment: bool = False,
+    ) -> Optional[str]:
+        """Run every check `assert_relation` would do; return None when
+        the assertion is permissible, or a short reason string when it
+        isn't. No mutation, no exceptions for predictable rejections.
+        Raises only on programming errors (unknown relation/entity).
+
+        `strict_containment=True` ignores the global validation mode and
+        always rejects containment violations — for callers (seeders,
+        planners) that want a principled answer regardless of whether
+        the runtime is in `warn` or `raise` mode."""
         rel = lexicon.relations.get(name)
         if rel is None:
             raise KeyError(f"unknown relation {name!r}")
         if len(args) != rel.arity:
-            raise ValueError(
-                f"relation {name!r}: expected {rel.arity} args, got {len(args)}")
+            return (f"relation {name!r}: expected {rel.arity} args, "
+                    f"got {len(args)}")
         for arg, expected_type in zip(args, rel.arg_types):
             ent = self.entities.get(arg)
             if ent is None:
                 raise KeyError(f"unknown entity {arg!r}")
             if not lexicon.types.is_subtype(ent.entity_type, expected_type):
-                raise ValueError(
-                    f"relation {name!r}: entity {arg!r} type "
-                    f"{ent.entity_type!r} not a {expected_type!r}")
-        # Per-arg subtype exclusions: arg_types declares the broadest
-        # admissible type; arg_excludes carves out narrower forbidden
-        # subtypes. havi.theme=physical excludes location/person so
-        # the planner can't even hypothesize `havi(petro, dormejo)`.
+                return (f"relation {name!r}: entity {arg!r} type "
+                        f"{ent.entity_type!r} not a {expected_type!r}")
         if rel.arg_excludes:
             for i, arg in enumerate(args):
                 if i >= len(rel.arg_excludes):
@@ -329,31 +334,24 @@ class Trace:
                 for forbidden in forbidden_list:
                     if lexicon.types.is_subtype(
                             ent.entity_type, forbidden):
-                        raise ValueError(
-                            f"relation {name!r}: arg {i} ({arg!r} type "
-                            f"{ent.entity_type!r}) is excluded subtype "
-                            f"{forbidden!r}")
-        # Per-arg "not a part" check: havi.theme can't be an entity
-        # that's already a `parto` of another (Mikael's mano can't be
-        # owned separately from Mikael). O(1) via _parts_index, which
-        # `assert_relation` maintains inline below.
+                        return (f"relation {name!r}: arg {i} ({arg!r} "
+                                f"type {ent.entity_type!r}) is excluded "
+                                f"subtype {forbidden!r}")
         if rel.arg_not_part:
             for i, arg in enumerate(args):
                 if i >= len(rel.arg_not_part) or not rel.arg_not_part[i]:
                     continue
                 if arg in self._parts_index:
-                    raise ValueError(
-                        f"relation {name!r}: arg {i} ({arg!r}) is a "
-                        f"part of another entity, can't appear here")
-        # Containment registry validation for en/sur. The containment
-        # index (containment.jsonl) is the source of truth for what
-        # can plausibly be in/on what. Assertions outside the registry
-        # are rejected so the sampler, the engine, and any test
-        # fixture stay in sync — no more "akvo en kuirejo" sneaking in
-        # because the type system is too permissive. Bypassed by env
-        # var for test fixtures that don't extend containment.jsonl.
-        if (_CONTAINMENT_VALIDATE != "off"
-                and name in ("en", "sur") and len(args) == 2):
+                    return (f"relation {name!r}: arg {i} ({arg!r}) is a "
+                            f"part of another entity, can't appear here")
+        # Containment registry: source of truth for what can plausibly
+        # be in/on what. Two-tier check (no required violation AND
+        # afforded by at least one entry). `strict_containment` bypasses
+        # the global warn/off mode for callers that want a principled
+        # answer regardless of runtime configuration.
+        check_containment = (
+            strict_containment or _CONTAINMENT_VALIDATE != "off")
+        if check_containment and name in ("en", "sur") and len(args) == 2:
             from .containment import (
                 containment_relations_for, required_fact_violations,
             )
@@ -365,32 +363,54 @@ class Trace:
                 idx = _containment_index_for(lexicon)
                 contained_lemma = contained_ent.concept_lemma
                 container_lemma = container_ent.concept_lemma
-                # Two-tier check, both must pass:
-                #   1. No required-entry violation (every applicable
-                #      requirement's container_pattern must match).
-                #   2. At least one entry (required or affordance)
-                #      permits the (contained, container, relation).
                 req_violations = required_fact_violations(
                     container_lemma, contained_lemma, name, idx, lexicon)
                 allowed = containment_relations_for(
                     container_lemma, contained_lemma, idx, lexicon)
-                bad = req_violations or (name not in allowed)
-                if bad:
-                    if _CONTAINMENT_VALIDATE == "raise":
-                        if req_violations:
-                            raise ValueError(
-                                f"containment requirement violation: "
-                                f"{contained_lemma} {name} {container_lemma} "
-                                f"violates {len(req_violations)} required "
-                                f"entr{'y' if len(req_violations)==1 else 'ies'} "
-                                f"in containment.jsonl")
-                        raise ValueError(
-                            f"containment violation: "
+                if req_violations:
+                    return (f"containment requirement violation: "
+                            f"{contained_lemma} {name} {container_lemma} "
+                            f"violates {len(req_violations)} required "
+                            f"entr{'y' if len(req_violations)==1 else 'ies'} "
+                            f"in containment.jsonl")
+                if name not in allowed:
+                    return (f"containment violation: "
                             f"{contained_lemma} {name} {container_lemma} "
                             f"not declared in containment.jsonl "
                             f"(allowed: {sorted(allowed) or 'none'})")
-                    _CONTAINMENT_VIOLATIONS.append(
-                        (contained_lemma, name, container_lemma))
+        return None
+
+    def is_relation_permitted(
+        self, name: str, args: tuple[str, ...], lexicon: Lexicon,
+        *, strict_containment: bool = True,
+    ) -> bool:
+        """Bool view of `validate_relation`. Defaults to strict
+        containment so callers get the principled answer ("would this
+        assertion violate any declared rule?") regardless of whether
+        the runtime is configured to warn or raise on violations."""
+        return self.validate_relation(
+            name, args, lexicon,
+            strict_containment=strict_containment) is None
+
+    def assert_relation(
+        self, name: str, args: tuple[str, ...], lexicon: Lexicon,
+    ) -> RelationAssertion:
+        # Hard checks (arity/type/excludes/parts) raise. Containment
+        # check honors the runtime mode: "raise" hard-rejects, "warn"
+        # logs to `_CONTAINMENT_VIOLATIONS` for audit, "off" skips.
+        reason = self.validate_relation(name, args, lexicon)
+        if reason is not None:
+            is_containment = reason.startswith("containment ")
+            if not is_containment:
+                raise ValueError(reason)
+            if _CONTAINMENT_VALIDATE == "raise":
+                raise ValueError(reason)
+            # warn mode: collect for audit, then continue.
+            if len(args) == 2:
+                contained_lemma = self.entities[args[0]].concept_lemma
+                container_lemma = self.entities[args[1]].concept_lemma
+                _CONTAINMENT_VIOLATIONS.append(
+                    (contained_lemma, name, container_lemma))
         ra = RelationAssertion(relation=name, args=args)
         self.relations.append(ra)
         # Maintain the parts index for the arg_not_part check above.

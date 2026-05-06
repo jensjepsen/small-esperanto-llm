@@ -378,15 +378,20 @@ def test_non_location_scene_fails(lex):
 
 
 def test_recipe_required_concepts_must_be_reachable(lex):
-    """Verify a known constraint: floro is unreachable from kuirejo, so no
-    plant_floro recipes should fire when sampling the kitchen."""
+    """Sanity guard: outdoor-only plants (floro, arbo, semo, herbo)
+    should not surface in kuirejo recipes — those plants live in
+    parko/ĝardeno, not on a kitchen counter. planti/akvumi on tero
+    (in a florpoto) IS reachable indoors, so plant_/water_ on tero
+    are legitimate; the forbidden set is plants without a kitchen
+    affordance path."""
     rng = random.Random(0)
     seen = set()
     for _ in range(40):
         _, info = sample_scene(rng=rng, lex=lex, scene="kuirejo")
         seen.add(info.recipe)
-    assert all(not r.startswith(("plant_", "water_")) for r in seen), \
-        f"garden recipe in kitchen: {seen}"
+    forbidden = {"plant_floro", "plant_arbo", "plant_semo", "plant_herbo",
+                 "water_floro", "water_arbo", "water_semo", "water_herbo"}
+    assert not (seen & forbidden), f"outdoor plant recipe in kitchen: {seen & forbidden}"
 
 
 def test_realize_variation_changes_with_rng_seed(lex):
