@@ -33,7 +33,7 @@ from ..dsl.implications import PropertyImplication, RelationImplication
 from ..dsl.patterns import Var
 from ..sampler import (
     PERSON_NAMES, _STRUCTURAL_SURFACES, _add_entity_randomized,
-    _ensure_placed, _ensure_world, _person_concepts,
+    _ensure_placed, _ensure_world, _person_concepts, _person_names,
 )
 from .planner import (
     _container_of, _entity_property_values, _has_relation,
@@ -66,11 +66,19 @@ def sample_scene(lex, rng, *, max_objects=4):
 
     # 2. 1-2 persons. Slight bias to 2 so altruistic / inter-agent
     # drives are possible (entity_slot drives need a non-self target).
+    # Concept choice for each name is filtered by the name's declared
+    # gender (Maria → virino-class concepts, Petro → viro-class) so
+    # the surface form aligns with the kin-derivation gender check.
+    from ..sampler import _person_gender
     n_persons = rng.choices([1, 2], weights=[2, 3], k=1)[0]
-    person_concepts = _person_concepts(lex)
+    name_pool = _person_names(lex)
     persons: list[str] = []
-    for name in rng.sample(PERSON_NAMES, min(n_persons, len(PERSON_NAMES))):
-        concept = rng.choice(person_concepts)
+    for name in rng.sample(name_pool, min(n_persons, len(name_pool))):
+        gender = _person_gender(lex, name)
+        candidates = _person_concepts(lex, gender=gender)
+        if not candidates:
+            candidates = _person_concepts(lex)
+        concept = rng.choice(candidates)
         _add_entity_randomized(t, concept, lex, rng, entity_id=name)
         t.assert_relation("en", (name, scene), lex)
         persons.append(name)
@@ -126,6 +134,16 @@ def sample_scene(lex, rng, *, max_objects=4):
             if rng.random() < 0.4:
                 t.assert_relation(
                     "havi", (rng.choice(valid_owners), eid), lex)
+                # Drop the item's en/sur placement: havi narrowly
+                # means "currently holding," and a stale surface
+                # placement contradicts that. The owner's location
+                # plus havi_implies_samloke_with_carried anchor it.
+                t.relations = [
+                    r for r in t.relations
+                    if not (r.relation in ("en", "sur")
+                            and len(r.args) == 2
+                            and r.args[0] == eid)
+                ]
 
     # 5b. Materialize fakto entities for the scene's `en`/`sur`/`havi`
     # relations. The vidi cascade rules also create these on demand

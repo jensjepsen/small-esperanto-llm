@@ -1,6 +1,6 @@
 """Derivation-rule implications.
 
-Derivations can imply two kinds of facts:
+Derivations can imply three kinds of facts:
 
   property(entity_var, slot, value)
     Assert entity.slot=value in the derived-property layer for every
@@ -11,6 +11,15 @@ Derivations can imply two kinds of facts:
     Vars (resolved per binding) or literal entity ids. Used for
     relations whose existence follows from other state — e.g.
     `samloke(A, B)` follows from `A and B share an en container`.
+
+  category(entity_var, lemma)
+    Tag the entity with an additional concept-lemma label that the
+    realizer can consult for back-reference aliasing. Lets contextual
+    roles (a viro in `gepatro(this, ?)` becomes a patro) surface
+    through the existing concept.category alias machinery without the
+    entity's concept_lemma changing. The label is purely a render-side
+    affordance — pattern matching against `entity(concept=...)` still
+    sees the immutable concept_lemma.
 
 Derived facts are erased and re-materialized every cycle of the
 engine's fixed-point loop, so a derivation whose precondition stops
@@ -56,6 +65,19 @@ class RelationImplication(Implication):
 
 
 @dataclass
+class CategoryImplication(Implication):
+    """`category(entity, lemma)` — derived per-entity category label.
+    Surfaces in the renderer's alias chain alongside the concept's
+    static categories, so a viro entity in `gepatro(this, ?)` can be
+    aliased "la patro" without changing concept_lemma."""
+    entity: Var
+    category: str
+
+    def reads(self) -> set[Var]:
+        return {self.entity}
+
+
+@dataclass
 class PartImplication(Implication):
     """`part(host, part_concept, relation)` — append a ConceptPart to the
     matched host concept's `parts` list.
@@ -84,6 +106,15 @@ def relation(name: str, *args: Any) -> RelationImplication:
     """Imply that rel(name, *args) holds in the derived-relation layer.
     Args may be Vars (resolved per binding) or literal entity ids."""
     return RelationImplication(name, tuple(args))
+
+
+def category(entity: Var, lemma: str) -> CategoryImplication:
+    """Imply that the entity bound to `entity` carries `lemma` as a
+    contextual category label. Renderer adds it to the alias pool;
+    pattern matching does not see it (concept_lemma stays the same)."""
+    if not isinstance(entity, Var):
+        raise TypeError("category(): entity must be a Var")
+    return CategoryImplication(entity, lemma)
 
 
 def part(entity: Var, part_concept: str,

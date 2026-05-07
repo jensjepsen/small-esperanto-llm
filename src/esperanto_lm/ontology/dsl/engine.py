@@ -33,7 +33,8 @@ from .effects import (
     RemoveRelation, TransferN,
 )
 from .implications import (
-    Implication, PartImplication, PropertyImplication, RelationImplication,
+    CategoryImplication, Implication, PartImplication, PropertyImplication,
+    RelationImplication,
 )
 from .patterns import (
     EventPattern, Pattern, Var,
@@ -436,6 +437,15 @@ def _run_derivations_to_fixed_point(
                         if derived.add_relation(
                                 imp.name, tuple(resolved_args)):
                             delta_rels.add(imp.name)
+                    elif isinstance(imp, CategoryImplication):
+                        eid = bindings.get(imp.entity)
+                        if eid is None:
+                            continue
+                        # Categories don't drive other derivations
+                        # (renderer-only state), so no delta tracking
+                        # needed — re-evaluation hooks read deltas in
+                        # rels/slots and treat categories as quiet.
+                        derived.add_category(eid, imp.category)
         if not delta_rels and not delta_slots:
             return
         # Next iteration: only derivations whose deps overlap with

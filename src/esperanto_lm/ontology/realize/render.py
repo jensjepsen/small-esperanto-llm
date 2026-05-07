@@ -202,17 +202,33 @@ ADJECTIVE_RATE = 0.30  # per-mention probability of attaching an adjective
 ALIAS_RATE = 0.20      # per back-reference probability of using a category alias
 
 
-def _concept_aliases(concept_lemma: str, lex: Lexicon) -> list[str]:
+def _concept_aliases(
+    concept_lemma: str, lex: Lexicon, *,
+    entity_id: Optional[str] = None,
+    derived=None,
+) -> list[str]:
     """Transitively walk `concept.category` to collect superordinate
     lemmas that can stand in for `concept_lemma` on a back-reference.
     pomo → frukto → manĝaĵo: a `pomo` entity yields ["frukto", "manĝaĵo"].
-    Cycle-safe via a visit set (concepts shouldn't have cycles, but
-    cheap to defend). Returns lemmas in the order encountered (most-
-    specific parent first), so the caller's random choice naturally
-    surfaces both levels with similar frequency."""
+
+    When `entity_id` and `derived` are given, also folds in any
+    contextual category labels the engine has tagged on the entity —
+    e.g. a viro entity in `gepatro(this, ?)` carries the derived
+    `patro` label. Derived labels each get their own concept-category
+    chain walked so "patro → viro" still surfaces as a deeper alias.
+
+    Cycle-safe via a visit set. Returns lemmas in the order encountered
+    (most-specific parent first), so the caller's random choice
+    naturally surfaces both levels with similar frequency."""
     out: list[str] = []
     visited: set[str] = {concept_lemma}
     frontier = [concept_lemma]
+    if derived is not None and entity_id is not None:
+        for label in derived.categories_for(entity_id):
+            if label not in visited:
+                visited.add(label)
+                out.append(label)
+                frontier.append(label)
     while frontier:
         cur = frontier.pop(0)
         concept = lex.concepts.get(cur)
@@ -288,9 +304,29 @@ def _name_for(
     lexicon: Optional[Lexicon] = None,
     adjective_history: Optional[dict[str, set[str]]] = None,
     alias_history: Optional[dict[str, set[str]]] = None,
+    derived=None,
 ) -> str:
     if entity.entity_type == "person":
         name = entity.id
+        # Derived-category alias on back-reference: a viro entity in
+        # `gepatro(this, ?)` carries the derived `patro` label and can
+        # be referred to as "la patro" instead of by name. Same
+        # ALIAS_RATE / cycle-through-history shape as the non-person
+        # case below. Falls through to pronoun / name when the
+        # rng / mentioned / derived gates don't all line up.
+        if (rng is not None
+                and entity.id in mentioned
+                and alias_history is not None
+                and derived is not None
+                and rng.random() < ALIAS_RATE):
+            cats = list(derived.categories_for(entity.id))
+            if cats:
+                used = alias_history.get(entity.id, set())
+                fresh = [c for c in cats if c not in used]
+                pool = fresh if fresh else cats
+                chosen = rng.choice(pool)
+                alias_history.setdefault(entity.id, set()).add(chosen)
+                return f"la {chosen}"
         if (rng is not None and trace is not None
                 and entity.id in mentioned
                 and _pronoun_unambiguous(name, trace)
@@ -304,11 +340,15 @@ def _name_for(
     # binding anchor; back-references vary so it learns the
     # genus-species coreference. Cycle through the available
     # parents per entity via `alias_history` so we don't repeat.
+    # Folds in derived categories (e.g. role-from-relation labels)
+    # alongside concept.category so contextual roles surface here too.
     if (rng is not None and lexicon is not None
             and entity.id in mentioned
             and alias_history is not None
             and rng.random() < ALIAS_RATE):
-        aliases = _concept_aliases(lemma, lexicon)
+        aliases = _concept_aliases(
+            lemma, lexicon,
+            entity_id=entity.id, derived=derived)
         if aliases:
             used = alias_history.get(entity.id, set())
             fresh = [a for a in aliases if a not in used]
@@ -403,7 +443,8 @@ class _Ctx:
             count_override=count_override,
             lexicon=self.lexicon,
             adjective_history=self.adjective_history,
-            alias_history=self.alias_history)
+            alias_history=self.alias_history,
+            derived=self.derived)
 
     def theme_form(self, entity, *,
                    count_override: Optional[int] = None) -> str:

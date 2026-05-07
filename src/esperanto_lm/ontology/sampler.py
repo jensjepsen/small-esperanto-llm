@@ -32,20 +32,68 @@ from .containment import (
 from .loader import Lexicon
 
 
-PERSON_NAMES = ["petro", "maria", "anna", "klara", "johano",
-                "elena", "pavel", "sara", "mikael", "lidia"]
+def _person_names(lex: Lexicon) -> list[str]:
+    """Just the name strings, in declaration order. Backwards-compatible
+    helper for callers that previously consumed the PERSON_NAMES
+    constant. Falls back to a small built-in list when the lexicon
+    has no person_names data — covers test fixtures that load a
+    lexicon without the names file."""
+    if lex.person_names:
+        return [pn.name for pn in lex.person_names]
+    return ["petro", "maria", "anna", "klara", "johano",
+            "elena", "pavel", "sara", "mikael", "lidia"]
 
 
-def _person_concepts(lex: Lexicon) -> list[str]:
+def _person_gender(lex: Lexicon, name: str) -> str | None:
+    """Return the declared gender lemma for a name, or None if the
+    name has no entry (sortal-neutral pick OK)."""
+    for pn in lex.person_names:
+        if pn.name == name:
+            return pn.gender
+    return None
+
+
+def _person_concepts(
+    lex: Lexicon, gender: str | None = None,
+) -> list[str]:
     """Every concept whose entity_type is `person`. Pulled live from the
     lexicon so additions there flow through without code changes —
     authored (persono, knabo, infano, doktoro…) and derived
     (kuiristo, instruisto, dancisto…) alike. Persons render by their
     entity_id (a name) so visible prose is the same regardless of
     concept, but concept-coverage stats and any future concept-keyed
-    rules see real variety."""
-    return [c.lemma for c in lex.concepts.values()
-            if c.entity_type == "person"]
+    rules see real variety.
+
+    When `gender` is set, restrict to concepts whose category chain
+    matches: a concept either explicitly belongs to that gender's
+    category (knabo → viro, knabino → virino, etc.) OR has no
+    gendered super-category (persono, infano, bebo — sortal-neutral).
+    Lets a name's gender flow through concept selection without
+    forcing every name to a specific concept."""
+    from .containment import _concept_in_category
+    out: list[str] = []
+    for c in lex.concepts.values():
+        if c.entity_type != "person":
+            continue
+        if gender is None:
+            out.append(c.lemma)
+            continue
+        # Match if concept is explicitly in `gender`'s category chain.
+        if _concept_in_category(c, gender, lex):
+            out.append(c.lemma)
+            continue
+        # Sortal-neutral: no gendered ancestor at all. Recognized by
+        # the absence of "viro" / "virino" anywhere in the chain.
+        if (not _concept_in_category(c, "viro", lex)
+                and not _concept_in_category(c, "virino", lex)):
+            out.append(c.lemma)
+    return out
+
+
+# Backwards-compat: callers still importing the constant get the
+# default list. New code should use `_person_names(lex)`.
+PERSON_NAMES = ["petro", "maria", "anna", "klara", "johano",
+                "elena", "pavel", "sara", "mikael", "lidia"]
 
 
 @dataclass

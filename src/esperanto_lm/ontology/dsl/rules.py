@@ -11,10 +11,10 @@ from __future__ import annotations
 from ..loader import Lexicon
 from .engine import Rule
 from . import (
-    add_relation, bind, caused_by, closure, consume_one, create_entity,
-    derive, destroy_entity, emit, entity, event, has_concept_field, part,
-    past_event, property, rel, relation, remove_relation, rule, transfer_n,
-    var,
+    add_relation, bind, category, caused_by, closure, consume_one,
+    create_entity, derive, destroy_entity, emit, entity, event,
+    has_concept_field, part, past_event, property, rel, relation,
+    remove_relation, rule, transfer_n, var,
 )
 
 
@@ -2381,6 +2381,131 @@ samloke_chains_through_sur = derive(
 )
 
 
+# ---------- derivations: kin-relation contextual category labels -------
+#
+# Asserting `gepatro(P, C)` derives the surface-form labels on the
+# parent and child, gendered by their concept's transitive category
+# chain (viro → patro/filo, virino → patrino/filino). The labels are
+# realizer-only — pattern matching against `entity(concept=...)` still
+# sees the entity's immutable concept_lemma — but the back-reference
+# alias pool gets enriched, so a knabo entity (category=viro) that
+# happens to be a parent can be referred to as "la patro" alongside
+# "la knabo" / "la viro".
+
+gepatro_implies_patro = derive(
+    when=rel("gepatro",
+             parent=bind(GIPP := var("P")),
+             child=bind(GIPC := var("C"))),
+    given=[entity(category="viro") & bind(GIPP)],
+    implies=category(GIPP, "patro"),
+    name="gepatro_implies_patro",
+)
+
+gepatro_implies_patrino = derive(
+    when=rel("gepatro",
+             parent=bind(GIMP := var("P")),
+             child=bind(GIMC := var("C"))),
+    given=[entity(category="virino") & bind(GIMP)],
+    implies=category(GIMP, "patrino"),
+    name="gepatro_implies_patrino",
+)
+
+gepatro_implies_filo = derive(
+    when=rel("gepatro",
+             parent=bind(GIFP := var("P")),
+             child=bind(GIFC := var("C"))),
+    given=[entity(category="viro") & bind(GIFC)],
+    implies=category(GIFC, "filo"),
+    name="gepatro_implies_filo",
+)
+
+gepatro_implies_filino = derive(
+    when=rel("gepatro",
+             parent=bind(GINP := var("P")),
+             child=bind(GINC := var("C"))),
+    given=[entity(category="virino") & bind(GINC)],
+    implies=category(GINC, "filino"),
+    name="gepatro_implies_filino",
+)
+
+
+# Symmetric kin relations: a single male/female derivation each.
+# The symmetric swap-yield in the engine fires bindings with both
+# arg orderings, so labelling the `a` participant covers both.
+
+frato_implies_frato = derive(
+    when=rel("frato",
+             a=bind(FRMA := var("A")),
+             b=bind(FRMB := var("B"))),
+    given=[entity(category="viro") & bind(FRMA)],
+    implies=category(FRMA, "frato"),
+    name="frato_implies_frato",
+)
+
+frato_implies_fratino = derive(
+    when=rel("frato",
+             a=bind(FRFA := var("A")),
+             b=bind(FRFB := var("B"))),
+    given=[entity(category="virino") & bind(FRFA)],
+    implies=category(FRFA, "fratino"),
+    name="frato_implies_fratino",
+)
+
+edzo_implies_edzo = derive(
+    when=rel("edzo",
+             a=bind(EDMA := var("A")),
+             b=bind(EDMB := var("B"))),
+    given=[entity(category="viro") & bind(EDMA)],
+    implies=category(EDMA, "edzo"),
+    name="edzo_implies_edzo",
+)
+
+edzo_implies_edzino = derive(
+    when=rel("edzo",
+             a=bind(EDFA := var("A")),
+             b=bind(EDFB := var("B"))),
+    given=[entity(category="virino") & bind(EDFA)],
+    implies=category(EDFA, "edzino"),
+    name="edzo_implies_edzino",
+)
+
+amiko_implies_amiko = derive(
+    when=rel("amiko",
+             a=bind(AMMA := var("A")),
+             b=bind(AMMB := var("B"))),
+    given=[entity(category="viro") & bind(AMMA)],
+    implies=category(AMMA, "amiko"),
+    name="amiko_implies_amiko",
+)
+
+amiko_implies_amikino = derive(
+    when=rel("amiko",
+             a=bind(AMFA := var("A")),
+             b=bind(AMFB := var("B"))),
+    given=[entity(category="virino") & bind(AMFA)],
+    implies=category(AMFA, "amikino"),
+    name="amiko_implies_amikino",
+)
+
+najbaro_implies_najbaro = derive(
+    when=rel("najbaro",
+             a=bind(NJMA := var("A")),
+             b=bind(NJMB := var("B"))),
+    given=[entity(category="viro") & bind(NJMA)],
+    implies=category(NJMA, "najbaro"),
+    name="najbaro_implies_najbaro",
+)
+
+najbaro_implies_najbarino = derive(
+    when=rel("najbaro",
+             a=bind(NJFA := var("A")),
+             b=bind(NJFB := var("B"))),
+    given=[entity(category="virino") & bind(NJFA)],
+    implies=category(NJFA, "najbarino"),
+    name="najbaro_implies_najbarino",
+)
+
+
 # Convenience bundle: every derivation the library ships with.
 # Callers assemble explicitly (as they do for rules) — no hidden
 # auto-registration. Pass to `run_dsl(..., derivations=...)`.
@@ -2452,6 +2577,18 @@ DEFAULT_DSL_DERIVATIONS = [
     vehicle_powered_from_active_motoro,
     vehicle_unpowered_from_inactive_motoro,
     vehicle_motorized_from_motoro,
+    gepatro_implies_patro,
+    gepatro_implies_patrino,
+    gepatro_implies_filo,
+    gepatro_implies_filino,
+    frato_implies_frato,
+    frato_implies_fratino,
+    edzo_implies_edzo,
+    edzo_implies_edzino,
+    amiko_implies_amiko,
+    amiko_implies_amikino,
+    najbaro_implies_najbaro,
+    najbaro_implies_najbarino,
 ]
 
 
@@ -2515,6 +2652,18 @@ RUNTIME_DERIVATIONS = [
     vehicle_powered_from_active_motoro,
     vehicle_unpowered_from_inactive_motoro,
     vehicle_emits_sound,
+    gepatro_implies_patro,
+    gepatro_implies_patrino,
+    gepatro_implies_filo,
+    gepatro_implies_filino,
+    frato_implies_frato,
+    frato_implies_fratino,
+    edzo_implies_edzo,
+    edzo_implies_edzino,
+    amiko_implies_amiko,
+    amiko_implies_amikino,
+    najbaro_implies_najbaro,
+    najbaro_implies_najbarino,
 ]
 
 

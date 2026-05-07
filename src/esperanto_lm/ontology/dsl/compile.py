@@ -844,6 +844,24 @@ class _Compiler:
             self.emit(f"if not {ent_local}.concept_lemma.endswith("
                       f"{value_repr}):")
             self._push(); self.emit("continue"); self._pop()
+        elif key == "category":
+            # Walk the concept's transitive `category` chain — same
+            # logic as `_entity_matches`'s category branch, just inlined
+            # so the compiled enum doesn't fall back to a slot lookup
+            # (which returns None and falsely fails the check).
+            cat_check = self.fresh("cat_ok")
+            self.emit(
+                "from esperanto_lm.ontology.containment import "
+                "_concept_in_category")
+            self.emit(
+                f"_cpt_obj = ctx.lexicon.concepts.get("
+                f"{ent_local}.concept_lemma)")
+            self.emit(
+                f"{cat_check} = (_cpt_obj is not None and "
+                f"_concept_in_category(_cpt_obj, {value_repr}, "
+                f"ctx.lexicon))")
+            self.emit(f"if not {cat_check}:")
+            self._push(); self.emit("continue"); self._pop()
         else:
             actual = self.fresh("v")
             self.emit(f"{actual} = ctx.effective_property("

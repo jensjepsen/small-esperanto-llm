@@ -25,7 +25,7 @@ from .patterns import Bindings, Pattern, Var
 
 @dataclass
 class DerivedState:
-    """Tracks facts materialized by derivation rules. Two layers:
+    """Tracks facts materialized by derivation rules. Three layers:
 
       properties — keyed by (entity_id, slot), value is the derived
         slot value. Distinct from `Trace.entities[*].properties` and
@@ -35,6 +35,13 @@ class DerivedState:
         from `Trace.relations`, which is the asserted relation list.
         Used for relations whose existence follows from other state
         (e.g. `samloke(A, B)` from shared `en` container).
+
+      categories — entity_id → set of contextual category lemmas. A
+        viro entity participating as the parent in a gepatro relation
+        gets `patro` added here; the renderer's alias chain consults
+        it on top of the static `concept.category` chain. Pattern
+        matching against `entity(concept=...)` is unaffected — the
+        derived category is realizer-only sugar.
 
     Fully rebuilt at the start of each derivation phase — see
     `engine.run_dsl`. Consumers should check asserted first and fall
@@ -48,11 +55,13 @@ class DerivedState:
     relations: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
     _relation_set: set[tuple[str, tuple[str, ...]]] = field(
         default_factory=set)
+    categories: dict[str, set[str]] = field(default_factory=dict)
 
     def clear(self) -> None:
         self.properties.clear()
         self.relations.clear()
         self._relation_set.clear()
+        self.categories.clear()
 
     def get(self, eid: str, slot: str) -> Any:
         return self.properties.get((eid, slot))
@@ -99,6 +108,23 @@ class DerivedState:
 
     def has_relation(self, name: str, args: tuple[str, ...]) -> bool:
         return (name, tuple(args)) in self._relation_set
+
+    def add_category(self, eid: str, lemma: str) -> bool:
+        """Tag entity with a contextual category lemma. Returns True
+        if the label is new for this entity."""
+        bucket = self.categories.get(eid)
+        if bucket is None:
+            self.categories[eid] = {lemma}
+            return True
+        if lemma in bucket:
+            return False
+        bucket.add(lemma)
+        return True
+
+    def categories_for(self, eid: str) -> set[str]:
+        """Read-only view of derived categories on an entity. Returns
+        empty set when nothing is derived."""
+        return self.categories.get(eid, set())
 
     def snapshot(self) -> dict[tuple[str, str], Any]:
         return dict(self.properties)

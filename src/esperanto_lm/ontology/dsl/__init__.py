@@ -36,8 +36,9 @@ from .engine import (
     run_dsl, validate_against_lexicon,
 )
 from .implications import (
-    Implication, PartImplication, PropertyImplication, RelationImplication,
-    part, property, relation,
+    CategoryImplication, Implication, PartImplication, PropertyImplication,
+    RelationImplication,
+    category, part, property, relation,
 )
 from .patterns import (
     AndPattern, BindPattern, CausedByPattern, ClosurePattern, EntityPattern,
@@ -61,9 +62,9 @@ __all__ = [
     "add_relation", "change", "consume_one", "create_entity",
     "destroy_entity", "emit", "remove_relation", "transfer_n",
     # implications
-    "Implication", "PartImplication", "PropertyImplication",
-    "RelationImplication",
-    "part", "property", "relation",
+    "CategoryImplication", "Implication", "PartImplication",
+    "PropertyImplication", "RelationImplication",
+    "category", "part", "property", "relation",
     # engine
     "Derivation", "Rule", "collect_rules", "compute_derived_state",
     "derive", "rule", "run_dsl",

@@ -24,6 +24,7 @@ from .schemas import (
     ContainmentFact,
     ContainmentPattern,
     Effect,
+    PersonName,
     PropertySlot,
     Quality,
     Relation,
@@ -48,6 +49,11 @@ class Lexicon:
     affixes: dict[str, Affix]                   # keyed by form (e.g. "il")
     containment: list[ContainmentFact] = field(default_factory=list)
     qualities: dict[str, Quality] = field(default_factory=dict)  # keyed by lemma
+    # Person-name registry — list of (name, gender) entries. Sampler
+    # uses gender to filter concept choice for named entities so
+    # "Maria" picks a virino-class concept and "Petro" a viro-class
+    # one. Empty list when person_names.jsonl is absent.
+    person_names: list[PersonName] = field(default_factory=list)
 
     # ---------- read helpers ----------
     def concept(self, lemma: str) -> Concept:
@@ -631,10 +637,29 @@ def load_lexicon(
             )
             containment.append(fact)
 
+    person_names: list[PersonName] = []
+    person_names_path = data_dir / "person_names.jsonl"
+    if person_names_path.exists():
+        seen_names: set[str] = set()
+        for d in _read_jsonl(person_names_path):
+            entry = PersonName(**d)
+            if entry.name in seen_names:
+                raise ValueError(
+                    f"duplicate person_name {entry.name!r}")
+            seen_names.add(entry.name)
+            # Validate gender resolves to a known concept (so seeders
+            # can reliably filter by category at pick time).
+            if entry.gender not in concepts:
+                raise ValueError(
+                    f"person_name {entry.name!r}: gender "
+                    f"{entry.gender!r} is not a known concept")
+            person_names.append(entry)
+
     return Lexicon(
         types=spine, slots=slots, concepts=concepts,
         relations=relations, actions=actions, affixes=affixes,
         containment=containment, qualities=qualities,
+        person_names=person_names,
     )
 
 

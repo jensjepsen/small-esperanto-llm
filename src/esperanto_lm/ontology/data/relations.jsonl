@@ -13,3 +13,8 @@
 {"name": "vestita", "arity": 2, "arg_types": ["animate", "artifact"], "arg_names": ["wearer", "garment"], "inverse": null, "symmetric": false}
 {"name": "amas", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["lover", "beloved"], "inverse": null, "symmetric": false}
 {"name": "timas", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["fearer", "feared"], "inverse": null, "symmetric": false}
+{"name": "gepatro", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["parent", "child"], "inverse": null, "symmetric": false}
+{"name": "frato", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
+{"name": "edzo", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
+{"name": "amiko", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
+{"name": "najbaro", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}

@@ -42,12 +42,18 @@ def _concept_in_category(
     visited: set[str] | None = None,
 ) -> bool:
     """True iff concept's transitive `category` chain contains
-    `category_lemma`. Walks up through `concept.category` ↦
-    `<parent>.category`, cycle-safe via `visited`."""
+    `category_lemma`. Reflexive: a concept is considered to be in its
+    own category (a viro IS-A viro), so callers can use `category=X`
+    to match both X-categorized concepts AND X itself when X is a
+    real instantiable concept (not just a stub). Walks up through
+    `concept.category` ↦ `<parent>.category`, cycle-safe via
+    `visited`."""
     if visited is None:
         visited = set()
     if concept.lemma in visited:
         return False
+    if concept.lemma == category_lemma:
+        return True
     visited.add(concept.lemma)
     for cat in concept.category:
         if cat == category_lemma:

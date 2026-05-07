@@ -104,6 +104,14 @@ class SceneBuilder:
         # via no_ownership() for seeders that need actor-only havi
         # bindings (count drives where actor's stash matters).
         self._ownership = True
+        # Kin seeding: build() probabilistically asserts a kin relation
+        # (currently gepatro) between two in-scene persons. Surfaces
+        # the gendered category derivations in regression prose ("la
+        # patrino" on back-references). Disable via no_kin_seeding()
+        # when a seeder needs actor identities decoupled from family
+        # graph (e.g. peti chains over money where the social bond
+        # would muddle the request semantics).
+        self._kin_seeding = True
         # Materialize the trace-wide `mondo` singleton (one per scene)
         # holding shared state like `tempo_de_tago`. Light derivations
         # consult it to make outdoor scenes go dark at night. Future
@@ -208,19 +216,42 @@ class SceneBuilder:
         return self
 
     def _named_actor(self, slot, concept_pool, *, in_, name=None):
-        from ..sampler import PERSON_NAMES
+        from ..sampler import _person_gender, _person_names
         if self._failed:
             return self
         if not concept_pool:
             self._fail()
             return self
-        concept = self.rng.choice(concept_pool)
+        name_pool = _person_names(self.lex)
         if name is None:
-            available = [n for n in PERSON_NAMES if n not in self._used_names]
+            available = [n for n in name_pool if n not in self._used_names]
             if not available:
                 self._fail()
                 return self
             name = self.rng.choice(available)
+        # Filter the candidate concepts by the name's gender so the
+        # picked concept's category-chain matches the name's
+        # convention (Maria → virino-class). Sortal-neutral concepts
+        # (persono, infano, bebo) survive any gender. Falls back to
+        # the unfiltered pool when the gender intersection is empty
+        # (caller handed a deliberately-restricted pool, like the
+        # animal seeder).
+        gender = _person_gender(self.lex, name)
+        if gender is not None:
+            from ..containment import _concept_in_category
+            filtered = [
+                c for c in concept_pool
+                if _concept_in_category(
+                    self.lex.concepts[c], gender, self.lex)
+                or (
+                    not _concept_in_category(
+                        self.lex.concepts[c], "viro", self.lex)
+                    and not _concept_in_category(
+                        self.lex.concepts[c], "virino", self.lex))
+            ]
+            if filtered:
+                concept_pool = filtered
+        concept = self.rng.choice(concept_pool)
         self._used_names.add(name)
         if not self._add(concept, name):
             self._fail()
@@ -232,7 +263,7 @@ class SceneBuilder:
 
     def person(self, slot, *, in_=None):
         """Pick a person concept and bind it to `slot` with a name from
-        `PERSON_NAMES`. Names are unique within a build."""
+        the lexicon's name registry. Names are unique within a build."""
         persons = [
             c.lemma for c in self.lex.concepts.values()
             if c.entity_type == "person"
@@ -577,6 +608,27 @@ class SceneBuilder:
         return self
 
     def havi(self, owner_slot, theme_slot):
+        """Assert havi(owner, theme), and retract any prior en/sur
+        placement of theme. We treat havi narrowly as "currently
+        holding" — the owner's location plus the
+        havi_implies_samloke_with_carried derivation are enough to
+        anchor the item, and a simultaneous physical surface placement
+        contradicts the in-hand reading. Without this drop the
+        realizer's lazy-mention pass leaks the prior placement into
+        the prose mid-narrative ("Mikael has the apples, but they're
+        on a table he just left")."""
+        if self._failed:
+            return self
+        theme_eid = self._resolve(theme_slot)
+        if theme_eid is None:
+            self._fail()
+            return self
+        self.t.relations = [
+            r for r in self.t.relations
+            if not (r.relation in ("en", "sur")
+                    and len(r.args) == 2
+                    and r.args[0] == theme_eid)
+        ]
         return self.relation("havi", owner_slot, theme_slot)
 
     def _maybe_place_on(self, person_slot, *, probability, attribute):
@@ -828,6 +880,8 @@ class SceneBuilder:
             self._apply_auto_pose()
         if self._ownership:
             self._distribute_ownership()
+        if self._kin_seeding:
+            self._assert_kin_relations()
         from ..sampler import _emit_weather_events
         _emit_weather_events(self.t, self.lex)
         return self.t, scene_id, self._drive
@@ -854,6 +908,62 @@ class SceneBuilder:
         stash count is the variable being driven."""
         self._ownership = False
         return self
+
+    def no_kin_seeding(self):
+        """Disable the build-time pass that asserts a kin relation
+        between two in-scene persons. Useful when family bonds would
+        confuse the drive semantics (peti-for-money among kin reads
+        differently than among strangers)."""
+        self._kin_seeding = False
+        return self
+
+    def _assert_kin_relations(self, *, probability: float = 0.25):
+        """With `probability`, pick two in-scene person entities and
+        assert a person-to-person relation between them. The candidate
+        pool is introspected from `lex.relations`: any binary relation
+        whose `arg_types` are both `person` qualifies — currently just
+        gepatro, but new kin/social relations (frato, edzo, amiko, …)
+        join the pool automatically as they're added.
+
+        Pair-binding is order-sensitive for asymmetric relations
+        (gepatro.parent vs gepatro.child); we sample without
+        replacement and let `assert_relation` handle the rest. Failed
+        asserts no-op (e.g., a relation declared for `arg_types=
+        [person, person]` but with arg_excludes that reject our pair).
+
+        Skips if fewer than 2 persons are in scene, or if any kin
+        relation already exists (so explicit seeders that pre-asserted
+        kin aren't disturbed)."""
+        if self._failed:
+            return
+        kin_relations = [
+            name for name, rdef in self.lex.relations.items()
+            if rdef.arity == 2
+            and len(rdef.arg_types) == 2
+            and all(self.lex.types.is_subtype(t, "person")
+                    for t in rdef.arg_types)
+        ]
+        if not kin_relations:
+            return
+        persons = [
+            eid for eid, ent in self.t.entities.items()
+            if self.lex.types.is_subtype(ent.entity_type, "person")
+            and ent.destroyed_at_event is None
+        ]
+        if len(persons) < 2:
+            return
+        kin_set = set(kin_relations)
+        for r in self.t.relations:
+            if r.relation in kin_set:
+                return
+        if self.rng.random() >= probability:
+            return
+        relation_name = self.rng.choice(kin_relations)
+        pair = self.rng.sample(persons, 2)
+        try:
+            self.t.assert_relation(relation_name, tuple(pair), self.lex)
+        except (KeyError, ValueError):
+            pass
 
     def _distribute_ownership(self, *, probability=0.30):
         """For each non-actor person in the scene, with `probability`,
@@ -904,6 +1014,16 @@ class SceneBuilder:
                 try:
                     self.t.assert_relation(
                         "havi", (person_eid, chosen), self.lex)
+                    # Drop the chosen item's en/sur — same reasoning
+                    # as `.havi()` above: havi means "now in hand,"
+                    # so leaving a stale physical placement would
+                    # contradict the carrying interpretation.
+                    self.t.relations = [
+                        r for r in self.t.relations
+                        if not (r.relation in ("en", "sur")
+                                and len(r.args) == 2
+                                and r.args[0] == chosen)
+                    ]
                     owned.add(chosen)
                     break
                 except (KeyError, ValueError):

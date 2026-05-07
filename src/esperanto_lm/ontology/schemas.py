@@ -24,6 +24,16 @@ class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+class PersonName(_Frozen):
+    """A given-name string and its associated gender lemma. The gender
+    is a concept-lemma label (`viro` / `virino`) that scene seeders
+    use to filter person-concept choices when materializing a named
+    entity, so "Maria" picks from virino-categorized concepts and
+    "Petro" from viro-categorized ones."""
+    name: str
+    gender: str
+
+
 class PropertySlot(_Frozen):
     """A property slot. The single source of truth for what values are
     legal on what entity types."""
