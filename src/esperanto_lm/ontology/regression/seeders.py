@@ -204,10 +204,14 @@ def regress_for_verb(verb_name, lex, rng):
         role_eids[role.name] = eid
 
     # Place each role-entity in scene_id, EXCEPT: the effect target
-    # gets a coin flip between scene_id and away_id (when distinct).
+    # gets placed in away_id with high probability (when distinct).
     # Placing the target away forces samloke(agent, theme) preconditions
     # to subgoal via iri, surfacing locomotion chains for verbs like
     # kuiri/akvumi/fermi that don't otherwise need to move the agent.
+    # The 0.85 rate (up from 0.5) keeps a small fraction of co-located
+    # scenes for variety while pushing most scenes into multi-event
+    # chains — the dedup analysis showed bare 1-event property scenes
+    # accumulating from the coin-flip case.
     #
     # Within the chosen scene location, route through any non-location
     # container the concept affords (vestaĵo en valizo, manĝebla en
@@ -219,7 +223,7 @@ def regress_for_verb(verb_name, lex, rng):
     for role_name, eid in role_eids.items():
         if (role_name == eff.target_role
                 and away_id != scene_id
-                and rng.random() < 0.5):
+                and rng.random() < 0.85):
             placement = away_id
         else:
             placement = scene_id
