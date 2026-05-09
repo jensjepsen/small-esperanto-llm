@@ -56,10 +56,15 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
     reachable solution. Cache hits are free; only fresh simulations
     consume the budget. Default 5000 covers all observed plan sizes
     with ~5× headroom; lower for stricter latency guarantees."""
+    from .planner import _FAILURE_REASON, _TERMINAL_DEPTH
     kind = drive[0]
     token = _PLANNER_RNG.set(rng)
-    budget = _SimulationBudget(simulation_budget)
-    btoken = _SIM_BUDGET.set(budget)
+    btoken = _SIM_BUDGET.set(_SimulationBudget(simulation_budget))
+    # Reset failure reason at entry. Don't reset at exit — leave the
+    # final reason readable by the caller via
+    # `get_planner_failure_reason()`. Persistence is fine because the
+    # contextvar lives in the caller's context.
+    _FAILURE_REASON.set(None)
     _SIM_CACHE.clear()
     _DERIVED_CACHE.clear()
     derived = _cached_compute_derived_state(t, derivations, lex)
@@ -133,6 +138,7 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
         # — caller (e.g. regression sampler) treats it as "this scene
         # couldn't be planned" and moves on. The exception keeps the
         # mid-search recursion from polluting the return path.
+        _FAILURE_REASON.set((_TERMINAL_DEPTH, ("budget",)))
         return None
     finally:
         _PLANNER_RNG.reset(token)

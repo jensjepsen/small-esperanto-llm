@@ -157,11 +157,21 @@ def _inherit_via_category(
     slots: dict[str, PropertySlot],
     spine: TypeSpine,
 ) -> dict[str, Concept]:
-    """For each concept, collect properties from its `category` chain
-    transitively (BFS) and copy any slot the concept itself doesn't
-    author. Authored values win. Honors slot `applies_to`: skip a copy
-    if the child's entity_type isn't covered by the parent's slot.
-    Returns a new concepts dict; input is not mutated."""
+    """For each concept, collect properties AND parts from its `category`
+    chain transitively (BFS) and copy any slot the concept itself doesn't
+    author + any part not already declared. Authored values/parts win.
+    Honors slot `applies_to`: skip a copy if the child's entity_type
+    isn't covered by the parent's slot. Returns a new concepts dict;
+    input is not mutated.
+
+    Parts inheritance lets juveniles (`-ido` derivatives, set with
+    `category=[parent_lemma]` in `_derive_concept_from_concept`) inherit
+    body parts from their adult form. Without this, katido has no parts,
+    bake-time anatomy rules (has_paws_can_walk etc.) don't fire on it,
+    and it ends up with no locomotion — making the regression sampler
+    pick it as an actor for movement drives that can never succeed.
+    Parts are deduplicated by `concept` field; an authored child part
+    shadows the parent's same-concept part."""
     out: dict[str, Concept] = dict(concepts)
     for lemma, c in concepts.items():
         if not c.category:
@@ -169,6 +179,9 @@ def _inherit_via_category(
         seen = {lemma}
         frontier = list(c.category)
         merged: dict[str, list[str]] = dict(c.properties)
+        merged_parts: list = list(c.parts or [])
+        own_part_concepts = {p.concept for p in merged_parts}
+        parts_added = False
         while frontier:
             parent_lemma = frontier.pop(0)
             if parent_lemma in seen:
@@ -186,9 +199,20 @@ def _inherit_via_category(
                                for t in slot.applies_to):
                         continue
                 merged[slot_name] = list(values)
+            for part in (parent.parts or []):
+                if part.concept in own_part_concepts:
+                    continue
+                merged_parts.append(part)
+                own_part_concepts.add(part.concept)
+                parts_added = True
             frontier.extend(parent.category)
+        update: dict = {}
         if merged != c.properties:
-            out[lemma] = c.model_copy(update={"properties": merged})
+            update["properties"] = merged
+        if parts_added:
+            update["parts"] = merged_parts
+        if update:
+            out[lemma] = c.model_copy(update=update)
     return out
 
 
@@ -207,7 +231,14 @@ def _derive_concept_from_concept(
     parent animal's locomotion (slot.applies_to=animate ⊇ animal),
     while -ar- (output_type=collective) does not (locomotion doesn't
     apply to collective). Affix's `output_properties` then overlay,
-    taking precedence over inherited values."""
+    taking precedence over inherited values.
+
+    Categorical linkage: the derived concept gets `category=[parent.lemma]`
+    so the post-derivation `_inherit_via_category` pass can fold in
+    parts and any further properties — including DSL-baked properties
+    that only show up after the bake step. This makes `katido` a
+    proper subcategory of `kato`, inheriting body parts, terrains,
+    senses, and bake-derived locomotion uniformly."""
     stem = parent.lemma[:-1] if parent.lemma.endswith("o") else parent.lemma
     surface = stem + affix.form + (affix.noun_ending or "")
     properties: dict[str, list[str]] = {}
@@ -222,6 +253,7 @@ def _derive_concept_from_concept(
         lemma=surface,
         entity_type=affix.output_type,
         properties=properties,
+        category=[parent.lemma],
         derived=True,
         derived_from={"concept": parent.lemma, "affix": affix.form},
     )
@@ -552,6 +584,15 @@ def load_lexicon(
                 f"derived concept {lemma!r} collides with authored concept; "
                 f"remove the authored entry — derivations are the truth")
         concepts[lemma] = concept
+
+    # Re-run category inheritance now that derived concepts (with
+    # `category=[parent.lemma]` set in `_derive_concept_from_concept`)
+    # are in the registry. This is what threads parent body-parts and
+    # category-baked properties down to juveniles like katido. The
+    # first pass (pre-derivation) handled authored concepts; this
+    # second pass handles derived ones. Idempotent on already-merged
+    # concepts (authored-wins keeps them stable).
+    concepts = _inherit_via_category(concepts, slots, spine)
 
     # Qualities live in their own registry — they're adjective lemmas
     # referenced by slot vocabularies and rendered as adjectives by

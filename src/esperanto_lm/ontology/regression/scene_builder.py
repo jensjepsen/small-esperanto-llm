@@ -271,13 +271,23 @@ class SceneBuilder:
         return self._named_actor(slot, persons, in_=in_)
 
     def animal(self, slot, *, in_=None):
-        """Pick a non-person animate concept; entity id is the lemma."""
+        """Pick a non-person animate concept; entity id is the lemma.
+
+        Excludes animates without a declared `locomotion` (the generic
+        `besto` stub, juvenile concepts like `abelido`/`ĉimpanzido`/
+        `leporido` that don't yet inherit a movement repertoire). Such
+        entities can't be moved by any verb — picking them for a slot
+        that participates in a drive produces an unsatisfiable plan.
+        Until juveniles inherit locomotion from their adult form in the
+        lexicon, this filter keeps the regression pool to animates the
+        planner can actually drive."""
         if self._failed:
             return self
         animals = [
             c.lemma for c in self.lex.concepts.values()
             if self.lex.types.is_subtype(c.entity_type, "animate")
             and not self.lex.types.is_subtype(c.entity_type, "person")
+            and c.properties.get("locomotion")
         ]
         if not animals:
             self._fail()

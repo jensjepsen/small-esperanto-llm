@@ -101,6 +101,60 @@ def _rule_writes(rule, slot: str, value: str) -> bool:
     return False
 
 
+# Cache of (slot, value) pairs reachable via SOME action effect, rule
+# effect (Change/Emit.property_changes), or derivation implication.
+# Computed once per (rules, derivations, lex) triple by id-keying;
+# the planner is the only consumer and treats this as immutable.
+#
+# A pair NOT in this set is intrinsic — no path achieves it. Subgoals
+# asking for an absent (slot, value) are unsatisfiable, so the
+# planner short-circuits them before recursing into a guaranteed-
+# failing plan_to_achieve. This catches the "verŝi a location"
+# class of dead-end paths, where a verb's role-property check would
+# subgoal e.g. state_of_matter=likva on a balcony — an intrinsic
+# property no rule writes.
+_WRITABLE_CACHE: dict = {}
+
+
+def _writable_slot_values(rules, actions, derivations) -> set:
+    """Return a set of (slot, value) pairs that could possibly be
+    written by some rule/action/derivation. Cached by id of the
+    inputs — they're treated as immutable during a plan_for_drive
+    call. Includes only literal (non-Var) values; varies-true slots
+    that get randomized at instance time are picked up via their
+    declared vocabulary in the slot-spec, not here."""
+    key = (id(rules), id(actions), id(derivations))
+    cached = _WRITABLE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    out: set = set()
+    for action in actions.values():
+        for eff in action.effects:
+            if (isinstance(eff.property, str)
+                    and isinstance(eff.value, str)):
+                out.add((eff.property, eff.value))
+    for rule in rules:
+        effects = (rule.then if isinstance(rule.then, (list, tuple))
+                   else [rule.then])
+        for eff in effects:
+            if isinstance(eff, Emit):
+                for (_ent, slot), val in eff.property_changes.items():
+                    if isinstance(slot, str) and isinstance(val, str):
+                        out.add((slot, val))
+            elif isinstance(eff, Change):
+                if (isinstance(eff.slot, str)
+                        and isinstance(eff.value, str)):
+                    out.add((eff.slot, eff.value))
+    for d in (derivations or []):
+        for imp in d.implies:
+            if isinstance(imp, PropertyImplication):
+                if (isinstance(imp.slot, str)
+                        and isinstance(imp.value, str)):
+                    out.add((imp.slot, imp.value))
+    _WRITABLE_CACHE[key] = out
+    return out
+
+
 def _trigger_event_pattern(rule):
     """Extract the EventPattern from rule.when (handles And-wrapped)."""
     when = rule.when
@@ -320,6 +374,144 @@ def _has_relation(relation, args, trace, derived=None, lex=None) -> bool:
         if derived is not None and derived.has_relation(relation, swapped):
             return True
     return False
+
+
+def _relation_args_admissible(relation, concrete, trace, lex) -> bool:
+    """True if `relation(*concrete)` would satisfy the relation
+    schema's arg_types and arg_excludes — i.e., asserting it would
+    not be rejected by `Trace.assert_relation` at runtime. Used to
+    pre-skip derivation candidates whose subgoaled patterns would be
+    schema-impossible: prevents the planner from backchaining
+    havi_implies_samloke into havi(actor, location), which is rejected
+    upstream and would only contribute noise to the failure reason."""
+    rel_def = lex.relations.get(relation)
+    if rel_def is None or len(concrete) != rel_def.arity:
+        return True
+    for i, arg_eid in enumerate(concrete):
+        ent = trace.entities.get(arg_eid)
+        if ent is None:
+            continue
+        if not lex.types.is_subtype(ent.entity_type, rel_def.arg_types[i]):
+            return False
+        if i < len(rel_def.arg_excludes):
+            for forbidden in rel_def.arg_excludes[i]:
+                if lex.types.is_subtype(ent.entity_type, forbidden):
+                    return False
+    return True
+
+
+# ---------- havas_parton is static: subgoaling it is futile -----------
+#
+# `havas_parton` is materialized at scene-build time from each entity's
+# concept-level `parts` declaration and never changes thereafter — no
+# rule or verb adds it at runtime, and no derivation implies it. So
+# any planner subgoal of `havas_parton(D, S)` where the relation
+# doesn't already hold is fundamentally unsatisfiable: there's no
+# action sequence that establishes it.
+#
+# Derivations like `host_lock_state_unlocked_from_seruro` reference
+# `havas_parton(D, S)` in their `given` clause to LOOK UP a host's
+# part (not to establish it). When the planner backchains through
+# such derivations and the bound `(D, S)` pair doesn't have an
+# existing parts-relationship, it should immediately give up on that
+# derivation candidate and try another, instead of recursing into a
+# `plan_to_establish_relation("havas_parton", ...)` that's guaranteed
+# to fail.
+#
+# Without this short-circuit, the planner wasted budget on impossible
+# parts-subgoals and (with scoped failure-recording) surfaced their
+# deepest leaves as the reported failure reason, drowning out actual
+# blockers like closed doors and missing keys.
+
+
+# ---------- post-subplan rebind: handle TransferN split etc. -----------
+#
+# When a sub-plan establishes `havi(actor, X)`, the engine's `TransferN`
+# may split a stacked source: the original entity stays with the prior
+# owner (count decremented), and a NEW entity of the requested quantity
+# is created and havi'd to the actor. After this, the original goal
+# `havi(actor, X)` is *not* satisfied — the actor instead has a fresh
+# entity of the same concept.
+#
+# Without intervention the precondition retry loop sees the literal
+# goal still unmet, tries to re-plan it, and fails (the candidate that
+# previously worked now violates the preserve constraint that was
+# pushed when the sub-plan committed). This blocks every drive that
+# acquires from a stack > 1: fruits-on-trees, NPC-owned multi-stacks,
+# etc. — empirically the largest single failure cluster in the
+# regression sampler.
+#
+# Fix: after `_refresh()` brings the simulated post-subplan state into
+# `cur_trace`, look for a new entity that satisfies the goal "morally"
+# (same content for fakto, same concept for havi-target) and rebind
+# the parent action's role dict to use the new entity. The rest of the
+# precondition loop and the eventually-returned plan step both pick up
+# the rewritten role.
+#
+# Equivalence is relation-keyed: the right "find replacement" check
+# differs by relation (havi: same concept_lemma + actor havi's; konas:
+# same fakto content + knower konas; etc.). Resolvers are registered
+# in `_REBIND_RESOLVERS` so future cases drop in without touching the
+# pc-loop site.
+
+def _havi_split_replacement(role_eids, pre_event_count, cur_trace, lex):
+    """For a havi(actor, X) goal where X may have been split: find a
+    new entity created at-or-after `pre_event_count`, sharing concept
+    with X, that the actor now `havi`s. Returns the new eid or None.
+
+    None covers two cases the caller already handles correctly:
+      - no split happened (qty >= source.count → wholesale transfer,
+        original X transferred, no rebind needed),
+      - the goal genuinely still can't be satisfied (no new entity +
+        original havi false → caller's None-return path)."""
+    if len(role_eids) != 2:
+        return None
+    actor_eid, original_eid = role_eids
+    original_ent = cur_trace.entities.get(original_eid)
+    if original_ent is None:
+        return None
+    target_concept = original_ent.concept_lemma
+    havi_set = {
+        tuple(r.args) for r in cur_trace.relations
+        if r.relation == "havi"
+    }
+    for eid, ent in cur_trace.entities.items():
+        if ent.concept_lemma != target_concept:
+            continue
+        if ent.created_at_event is None:
+            continue
+        if ent.created_at_event < pre_event_count:
+            continue
+        if (actor_eid, eid) in havi_set:
+            return eid
+    return None
+
+
+_REBIND_RESOLVERS: dict = {
+    "havi": _havi_split_replacement,
+    # Future: "konas" rebind once knowledge drives show the same
+    # fakto-recreation symptom in the sampler. Equivalence check there
+    # is content-based: same pri_relacio + subjekto + objekto.
+}
+
+
+def _find_post_subplan_replacement(rel_name, role_eids, pre_event_count,
+                                    cur_trace, lex):
+    """Dispatch to a relation-specific resolver. Returns a (role_index,
+    new_eid) pair indicating which arg of `role_eids` should be replaced,
+    or None if no rebind is appropriate.
+
+    Currently every resolver replaces the second arg (the theme), since
+    that's the role TransferN can mutate — agent stays put. If future
+    relations need first-arg rebinds, the resolver can return its own
+    index."""
+    resolver = _REBIND_RESOLVERS.get(rel_name)
+    if resolver is None:
+        return None
+    new_eid = resolver(role_eids, pre_event_count, cur_trace, lex)
+    if new_eid is None or new_eid == role_eids[1]:
+        return None
+    return (1, new_eid)
 
 
 def _knower_already_knows_about(knower, thing, trace) -> bool:
@@ -1052,6 +1244,14 @@ def _resolve_preconditions_in_order(action, event_pat, roles, actor_id,
         unresolved = False
 
         # Verb-level role property constraints.
+        # Statically-unachievable property values are pre-filtered:
+        # if no rule/action/derivation writes (slot, value), the
+        # candidate verb can never satisfy this role-property and
+        # we reject it without recording a slot-leaf failure. This
+        # keeps the failure attribution at the parent relation/
+        # property level instead of bottoming out at e.g.
+        # state_of_matter=likva on a balcony.
+        writable = _writable_slot_values(rules, lex.actions, derivations)
         for role_name, eid in list(roles.items()):
             ent = _ent(eid)
             if ent is None:
@@ -1067,6 +1267,8 @@ def _resolve_preconditions_in_order(action, event_pat, roles, actor_id,
                     unresolved = True
                     expected = prop_vals[0] if prop_vals else None
                     if expected is None:
+                        return _ret(([], False))
+                    if (prop_slot, expected) not in writable:
                         return _ret(([], False))
                     sub = plan_to_achieve(
                         eid, prop_slot, expected, actor_id,
@@ -1093,6 +1295,8 @@ def _resolve_preconditions_in_order(action, event_pat, roles, actor_id,
                         if expected in values:
                             continue
                         unresolved = True
+                        if (prop_slot, expected) not in writable:
+                            return _ret(([], False))
                         sub = plan_to_achieve(
                             eid, prop_slot, expected, actor_id,
                             cur_trace, lex, rules, derived=cur_derived,
@@ -1120,6 +1324,7 @@ def _resolve_preconditions_in_order(action, event_pat, roles, actor_id,
                     _push_preserve(("rel", pc.rel, tuple(eids)))
                     continue
                 unresolved = True
+                pre_event_count = len(cur_trace.events)
                 sub = plan_to_establish_relation(
                     pc.rel, tuple(eids), actor_id,
                     cur_trace, lex, rules, derived=cur_derived,
@@ -1131,6 +1336,24 @@ def _resolve_preconditions_in_order(action, event_pat, roles, actor_id,
                     committed.extend(sub)
                     progress = True
                     _refresh()
+                    # Post-refresh: the sub-plan may have created a new
+                    # entity (TransferN split, etc.) that morally
+                    # satisfies the goal even though the literal eids
+                    # don't. Rebind the parent action's role to the
+                    # new entity so subsequent pc checks and the final
+                    # plan step pick it up. See `_REBIND_RESOLVERS`.
+                    if not _has_relation(
+                            pc.rel, tuple(eids),
+                            cur_trace, cur_derived, lex):
+                        rebind = _find_post_subplan_replacement(
+                            pc.rel, eids, pre_event_count, cur_trace, lex)
+                        if rebind is not None:
+                            arg_idx, new_eid = rebind
+                            old_eid = eids[arg_idx]
+                            for role_name, eid in list(roles.items()):
+                                if eid == old_eid:
+                                    roles[role_name] = new_eid
+                            eids[arg_idx] = new_eid
                 _push_preserve(("rel", pc.rel, tuple(eids)))
             elif isinstance(pc, IfPropertyPrecondition):
                 eid = roles.get(pc.role)
@@ -1243,6 +1466,67 @@ _SIM_BUDGET: contextvars.ContextVar = contextvars.ContextVar(
     "_SIM_BUDGET", default=None)
 
 
+# Last unmet sub-goal recorded by the planner during its DFS. Each
+# leaf-failure call site (`plan_to_establish_relation`, `plan_to_achieve`,
+# `plan_to_reach_count`) writes here when it bails with None, so the
+# dispatcher can surface a structured failure reason after planning.
+#
+# Storage shape: None, or (depth, reason). Depth is the planner's DFS
+# recursion depth at the failure point. Deepest-wins: the recorded
+# reason is the most-deeply-nested leaf the planner ever reached
+# across ANY explored DFS branch — i.e., the path that came closest
+# to a solution before giving up. First-write-wins on ties so the
+# behavior is deterministic.
+#
+# Why deepest, not first: an earlier (now-removed) first-write-wins
+# strategy reported the deepest leaf of the FIRST DFS branch. But the
+# planner enumerates many derivations per goal; the FIRST one explored
+# is often a one-step dead-end (e.g. en_implies_samloke trying to put
+# the actor inside a tree), while the actual blocker lives deep in a
+# later, longer branch. First-write-wins pinned the report on the
+# shallow noise. Deepest-wins picks the leaf that actually represents
+# planner exhaustion: the place a successful derivation chain finally
+# couldn't bridge.
+#
+# Reason shape:
+#   ("relation", relation_name, args_tuple)
+#   ("property", entity_id, slot, value)
+#   ("count", actor_id, concept_lemma, target_count)
+#   ("budget",)  — set with sentinel depth by the dispatcher so it
+#                  always wins (budget exhaustion is the real cause
+#                  whenever it fires).
+_FAILURE_REASON: contextvars.ContextVar = contextvars.ContextVar(
+    "_FAILURE_REASON", default=None)
+
+# Sentinel "infinite" depth for terminal reasons (budget exhaustion)
+# that should always overwrite any subgoal-leaf reason.
+_TERMINAL_DEPTH = 1 << 30
+
+
+def _record_failure(reason, depth: int = 0) -> None:
+    """Record a failed sub-goal. Deepest-wins: keeps the most-deeply-
+    nested failure recorded across all DFS branches. Ties keep the
+    first one written (deterministic). Best-effort: outside a planner
+    context the write is harmless."""
+    try:
+        cur = _FAILURE_REASON.get()
+        if cur is not None and cur[0] >= depth:
+            return
+        _FAILURE_REASON.set((depth, reason))
+    except LookupError:
+        pass
+
+
+def get_planner_failure_reason():
+    """Read the failure reason recorded by the planner during the
+    current `plan_for_drive` call. Returns the bare reason tuple, or
+    None if no failure was recorded."""
+    cur = _FAILURE_REASON.get()
+    if cur is None:
+        return None
+    return cur[1]
+
+
 def _candidate_breaks_preserved(sub_plan, trace, lex, rules, derivations):
     """True if simulating `trace + sub_plan` would invalidate any
     constraint in the current `_PRESERVE_CONSTRAINTS`. Empty plans
@@ -1304,6 +1588,24 @@ def plan_to_reach_count(target_owner_id: str, concept_lemma: str,
                         *, planner_actor_id: Optional[str] = None,
                         derived=None, derivations=None,
                         max_depth=8):
+    """Public entry: scope failure recording (see plan_to_establish_relation
+    for rationale)."""
+    _saved = _FAILURE_REASON.get()
+    result = _plan_to_reach_count_impl(
+        target_owner_id, concept_lemma, target_count, trace, lex, rules,
+        planner_actor_id=planner_actor_id,
+        derived=derived, derivations=derivations,
+        max_depth=max_depth)
+    if result is not None:
+        _FAILURE_REASON.set(_saved)
+    return result
+
+
+def _plan_to_reach_count_impl(target_owner_id: str, concept_lemma: str,
+                              target_count: int, trace, lex, rules,
+                              *, planner_actor_id: Optional[str] = None,
+                              derived=None, derivations=None,
+                              max_depth=8):
     """Plan for `target_owner_id` to own at least `target_count` units
     of `concept_lemma`, summed across all stacks. Greedy across sources:
     pick the largest unowned stack first, plan to acquire it via
@@ -1391,6 +1693,7 @@ def plan_to_reach_count(target_owner_id: str, concept_lemma: str,
         current = _count_owned(target_owner_id, concept_lemma, cur_trace)
         if current >= target_count:
             return plan
+    _record_failure(("count", target_owner_id, concept_lemma, target_count))
     return None
 
 
@@ -1398,6 +1701,27 @@ def plan_to_establish_relation(relation, target_args, actor_id,
                                trace, lex, rules, *, derived=None,
                                derivations=None,
                                max_depth=8, _depth=0, _seen=None):
+    """Public entry: scope failure recording. Save the current
+    failure_reason on entry; restore it if this call returns a working
+    plan. Failures captured inside a successful call are noise from
+    rejected sibling DFS branches — discard them. Failures inside a
+    call that returns None survive (the call's caller may later treat
+    it as the actual blocker)."""
+    _saved = _FAILURE_REASON.get()
+    result = _plan_to_establish_relation_impl(
+        relation, target_args, actor_id, trace, lex, rules,
+        derived=derived, derivations=derivations,
+        max_depth=max_depth, _depth=_depth, _seen=_seen)
+    if result is not None:
+        _FAILURE_REASON.set(_saved)
+    return result
+
+
+def _plan_to_establish_relation_impl(
+        relation, target_args, actor_id,
+        trace, lex, rules, *, derived=None,
+        derivations=None,
+        max_depth=8, _depth=0, _seen=None):
     """Find a sequence of actions that asserts rel(relation, *target_args).
     Returns [] if already true, list of (verb, roles), or None.
 
@@ -1420,6 +1744,58 @@ def plan_to_establish_relation(relation, target_args, actor_id,
         return None
     if _has_relation(relation, target_args, trace, derived, lex):
         return []
+    # Schema-level impossibility filter: if the relation's
+    # `arg_excludes` would forbid this entity at this position, no
+    # action sequence can establish it — `assert_relation` would
+    # reject. Catches the planner's "havi(actor, location)" exploration
+    # (for malŝlosi → ŝlosilo paths bottoming out as "actor wants to
+    # acquire the room") and any future relation-arg-type mismatch
+    # without per-relation hardcoding. Type-spine subtype checks too:
+    # `havi.theme=physical` forbids non-physical themes regardless of
+    # arg_excludes.
+    rel_def = lex.relations.get(relation)
+    if rel_def is not None and len(target_args) == rel_def.arity:
+        for i, arg_eid in enumerate(target_args):
+            ent = trace.entities.get(arg_eid)
+            if ent is None:
+                continue
+            expected_type = rel_def.arg_types[i]
+            if not lex.types.is_subtype(ent.entity_type, expected_type):
+                _record_failure(
+                    ("relation", relation, tuple(target_args)),
+                    depth=_depth)
+                return None
+            if i < len(rel_def.arg_excludes):
+                forbidden = rel_def.arg_excludes[i]
+                if any(lex.types.is_subtype(ent.entity_type, f)
+                       for f in forbidden):
+                    _record_failure(
+                        ("relation", relation, tuple(target_args)),
+                        depth=_depth)
+                    return None
+    # Movement-verb impossibility: apud(X, Y) is unreachable from
+    # current state if X is already `en Y`. Every movement verb
+    # (iri/veni/kuri/flugi/...) carries a NotPattern `~rel("en", IA,
+    # ID)` that refuses to move the agent into a location it's
+    # already in — so no verb can produce apud(X, Y) here. Without
+    # this short-circuit, derivations like `shared_apud_means_samloke`
+    # backchain samloke(actor, X) into apud(actor, current_loc) +
+    # apud(X, current_loc), and the actor-already-in-current case
+    # bottoms out on the deepest leaf and surfaces as a confusing
+    # "actor cannot reach own location" failure.
+    #
+    # Returns None silently — does NOT record this as a failure.
+    # The outer goal (samloke etc.) will record its own failure if
+    # all its derivation candidates fail. Suppressing this leaf lets
+    # the actual blocker surface.
+    if relation == "apud" and len(target_args) == 2:
+        x_eid, y_eid = target_args
+        for r in trace.relations:
+            if (r.relation == "en"
+                    and len(r.args) == 2
+                    and r.args[0] == x_eid
+                    and r.args[1] == y_eid):
+                return None
     seen_next = _seen | {key}
 
     # Altruism preference: when actor isn't one of the relation's
@@ -1724,6 +2100,8 @@ def plan_to_establish_relation(relation, target_args, actor_id,
             derivations, derived, max_depth, _depth + 1, seen_next)
         if sub is not None:
             return sub
+    _record_failure(
+        ("relation", relation, tuple(target_args)), depth=_depth)
     return None
 
 
@@ -2166,6 +2544,27 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
                             break
                     if not sub_ok:
                         break
+                    # havas_parton is static — never added at runtime.
+                    # Any subgoal whose pair doesn't already hold can't
+                    # be satisfied. Short-circuit instead of recursing.
+                    if (rel_name_pat == "havas_parton"
+                            and len(concrete) == 2
+                            and not _has_relation(
+                                "havas_parton", tuple(concrete),
+                                trace, derived, lex)):
+                        sub_ok = False
+                        break
+                    # Schema-impossibility: if the derivation's bound
+                    # subgoal would violate the relation's arg_excludes
+                    # or arg_types, skip the candidate without recording
+                    # a leaf for it. Otherwise the derivation backchain
+                    # produces noise like havi(actor, location) when
+                    # exploring havi_implies_samloke, drowning out the
+                    # actual outer goal that couldn't be satisfied.
+                    if not _relation_args_admissible(
+                            rel_name_pat, concrete, trace, lex):
+                        sub_ok = False
+                        break
                     sub = plan_to_establish_relation(
                         rel_name_pat, tuple(concrete), actor_id,
                         trace, lex, rules,
@@ -2545,6 +2944,23 @@ def plan_to_achieve(goal_entity_id, goal_slot, goal_value,
                     actor_id, trace, lex, rules, *, derived=None,
                     derivations=None,
                     max_depth=8, _depth=0, _seen=None):
+    """Public entry: scope failure recording (see plan_to_establish_relation
+    for rationale)."""
+    _saved = _FAILURE_REASON.get()
+    result = _plan_to_achieve_impl(
+        goal_entity_id, goal_slot, goal_value,
+        actor_id, trace, lex, rules,
+        derived=derived, derivations=derivations,
+        max_depth=max_depth, _depth=_depth, _seen=_seen)
+    if result is not None:
+        _FAILURE_REASON.set(_saved)
+    return result
+
+
+def _plan_to_achieve_impl(goal_entity_id, goal_slot, goal_value,
+                          actor_id, trace, lex, rules, *, derived=None,
+                          derivations=None,
+                          max_depth=8, _depth=0, _seen=None):
     """General-purpose subgoal planner. Find a sequence of actions
     that, when executed, would result in `goal_entity` having
     `goal_slot=goal_value`. Returns a list of (verb, roles) — possibly
@@ -2586,6 +3002,22 @@ def plan_to_achieve(goal_entity_id, goal_slot, goal_value,
     # Already satisfied?
     if goal_value in _entity_property_values(goal_entity, goal_slot, trace, derived):
         return []
+
+    # Statically unachievable? If no rule, action, or derivation in the
+    # registry produces (slot, value), the goal can never be reached.
+    # Short-circuit and record the failure here, instead of letting
+    # the candidate-loop walk every verb/derivation only to find no
+    # writer. Catches verŝi-on-balcony chains that try to flip
+    # state_of_matter on a location, lock_state on a non-lockable
+    # artifact, etc. — the planner formerly recursed deeply into
+    # these dead ends and surfaced their state_of_matter/locomotion/
+    # etc. leaves as misleading failure reasons.
+    writable = _writable_slot_values(rules, lex.actions, derivations)
+    if (goal_slot, goal_value) not in writable:
+        _record_failure(
+            ("property", goal_entity_id, goal_slot, goal_value),
+            depth=_depth)
+        return None
 
     seen_next = _seen | {key}
 
@@ -2703,6 +3135,9 @@ def plan_to_achieve(goal_entity_id, goal_slot, goal_value,
             max_depth, _depth + 1, seen_next)
         if sub is not None:
             return sub
+    _record_failure(
+        ("property", goal_entity_id, goal_slot, goal_value),
+        depth=_depth)
     return None
 
 
@@ -2815,6 +3250,23 @@ def _plan_property_via_derivation(entity_id, slot, value, actor_id,
                             sub_ok = False
                             break
                     if not sub_ok:
+                        break
+                    # havas_parton is static — short-circuit the
+                    # subgoal when it doesn't already hold. See
+                    # `_plan_via_derivation` for rationale.
+                    if (rel_name_pat == "havas_parton"
+                            and len(concrete) == 2
+                            and not _has_relation(
+                                "havas_parton", tuple(concrete),
+                                trace, derived, lex)):
+                        sub_ok = False
+                        break
+                    # Schema-impossibility: skip derivation candidates
+                    # whose subgoaled args would violate arg_types /
+                    # arg_excludes. See `_plan_via_derivation`.
+                    if not _relation_args_admissible(
+                            rel_name_pat, concrete, trace, lex):
+                        sub_ok = False
                         break
                     sub = plan_to_establish_relation(
                         rel_name_pat, tuple(concrete), actor_id,

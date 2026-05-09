@@ -1086,21 +1086,24 @@ def _render_event_phrase(
                     recipient_handled = True
                 parts.append(ke)
             else:
-                # Consumption verbs (rules using `consume_one`) always
-                # pass quantity as count_override — quantity=1 forces
-                # singular even when the source stack has count > 1
-                # ("Maria manĝis la pomon", not "la tri pomojn").
-                # Transfer verbs (rules using `transfer_n`) override on
-                # explicit qty > 1 set by the count-drive planner;
-                # default qty=1 keeps the natural-count rendering used
-                # by hunger drives etc. Both sets are derived from the
-                # rule structure — see dsl/introspect.
+                # Consumption verbs (rules using `consume_one`) and
+                # transfer verbs (rules using `transfer_n`) both render
+                # at the event's quantity — qty=1 forces singular even
+                # when the source stack has count > 1 ("Maria manĝis la
+                # pomon", "Anna prenis la piron de la pirarbo"), qty>1
+                # produces the plural numeral ("Maria prenis du pomojn").
+                # Without this, default qty=1 fell back to the entity's
+                # natural_count and rendered preni-from-stacked-source
+                # as a collective ("prenis la tri pirojn") even when
+                # the engine's TransferN had only split off one unit —
+                # the prose contradicted the actual world-state. Both
+                # verb sets are derived from rule structure — see
+                # dsl/introspect.
                 _ev_qty = getattr(ev, "quantity", 1)
                 _verb_meta = _verb_metadata()
                 if ev.action in _verb_meta["consumption"]:
                     _count_override = _ev_qty
-                elif (ev.action in _verb_meta["transfer"]
-                        and _ev_qty > 1):
+                elif ev.action in _verb_meta["transfer"]:
                     _count_override = _ev_qty
                 else:
                     _count_override = None
