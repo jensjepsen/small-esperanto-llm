@@ -112,6 +112,16 @@ class SceneBuilder:
         # graph (e.g. peti chains over money where the social bond
         # would muddle the request semantics).
         self._kin_seeding = True
+        # Loose-instrument decoration: build() probabilistically drops
+        # an instrument (vehicle / tool) that some action-pool verb's
+        # `instrument` role would accept, near the scene location. The
+        # planner's chain-richness weight then occasionally recruits
+        # the instrument into the chain — surfacing veturi when an
+        # aŭto is around, ŝlosi when a ŝlosilo is around, etc. —
+        # without dedicated bare-location seeders. Disable via
+        # no_loose_instruments() for seeders whose drive depends on
+        # nothing else being in scene (rare).
+        self._loose_instruments = True
         # Materialize the trace-wide `mondo` singleton (one per scene)
         # holding shared state like `tempo_de_tago`. Light derivations
         # consult it to make outdoor scenes go dark at night. Future
@@ -960,6 +970,8 @@ class SceneBuilder:
             self._distribute_ownership()
         if self._kin_seeding:
             self._assert_kin_relations()
+        if self._loose_instruments:
+            self._seed_loose_instruments()
         from ..sampler import _emit_weather_events
         _emit_weather_events(self.t, self.lex)
         return self.t, scene_id, self._drive
@@ -994,6 +1006,72 @@ class SceneBuilder:
         differently than among strangers)."""
         self._kin_seeding = False
         return self
+
+    def no_loose_instruments(self):
+        """Disable the build-time pass that drops a vehicle / tool in
+        the scene as a planner-discoverable instrument."""
+        self._loose_instruments = False
+        return self
+
+    def _seed_loose_instruments(self, *, probability=0.30):
+        """Drop one instrument (vehicle / tool) near the scene location
+        that some action's `instrument` role would accept. The planner
+        may or may not recruit it into the chain — surfaces veturi /
+        ludi / lavi-with-tool / etc. as side-effects of the drive
+        verb's natural subgoaling, instead of needing a dedicated
+        seeder per instrument-using verb.
+
+        Pure pool-driven: introspects lex.actions for any action with
+        an `instrument` role, collects every concept that would match
+        any such role spec, picks one uniformly. A future verb adding
+        an instrument (e.g. veli per velŝipo) joins the pool without
+        any code change here."""
+        if self._failed or self._drive is None:
+            return
+        if self.rng.random() >= probability:
+            return
+        scene_id = self.slots.get(self._scene_slot) if self._scene_slot else None
+        if scene_id is None:
+            return
+        instrument_concepts: set[str] = set()
+        for action in self.lex.actions.values():
+            for role in action.roles:
+                if role.name != "instrument":
+                    continue
+                for c in self.lex.concepts.values():
+                    if not self.lex.types.is_subtype(
+                            c.entity_type, role.type):
+                        continue
+                    ok = True
+                    for slot, vals in role.properties.items():
+                        cvals = c.properties.get(slot, [])
+                        if not (set(vals) & set(cvals)):
+                            ok = False
+                            break
+                    if ok:
+                        instrument_concepts.add(c.lemma)
+        if not instrument_concepts:
+            return
+        # Don't dupe an instrument already in the scene.
+        existing_concepts = {
+            ent.concept_lemma for ent in self.t.entities.values()}
+        candidates = sorted(instrument_concepts - existing_concepts)
+        if not candidates:
+            return
+        concept = self.rng.choice(candidates)
+        eid = self._unique_id(concept)
+        if not self._add(concept, eid):
+            return
+        # Place under the scene location. Use the routing helper so
+        # vehicles land en the location's terrain-compatible part
+        # when applicable; falls back to bare en assertion.
+        from .seeders import _route_through_container
+        if not _route_through_container(
+                self.t, eid, concept, scene_id, self.lex, self.rng):
+            try:
+                self.t.assert_relation("en", (eid, scene_id), self.lex)
+            except (KeyError, ValueError):
+                pass
 
     def _assert_kin_relations(self, *, probability: float = 0.25):
         """With `probability`, pick two in-scene person entities and

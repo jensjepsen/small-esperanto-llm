@@ -1139,22 +1139,14 @@ def sample_regression_scene(lex, rng, *, rules=None):
     if not pool:
         return None
     for _ in range(8):
-        # Locomotion-driven scenes have no natural pool entry — kuri/
-        # naĝi/flugi/iri are effect-less movement verbs. Roll occasion-
-        # ally for a non-person animate actor with a location goal so
-        # flugi / naĝi surface for fliers / swimmers.
-        if rng.random() < 0.15:
-            result = regress_for_movement(lex, rng)
-            if result is not None:
-                return result
-        # veturi has the same pool-entry gap (no effects, no konas)
-        # AND requires a person agent (can_use_tools=yes) with a
-        # vehicle in scene. Without this seeder, veturi → ŝalti
-        # chains never surface in regression coverage.
-        if rng.random() < 0.10:
-            result = regress_for_vehicle(lex, rng)
-            if result is not None:
-                return result
+        # Bare-location seeders (movement, vehicle) used to fire here.
+        # Removed: their drives ("AGENT wants to be in LOC") were
+        # single-event walking scenes that dominated the dedup head
+        # (~28% of all drives). Locomotion verbs still surface as
+        # planner-discovered subgoals when the chosen drive's theme
+        # lives in a different room. Vehicles and intransitive
+        # movement re-enter scenes via SceneBuilder's loose-tools
+        # decoration hook (see _seed_loose_instruments).
         # Cascade-driven self_slot scenes (hunger=sata, thirst=satigita,
         # …): cascade verbs (satiĝi, sensoifiĝi) have no agent role so
         # `regress_for_verb` can't seed them. `regress_for_self_slot`
