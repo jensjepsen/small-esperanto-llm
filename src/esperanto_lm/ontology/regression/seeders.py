@@ -57,6 +57,24 @@ def _regression_verb_pool(lex) -> list[str]:
     return out
 
 
+def _verb_chain_weight(action) -> float:
+    """Score a verb by its subgoal-chain potential — same shape as the
+    planner's `_chain_richness_weight`, lifted to seeder-side so the
+    drive picker biases toward verbs that produce richer plans.
+
+    Counts preconditions + total slots across all role.properties.
+    A verb with no preconditions and bare roles scores 1; malŝlosi
+    (samloke + havi + multiple role-property gates) scores ~5;
+    veturi (when in pool) ~6. Surfacing rich verbs more often
+    dilutes the bare-state head visible in dedup analysis without
+    adding any per-verb hardcoding — the lexicon's existing
+    precondition/role data is the signal."""
+    score = 1 + len(action.preconditions)
+    for role in action.roles:
+        score += len(role.properties)
+    return float(score)
+
+
 def _concepts_matching_role(lex, role_spec) -> list[str]:
     """Concepts compatible with role_spec: subtype-correct AND every
     role.properties slot is meaningful for the concept.
@@ -1189,7 +1207,12 @@ def sample_regression_scene(lex, rng, *, rules=None):
             result = regress_for_sell(lex, rng)
             if result is not None:
                 return result
-        verb = rng.choice(pool)
+        # Weighted pick: chain-rich verbs (more preconditions / role
+        # constraints) win the draw more often, so the head of the
+        # drive distribution leans toward multi-step scenes instead
+        # of bare single-event ones.
+        weights = [_verb_chain_weight(lex.actions[v]) for v in pool]
+        verb = rng.choices(pool, weights=weights, k=1)[0]
         if verb in konas_pool:
             result = regress_for_knowledge_verb(verb, lex, rng, rules)
         else:
