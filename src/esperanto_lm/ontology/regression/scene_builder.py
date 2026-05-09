@@ -333,32 +333,6 @@ class SceneBuilder:
             if where is not None:
                 candidates = [c for c in candidates
                               if where(self.lex.concepts[c])]
-            # When placing into a location, filter candidates to ones
-            # the containment graph permits there (transitively, so
-            # tablo-on-floor-of-kitchen is reachable when the target
-            # would route through a container). Without this filter,
-            # any standalone concept can land anywhere — fish in
-            # pharmacies, boats in offices — because direct
-            # `assert_relation("en", ...)` runs in warn-mode and skips
-            # the containment check. Pre-filtering at pick time gives
-            # us strict containment WITHOUT sweeping global mode
-            # changes.
-            if in_ is not None:
-                container_id = self._resolve(in_)
-                container_ent = (self.t.entities.get(container_id)
-                                 if container_id else None)
-                if (container_ent is not None
-                        and self.lex.types.is_subtype(
-                            container_ent.entity_type, "location")):
-                    from ..containment import (
-                        reachable_from, resolve_containment,
-                    )
-                    idx = resolve_containment(self.lex)
-                    reachable = reachable_from(
-                        container_ent.concept_lemma, idx, self.lex)
-                    filtered = [c for c in candidates if c in reachable]
-                    if filtered:
-                        candidates = filtered
             if not candidates:
                 self._fail()
                 return self
@@ -905,14 +879,7 @@ class SceneBuilder:
         return self
 
     def build(self):
-        # Drive is required by default — the regression sampler treats
-        # every scene as goal-directed. Callers building scene-only
-        # data (no goal, just initial-state prose) can opt out via
-        # `.no_drive()`, which sets a sentinel that bypasses this gate
-        # and returns a None drive in the build tuple.
-        if self._failed or self._scene_slot is None:
-            return None
-        if self._drive is None and not getattr(self, "_drive_optional", False):
+        if self._failed or self._scene_slot is None or self._drive is None:
             return None
         scene_id = self.slots.get(self._scene_slot)
         if scene_id is None:
@@ -958,13 +925,6 @@ class SceneBuilder:
         confuse the drive semantics (peti-for-money among kin reads
         differently than among strangers)."""
         self._kin_seeding = False
-        return self
-
-    def no_drive(self):
-        """Make the drive optional — `.build()` succeeds without one,
-        returning `(trace, scene_id, None)`. Use for scene-only data
-        generation (initial-state prose without a goal)."""
-        self._drive_optional = True
         return self
 
     def _assert_kin_relations(self, *, probability: float = 0.25):

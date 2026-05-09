@@ -327,37 +327,23 @@ class RelPattern(Pattern):
         # by arg_filters: otherwise an asserted `apud(koridoro, kuirejo)`
         # would be dropped when querying for `neighbor=koridoro`, since
         # only the swap matches the filter.
-        #
-        # Parent-relation expansion: when self.relation has child
-        # relations declared via `parent`, the parent pattern matches
-        # any child assertion too. Both `sur(actor, sofo)` and
-        # `sidi(actor, sofo)` should satisfy a `rel("sur", ...)` query.
-        # Children come from `lexicon.relation_children` (precomputed
-        # transitive closure) so this stays a constant-time lookup.
-        # Parent-relation expansion: when self.relation has child
-        # relations declared via `parent`, scan child assertions too.
-        # `sur(actor, sofo)` and `sidi(actor, sofo)` should both
-        # satisfy a `rel("sur", ...)` query.
         seen: set[tuple[str, ...]] = set()
         candidates: list[tuple[str, ...]] = []
-        names_to_scan = [self.relation] + sorted(
-            ctx.lexicon.relation_children.get(self.relation, frozenset()))
-        for name in names_to_scan:
-            for args in ctx.relations_of(name):
-                if len(args) != len(rel_def.arg_names):
+        for args in ctx.relations_of(self.relation):
+            if len(args) != len(rel_def.arg_names):
+                continue
+            for cand in (
+                    (args, (args[1], args[0]))
+                    if rel_def.symmetric and len(args) == 2
+                    and args[0] != args[1]
+                    else (args,)):
+                if cand in seen:
                     continue
-                for cand in (
-                        (args, (args[1], args[0]))
-                        if rel_def.symmetric and len(args) == 2
-                        and args[0] != args[1]
-                        else (args,)):
-                    if cand in seen:
-                        continue
-                    if arg_filters and not all(
-                            cand[i] == v for i, v in arg_filters):
-                        continue
-                    seen.add(cand)
-                    candidates.append(cand)
+                if arg_filters and not all(
+                        cand[i] == v for i, v in arg_filters):
+                    continue
+                seen.add(cand)
+                candidates.append(cand)
 
         for args in candidates:
             yield from _apply_args(

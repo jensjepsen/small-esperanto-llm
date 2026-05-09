@@ -355,23 +355,13 @@ def _action_writes(action, slot, value):
 def _has_relation(relation, args, trace, derived=None, lex=None) -> bool:
     """True if rel(relation, *args) currently holds — checks asserted
     trace.relations first, then derived (via DerivedState) if given.
-    For symmetric relations (per lex), also checks the swapped pair.
-
-    Parent-child relations: a query for the parent (e.g. `sur`) is
-    also satisfied by any asserted child (e.g. `sidi`/`kuŝi`). The
-    child-set comes from `lex.relation_children` built at load time."""
+    For symmetric relations (per lex), also checks the swapped pair."""
     target = tuple(args)
-    if lex is not None:
-        names = {relation} | lex.relation_children.get(relation, frozenset())
-    else:
-        names = {relation}
     for r in trace.relations:
-        if r.relation in names and r.args == target:
+        if r.relation == relation and r.args == target:
             return True
-    if derived is not None:
-        for n in names:
-            if derived.has_relation(n, target):
-                return True
+    if derived is not None and derived.has_relation(relation, target):
+        return True
     is_symmetric = (
         lex is not None
         and relation in lex.relations
@@ -379,12 +369,10 @@ def _has_relation(relation, args, trace, derived=None, lex=None) -> bool:
     if is_symmetric and len(target) == 2 and target[0] != target[1]:
         swapped = (target[1], target[0])
         for r in trace.relations:
-            if r.relation in names and r.args == swapped:
+            if r.relation == relation and r.args == swapped:
                 return True
-        if derived is not None:
-            for n in names:
-                if derived.has_relation(n, swapped):
-                    return True
+        if derived is not None and derived.has_relation(relation, swapped):
+            return True
     return False
 
 

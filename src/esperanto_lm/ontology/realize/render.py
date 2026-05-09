@@ -201,15 +201,6 @@ def _pronoun_unambiguous(name: str, trace: Trace) -> bool:
 ADJECTIVE_RATE = 0.30  # per-mention probability of attaching an adjective
 ALIAS_RATE = 0.20      # per back-reference probability of using a category alias
 
-# Probability of rendering a posture-aware verb (sidi, kuŝi, naĝi)
-# when one is available, vs falling back to the bland parent-relation
-# template ("estas sur", "estas en"). Variation makes prose less
-# repetitive while keeping the specific verb dominant. Sub-1 ensures
-# the parent form surfaces sometimes — relevant now that we model
-# sidi/kuŝi as child-relations of `sur`, so the parent template is a
-# semantically equivalent rendering.
-SPECIFIC_VERB_RATE = 0.7
-
 
 def _concept_aliases(
     concept_lemma: str, lex: Lexicon, *,
@@ -549,19 +540,9 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
         # libro=kuŝanta) or derived (sittable/lieable/imposes_pose
         # all write to posture via derivations). One uniform path —
         # no per-relation lookup logic, the data layer carries it.
-        #
-        # When a posture verb is available we sometimes render with
-        # the bland parent template ("Maria estas sur la sofo")
-        # instead of the specific verb ("Maria sidas sur la sofo")
-        # for natural variation. Weighted toward the specific verb
-        # since it's more informative; bland gets the rest. The
-        # parent-relation hierarchy (sidi/kuŝi → sur) makes both
-        # forms semantically equivalent — same world-state, different
-        # surface emphasis.
         b_form = ctx.name_for(b)
         verb_root = _contextual_posture_verb_root(a, ctx)
-        if verb_root is not None and (
-                ctx.rng is None or ctx.rng.random() < SPECIFIC_VERB_RATE):
+        if verb_root is not None:
             flip = ctx.rng.random() < 0.5 if ctx.rng is not None else False
             sent = (f"{a_form} {verb_root}{ctx.tense} sur {b_form}."
                     if flip
@@ -578,10 +559,8 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
         # set posture fire on `sur`/`en` containment, not `apud`, so
         # an animate apud the lake stays at the unmarked posture and
         # we render the bland template. No relation-literal gating here.
-        # Same specific-vs-bland variation as the sur branch.
         verb_root = _contextual_posture_verb_root(a, ctx)
-        if verb_root is not None and (
-                ctx.rng is None or ctx.rng.random() < SPECIFIC_VERB_RATE):
+        if verb_root is not None:
             flip = ctx.rng.random() < 0.5 if ctx.rng is not None else False
             sent = (f"{a_form} {verb_root}{ctx.tense} {rel.relation} {b_form}."
                     if flip
@@ -798,46 +777,36 @@ _POSE_VERB_ROOT_CACHE: dict[str, str] = {}
 
 
 def _contextual_posture_verb_root(entity, ctx) -> Optional[str]:
-    """Verb root for an entity's current activity-relation, picking the
-    more specific verb over the bland `estas` template when one
-    applies.
+    """Verb root for an entity's posture, picking the more specific
+    verb over the bland `estas` template when the posture is
+    informative.
 
     Resolution:
       1. Intrinsic posture (declared in concept.properties — glaso=
-         staranta, libro=kuŝanta). Explicit opt-in; render unconditionally.
-      2. Activity child-relation: walk the entity's relations (asserted
-         + derived) for any `sur`/`en`/etc. child-relation involving
-         this entity (sidi, kuŝi, naĝi, pendi, …). The relation NAME
-         IS the verb root — the lexicon's child-relations of `sur`/`en`
-         are exactly the activity verbs we want to render. Lets the
-         realizer surface "Maria sidas sur la sofo" without reading a
-         posture-shadow attribute. New activity verbs (flugi, kuradi,
-         …) join automatically when added as relations with a parent.
-      3. None — caller falls back to the bland `estas` template, or the
-         unmarked-default standing case (no specific activity)."""
+         staranta, libro=kuŝanta, fork=kuŝanta). These are explicit
+         opt-ins; the verb is always informative even if it's the
+         slot's unmarked value, so we render with it unconditionally.
+      2. Derived posture (computed by derivations — naĝanta for an
+         animate en water_body, penda for a fruit sur arbo, sidanta
+         for an animate sur sittable). Render with the verb unless
+         it's the slot's unmarked default, since `animate_default_
+         standing` writes staranta to every animate's derived state
+         to satisfy iri's posture precondition — that derived
+         default isn't worth rendering as "X staras en Y" everywhere.
+      3. None — caller falls back to the bland `estas` template."""
     intrinsic = entity.properties.get("posture", [])
     if intrinsic:
         return _pose_verb_root(intrinsic[0])
     if ctx.derived is None:
         return None
-    # Collect all child-relations of `sur` and `en` (the parents that
-    # carry activity verbs). Ask: is this entity in any such relation
-    # as the first arg? If yes, strip the verb-infinitive `-i` suffix
-    # to get the root the realizer needs (sidi → sid → "sidas" via
-    # the tense suffix).
-    activity_names = (
-        ctx.lexicon.relation_children.get("sur", frozenset())
-        | ctx.lexicon.relation_children.get("en", frozenset())
-    )
-    def _root(verb_lemma):
-        return verb_lemma[:-1] if verb_lemma.endswith("i") else verb_lemma
-    for rel in ctx.trace.relations:
-        if rel.relation in activity_names and rel.args[0] == entity.id:
-            return _root(rel.relation)
-    for name, args in ctx.derived.relations:
-        if name in activity_names and args[0] == entity.id:
-            return _root(name)
-    return None
+    posture = ctx.derived.properties.get((entity.id, "posture"))
+    if not posture:
+        return None
+    slot = ctx.lexicon.slots.get("posture")
+    unmarked = slot.unmarked if slot is not None else None
+    if posture == unmarked:
+        return None
+    return _pose_verb_root(posture)
 
 
 def _pose_verb_root(pose: str) -> str:
@@ -1447,9 +1416,7 @@ def _render_grouped_relation(
         if only is not None and ctx.lexicon.types.is_subtype(
                 only.entity_type, "animate"):
             posture_root = _contextual_posture_verb_root(only, ctx)
-            if posture_root is not None and (
-                    ctx.rng is None
-                    or ctx.rng.random() < SPECIFIC_VERB_RATE):
+            if posture_root is not None:
                 verb = f"{posture_root}{ctx.tense}"
     return f"{prep} {container_form} {verb} {list_str}."
 
