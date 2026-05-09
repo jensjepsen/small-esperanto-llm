@@ -73,7 +73,7 @@ class EventMessage(Message):
     owner is narrated even though we suppress the separate
     "Maria ne plu havas" line.
 
-    `precondition` (optional): a `(entity_id, quality_lemma)` pair
+    `precondition` (optional): an `(entity_id, slot, quality_lemma)` triple
     naming a state that ENABLED this event (the verb or a rule
     conditioned on it AND the entity actually has that value). Folded
     into the rendered sentence as a `ĉar` ("because") clause — e.g.
@@ -82,7 +82,7 @@ class EventMessage(Message):
     """
     event: Event
     source_entity_id: Optional[str] = None
-    precondition: Optional[tuple[str, str]] = None
+    precondition: Optional[tuple[str, str, str]] = None
 
 
 @dataclass(kw_only=True)
@@ -145,9 +145,16 @@ class EntityQualityMessage(Message):
     "Hungra Maria parolis." — the attributive form is a stretch goal).
 
     The quality is a Quality lemma (e.g. "ŝlosita", "malsata") and the
-    renderer outputs it directly as the adjective surface form."""
+    renderer outputs it directly as the adjective surface form.
+
+    `slot` is the slot the quality came from. The renderer uses it to
+    look up `lexicon.state_verbs[(slot, quality_lemma)]` and decide
+    whether the quality has a producing verb that can be contracted
+    into a verbal predicate ("la pordo ŝlositas" instead of
+    "la pordo estas ŝlosita")."""
     entity_id: str
     quality_lemma: str
+    slot: Optional[str] = None
 
 
 @dataclass(kw_only=True)

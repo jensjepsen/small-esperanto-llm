@@ -54,6 +54,22 @@ class Lexicon:
     # "Maria" picks a virino-class concept and "Petro" a viro-class
     # one. Empty list when person_names.jsonl is absent.
     person_names: list[PersonName] = field(default_factory=list)
+    # (slot, value) → verb lemmas whose `effects` set that slot to that
+    # value (any target_role). Built once at load from `actions.jsonl`.
+    # Used by the realizer's verbal-predicate contraction
+    # ("la pordo ŝlositas") as a gate — if some verb produces this
+    # state, the contracted predicate is meaningful.
+    state_verbs: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
+    # (slot, value) → verb lemmas whose effect sets that slot on the
+    # AGENT role specifically. Used by the realizer to pick a verb
+    # form rendering when describing an entity in an agent-state
+    # context: "Maria sidas" instead of "Maria estas sidanta",
+    # "Maria dormas" instead of "Maria estas dormanta". Filters out
+    # transitive verbs that produce the state on their theme
+    # (`veki` → theme.sleep_state=vekita), since "Maria vekas"
+    # without an object reads as "Maria wakes (someone)" and is
+    # wrong for the intransitive agent-state intent.
+    agent_state_verbs: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
 
     # ---------- read helpers ----------
     def concept(self, lemma: str) -> Concept:
@@ -696,11 +712,22 @@ def load_lexicon(
                     f"{entry.gender!r} is not a known concept")
             person_names.append(entry)
 
+    state_verbs: dict[tuple[str, str], list[str]] = {}
+    agent_state_verbs: dict[tuple[str, str], list[str]] = {}
+    for lemma, a in actions.items():
+        for eff in a.effects:
+            key = (eff.property, eff.value)
+            state_verbs.setdefault(key, []).append(lemma)
+            if eff.target_role == "agent":
+                agent_state_verbs.setdefault(key, []).append(lemma)
+
     return Lexicon(
         types=spine, slots=slots, concepts=concepts,
         relations=relations, actions=actions, affixes=affixes,
         containment=containment, qualities=qualities,
         person_names=person_names,
+        state_verbs={k: tuple(v) for k, v in state_verbs.items()},
+        agent_state_verbs={k: tuple(v) for k, v in agent_state_verbs.items()},
     )
 
 

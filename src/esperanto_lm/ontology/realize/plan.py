@@ -62,7 +62,7 @@ def plan_messages(
 
     # Per-event preconditions for the ĉar-clause attachment.
     event_preconds = _event_preconditions(trace, lexicon)
-    inlined_entities = {eid for (eid, _) in event_preconds.values()}
+    inlined_entities = {eid for (eid, _, _) in event_preconds.values()}
 
     # Compute first-event index per entity. Drives the lazy-grounding
     # anchor: a grounding/setup-relation message attaches to the
@@ -108,7 +108,7 @@ def plan_messages(
     # `inlined_entities` then filters the generic quality-grounding
     # pass so we don't double-emit.
     seen_precond: set[tuple[str, str]] = set()
-    for ev_id, (entity_id, quality_lemma) in event_preconds.items():
+    for ev_id, (entity_id, slot, quality_lemma) in event_preconds.items():
         if entity_id not in referenced:
             continue
         key = (entity_id, quality_lemma)
@@ -117,7 +117,8 @@ def plan_messages(
         seen_precond.add(key)
         anchor = first_event_idx.get(entity_id, 0)
         pre_event[anchor].append(EntityQualityMessage(
-            entity_id=entity_id, quality_lemma=quality_lemma))
+            entity_id=entity_id, slot=slot,
+            quality_lemma=quality_lemma))
 
     for eid in _synthetic_grounding_targets(
             trace, scene_location_id, setup_relations):
@@ -326,13 +327,16 @@ def _extract_entity_constraints(patt) -> dict[str, object]:
 
 def _event_preconditions(
     trace: Trace, lexicon: Lexicon,
-) -> dict[str, tuple[str, str]]:
+) -> dict[str, tuple[str, str, str]]:
     """For each event, find one ACTIVE precondition: an (entity_id,
-    quality_lemma) pair where some verb-role or rule-pattern conditions
-    on a slot AND the entity actually has the constraint's value.
+    slot, quality_lemma) triple where some verb-role or rule-pattern
+    conditions on a slot AND the entity actually has the constraint's
+    value.
 
-    Returns {event_id: (entity_id, quality_lemma)} for events that have
-    such a precondition. Used to:
+    Returns {event_id: (entity_id, slot, quality_lemma)} for events
+    that have such a precondition. The slot is what the renderer
+    needs to look up `lexicon.state_verbs[(slot, value)]` and decide
+    whether the predicate can be contracted to a verbal form. Used to:
       (1) suppress separate quality grounding for that entity (the
           quality is already going to be inlined),
       (2) attach the precondition to the EventMessage so the renderer
@@ -345,7 +349,7 @@ def _event_preconditions(
     from ..dsl.rules import DEFAULT_DSL_RULES
     rules = list(DEFAULT_DSL_RULES)
 
-    out: dict[str, tuple[str, str]] = {}
+    out: dict[str, tuple[str, str, str]] = {}
     for ev in trace.events:
         # Synthesized events (cause is non-empty) inherit causal
         # connectives from their cause; skip ĉar for them.
@@ -398,10 +402,10 @@ def _event_preconditions(
                 continue
             actual = ent.properties.get(slot, [])
             if isinstance(actual, list) and expected in actual:
-                out[ev.id] = (eid, expected)
+                out[ev.id] = (eid, slot, expected)
                 break
             if actual == expected:
-                out[ev.id] = (eid, expected)
+                out[ev.id] = (eid, slot, expected)
                 break
     return out
 
@@ -509,7 +513,7 @@ def _quality_grounding_messages(
             continue
         quality = value[0] if isinstance(value, list) else value
         out.append(EntityQualityMessage(
-            entity_id=eid, quality_lemma=quality))
+            entity_id=eid, slot=slot_name, quality_lemma=quality))
         seen.add(eid)
     return out
 

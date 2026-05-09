@@ -489,14 +489,51 @@ def _render_entity_quality(m, ctx: _Ctx) -> Optional[str]:
     """'La sofo estas malseka.' — predicative attribution. The
     quality lemma is already in adjective form (Esperanto -a ending),
     no inflection needed for predicative use (predicative adjective
-    stays in nominative singular form to match the singular subject)."""
+    stays in nominative singular form to match the singular subject).
+
+    When the (slot, quality_lemma) has a producing verb in the
+    lexicon's `state_verbs` index AND rng allows, contracts the
+    predicate to verbal form ("la pordo ŝlositas"). Stilted but
+    valid Esperanto and gives the model lexical variation."""
     ent = ctx.trace.entities.get(m.entity_id)
     if ent is None:
         return None
     form = ctx.name_for(ent)
     ctx.note_mention(ent)
+    predicate = _state_predicate(m.slot, m.quality_lemma, ctx)
+    return f"{form} {predicate}."
+
+
+# Probability of contracting "estas X-ita" → "X-itas" when a verbal
+# form is available. Stilted but grammatical; the variation is for
+# the language model's benefit. Independent of the agent-state vs
+# theme-state distinction — both can contract.
+_VERBAL_PREDICATE_RATE = 0.30
+
+
+def _state_predicate(
+    slot: Optional[str], quality_lemma: str, ctx: _Ctx,
+) -> str:
+    """Render the copula+quality predicate for a state.
+
+    Default: "estas X" (or estis/estos by tense). When the (slot,
+    quality_lemma) has a producing verb AND rng rolls under
+    _VERBAL_PREDICATE_RATE, returns the verbal-contracted form
+    (drops the trailing -a of the participle and appends the tense
+    suffix: "ŝlosita" → "ŝlositas"). The slot is None when the
+    caller doesn't have it; in that case we fall back to the
+    adjectival form."""
     copula = f"est{ctx.tense}"
-    return f"{form} {copula} {m.quality_lemma}."
+    if slot is None or ctx.rng is None or ctx.lexicon is None:
+        return f"{copula} {quality_lemma}"
+    verbs = ctx.lexicon.state_verbs.get((slot, quality_lemma))
+    if not verbs:
+        return f"{copula} {quality_lemma}"
+    if not quality_lemma.endswith("a"):
+        return f"{copula} {quality_lemma}"
+    if ctx.rng.random() >= _VERBAL_PREDICATE_RATE:
+        return f"{copula} {quality_lemma}"
+    return f"{quality_lemma[:-1]}{ctx.tense}"
 
 
 def _render_scene_grounding(m: SceneGroundingMessage, ctx: _Ctx) -> Optional[str]:
@@ -576,7 +613,7 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
 
 def _append_precondition_clause(
     sentence: str,
-    precondition: Optional[tuple[str, str]],
+    precondition: Optional[tuple[str, str, str]],
     ctx: _Ctx,
 ) -> str:
     """Fold an active precondition into a sentence as a `ĉar` clause:
@@ -587,14 +624,14 @@ def _append_precondition_clause(
     missing."""
     if precondition is None:
         return sentence
-    eid, quality_lemma = precondition
+    eid, slot, quality_lemma = precondition
     ent = ctx.trace.entities.get(eid)
     if ent is None:
         return sentence
     ent_form = ctx.name_for(ent)
-    copula = f"est{ctx.tense}"
+    predicate = _state_predicate(slot, quality_lemma, ctx)
     base = sentence[:-1] if sentence.endswith(".") else sentence
-    return f"{base} ĉar {ent_form} {copula} {quality_lemma}."
+    return f"{base} ĉar {ent_form} {predicate}."
 
 
 def _render_event(m: EventMessage, ctx: _Ctx) -> Optional[str]:
@@ -776,50 +813,89 @@ _VERB_LOCATION_PREP_CACHE: dict[int, dict[str, str]] = {}
 _POSE_VERB_ROOT_CACHE: dict[str, str] = {}
 
 
+# Agent-state slots considered for verbal rendering, in order of
+# preference when multiple are marked. sleep_state wins over posture
+# because "Maria dormas" is more informative than "Maria kuŝas" for
+# a sleeping Maria. Extension is data-driven — the loader's
+# `state_verbs` index identifies slots whose action effects target
+# the agent role; we list them here in priority order. (Hardcoding
+# the priority is deliberate: nothing in the slot config expresses
+# salience ordering, and it's a small list.)
+_AGENT_STATE_SLOTS_BY_PREFERENCE: tuple[str, ...] = (
+    "sleep_state", "posture",
+)
+
+
 def _contextual_posture_verb_root(entity, ctx) -> Optional[str]:
-    """Verb root for an entity's posture, picking the more specific
-    verb over the bland `estas` template when the posture is
-    informative.
+    """Verb root for an entity's most-informative agent-state, picking
+    a verb over the bland `estas` template.
+
+    Resolution per slot in preference order (sleep_state, posture):
+      1. Intrinsic value (declared in concept.properties — glaso=
+         posture:staranta, libro=posture:kuŝanta). Explicit opt-ins;
+         the verb is always informative even if it's the slot's
+         unmarked default, so we render with it unconditionally.
+      2. Derived value (computed by derivations — posture:naĝanta
+         for an animate en water_body, posture:penda for a fruit
+         sur arbo, posture:sidanta for an animate sur sittable).
+         Render with the verb unless it's the slot's unmarked
+         default, since `animate_default_standing` writes staranta
+         to every animate's derived state to satisfy iri's posture
+         precondition — that default isn't worth rendering as "X
+         staras en Y" everywhere.
+
+    Returns the first slot with a non-default value's verb root,
+    or None if no slot has informative state. Caller falls back to
+    the bland `estas` template."""
+    for slot_name in _AGENT_STATE_SLOTS_BY_PREFERENCE:
+        intrinsic = entity.properties.get(slot_name, [])
+        if intrinsic:
+            return _state_verb_root(slot_name, intrinsic[0], ctx.lexicon)
+        if ctx.derived is None:
+            continue
+        value = ctx.derived.properties.get((entity.id, slot_name))
+        if not value:
+            continue
+        slot = ctx.lexicon.slots.get(slot_name)
+        unmarked = slot.unmarked if slot is not None else None
+        if value == unmarked:
+            continue
+        return _state_verb_root(slot_name, value, ctx.lexicon)
+    return None
+
+
+def _state_verb_root(slot: str, value: str, lexicon=None) -> str:
+    """Verb stem for an entity-as-AGENT state participle, ready for
+    tense suffix composition.
 
     Resolution:
-      1. Intrinsic posture (declared in concept.properties — glaso=
-         staranta, libro=kuŝanta, fork=kuŝanta). These are explicit
-         opt-ins; the verb is always informative even if it's the
-         slot's unmarked value, so we render with it unconditionally.
-      2. Derived posture (computed by derivations — naĝanta for an
-         animate en water_body, penda for a fruit sur arbo, sidanta
-         for an animate sur sittable). Render with the verb unless
-         it's the slot's unmarked default, since `animate_default_
-         standing` writes staranta to every animate's derived state
-         to satisfy iri's posture precondition — that derived
-         default isn't worth rendering as "X staras en Y" everywhere.
-      3. None — caller falls back to the bland `estas` template."""
-    intrinsic = entity.properties.get("posture", [])
-    if intrinsic:
-        return _pose_verb_root(intrinsic[0])
-    if ctx.derived is None:
-        return None
-    posture = ctx.derived.properties.get((entity.id, "posture"))
-    if not posture:
-        return None
-    slot = ctx.lexicon.slots.get("posture")
-    unmarked = slot.unmarked if slot is not None else None
-    if posture == unmarked:
-        return None
-    return _pose_verb_root(posture)
-
-
-def _pose_verb_root(pose: str) -> str:
-    """Verb root for an Esperanto pose adjective/participle. `staranta`
-    → `star`, `penda` → `pend`. Uses the morph parser so adding a new
-    pose value (e.g. `kaŭranta` → `kaŭr`) needs no realizer edit.
-    Cached since the slot vocab is small and bounded."""
-    cached = _POSE_VERB_ROOT_CACHE.get(pose)
+      1. Lexicon's `agent_state_verbs[(slot, value)]` — the verb
+         whose effect declares it produces this state on the agent
+         role. Covers (posture, sidanta) → sidi, (sleep_state,
+         dormanta) → dormi, (sleep_state, vekita) → vekiĝi
+         (intransitive becoming, NOT veki — which targets theme).
+         The stem is the lemma with the trailing -i stripped, NOT
+         the morphological root: vekiĝi → vekiĝ (so vekiĝ+as =
+         vekiĝas), since the morph parser would strip -iĝ as an
+         affix and yield just `vek` (which would render as the
+         transitive `vekas`).
+      2. Morph parse — for derivation-produced values that no
+         action effect declares: (posture, naĝanta) → naĝ,
+         (posture, penda) → pend. Affix-stripping is what we want
+         here, since the participle's morphology IS the verb stem.
+    """
+    cached = _POSE_VERB_ROOT_CACHE.get(value)
     if cached is not None:
         return cached
+    if lexicon is not None:
+        verbs = lexicon.agent_state_verbs.get((slot, value))
+        if verbs:
+            stem = verbs[0][:-1] if verbs[0].endswith("i") else verbs[0]
+            _POSE_VERB_ROOT_CACHE[value] = stem
+            return stem
     from ..morph import DefaultMorphParser
-    root = DefaultMorphParser().parse(pose).root
-    _POSE_VERB_ROOT_CACHE[pose] = root
+    root = DefaultMorphParser().parse(value).root
+    _POSE_VERB_ROOT_CACHE[value] = root
     return root
 
 
