@@ -1516,11 +1516,20 @@ def _self_slot_drive_pairs(rules, lex) -> list[tuple[str, Any]]:
         for eff in action.effects:
             if eff.target_role == "theme":
                 out.add((eff.property, eff.value))
+    # Path 3: direct agent-slot. Filter to slots that carry a
+    # PREFERENCE (baseline or context override) — without one, the
+    # drive "actor wants posture=sidanta" has no motivation and
+    # produces single-event scenes that just clutter the dedup head.
+    # Keeps sleep_state (preferred=vekita; flips to dormanta at
+    # nokto) and any future preferred slot; drops posture etc.
+    from ..agent.preferences import SLOT_PREFERENCES
     for action in lex.actions.values():
         if "agent" not in {r.name for r in action.roles}:
             continue
         for eff in action.effects:
             if eff.target_role == "agent":
+                if eff.property not in SLOT_PREFERENCES:
+                    continue
                 out.add((eff.property, eff.value))
     return list(out)
 
