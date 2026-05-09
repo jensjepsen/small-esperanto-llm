@@ -18,3 +18,7 @@
 {"name": "edzo", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
 {"name": "amiko", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
 {"name": "najbaro", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
+{"name": "sidi", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["sitter", "seat"], "inverse": null, "symmetric": false, "parent": "sur"}
+{"name": "kuŝi", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["lier", "bed"], "inverse": null, "symmetric": false, "parent": "sur"}
+{"name": "naĝi", "arity": 2, "arg_types": ["animate", "location"], "arg_names": ["swimmer", "water"], "inverse": null, "symmetric": false, "parent": "en"}
+{"name": "pendi", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["hanger", "support"], "inverse": null, "symmetric": false, "parent": "sur"}

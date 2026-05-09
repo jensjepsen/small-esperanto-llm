@@ -1730,7 +1730,14 @@ animate_lying_when_on_lieable = derive(
             container=entity(lieable="yes") & bind(B_lie := var("B"))),
     ],
     implies=[
-        property(T_lie, "posture", "kuŝanta"),
+        # Activity child-relation: realizer reads `kuŝi` directly to
+        # pick the verb form via morphology. Source of truth for
+        # "currently lying". Posture-as-slot is computed from this
+        # relation via the separate `posture_from_kuŝi` derivation
+        # below — kept around to satisfy action role-spec gates
+        # (iri/eniri/kuri require posture=staranta) until those
+        # specs are migrated to relation-based gating.
+        relation("kuŝi", T_lie, B_lie),
         property(T_lie, "sleep_state", "dormanta"),
     ],
     name="animate_lying_when_on_lieable",
@@ -1742,8 +1749,32 @@ animate_sitting_when_on_sittable = derive(
         rel("sur", contained=T_sit,
             container=entity(sittable="yes") & bind(S_sit := var("S"))),
     ],
-    implies=property(T_sit, "posture", "sidanta"),
+    implies=relation("sidi", T_sit, S_sit),
     name="animate_sitting_when_on_sittable",
+)
+
+
+# ---------- posture-from-relation bridges ------------------------------
+#
+# Posture-as-slot is now COMPUTED from the activity child-relations
+# (sidi/kuŝi/naĝi/pendi). The relation is the source of truth; the
+# posture is a derived view. These bridges exist solely to keep
+# action role-spec gates working (iri/eniri/kuri etc. read
+# `posture=staranta`); when those are migrated to relation-based
+# checks the posture slot can be retired entirely.
+
+posture_from_sidi = derive(
+    when=entity() & bind(T_psi := var("T")),
+    given=[rel("sidi", sitter=T_psi, seat=var())],
+    implies=property(T_psi, "posture", "sidanta"),
+    name="posture_from_sidi",
+)
+
+posture_from_kuŝi = derive(
+    when=entity() & bind(T_pku := var("T")),
+    given=[rel("kuŝi", lier=T_pku, bed=var())],
+    implies=property(T_pku, "posture", "kuŝanta"),
+    name="posture_from_kuŝi",
 )
 
 # Animate `en` a water_body location is swimming. Listed BEFORE
@@ -1758,8 +1789,15 @@ animate_swimming_when_in_water_body = derive(
         rel("en", contained=T_swim,
             container=entity(water_body="yes") & bind(L_swim := var("L"))),
     ],
-    implies=property(T_swim, "posture", "naĝanta"),
+    implies=relation("naĝi", T_swim, L_swim),
     name="animate_swimming_when_in_water_body",
+)
+
+posture_from_naĝi = derive(
+    when=entity() & bind(T_pna := var("T")),
+    given=[rel("naĝi", swimmer=T_pna, water=var())],
+    implies=property(T_pna, "posture", "naĝanta"),
+    name="posture_from_naĝi",
 )
 
 
@@ -1777,8 +1815,15 @@ container_imposes_penda_on_contents = derive(
         rel("sur", contained=C_imp,
             container=entity(imposes_pose="penda") & bind(H_imp := var("H"))),
     ],
-    implies=property(C_imp, "posture", "penda"),
+    implies=relation("pendi", C_imp, H_imp),
     name="container_imposes_penda_on_contents",
+)
+
+posture_from_pendi = derive(
+    when=entity() & bind(C_ppe := var("C")),
+    given=[rel("pendi", hanger=C_ppe, support=var())],
+    implies=property(C_ppe, "posture", "penda"),
+    name="container_imposes_penda_via_pendi",
 )
 
 animate_default_standing = derive(
@@ -2620,6 +2665,13 @@ RUNTIME_DERIVATIONS = [
     animate_sitting_when_on_sittable,
     animate_swimming_when_in_water_body,
     container_imposes_penda_on_contents,
+    # Bridges: relation → posture (transitional, until role-spec gates
+    # migrate off posture). Listed AFTER the activity-deriving
+    # derivations so the relations are present when these fire.
+    posture_from_kuŝi,
+    posture_from_sidi,
+    posture_from_naĝi,
+    posture_from_pendi,
     animate_default_standing,
     animate_default_awake,
     location_water_body_via_en,

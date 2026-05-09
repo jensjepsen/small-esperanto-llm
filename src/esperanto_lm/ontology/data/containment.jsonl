@@ -81,7 +81,6 @@
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "pilko", "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "skatolo", "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "sako", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained_pattern": {"category": "vehiklo"}, "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "flako", "relation": "en"}
 {"container_pattern": {"entity_type": "physical"}, "contained": "skribaĵo", "relation": "sur"}
 {"container_pattern": {"property": {"liquid_holder": "yes"}}, "contained_pattern": {"property": {"state_of_matter": "likva"}}, "relation": "en", "required": true}
@@ -90,3 +89,7 @@
 {"container": "ŝranko", "contained_pattern": {"category": "vestaĵo"}, "relation": "en"}
 {"container": "kofro", "contained_pattern": {"property": {"is_currency": "yes"}}, "relation": "en"}
 {"container": "skatolo", "contained_pattern": {"property": {"is_currency": "yes"}}, "relation": "en"}
+{"container_pattern": {"property": {"terrain": "water", "indoor_outdoor": "ekstera"}}, "contained_pattern": {"property": {"terrain": "water"}, "entity_type": "artifact"}, "relation": "en"}
+{"container_pattern": {"property": {"terrain": "land", "indoor_outdoor": "ekstera"}}, "contained_pattern": {"property": {"terrain": "land"}, "entity_type": "artifact"}, "relation": "en"}
+{"container_pattern": {"property": {"terrain": "rail", "indoor_outdoor": "ekstera"}}, "contained_pattern": {"property": {"terrain": "rail"}, "entity_type": "artifact"}, "relation": "en"}
+{"container_pattern": {"property": {"terrain": "air", "indoor_outdoor": "ekstera"}}, "contained_pattern": {"property": {"terrain": "air"}, "entity_type": "artifact"}, "relation": "en"}

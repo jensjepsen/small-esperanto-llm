@@ -192,6 +192,15 @@ class Relation(_Frozen):
     # from their host (Petro can't `havi` Mikael's mano). The check
     # at `assert_relation` is O(1) via Trace._parts_index.
     arg_not_part: list[bool] = Field(default_factory=list)
+    # Optional parent relation. Asserting a child satisfies queries
+    # against its parent: `sidi(maria, sofo)` makes `sur(maria, sofo)`
+    # true via `_has_relation`'s parent-walk. The parent's `arg_types`
+    # /`arg_names`/`arity` constrain the child (validated at load).
+    # Lets us model activities (`sidi`/`kuŝi` ⊂ `sur`) without
+    # double-assertion or duplicating spatial reasoning, and gives
+    # the realizer a choice between the specific child verb and the
+    # parent's bland template.
+    parent: Optional[str] = None
 
 
 class RoleSpec(_Frozen):

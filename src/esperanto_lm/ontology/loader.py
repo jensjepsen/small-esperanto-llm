@@ -54,6 +54,15 @@ class Lexicon:
     # "Maria" picks a virino-class concept and "Petro" a viro-class
     # one. Empty list when person_names.jsonl is absent.
     person_names: list[PersonName] = field(default_factory=list)
+    # Parent-relation transitive child closure. For each relation R that
+    # has at least one child relation declaring `parent: R`, this maps
+    # R → set of all transitive children (including indirect descendants).
+    # Empty for relations with no children. Used by `_has_relation` to
+    # treat a query for the parent as also satisfied by any asserted
+    # child, and by RelPattern matching to expand a parent-pattern
+    # match across child assertions. Built once at load time so the
+    # query path stays a constant-time set lookup.
+    relation_children: dict[str, frozenset[str]] = field(default_factory=dict)
 
     # ---------- read helpers ----------
     def concept(self, lemma: str) -> Concept:
@@ -524,6 +533,54 @@ def load_lexicon(
                     f"relation {r.name!r}: unknown arg type {t!r}")
         relations[r.name] = r
 
+    # Parent-relation validation + transitive child-closure index.
+    # A child's parent must (a) exist, (b) have the same arity, and
+    # (c) have arg_types that the child's are subtypes of — so a
+    # query at the parent level remains type-correct when satisfied
+    # by a child assertion. Cycle detection runs by walking each
+    # parent chain. The closure expands transitively so a future
+    # grandchild like `kuradi → kuri → apud` works without
+    # extra logic at query time.
+    relation_children: dict[str, set[str]] = {}
+    for r in relations.values():
+        if r.parent is None:
+            continue
+        if r.parent not in relations:
+            raise ValueError(
+                f"relation {r.name!r}: parent {r.parent!r} not declared")
+        parent = relations[r.parent]
+        if parent.arity != r.arity:
+            raise ValueError(
+                f"relation {r.name!r}: arity={r.arity} differs from "
+                f"parent {r.parent!r} arity={parent.arity}")
+        for i, (child_t, parent_t) in enumerate(
+                zip(r.arg_types, parent.arg_types)):
+            if not spine.is_subtype(child_t, parent_t):
+                raise ValueError(
+                    f"relation {r.name!r}: arg[{i}] type {child_t!r} "
+                    f"not a subtype of parent {r.parent!r} arg[{i}] "
+                    f"type {parent_t!r}")
+        # Cycle detection: walk parent chain.
+        visited: set[str] = {r.name}
+        cur = r.parent
+        while cur is not None:
+            if cur in visited:
+                raise ValueError(
+                    f"relation {r.name!r}: cycle in parent chain via "
+                    f"{cur!r}")
+            visited.add(cur)
+            cur = relations[cur].parent
+    for r in relations.values():
+        if r.parent is None:
+            continue
+        cur = r.parent
+        while cur is not None:
+            relation_children.setdefault(cur, set()).add(r.name)
+            cur = relations[cur].parent
+    relation_children_frozen: dict[str, frozenset[str]] = {
+        k: frozenset(v) for k, v in relation_children.items()
+    }
+
     actions: dict[str, Action] = {}
     for d in _read_jsonl(data_dir / "actions.jsonl"):
         a = Action(**d)
@@ -701,6 +758,7 @@ def load_lexicon(
         relations=relations, actions=actions, affixes=affixes,
         containment=containment, qualities=qualities,
         person_names=person_names,
+        relation_children=relation_children_frozen,
     )
 
 
