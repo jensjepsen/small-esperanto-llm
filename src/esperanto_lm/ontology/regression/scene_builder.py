@@ -559,8 +559,20 @@ class SceneBuilder:
         self._fail()
         return self
 
-    def vehicle(self, slot, *, in_=None):
-        """Pick a vehicle concept (is_vehicle=yes)."""
+    def vehicle(self, slot, *, in_=None, for_action="veturi", role="instrument"):
+        """Pick a vehicle concept (is_vehicle=yes) and unsatisfy any
+        if_property preconditions that `for_action` (default veturi)
+        gates on the chosen role of this entity, so the planner has a
+        real subgoal chain to discover before committing to the action.
+
+        For veturi.instrument that's `motorized=yes → power_state=
+        aktiva` — the bake makes motorized=yes already, so this method
+        flips power_state on whichever entity actually asserts it (the
+        motoro part for vehicles whose power_state lifts via a
+        host-from-part derivation; the vehicle itself if it asserted
+        the slot directly). Schema-derived: no hardcoded slot names
+        or values, so adding a new if_property gate on veturi (or
+        retargeting this builder to another action) keeps working."""
         if self._failed:
             return self
         vehicles = [
@@ -576,9 +588,65 @@ class SceneBuilder:
             self._fail()
             return self
         self.slots[slot] = eid
+        self._unsatisfy_if_property(eid, for_action, role)
         if not self._place(eid, in_):
             self._fail()
         return self
+
+    def _unsatisfy_if_property(
+        self, eid: str, action_lemma: str, role: str,
+    ) -> None:
+        """For each `if_property` precondition on `action_lemma`'s
+        `role` whose antecedent currently holds for `eid`, flip the
+        consequent slot on whichever entity (eid or one of its parts)
+        actually asserts the slot, picking a non-then_value from the
+        slot's vocabulary. No-op when the antecedent doesn't hold,
+        when the slot has no other value to pick, or when no part
+        carries the slot directly."""
+        action = self.lex.actions.get(action_lemma)
+        if action is None:
+            return
+        ent = self.t.entities.get(eid)
+        if ent is None:
+            return
+        for pc in action.preconditions:
+            if pc.kind != "if_property" or pc.role != role:
+                continue
+            if pc.if_value not in ent.properties.get(pc.if_property, []):
+                continue
+            target = self._part_asserting_slot(eid, pc.then_property)
+            if target is None:
+                continue
+            slot_def = self.lex.slots.get(pc.then_property)
+            if slot_def is None or slot_def.vocabulary is None:
+                continue
+            alternatives = [
+                v for v in slot_def.vocabulary if v != pc.then_value]
+            if not alternatives:
+                continue
+            target.set_property(
+                pc.then_property, self.rng.choice(alternatives))
+
+    def _part_asserting_slot(self, eid: str, slot: str):
+        """Walk havas_parton from `eid` and return the first entity
+        whose CONCEPT authors `slot` (i.e. asserts it directly rather
+        than receiving it via a derivation lift). Falls back to the
+        host itself if it authors the slot. Used to find which part
+        carries the source-of-truth state for a derived slot."""
+        ent = self.t.entities.get(eid)
+        if ent is None:
+            return None
+        concept = self.lex.concepts.get(ent.concept_lemma)
+        if concept is not None and slot in concept.properties:
+            return ent
+        for r in self.t.relations:
+            if (r.relation == "havas_parton"
+                    and len(r.args) == 2
+                    and r.args[0] == eid):
+                sub = self._part_asserting_slot(r.args[1], slot)
+                if sub is not None:
+                    return sub
+        return None
 
     def readable(self, slot, *, in_=None):
         """Pick a readable artifact (readability=legebla)."""
