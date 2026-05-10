@@ -817,9 +817,17 @@ _SLOT_PRODUCERS_CACHE: dict[int, dict[tuple[str, str], bool]] = {}
 def _chain_richness_weight(candidate, lex) -> float:
     """Score a relation-adder candidate by how many subgoals its
     selection would create — proxy for chain length. Counts
-    action.preconditions + total slots across all role.properties.
-    Used as a weight in candidate-shuffling so chain-rich verbs
-    (veturi vs iri for `en` goals) surface longer narratives."""
+    action.preconditions + total slots across all role.properties,
+    then doubles when the action has an `instrument` role.
+
+    The instrument bonus is the cheap, generic version of "prefer
+    verbs that recruit tools when one is available" — veturi over
+    iri for samloke goals when a vehicle's reachable, lavi-with-
+    lavilo over lavi-bare-handed when a lavilo's around. The planner
+    already vetted the candidate (instrument-bearing verbs only pass
+    the candidate filter when a satisfiable instrument exists), so
+    doubling here just shifts the weighted-shuffle's probability mass
+    toward the richer plan without adding any per-verb flag."""
     _rule, event_pat, _arg_sources = candidate
     action = lex.actions.get(event_pat.action)
     if action is None:
@@ -827,6 +835,8 @@ def _chain_richness_weight(candidate, lex) -> float:
     score = 1 + len(action.preconditions)
     for role in action.roles:
         score += len(role.properties)
+    if any(r.name == "instrument" for r in action.roles):
+        score *= 2
     return float(score)
 
 
