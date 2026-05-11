@@ -312,3 +312,6 @@
 {"lemma": "gluo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "functional_signature": ["glui"]}}
 {"lemma": "varmilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "functional_signature": ["varmigi"]}, "category": ["ilo"]}
 {"lemma": "frostilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "functional_signature": ["frostigi"]}, "category": ["ilo"]}
+{"lemma": "peniko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "functional_signature": ["pentri"]}, "category": ["ilo"]}
+{"lemma": "farbo", "entity_type": "substance", "properties": {"state_of_matter": ["likva"]}}
+{"lemma": "ŝraŭbo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "count": ["1"], "made_of": ["metal"]}, "category": ["metalaĵo"]}
