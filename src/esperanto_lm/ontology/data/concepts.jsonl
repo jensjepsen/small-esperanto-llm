@@ -307,3 +307,8 @@
 {"lemma": "pelvo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "fullness": ["malplena"], "liquid_holder": ["yes"]}, "category": ["ujo"]}
 {"lemma": "valizo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"]}, "parts": [{"concept": "seruro"}], "category": ["ujo"]}
 {"lemma": "kofro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"], "made_of": ["wood"]}, "parts": [{"concept": "seruro"}], "category": ["ujo"]}
+{"lemma": "broso", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "functional_signature": ["balaĝi"]}, "category": ["ilo"]}
+{"lemma": "viŝtuko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "functional_signature": ["viŝi"]}}
+{"lemma": "gluo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "functional_signature": ["glui"]}}
+{"lemma": "varmilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "functional_signature": ["varmigi"]}, "category": ["ilo"]}
+{"lemma": "frostilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "functional_signature": ["frostigi"]}, "category": ["ilo"]}
