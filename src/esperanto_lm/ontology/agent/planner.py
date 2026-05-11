@@ -836,7 +836,7 @@ def _chain_richness_weight(candidate, lex) -> float:
     for role in action.roles:
         score += len(role.properties)
     if any(r.name == "instrument" for r in action.roles):
-        score *= 2
+        score *= 3
     return float(score)
 
 
@@ -1838,22 +1838,33 @@ def _plan_to_establish_relation_impl(
     # (`iri` over `veturi`), making rich chains rare. Weight is just
     # a count of action.preconditions + total role.properties — pure
     # data, no per-verb hardcoding.
+    # Weighted sampling: combine chain-richness and pre-satisfaction
+    # into a single weight, then shuffle. Pre-satisfaction is a strong
+    # P(success) proxy — candidates whose preconditions already hold
+    # need fewer subgoals and rarely dead-end — so we amplify it
+    # exponentially while letting richness break ties / explore
+    # subgoal-deep variants. The previous shape (weighted shuffle
+    # then stable sort by satisfaction) was deterministic per goal
+    # given trace state; sampling makes same-goal-same-trace produce
+    # plan-shape variety across seeds, useful for training-data
+    # diversity. No additional compute since high-P candidates still
+    # win the draw most of the time.
     _shuffle_rng = _PLANNER_RNG.get()
     if _shuffle_rng is not None:
+        weights = []
+        for c in rel_candidates:
+            richness = _chain_richness_weight(c, lex)
+            satisfied = _count_satisfied_preconds(
+                c, target_args, actor_id, trace, derived, lex)
+            weights.append(richness * (2 ** satisfied))
         rel_candidates = _weighted_shuffle(
-            rel_candidates,
-            [_chain_richness_weight(c, lex) for c in rel_candidates],
-            _shuffle_rng)
-    # Precondition-satisfaction prefilter: count how many of each
-    # candidate's preconditions ALREADY hold given the partial role
-    # bindings (agent=actor + arg_source bindings). Candidates with
-    # more holding preconditions need fewer subgoals and almost always
-    # produce shorter plans — so try them first. Uncertain
-    # preconditions (whose roles aren't yet bound) don't penalize.
-    # This is a pure ordering hint; semantics unchanged.
-    rel_candidates.sort(
-        key=lambda c: -_count_satisfied_preconds(
-            c, target_args, actor_id, trace, derived, lex))
+            rel_candidates, weights, _shuffle_rng)
+    else:
+        # No rng (tests / deterministic mode): fall back to ordering
+        # by satisfaction count alone.
+        rel_candidates.sort(
+            key=lambda c: -_count_satisfied_preconds(
+                c, target_args, actor_id, trace, derived, lex))
 
     for rule, event_pat, arg_sources in rel_candidates:
         action = lex.actions.get(event_pat.action)
