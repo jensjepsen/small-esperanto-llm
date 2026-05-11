@@ -1,5 +1,5 @@
 {"name": "fragility", "vocabulary": ["fragila", "fortika"], "applies_to": ["inanimate"], "scalar": true, "adjectival": true, "unmarked": "fortika"}
-{"name": "integrity", "vocabulary": ["tuta", "tranĉita", "rompita"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "unmarked": "tuta"}
+{"name": "integrity", "vocabulary": ["tuta", "tranĉita", "rompita"], "applies_to": ["physical"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "tuta", "weights": [0.7, 0.15, 0.15]}
 {"name": "temperature", "vocabulary": ["malvarma", "varma", "varmega"], "applies_to": ["physical"], "scalar": true, "varies": true, "pervasive": true, "adjectival": true, "unmarked": "varma"}
 {"name": "lock_state", "vocabulary": ["ŝlosita", "malŝlosita"], "applies_to": ["artifact"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "malŝlosita"}
 {"name": "edibility", "vocabulary": ["manĝebla", "nemanĝebla"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "unmarked": "manĝebla"}
