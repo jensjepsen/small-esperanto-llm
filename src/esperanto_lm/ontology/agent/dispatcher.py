@@ -13,8 +13,9 @@ coverage harness for prose listings.
 from __future__ import annotations
 
 from .planner import (
-    _BudgetExceeded, _DERIVED_CACHE, _PLANNER_RNG, _SIM_BUDGET,
-    _SIM_CACHE, _SimulationBudget, _cached_compute_derived_state,
+    _BudgetExceeded, _DERIVED_CACHE, _ENTITY_RESOLVER, _PLANNER_RNG,
+    _SIM_BUDGET, _SIM_CACHE, _SimulationBudget,
+    _cached_compute_derived_state,
     _count_owned, plan_to_achieve, plan_to_establish_relation,
     plan_to_reach_count,
 )
@@ -40,7 +41,8 @@ def _dedupe_adjacent_steps(plan):
 
 
 def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
-                    rng=None, simulation_budget=5000):
+                    rng=None, simulation_budget=5000,
+                    entity_resolver=None):
     """Dispatch one drive to the right planner entry. Returns the
     plan or None. Computes derived state once. Doesn't fire — caller
     is responsible for executing the plan against the trace.
@@ -60,6 +62,8 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
     kind = drive[0]
     token = _PLANNER_RNG.set(rng)
     btoken = _SIM_BUDGET.set(_SimulationBudget(simulation_budget))
+    rtoken = (_ENTITY_RESOLVER.set(entity_resolver)
+              if entity_resolver is not None else None)
     # Reset failure reason at entry. Don't reset at exit — leave the
     # final reason readable by the caller via
     # `get_planner_failure_reason()`. Persistence is fine because the
@@ -143,6 +147,8 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
     finally:
         _PLANNER_RNG.reset(token)
         _SIM_BUDGET.reset(btoken)
+        if rtoken is not None:
+            _ENTITY_RESOLVER.reset(rtoken)
 
 
 
