@@ -93,3 +93,18 @@
 {"container_pattern": {"property": {"terrain": "land", "indoor_outdoor": "ekstera"}}, "contained_pattern": {"property": {"terrain": "land"}, "entity_type": "artifact"}, "relation": "en"}
 {"container_pattern": {"property": {"terrain": "rail", "indoor_outdoor": "ekstera"}}, "contained_pattern": {"property": {"terrain": "rail"}, "entity_type": "artifact"}, "relation": "en"}
 {"container_pattern": {"property": {"terrain": "air", "indoor_outdoor": "ekstera"}}, "contained_pattern": {"property": {"terrain": "air"}, "entity_type": "artifact"}, "relation": "en"}
+{"container": "domo", "contained": "banĉambro", "relation": "en"}
+{"container": "banĉambro", "contained": "bankuvo", "relation": "en"}
+{"container": "banĉambro", "contained": "duŝo", "relation": "en"}
+{"container": "banĉambro", "contained": "lavabo", "relation": "en"}
+{"container": "banĉambro", "contained": "klozeto", "relation": "en"}
+{"container": "banĉambro", "contained": "dentobrosilo", "relation": "en"}
+{"container": "banĉambro", "contained": "dentopasto", "relation": "en"}
+{"container": "banĉambro", "contained": "ŝampuo", "relation": "en"}
+{"container": "banĉambro", "contained": "sapo", "relation": "en"}
+{"container": "banĉambro", "contained": "spegulo", "relation": "en"}
+{"container": "banĉambro", "contained": "lavilo", "relation": "en"}
+{"container": "banĉambro", "contained": "brosilo", "relation": "en"}
+{"container": "banĉambro", "contained": "tuko", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lavilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "brosilo", "relation": "en"}

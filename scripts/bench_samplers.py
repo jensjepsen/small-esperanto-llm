@@ -66,7 +66,9 @@ def _run_batch(args):
             no_sample += 1
             continue
         t, scene_id, drive = sample
-        spawner = make_spawner(scene_id, _LEX, rng, budget=spawn_budget)
+        spawner = make_spawner(
+            scene_id, _LEX, rng, budget=spawn_budget,
+            prefer_scene_p=float(os.environ.get("PREFER_SCENE_P", "1.0")))
         try:
             if use_forward:
                 plan = plan_for_goal(

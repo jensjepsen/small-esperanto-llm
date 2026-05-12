@@ -29,6 +29,7 @@ def make_spawner(
     rng,
     *,
     budget: int = 6,
+    prefer_scene_p: float = 1.0,
 ) -> Callable:
     """Return a resolver closure for the planner's _ENTITY_RESOLVER.
 
@@ -56,7 +57,14 @@ def make_spawner(
 
     def resolver(role_spec, trace, lex_arg, exclude,
                  action=None, role_name=None, *,
-                 prefer_scene: bool = True):
+                 prefer_scene: bool | None = None):
+        # `prefer_scene` resolution:
+        #   - explicit True/False from caller: honored
+        #   - None (default): coin flip against `prefer_scene_p` —
+        #     1.0 (default) is "always prefer scene" (BP behavior);
+        #     0.0 is "always natural habitat"; 0.5 mixes
+        if prefer_scene is None:
+            prefer_scene = rng.random() < prefer_scene_p
         # Budget exhausted: bail before any expensive work
         # (`_concepts_matching_role` walks the full concept dict, and
         # `_place_respecting_containment` recursively walks containment).

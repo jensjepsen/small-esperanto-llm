@@ -315,3 +315,11 @@
 {"lemma": "peniko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "functional_signature": ["pentri"]}, "category": ["ilo"]}
 {"lemma": "farbo", "entity_type": "substance", "properties": {"state_of_matter": ["likva"]}}
 {"lemma": "ŝraŭbo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "count": ["1"], "made_of": ["metal"]}, "category": ["metalaĵo"]}
+{"lemma": "banĉambro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "bankuvo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["meblo"]}
+{"lemma": "duŝo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["meblo"]}
+{"lemma": "lavabo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["meblo"]}
+{"lemma": "klozeto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["meblo"]}
+{"lemma": "dentobrosilo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"]}, "category": ["ilo"]}
+{"lemma": "dentopasto", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["likva"]}}
+{"lemma": "ŝampuo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["likva"]}}
