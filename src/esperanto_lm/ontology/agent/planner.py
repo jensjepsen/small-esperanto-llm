@@ -1720,7 +1720,7 @@ _PRESERVE_CONSTRAINTS: contextvars.ContextVar = contextvars.ContextVar(
 # still works while shallower actions don't multiplicatively explore.
 _RP_DEPTH: contextvars.ContextVar = contextvars.ContextVar(
     "_RP_DEPTH", default=0)
-_RP_PERMUTE_MAX_DEPTH = 0
+_RP_PERMUTE_MAX_DEPTH = 1
 
 
 # Per-`plan_for_drive` simulation budget. Counts each
