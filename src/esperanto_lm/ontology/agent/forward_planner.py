@@ -1,0 +1,1363 @@
+"""Forward state-space planner POC.
+
+Alternative to `planner.py`'s backward chainer. Search goes from the
+initial state outward: enumerate actions whose preconditions hold
+NOW, apply each, recurse. Goal-directedness comes from a heuristic
+`h(state)` that estimates remaining work; greedy best-first picks
+the state with lowest h.
+
+Why this exists alongside the backward chainer:
+  - Backward chaining fights our event-calculus model (state advances
+    via fired events; deriving "what state did action X need to fire"
+    requires reasoning backward through derivations and effects).
+  - Backward chaining accumulates "preserve constraint" complexity
+    (do A, do B; if B breaks A, reject and try other order). The
+    STRIPS-with-re-establishment limitation. Forward search has no
+    such issue: we only ever fire actions whose preconditions hold
+    in the current simulated state.
+  - Failure semantics: when forward search runs out of applicable
+    progress-making actions, the heuristic plateau is a clean signal.
+    Backward chaining reports a misleading "deepest leaf" reason.
+
+POC scope (first iteration):
+  - Greedy best-first search (no A*, no admissibility worry — we
+    don't care about plan optimality for training data; existence
+    suffices).
+  - h_add over a relaxed planning graph that treats derived facts
+    (samloke, scias_lokon, ...) as first-class via the runtime
+    derivation engine on each state.
+  - Drive shapes: entity_slot and self_slot only for now.
+  - Reuses Trace, _simulate_from_scratch, _find_role_filler from
+    the existing planner — no domain code duplicated.
+"""
+from __future__ import annotations
+
+import itertools
+from typing import Optional
+
+from ..causal import Trace
+from .planner import (
+    _cached_compute_derived_state, _entity_property_values,
+    _find_role_filler, _has_relation, _simulate_from_scratch,
+    _step_to_event,
+)
+
+
+# ---------- applicability ----------
+
+def _applicable_actions(
+    trace: Trace, lex, rules, derivations, derived,
+    *, max_per_action: int = 4,
+    relevant_entities: set | None = None,
+    helpful: set | None = None,
+):
+    """Enumerate (verb, role_bindings) tuples whose preconditions
+    hold in the current state. Yields one binding per role-fillable
+    candidate, up to `max_per_action` per action to bound branching.
+
+    A role binding is built by binding each of the action's roles to
+    an in-trace entity matching the role spec (type + properties).
+    Preconditions (relation, if_property, match) are checked against
+    the resulting binding before yielding.
+    """
+    from ..schemas import (
+        IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
+    )
+
+    for action in lex.actions.values():
+        if not action.roles:
+            continue
+        # Per-role candidates. Each role's candidates are the
+        # in-trace entities satisfying role_spec.type + properties.
+        per_role: list[list[str]] = []
+        for role_spec in action.roles:
+            candidates: list[str] = []
+            for eid, ent in trace.entities.items():
+                if not lex.types.is_subtype(
+                        ent.entity_type, role_spec.type):
+                    continue
+                ok = True
+                for slot, vals in (role_spec.properties or {}).items():
+                    values = _entity_property_values(
+                        ent, slot, trace, derived)
+                    if not values & set(vals):
+                        ok = False
+                        break
+                if ok:
+                    candidates.append(eid)
+            if not candidates:
+                # Some role can't be bound to any in-trace entity —
+                # the whole action is inapplicable here.
+                per_role = []
+                break
+            per_role.append(candidates)
+        if not per_role:
+            continue
+
+        # Enumerate cross-products. Sort combos so helpful bindings
+        # come first (so the max_per_action cap doesn't drop them).
+        combos = []
+        for combo in itertools.product(*per_role):
+            if len(set(combo)) != len(combo):
+                continue
+            if relevant_entities is not None:
+                if not any(e in relevant_entities for e in combo):
+                    continue
+            combos.append(combo)
+        if helpful is not None:
+            def _helpful_score(combo):
+                roles = {r.name: e for r, e in zip(action.roles, combo)}
+                return 0 if (action.lemma,
+                              frozenset(roles.items())) in helpful else 1
+            combos.sort(key=_helpful_score)
+        emitted = 0
+        for combo in combos:
+            roles = {r.name: e for r, e in zip(action.roles, combo)}
+            if not _preconditions_hold(
+                    action, roles, trace, derived, lex):
+                continue
+            yield (action.lemma, roles)
+            emitted += 1
+            if emitted >= max_per_action:
+                break
+
+
+def _preconditions_hold(action, roles, trace, derived, lex) -> bool:
+    """All action.preconditions satisfied by current state +
+    derived facts. Mirrors `_resolve_preconditions_in_order`'s
+    CHECK side, without the subgoaling branch.
+
+    `scias_lokon`/`konas` are NOT enforced — these are derived
+    through entity-creation chains (vidi creates a fakto entity)
+    that the relaxed planning graph can't model. Skipping them here
+    keeps the actual-applicability check consistent with the h_add
+    encoding (see `_ground_action_facts`). Plans emitted by forward
+    search may therefore include `preni` without a preceding
+    `vidi`; the engine accepts this since preni's RULE only
+    requires samloke. Narrative cohesion suffers slightly — fixable
+    by encoding vidi's fakto-creation in the relaxed graph (out of
+    POC scope)."""
+    from ..schemas import (
+        IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
+    )
+    for pc in action.preconditions:
+        if isinstance(pc, RelationPrecondition):
+            if pc.rel in ("scias_lokon", "konas"):
+                continue
+            eids = tuple(roles.get(r) for r in pc.roles)
+            if any(e is None for e in eids):
+                return False
+            if not _has_relation(pc.rel, eids, trace, derived, lex):
+                return False
+        elif isinstance(pc, IfPropertyPrecondition):
+            eid = roles.get(pc.role)
+            if eid is None:
+                continue
+            ent = trace.entities.get(eid)
+            if ent is None:
+                return False
+            gate = _entity_property_values(
+                ent, pc.if_property, trace, derived)
+            if pc.if_value not in gate:
+                continue  # Gate not active — pc vacuously holds.
+            then_vals = _entity_property_values(
+                ent, pc.then_property, trace, derived)
+            if pc.then_value not in then_vals:
+                return False
+        elif isinstance(pc, MatchPrecondition):
+            ea = trace.entities.get(roles.get(pc.role_a))
+            eb = trace.entities.get(roles.get(pc.role_b))
+            if ea is None or eb is None:
+                return False
+            va = set(ea.properties.get(pc.slot_a, []))
+            vb = set(eb.properties.get(pc.slot_b, []))
+            if not (va & vb):
+                return False
+    return True
+
+
+# ---------- goal test ----------
+
+def _goal_satisfied(goal, trace, derived, lex) -> bool:
+    """Goal shapes:
+      ("property", eid, slot, value)
+      ("relation", relation, args_tuple)
+    """
+    kind = goal[0]
+    if kind == "property":
+        _, eid, slot, value = goal
+        ent = trace.entities.get(eid)
+        if ent is None:
+            return False
+        return value in _entity_property_values(ent, slot, trace, derived)
+    if kind == "relation":
+        _, relation, args = goal
+        return _has_relation(relation, args, trace, derived, lex)
+    return False
+
+
+# ---------- heuristic (h_add over relaxed planning graph) ----------
+#
+# Standard relaxed-planning-graph layered expansion. Each layer is a
+# pair (fact set, action set):
+#   layer 0 facts = state's facts ∪ derived facts.
+#   layer k actions = grounded actions whose precondition facts ⊆
+#                     layer k-1 facts.
+#   layer k facts = layer k-1 facts ∪ effects of layer k actions.
+# Iterate to fixed point or cap.
+#
+# Cost(fact) = first layer at which the fact appears.
+# h_add(goal) = sum over goal literals of cost(literal). Inadmissible
+# but informative, well-suited to greedy best-first.
+#
+# Encoding:
+#   Facts are tuples — ("prop", eid, slot, value) for property
+#   assertions, ("rel", relation, args) for relation assertions.
+#
+# Limitations (acceptable for POC, can be refined):
+#   - Action grounding uses entities currently in the trace; the
+#     relaxed graph doesn't model entity creation. Actions whose
+#     effect target needs a not-yet-spawned entity get cost INF.
+#   - if_property preconditions: gate-true cases treated as adding
+#     the gate's then-fact as a precondition; gate-false cases are
+#     treated as vacuous.
+#   - match preconditions: treated as vacuous in the relaxation
+#     (terrain compat is structural, doesn't bottleneck).
+#   - Derivations: re-run after each layer so derived facts surface
+#     naturally with their producer-fact's cost.
+
+_HEURISTIC_INF = 10_000
+
+# Cache the rule-effects index across heuristic calls in the same
+# planning session. Keyed by id(lex) — the rules are loaded once and
+# never change during a benchmark, so this is effectively a global
+# memoization with safe invalidation on a fresh lexicon load.
+_RULE_EFFECTS_CACHE: dict = {}
+
+
+def _ground_action_facts(action, roles, lex, rule_effects):
+    """Return (precondition_facts, effect_facts) for a grounded
+    action — both as sets of fact tuples. `rule_effects` is the
+    `{verb: [(relation, role_arg_names)]}` index of rule-added
+    relations (preni adds havi, vidi adds konas, etc.) — without
+    these the relaxed graph misses key transitions and the
+    heuristic returns INF for any chain that depends on them."""
+    from ..schemas import (
+        IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
+    )
+    pres: set = set()
+    effs: set = set()
+    # Role property requirements: pre `("prop", eid, slot, value)`.
+    for role_spec in action.roles:
+        eid = roles.get(role_spec.name)
+        if eid is None:
+            continue
+        for slot, vals in (role_spec.properties or {}).items():
+            if vals:
+                pres.add(("prop", eid, slot, vals[0]))
+    # Action-level preconditions.
+    for pc in action.preconditions:
+        if isinstance(pc, RelationPrecondition):
+            # scias_lokon / konas are derived through entity-
+            # creation chains (vidi creates a fakto entity, then
+            # konas+subjekto+objekto derive scias_lokon). The
+            # relaxed graph can't model entity creation; treating
+            # these preconditions as always satisfiable here lets
+            # h_add propagate through chains that need perception.
+            # Acceptable POC simplification — every animate in a
+            # lit room can perceive nearby objects in practice.
+            if pc.rel in ("scias_lokon", "konas"):
+                continue
+            eids = tuple(roles.get(r) for r in pc.roles)
+            if any(e is None for e in eids):
+                continue
+            pres.add(("rel", pc.rel, eids))
+        elif isinstance(pc, IfPropertyPrecondition):
+            # Skipped in relaxed encoding. The gate is conditional
+            # — fires only when `if_property=if_value` holds on the
+            # bound entity — and the entity may not even carry the
+            # gate's slot (eniri's openness gate on ĝardeno, which
+            # has no openness; or sekigi's reflexive gate). Modeling
+            # this conditionally in the relaxed graph requires
+            # gate-state tracking; for the POC the planner's
+            # _preconditions_hold check at applicability time still
+            # enforces the real gate semantics, so plans firing
+            # closed doors get caught there.
+            pass
+        # MatchPrecondition skipped.
+    # Schema-level effects (property writes).
+    for eff in action.effects:
+        eid = roles.get(eff.target_role)
+        if eid is None:
+            continue
+        effs.add(("prop", eid, eff.property, eff.value))
+    # Rule-level effects: only 'adds' for the relaxed graph (delete
+    # relaxation). The fact-set incremental simulator uses the same
+    # index but reads 'dels' too.
+    entry = rule_effects.get(action.lemma)
+    if entry is not None:
+        for relation, role_arg_names in entry["adds"]:
+            eids = tuple(roles.get(r) for r in role_arg_names)
+            if any(e is None for e in eids):
+                continue
+            effs.add(("rel", relation, eids))
+    return pres, effs
+
+
+def _ground_derivations(derivations, trace, lex) -> list:
+    """Compile derivations into grounded pseudo-actions for the
+    relaxed graph. Each binding of a derivation's variables to
+    entities becomes one pseudo-action:
+      pres = facts from rel patterns in when+given (with synthesized
+             vars for inline EntityPattern args) + property constraints
+             from EntityPattern constraints
+      effs = facts from implies clause
+
+    Pseudo-actions are cost-0 — derived facts get the same layer as
+    their producing fact, modeling "if X holds, samloke(X, Y) also
+    holds, instantly". Skips NotPatterns (relaxation drops negation).
+
+    Reuses existing planner helpers (`_walk_for_rel_patterns`,
+    `_extract_bind_vars`) so the pattern walking matches the live
+    engine's interpretation."""
+    from ..dsl.implications import (
+        PropertyImplication, RelationImplication,
+    )
+    from ..dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern, Var,
+    )
+    from .planner import (
+        _walk_for_rel_patterns, _extract_bind_vars,
+    )
+
+    def _bind_target_var(arg_pat):
+        """If arg_pat is a Var, returns it. If it's a BindPattern,
+        returns its target. Otherwise None — including for inline
+        EntityPatterns with no Var binding."""
+        if isinstance(arg_pat, Var):
+            return arg_pat
+        if isinstance(arg_pat, BindPattern):
+            return arg_pat.target
+        if isinstance(arg_pat, AndPattern):
+            # Common shape: EntityPattern(...) & bind(Var)
+            for side in (arg_pat.left, arg_pat.right):
+                if isinstance(side, BindPattern):
+                    return side.target
+                if isinstance(side, Var):
+                    return side
+        return None
+
+    def _entity_pattern_for(arg_pat):
+        """Find the EntityPattern inside arg_pat, if any."""
+        if isinstance(arg_pat, EntityPattern):
+            return arg_pat
+        if isinstance(arg_pat, AndPattern):
+            for side in (arg_pat.left, arg_pat.right):
+                ep = _entity_pattern_for(side)
+                if ep is not None:
+                    return ep
+        if isinstance(arg_pat, BindPattern):
+            return _entity_pattern_for(arg_pat.pattern)
+        return None
+
+    def _ep_for_var(target_var, when, given):
+        """Find an EntityPattern co-bound with target_var anywhere
+        under when+given. Returns the EntityPattern or None."""
+        for pat in [when] + list(given):
+            ep = _walk_for_ep_binding_local(pat, target_var)
+            if ep is not None:
+                return ep
+        return None
+
+    def _walk_for_ep_binding_local(pattern, target_var):
+        if isinstance(pattern, AndPattern):
+            # EntityPattern(...) & bind(Var)
+            if (isinstance(pattern.left, EntityPattern)
+                    and isinstance(pattern.right, BindPattern)
+                    and pattern.right.target is target_var):
+                return pattern.left
+            if (isinstance(pattern.right, EntityPattern)
+                    and isinstance(pattern.left, BindPattern)
+                    and pattern.left.target is target_var):
+                return pattern.right
+            for side in (pattern.left, pattern.right):
+                ep = _walk_for_ep_binding_local(side, target_var)
+                if ep is not None:
+                    return ep
+        return None
+
+    def _constraints_from_ep(ep, lex):
+        """Pull literal type/concept/property constraints from an
+        EntityPattern.constraints dict. Returns
+        (type_, concept_, prop_pairs)."""
+        type_ = None
+        concept_ = None
+        props: list = []  # (slot, value)
+        if ep is None:
+            return type_, concept_, props
+        for k, v in ep.constraints.items():
+            if isinstance(v, Var):
+                continue
+            if k == "type":
+                type_ = v
+            elif k == "concept":
+                concept_ = v
+            elif k in lex.slots:
+                # Property constraint
+                if isinstance(v, (list, tuple)):
+                    if v:
+                        # Multi-value — relaxation: take the first.
+                        props.append((k, v[0]))
+                else:
+                    props.append((k, v))
+        return type_, concept_, props
+
+    out = []
+    next_synth_id = [-1_000_000]
+
+    def _new_synth_var(constraints):
+        next_synth_id[0] -= 1
+        return next_synth_id[0]
+
+    for d in derivations:
+        # All explicit Vars used in when+given+implies.
+        all_vars: dict = {}  # id(Var) -> Var (or synth-int)
+        var_constraints: dict = {}  # id -> (type, concept, [(slot, val)])
+
+        for v in _extract_bind_vars(d.when):
+            all_vars[id(v)] = v
+        for g in d.given:
+            for v in _extract_bind_vars(g):
+                all_vars[id(v)] = v
+        for imp in d.implies:
+            if isinstance(imp, PropertyImplication):
+                if isinstance(imp.entity, Var):
+                    all_vars[id(imp.entity)] = imp.entity
+            elif isinstance(imp, RelationImplication):
+                for a in imp.args:
+                    if isinstance(a, Var):
+                        all_vars[id(a)] = a
+
+        # Gather constraints for each explicit Var.
+        for vid, v in all_vars.items():
+            ep = _ep_for_var(v, d.when, d.given)
+            var_constraints[vid] = _constraints_from_ep(ep, lex)
+
+        # RelPatterns in when+given. For each rel-arg that's an
+        # inline EntityPattern (no Var), synthesize a free Var so we
+        # ground over its constraints too.
+        rel_patterns: list = []
+        # For each rel pattern, keep arg → vid mapping (synth or real).
+        rel_arg_vids: list = []
+        for pat in [d.when] + list(d.given):
+            for rp in _walk_for_rel_patterns(pat):
+                rel_def = lex.relations.get(rp.relation)
+                if rel_def is None:
+                    continue
+                arg_vids: list = []
+                ok = True
+                for arg_name in rel_def.arg_names:
+                    arg_pat = rp.arg_patterns.get(arg_name)
+                    if arg_pat is None:
+                        ok = False
+                        break
+                    tgt = _bind_target_var(arg_pat)
+                    if tgt is not None:
+                        arg_vids.append(id(tgt))
+                        if id(tgt) not in all_vars:
+                            # Var referenced but not previously bound;
+                            # treat as free.
+                            all_vars[id(tgt)] = tgt
+                            ep_inline = _entity_pattern_for(arg_pat)
+                            var_constraints[id(tgt)] = (
+                                _constraints_from_ep(ep_inline, lex))
+                    else:
+                        # Inline EntityPattern with no Var binding.
+                        ep_inline = _entity_pattern_for(arg_pat)
+                        synth_id = _new_synth_var(None)
+                        all_vars[synth_id] = None  # synth marker
+                        var_constraints[synth_id] = (
+                            _constraints_from_ep(ep_inline, lex))
+                        arg_vids.append(synth_id)
+                if not ok:
+                    continue
+                rel_patterns.append(rp)
+                rel_arg_vids.append(arg_vids)
+
+        # Implies → effects (only Var-bound entities).
+        impl_specs: list = []
+        for imp in d.implies:
+            if isinstance(imp, PropertyImplication):
+                if not isinstance(imp.entity, Var):
+                    continue
+                if isinstance(imp.value, Var):
+                    continue
+                impl_specs.append(("prop", imp.entity, imp.slot, imp.value))
+            elif isinstance(imp, RelationImplication):
+                impl_specs.append(("rel", imp.name, tuple(imp.args)))
+        if not impl_specs:
+            continue
+
+        # Ground each Var to entities matching its constraints.
+        # Body parts (inanimate sub-entities like virino_piedo) and
+        # the mondo singleton aren't goal-relevant for plan search;
+        # excluding them collapses the grounding count by ~10× on
+        # typical scenes (was 42k samloke groundings → ~4k).
+        domains: list = []
+        var_ids = list(all_vars.keys())
+        for vid in var_ids:
+            type_, concept_, _props = var_constraints[vid]
+            cands = []
+            for eid, ent in trace.entities.items():
+                if eid == "mondo":
+                    continue
+                if ent.entity_type == "inanimate":
+                    continue  # body parts
+                if type_ is not None:
+                    if not lex.types.is_subtype(
+                            ent.entity_type, type_):
+                        continue
+                if concept_ is not None:
+                    if ent.concept_lemma != concept_:
+                        continue
+                cands.append(eid)
+            domains.append(cands)
+
+        if not all(domains):
+            continue
+
+        for combo in itertools.product(*domains):
+            if len(set(combo)) != len(combo):
+                continue
+            binding = {vid: combo[i] for i, vid in enumerate(var_ids)}
+
+            # pres: each rel pattern grounded with binding, plus
+            # property constraints on each Var.
+            pres: set = set()
+            ok = True
+            for rp, arg_vids in zip(rel_patterns, rel_arg_vids):
+                args = []
+                for av in arg_vids:
+                    eid = binding.get(av)
+                    if eid is None:
+                        ok = False
+                        break
+                    args.append(eid)
+                if not ok:
+                    break
+                pres.add(("rel", rp.relation, tuple(args)))
+            if not ok:
+                continue
+            # Property constraints from each Var → pres.
+            for vid in var_ids:
+                _, _, props = var_constraints[vid]
+                eid = binding[vid]
+                for slot, val in props:
+                    pres.add(("prop", eid, slot, val))
+
+            # effs: from impl_specs.
+            effs: set = set()
+            for spec in impl_specs:
+                if spec[0] == "prop":
+                    _, e_var, slot, val = spec
+                    eid = binding.get(id(e_var))
+                    if eid is None:
+                        continue
+                    effs.add(("prop", eid, slot, val))
+                else:
+                    _, name, arg_vars = spec
+                    args = []
+                    ok = True
+                    for a in arg_vars:
+                        if isinstance(a, Var):
+                            eid = binding.get(id(a))
+                            if eid is None:
+                                ok = False
+                                break
+                            args.append(eid)
+                        else:
+                            args.append(a)
+                    if not ok:
+                        continue
+                    effs.add(("rel", name, tuple(args)))
+
+            if effs:
+                out.append((None, binding, pres, effs))
+    return out
+
+
+def _action_delta(action, roles, rule_effects, lex):
+    """Compute (adds, dels) fact deltas for firing this grounded
+    action. Used by the fact-set incremental simulator. Far cheaper
+    than `_simulate_from_scratch` (no Trace fork, no engine rerun)
+    at the cost of skipping cascades and entity creation. For our
+    common chains (preni, iri, eniri, sekigi, malŝalti) the action+
+    rule effects are sufficient.
+
+    adds:
+      - action.effects (property writes on the target role)
+      - rule effects: AddRelation, TransferN-as-havi
+    dels:
+      - rule effects: RemoveRelation
+      - For scalar slot writes, the previous value on that slot is
+        implicitly displaced (caller treats slot=value as scalar).
+    """
+    adds: set = set()
+    dels: set = set()
+    # Schema-level effects (property writes).
+    for eff in action.effects:
+        eid = roles.get(eff.target_role)
+        if eid is None:
+            continue
+        adds.add(("prop", eid, eff.property, eff.value))
+    # Rule-level effects.
+    entry = rule_effects.get(action.lemma)
+    if entry is not None:
+        for relation, role_arg_names in entry["adds"]:
+            eids = tuple(roles.get(r) for r in role_arg_names)
+            if any(e is None for e in eids):
+                continue
+            adds.add(("rel", relation, eids))
+        for relation, role_arg_names in entry["dels"]:
+            eids = tuple(roles.get(r) for r in role_arg_names)
+            if any(e is None for e in eids):
+                continue
+            dels.add(("rel", relation, eids))
+    return adds, dels
+
+
+def _apply_delta(facts: frozenset, adds: set, dels: set,
+                  derivation_pseudos: list, slot_vocab: dict) -> frozenset:
+    """Apply an event's delta to a fact set and re-derive.
+
+    Scalar slot semantics: when an `adds` fact is `("prop", eid,
+    slot, value)` for a scalar slot, all OTHER ("prop", eid, slot,
+    *) facts are removed (only one value per scalar slot per entity
+    at a time). Non-scalar slots accumulate values.
+
+    Re-derivation: after the base delta is applied, run grounded
+    derivation pseudo-actions to fixed point. Each derivation adds
+    its `effs` if its `pres` are all in the fact set.
+    """
+    new_facts = set(facts)
+    new_facts -= dels
+    # Scalar slot displacement: replace other values on same slot.
+    for f in adds:
+        if f[0] == "prop":
+            _, eid, slot, _val = f
+            if slot_vocab.get(slot, {}).get("scalar", True):
+                new_facts = {
+                    g for g in new_facts
+                    if not (g[0] == "prop"
+                            and g[1] == eid and g[2] == slot)
+                }
+    new_facts |= adds
+    # Re-derive to fixed point (cheap for our small derivation set).
+    # Scalar-slot policy: a derivation's `("prop", eid, slot, val)`
+    # effect is suppressed if the entity already has any value for
+    # that scalar slot — explicit state (from trace + actions) shadows
+    # default derivations. Without this, multiple posture/temperature/
+    # etc. derivations all fire freely and the goal check
+    # `goal_fact in facts` succeeds trivially.
+    changed = True
+    iters = 0
+    while changed and iters < 100:
+        iters += 1
+        changed = False
+        for _info, _binding, pres, effs in derivation_pseudos:
+            if not all(p in new_facts for p in pres):
+                continue
+            for e in effs:
+                if e in new_facts:
+                    continue
+                if e[0] == "prop":
+                    _, eid, slot, _ = e
+                    if slot_vocab.get(slot, {}).get("scalar", True):
+                        # Already populated → derivation shadowed.
+                        if any(g[0] == "prop" and g[1] == eid
+                               and g[2] == slot for g in new_facts):
+                            continue
+                new_facts.add(e)
+                changed = True
+    return frozenset(new_facts)
+
+
+def _build_rule_effects_index(rules) -> dict:
+    """Index rules by their trigger verb, collecting AddRelation and
+    RemoveRelation effects with role-arg-name mappings. Maps
+    verb_lemma → {'adds': [(relation, (role_name, ...))], 'dels':
+    [...]}. Both lists are used: 'adds' for the relaxed graph
+    (delete-relaxation drops dels there), 'dels' for the
+    fact-set incremental simulator (which DOES apply dels)."""
+    from ..dsl.effects import AddRelation, RemoveRelation, TransferN
+    from ..dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern, EventPattern, Var,
+    )
+    out: dict = {}
+
+    def _find_event_pattern(p):
+        if isinstance(p, EventPattern):
+            return p
+        if isinstance(p, AndPattern):
+            return (_find_event_pattern(p.left)
+                    or _find_event_pattern(p.right))
+        return None
+
+    def _bind_var_of(p):
+        """Extract the Var bound by a role pattern.
+        BindPattern.target carries the Var. AndPattern wraps a
+        BindPattern alongside an EntityPattern (e.g.
+        entity(type="animate") & bind(A))."""
+        if isinstance(p, BindPattern):
+            return p.target
+        if isinstance(p, AndPattern):
+            return _bind_var_of(p.left) or _bind_var_of(p.right)
+        if isinstance(p, Var):
+            return p
+        return None
+
+    for rule in rules:
+        ep = _find_event_pattern(rule.when)
+        if ep is None:
+            continue
+        verb = ep.action
+        var_to_role: dict = {}
+        for role_name, role_pat in ep.role_patterns.items():
+            v = _bind_var_of(role_pat)
+            if isinstance(v, Var):
+                var_to_role[id(v)] = role_name
+        # Walk rule.then for AddRelation / RemoveRelation / TransferN.
+        effects = (rule.then if isinstance(rule.then, (list, tuple))
+                   else [rule.then])
+        entry = out.setdefault(verb, {"adds": [], "dels": []})
+        for eff in effects:
+            if isinstance(eff, AddRelation):
+                role_args = []
+                ok = True
+                for arg in eff.args:
+                    role_name = var_to_role.get(id(arg))
+                    if role_name is None:
+                        ok = False
+                        break
+                    role_args.append(role_name)
+                if ok:
+                    entry["adds"].append(
+                        (eff.relation, tuple(role_args)))
+            elif isinstance(eff, RemoveRelation):
+                role_args = []
+                ok = True
+                for arg in eff.args:
+                    role_name = var_to_role.get(id(arg))
+                    if role_name is None:
+                        ok = False
+                        break
+                    role_args.append(role_name)
+                if ok:
+                    entry["dels"].append(
+                        (eff.relation, tuple(role_args)))
+            elif isinstance(eff, TransferN):
+                src_role = var_to_role.get(id(eff.source))
+                tgt_role = var_to_role.get(id(eff.target))
+                if src_role and tgt_role:
+                    entry["adds"].append(
+                        ("havi", (tgt_role, src_role)))
+    return out
+
+
+def _state_facts(trace, derived) -> set:
+    """Snapshot of state facts (property + relation) for the
+    relaxed graph's layer 0."""
+    facts: set = set()
+    for eid, ent in trace.entities.items():
+        for slot, values in ent.properties.items():
+            for v in values:
+                facts.add(("prop", eid, slot, v))
+    for r in trace.relations:
+        facts.add(("rel", r.relation, tuple(r.args)))
+    # Derived state — relations + properties.
+    if derived is not None:
+        for rel_tuple in derived.relations:
+            # `compute_derived_state` returns tuples (relation, args).
+            facts.add(("rel", rel_tuple[0], tuple(rel_tuple[1])))
+        for (eid, slot), val in (
+                getattr(derived, "properties", {}) or {}).items():
+            if isinstance(val, list):
+                for v in val:
+                    facts.add(("prop", eid, slot, v))
+            else:
+                facts.add(("prop", eid, slot, val))
+    return facts
+
+
+def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
+    """All (action, roles, pres, effs) for actions whose roles can
+    be bound to current entities. Pure enumeration — preconditions
+    not checked here (the relaxed graph layer decides applicability).
+    Skips bindings where the same entity fills two roles, matches the
+    behavior of `_applicable_actions`. `rule_effects` is the
+    rule-effect index built by `_build_rule_effects_index`."""
+    out = []
+    for action in lex.actions.values():
+        if not action.roles:
+            continue
+        per_role: list[list[str]] = []
+        ok = True
+        for role_spec in action.roles:
+            cand = []
+            for eid, ent in trace.entities.items():
+                if not lex.types.is_subtype(
+                        ent.entity_type, role_spec.type):
+                    continue
+                cand.append(eid)
+            if not cand:
+                ok = False
+                break
+            per_role.append(cand)
+        if not ok:
+            continue
+        for combo in itertools.product(*per_role):
+            if len(set(combo)) != len(combo):
+                continue
+            roles = {r.name: e for r, e in zip(action.roles, combo)}
+            pres, effs = _ground_action_facts(
+                action, roles, lex, rule_effects)
+            if not effs:
+                continue  # No-effect actions don't add facts.
+            out.append((action, roles, pres, effs))
+    return out
+
+
+def _build_consumer_index(actions, derivations):
+    """Inverted index: fact → list of (base_cost, pres_set, effs_set,
+    pres_tuple) consumers that need this fact in their pres. Actions
+    have base_cost=1, derivations have base_cost=0. Used by the
+    worklist h_add relaxation so each fact addition only re-checks
+    the consumers that actually care about it, instead of iterating
+    all ~5000 grounded actions+derivations per layer.
+
+    Returns (fact_to_consumers, all_consumers) — the second is
+    needed for the initial pass over consumers with empty pres
+    (axioms / actions with no preconditions that fire from layer 0)."""
+    fact_to: dict[tuple, list] = {}
+    all_consumers: list = []
+    cid = 0
+    for _, _, pres, effs in actions:
+        consumer = (1, frozenset(pres), frozenset(effs), cid)
+        all_consumers.append(consumer)
+        for p in pres:
+            fact_to.setdefault(p, []).append(consumer)
+        if not pres:
+            # No-pre actions: fire at layer 0 (cost 1). Used by
+            # passive/cascade verbs with empty action.preconditions.
+            pass
+        cid += 1
+    for _, _, pres, effs in derivations:
+        consumer = (0, frozenset(pres), frozenset(effs), cid)
+        all_consumers.append(consumer)
+        for p in pres:
+            fact_to.setdefault(p, []).append(consumer)
+        cid += 1
+    return fact_to, all_consumers
+
+
+def _heuristic_and_helpful(
+    goal, trace, derived, lex, grounded_actions=None,
+    grounded_derivations=None, consumer_index=None,
+    facts: set | None = None,
+) -> tuple[int, set]:
+    """h_add over the relaxed planning graph using a worklist with
+    an inverted fact→consumers index. Also returns the "helpful
+    actions" set — verbs whose grounded effects appear on the
+    cheapest path back from the goal in the relaxed plan.
+
+    Initial: cost(initial_facts) = 0. For each consumer c (action or
+    derivation) whose pres are all known: tentative_cost = c.base +
+    sum(cost[p] for p in c.pres). For each effect e: if
+    tentative_cost < cost[e], update cost[e] and remember the
+    producer. Terminates when the worklist is empty.
+
+    Helpful action extraction: walk back from goal facts through
+    cheapest producers; collect the (verb, roles) pairs of action
+    producers (skipping derivation pseudo-actions). Forward search
+    only expands these — typically 3-8 out of ~80 applicable, so
+    the branching factor collapses to something tractable.
+
+    Returns (h, helpful_actions) — h is 0 if goal holds, INF if
+    unreached, else sum of costs over goal literals.
+    """
+    # If facts provided, skip trace-based goal check (used in
+    # fact-set search where there's no real Trace per state).
+    if facts is None:
+        if _goal_satisfied(goal, trace, derived, lex):
+            return 0, set()
+    else:
+        # Goal as fact-set check.
+        if goal[0] == "property":
+            _, eid, slot, value = goal
+            if ("prop", eid, slot, value) in facts:
+                return 0, set()
+        elif goal[0] == "relation":
+            _, relation, args = goal
+            if ("rel", relation, tuple(args)) in facts:
+                return 0, set()
+
+    rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
+    if rule_effects is None:
+        from ..dsl.rules import DEFAULT_DSL_RULES
+        rule_effects = _build_rule_effects_index(DEFAULT_DSL_RULES)
+        _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
+
+    actions = (grounded_actions if grounded_actions is not None
+                else _ground_all_actions(trace, lex, derived, rule_effects))
+    if grounded_derivations is not None:
+        derivation_pseudos = grounded_derivations
+    else:
+        from ..dsl.rules import RUNTIME_DERIVATIONS
+        derivation_pseudos = _ground_derivations(
+            RUNTIME_DERIVATIONS, trace, lex)
+    if consumer_index is None:
+        fact_to, all_consumers = _build_consumer_index(
+            actions, derivation_pseudos)
+    else:
+        fact_to, all_consumers = consumer_index
+
+    # Map consumer id (cid) → (verb_lemma or None, roles, pres, effs).
+    # Used to reconstruct the producer chain when extracting helpful
+    # actions. Derivations have verb_lemma=None.
+    cid_to_info: dict = {}
+    cid = 0
+    for action, roles, pres, effs in actions:
+        cid_to_info[cid] = (action.lemma, roles, pres, effs)
+        cid += 1
+    for _, _, pres, effs in derivation_pseudos:
+        cid_to_info[cid] = (None, None, pres, effs)
+        cid += 1
+
+    # Layer 0: state facts at cost 0. Either from a fact set
+    # (incremental sim) or extracted from the trace+derived.
+    if facts is not None:
+        cost: dict = {f: 0 for f in facts}
+    else:
+        cost: dict = {f: 0 for f in _state_facts(trace, derived)}
+    # producer[fact] = cid of the consumer that achieved cost[fact].
+    producer: dict = {}
+
+    from collections import deque
+    worklist = deque(cost.keys())
+
+    for base, pres, effs, cid_ in all_consumers:
+        if pres:
+            continue
+        for e in effs:
+            if e not in cost or base < cost[e]:
+                cost[e] = base
+                producer[e] = cid_
+                worklist.append(e)
+
+    iter_cap = 200_000
+    iters = 0
+    while worklist and iters < iter_cap:
+        iters += 1
+        f = worklist.popleft()
+        consumers = fact_to.get(f, ())
+        for base, pres, effs, cid_ in consumers:
+            ready = True
+            total_pre = 0
+            for p in pres:
+                if p not in cost:
+                    ready = False
+                    break
+                total_pre += cost[p]
+            if not ready:
+                continue
+            new_cost = base + total_pre
+            for e in effs:
+                if e not in cost or new_cost < cost[e]:
+                    cost[e] = new_cost
+                    producer[e] = cid_
+                    worklist.append(e)
+
+    if goal[0] == "property":
+        _, eid, slot, value = goal
+        goal_facts = [("prop", eid, slot, value)]
+    elif goal[0] == "relation":
+        _, relation, args = goal
+        goal_facts = [("rel", relation, tuple(args))]
+    else:
+        return _HEURISTIC_INF, set()
+
+    # Check goal reachability.
+    for g in goal_facts:
+        if cost.get(g, _HEURISTIC_INF) >= _HEURISTIC_INF:
+            return _HEURISTIC_INF, set()
+
+    # Two producer maps:
+    # - producers_cheapest: for h_FF count. One producer per fact
+    #   at cheapest cost. Drives heuristic value.
+    # - producers_all: for helpful-action set. All valid producers
+    #   so search can try alternative paths (eniri/iri when
+    #   relaxation prefers naĝi).
+    producers_cheapest: dict[tuple, list] = {}
+    producers_all: dict[tuple, list] = {}
+    for base, pres, effs, cid_ in all_consumers:
+        ready = True
+        total_pre = 0
+        for p in pres:
+            if p not in cost:
+                ready = False
+                break
+            total_pre += cost[p]
+        if not ready:
+            continue
+        c = base + total_pre
+        for e in effs:
+            if e not in cost:
+                continue
+            producers_all.setdefault(e, []).append(cid_)
+            if cost[e] == c:
+                producers_cheapest.setdefault(e, []).append(cid_)
+
+    # h_FF: walk back from goal through CHEAPEST producers,
+    # collecting unique action cids. h = |unique actions|.
+    relaxed_action_cids: set = set()
+    visited_cheapest: set = set()
+    stack = list(goal_facts)
+    while stack:
+        f = stack.pop()
+        if f in visited_cheapest:
+            continue
+        visited_cheapest.add(f)
+        for cid_ in producers_cheapest.get(f, ()):
+            info = cid_to_info.get(cid_)
+            if info is None:
+                continue
+            verb, _roles, pres, _effs = info
+            if verb is not None:
+                relaxed_action_cids.add(cid_)
+            for p in pres:
+                if p not in visited_cheapest:
+                    stack.append(p)
+            break  # one producer per fact for h_FF
+    h_ff = len(relaxed_action_cids)
+
+    # Helpful set: walk back through ALL producers, collect verbs.
+    # Larger set lets search try whichever is applicable.
+    helpful: set = set()
+    visited_all: set = set()
+    stack = list(goal_facts)
+    while stack:
+        f = stack.pop()
+        if f in visited_all:
+            continue
+        visited_all.add(f)
+        for cid_ in producers_all.get(f, ()):
+            info = cid_to_info.get(cid_)
+            if info is None:
+                continue
+            verb, roles, pres, _effs = info
+            if verb is not None:
+                helpful.add((verb, frozenset(roles.items())))
+            for p in pres:
+                if p not in visited_all:
+                    stack.append(p)
+
+    return h_ff, helpful
+
+
+def _heuristic(goal, trace, derived, lex, grounded_actions=None,
+                grounded_derivations=None, consumer_index=None) -> int:
+    """Backward-compatible: just the h value, without helpful set."""
+    h, _ = _heuristic_and_helpful(
+        goal, trace, derived, lex, grounded_actions,
+        grounded_derivations, consumer_index)
+    return h
+
+
+# ---------- search ----------
+
+def _trace_signature(trace: Trace) -> tuple:
+    """Hashable fingerprint of a trace for visited-state dedup. Uses
+    the sorted (eid, frozenset(items)) tuples for entities + a sorted
+    tuple of (relation, args) for relations + the event id list."""
+    ents = tuple(sorted(
+        (eid, tuple(sorted(
+            (k, tuple(v) if isinstance(v, list) else v)
+            for k, v in ent.properties.items())))
+        for eid, ent in trace.entities.items()))
+    rels = tuple(sorted(
+        (r.relation, tuple(r.args)) for r in trace.relations))
+    evs = tuple(ev.id for ev in trace.events)
+    return (ents, rels, evs)
+
+
+def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
+    """For each action whose effects could produce `goal`, ensure all
+    role types have at least one matching entity. Missing roles are
+    filled by calling `resolver`. Mirrors what the backward planner's
+    `_find_role_filler` does lazily during search."""
+    if goal[0] != "property":
+        return
+    _, target_eid, slot, value = goal
+    target_ent = trace.entities.get(target_eid)
+    if target_ent is None:
+        return
+    derived_now = _cached_compute_derived_state(trace, derivations, lex)
+    for action in lex.actions.values():
+        # Does this action's effect spec match the goal?
+        produces = False
+        target_role_name = None
+        for eff in action.effects:
+            if eff.property == slot and eff.value == value:
+                produces = True
+                target_role_name = eff.target_role
+                break
+        if not produces:
+            continue
+        # Check target role's type matches our target entity.
+        target_role_spec = next(
+            (r for r in action.roles if r.name == target_role_name), None)
+        if target_role_spec is None:
+            continue
+        if not lex.types.is_subtype(
+                target_ent.entity_type, target_role_spec.type):
+            continue
+        # For each non-target role, check whether an in-trace entity
+        # already fills it; if not, ask the resolver to spawn one.
+        exclude = {target_eid}
+        for role_spec in action.roles:
+            if role_spec.name == target_role_name:
+                continue
+            filler = _find_role_filler(
+                role_spec, trace, lex, derived=derived_now,
+                exclude=exclude, action=action,
+                role_name=role_spec.name)
+            if filler is None:
+                # Call resolver directly with the same signature
+                # _find_role_filler would have used (it falls back
+                # to resolver only if context var is set; we don't
+                # rely on that here — pass resolver explicitly).
+                filler = resolver(role_spec, trace, lex, exclude,
+                                  action=action, role_name=role_spec.name)
+            if filler is not None:
+                exclude.add(filler)
+
+
+def plan_for_goal(
+    drive, initial_trace: Trace, lex, rules, derivations,
+    *, max_states: int = 200, max_plan_length: int = 12,
+    entity_resolver=None,
+) -> Optional[list]:
+    """Greedy best-first forward search. Returns a plan (list of
+    (verb, roles) steps) or None.
+
+    `max_states` bounds total state expansions (latency cap).
+    `max_plan_length` bounds plan depth (prevents infinite chains
+    when goal is unreachable but heuristic plateaus).
+    `entity_resolver`: optional callable matching the backward
+    planner's `_ENTITY_RESOLVER` signature. When provided, pre-spawns
+    missing role-fillers for goal-producing actions so the
+    forward search sees the same scene as backward search would."""
+    goal = _drive_to_goal(drive, initial_trace, lex)
+    if goal is None:
+        return None
+
+    initial_derived = _cached_compute_derived_state(
+        initial_trace, derivations, lex)
+    if _goal_satisfied(goal, initial_trace, initial_derived, lex):
+        return []
+
+    if entity_resolver is not None:
+        _prespawn_for_goal(
+            goal, initial_trace, lex, rules, derivations, entity_resolver)
+        # Re-derive after spawns may have added entities.
+        initial_derived = _cached_compute_derived_state(
+            initial_trace, derivations, lex)
+
+    # Ground actions once for the initial entity set; reuse across
+    # all heuristic + applicability calls. Event firing rarely
+    # creates new entities in our domain, so the grounding stays
+    # valid for the search. Invalidation: not needed for the POC.
+    rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
+    if rule_effects is None:
+        rule_effects = _build_rule_effects_index(rules)
+        _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
+    grounded = _ground_all_actions(
+        initial_trace, lex, initial_derived, rule_effects)
+    grounded_derivs = _ground_derivations(
+        derivations, initial_trace, lex)
+
+    # Goal-aware filter: shrink the consumer set to only those that
+    # could reach the goal in the relaxed graph. Walk back from the
+    # goal facts collecting any consumer whose effects intersect
+    # with the reachable-fact frontier; recurse via their pres.
+    # Reduces 1300+5000 → typically a few hundred consumers,
+    # cutting per-heuristic-call cost ~5-10×.
+    if goal[0] == "property":
+        _, eid, slot, value = goal
+        seed_goal = {("prop", eid, slot, value)}
+    elif goal[0] == "relation":
+        _, relation, args = goal
+        seed_goal = {("rel", relation, tuple(args))}
+    else:
+        seed_goal = set()
+
+    # Build effect→consumers index for the back-walk.
+    effs_to: dict = {}
+    for i, (_, _, _pres, effs) in enumerate(grounded):
+        for e in effs:
+            effs_to.setdefault(e, []).append(("action", i))
+    for i, (_, _, _pres, effs) in enumerate(grounded_derivs):
+        for e in effs:
+            effs_to.setdefault(e, []).append(("deriv", i))
+
+    relevant_act: set = set()
+    relevant_deriv: set = set()
+    visited_facts: set = set()
+    stack = list(seed_goal)
+    walk_iter = 0
+    while stack and walk_iter < 50_000:
+        walk_iter += 1
+        f = stack.pop()
+        if f in visited_facts:
+            continue
+        visited_facts.add(f)
+        for kind, i in effs_to.get(f, ()):
+            if kind == "action":
+                if i in relevant_act:
+                    continue
+                relevant_act.add(i)
+                _, _, pres, _ = grounded[i]
+            else:
+                if i in relevant_deriv:
+                    continue
+                relevant_deriv.add(i)
+                _, _, pres, _ = grounded_derivs[i]
+            for p in pres:
+                if p not in visited_facts:
+                    stack.append(p)
+
+    grounded = [grounded[i] for i in sorted(relevant_act)]
+    grounded_derivs = [grounded_derivs[i] for i in sorted(relevant_deriv)]
+    consumer_index = _build_consumer_index(grounded, grounded_derivs)
+
+    # Slot scalar info for the fact-set incremental simulator —
+    # needed to correctly displace prior values on scalar slots.
+    slot_vocab: dict = {
+        name: {"scalar": getattr(s, "scalar", True)}
+        for name, s in lex.slots.items()
+    }
+
+    def heuristic_and_helpful(facts):
+        return _heuristic_and_helpful(
+            goal, None, None, lex,
+            grounded_actions=grounded,
+            grounded_derivations=grounded_derivs,
+            consumer_index=consumer_index, facts=facts)
+
+    # Goal as fact for direct fact-set check.
+    if goal[0] == "property":
+        _, eid, slot, value = goal
+        goal_fact = ("prop", eid, slot, value)
+    elif goal[0] == "relation":
+        _, relation, args = goal
+        goal_fact = ("rel", relation, tuple(args))
+    else:
+        return None
+
+    # Fact-set incremental search. State is frozenset(facts). Each
+    # successor: check pres ⊆ state, compute delta via
+    # `_action_delta`, apply via `_apply_delta` (which re-derives).
+    # Far faster than `_simulate_from_scratch` per successor (~1ms
+    # vs ~9ms) at the cost of skipping cascades / entity creation.
+    H_WEIGHT = 2
+
+    initial_facts = frozenset(
+        _state_facts(initial_trace, initial_derived))
+    # Apply derivations to layer-0 to get full derived layer.
+    initial_facts = _apply_delta(
+        initial_facts, set(), set(),
+        grounded_derivs, slot_vocab)
+
+    if goal_fact in initial_facts:
+        return []
+
+    initial_h, initial_helpful = heuristic_and_helpful(initial_facts)
+    if initial_h >= _HEURISTIC_INF:
+        return None
+
+    import heapq
+    open_list: list = []
+    # (f, helpful_priority, tiebreak, g, h, plan, facts, helpful)
+    heapq.heappush(open_list, (
+        H_WEIGHT * initial_h, 0, 0, 0, initial_h,
+        [], initial_facts, initial_helpful))
+    visited: dict = {initial_facts: 0}
+    expansions = 0
+    tiebreak = 1
+
+    while open_list and expansions < max_states:
+        (f, _hp, _tie, g, h_cur, plan, facts, helpful) = (
+            heapq.heappop(open_list))
+        if h_cur >= _HEURISTIC_INF:
+            continue
+        if goal_fact in facts:
+            return plan
+        expansions += 1
+        if g >= max_plan_length:
+            continue
+
+        # Iterate grounded actions: pres-check is just subset on
+        # frozenset (O(|pres|), ~5 facts per action).
+        for action, roles, pres, _effs in grounded:
+            if not all(p in facts for p in pres):
+                continue
+            adds, dels = _action_delta(action, roles, rule_effects, lex)
+            if not adds and not dels:
+                continue
+            new_facts = _apply_delta(
+                facts, adds, dels, grounded_derivs, slot_vocab)
+            if new_facts == facts:
+                continue  # no-op event
+            new_g = g + 1
+            prev_g = visited.get(new_facts)
+            if prev_g is not None and prev_g <= new_g:
+                continue
+            visited[new_facts] = new_g
+            if goal_fact in new_facts:
+                return plan + [(action.lemma, roles)]
+            new_h, new_helpful = heuristic_and_helpful(new_facts)
+            if new_h >= _HEURISTIC_INF:
+                continue
+            key = (action.lemma, frozenset(roles.items()))
+            is_helpful = key in helpful
+            heapq.heappush(open_list, (
+                new_g + H_WEIGHT * new_h,
+                0 if is_helpful else 1, tiebreak,
+                new_g, new_h, plan + [(action.lemma, roles)],
+                new_facts, new_helpful))
+            tiebreak += 1
+    return None
+
+
+def _drive_to_goal(drive, trace, lex):
+    """Translate the dispatcher's drive shape into a forward-planner
+    goal. Currently supports entity_slot, self_slot, location,
+    possession, wearing. Returns the goal tuple or None for
+    unsupported shapes."""
+    kind = drive[0]
+    if kind == "entity_slot":
+        _, _actor, target, slot, value = drive
+        return ("property", target, slot, value)
+    if kind == "self_slot":
+        _, actor, slot, value = drive
+        return ("property", actor, slot, value)
+    if kind == "location":
+        _, actor, loc = drive
+        return ("relation", "en", (actor, loc))
+    if kind == "possession":
+        _, actor, item = drive
+        return ("relation", "havi", (actor, item))
+    if kind == "wearing":
+        _, actor, garment = drive
+        return ("relation", "vestita", (actor, garment))
+    return None

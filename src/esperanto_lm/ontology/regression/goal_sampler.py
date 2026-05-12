@@ -74,81 +74,87 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 if e.property == slot and e.value == target_value),
                action.effects[0])
 
-    # Pick an agent concept. The actor is the one role we pre-bind:
-    # everything else flows from the planner asking the spawner.
+    # Pick an actor concept. Normally that's the "agent" role; for
+    # intransitive verbs (fali, bruli, satiĝi, morti, pluvi, …) there
+    # is no agent and the action's sole role IS the subject of the
+    # sentence — "la folio falas" / "la virino satiĝas". Fall back to
+    # that role.
     agent_role_spec = next(
         (r for r in action.roles if r.name == "agent"), None)
+    if agent_role_spec is None and len(action.roles) == 1:
+        agent_role_spec = action.roles[0]
     if agent_role_spec is None:
         return None
+    actor_role_name = agent_role_spec.name
     agent_candidates = _concepts_matching_role(lex, agent_role_spec)
     if not agent_candidates:
         return None
     agent_concept = rng.choice(agent_candidates)
 
-    # Scene location.
+    # Scene location. Retry with different locations on placement
+    # failure — actor or target may be incompatible with the
+    # randomly-picked scene's containment affordances.
     locations = [l for l, c in lex.concepts.items()
                  if lex.types.is_subtype(c.entity_type, "location")
                  and not getattr(c, "is_category_stub", False)]
     if not locations:
         return None
-    scene_lemma = rng.choice(locations)
+    tried: set = set()
+    for _ in range(5):
+        remaining = [l for l in locations if l not in tried]
+        if not remaining:
+            break
+        scene_lemma = rng.choice(remaining)
+        tried.add(scene_lemma)
 
-    # Minimal trace: mondo + scene + actor. No theme, no instrument,
-    # no away location — the spawner builds those as the planner
-    # discovers it needs them.
-    t = Trace()
-    _ensure_world(t, lex, rng)
-    try:
-        _add_entity_randomized(t, scene_lemma, lex, rng, entity_id=scene_lemma)
-    except (KeyError, ValueError):
-        return None
-    scene_id = scene_lemma
+        # Minimal trace: mondo + scene + actor. No theme, no instrument,
+        # no away location — the spawner builds those as the planner
+        # discovers it needs them.
+        t = Trace()
+        _ensure_world(t, lex, rng)
+        try:
+            _add_entity_randomized(t, scene_lemma, lex, rng,
+                                    entity_id=scene_lemma)
+        except (KeyError, ValueError):
+            continue
+        scene_id = scene_lemma
 
-    actor_eid = agent_concept
-    suffix = 0
-    while actor_eid in t.entities:
-        suffix += 1
-        actor_eid = f"{agent_concept}_actor{suffix if suffix > 1 else ''}"
-    try:
-        _add_entity_randomized(t, agent_concept, lex, rng, entity_id=actor_eid)
-        t.assert_relation("en", (actor_eid, scene_id), lex)
-    except (KeyError, ValueError):
-        return None
+        actor_eid = agent_concept
+        suffix = 0
+        while actor_eid in t.entities:
+            suffix += 1
+            actor_eid = (
+                f"{agent_concept}_actor{suffix if suffix > 1 else ''}")
+        try:
+            _add_entity_randomized(t, agent_concept, lex, rng,
+                                    entity_id=actor_eid)
+            t.assert_relation("en", (actor_eid, scene_id), lex)
+        except (KeyError, ValueError):
+            continue
 
-    # Drive: the planner needs a target eid. For reflexive verbs
-    # (sidi, stari, kuŝi, dormi) the effect's target IS the agent —
-    # there's no separate theme to spawn, the actor is BOTH the
-    # subject and the thing changing state. For non-reflexive verbs
-    # (ŝlosi/lavi/varmigi/...) we invoke the spawner to materialize
-    # a target with the same verb-aware setup (non-target initial
-    # state, if_property gates) regress_for_verb does inline.
-    if eff.target_role == "agent":
-        target_eid = actor_eid
-        # Mirror the spawner's "non-target initial state": flip the
-        # actor's effect slot to a non-eff.value vocabulary entry so
-        # the verb has work to do. The actor concept doesn't declare
-        # the slot (`posture` on `persono` etc.), but set_property
-        # writes to the instance state regardless and the runtime
-        # engine reads it back via property_at.
-        slot_def = lex.slots.get(eff.property)
-        if slot_def is not None and slot_def.vocabulary:
-            non_target = [v for v in slot_def.vocabulary
-                          if v != eff.value]
-            if non_target:
-                t.entities[actor_eid].set_property(
-                    eff.property, rng.choice(non_target))
-    else:
-        from .spawner import make_spawner
-        setup_spawner = make_spawner(scene_id, lex, rng, budget=1)
-        target_role_spec = next(
-            (r for r in action.roles if r.name == eff.target_role), None)
-        if target_role_spec is None:
-            return None
-        target_eid = setup_spawner(
-            target_role_spec, t, lex, set(t.entities.keys()),
-            action=action, role_name=eff.target_role)
-        if target_eid is None:
-            return None
+        if eff.target_role == actor_role_name:
+            target_eid = actor_eid
+            slot_def = lex.slots.get(eff.property)
+            if slot_def is not None and slot_def.vocabulary:
+                non_target = [v for v in slot_def.vocabulary
+                              if v != eff.value]
+                if non_target:
+                    t.entities[actor_eid].set_property(
+                        eff.property, rng.choice(non_target))
+        else:
+            from .spawner import make_spawner
+            setup_spawner = make_spawner(scene_id, lex, rng, budget=1)
+            target_role_spec = next(
+                (r for r in action.roles
+                 if r.name == eff.target_role), None)
+            if target_role_spec is None:
+                return None  # schema issue, not placement
+            target_eid = setup_spawner(
+                target_role_spec, t, lex, set(t.entities.keys()),
+                action=action, role_name=eff.target_role)
+            if target_eid is None:
+                continue  # try another scene location
 
-    drive = ("entity_slot", actor_eid, target_eid, slot, target_value)
-    return t, scene_id, drive
+        drive = ("entity_slot", actor_eid, target_eid, slot, target_value)
+        return t, scene_id, drive
+    return None
