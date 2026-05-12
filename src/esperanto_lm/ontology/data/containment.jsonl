@@ -108,3 +108,26 @@
 {"container": "banĉambro", "contained": "tuko", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lavilo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "brosilo", "relation": "en"}
+{"container": "biblioteko", "contained": "librobreto", "relation": "en"}
+{"container": "biblioteko", "contained": "skribotablo", "relation": "en"}
+{"container": "biblioteko", "contained": "libro", "relation": "en"}
+{"container": "biblioteko", "contained": "kajero", "relation": "en"}
+{"container": "biblioteko", "contained": "vortaro", "relation": "en"}
+{"container": "biblioteko", "contained": "enciklopedio", "relation": "en"}
+{"container": "biblioteko", "contained": "mapo", "relation": "en"}
+{"container": "librobreto", "contained": "libro", "relation": "sur"}
+{"container": "librobreto", "contained": "vortaro", "relation": "sur"}
+{"container": "librobreto", "contained": "enciklopedio", "relation": "sur"}
+{"container": "librobreto", "contained": "kajero", "relation": "sur"}
+{"container": "librobreto", "contained": "ĵurnalo", "relation": "sur"}
+{"container": "librobreto", "contained": "revuo", "relation": "sur"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "kajero", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "vortaro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "mapo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "enciklopedio", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "markilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "gumo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "inko", "relation": "en"}
+{"container_pattern": {"category": "surfaco"}, "contained": "kajero", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "markilo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "gumo", "relation": "sur"}
