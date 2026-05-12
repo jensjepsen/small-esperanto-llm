@@ -41,23 +41,14 @@ _MISS = object()  # property_at cache sentinel — None is a valid stored value
 # Keyed by id(lex). Resolves once per lexicon — the index is the same
 # data the sampler uses (see `containment.resolve_containment`), so
 # this just deduplicates work between scene placement and assertion
-# validation. Set ESPLLM_CONTAINMENT_VALIDATION=0 to disable the
-# check (useful for synthetic test fixtures that don't populate
-# containment.jsonl for their ad-hoc concepts).
-import os as _os
+# validation.
 _CONTAINMENT_IDX_CACHE: dict[int, dict] = {}
-# Three modes, set via ESPLLM_CONTAINMENT_VALIDATION:
-#   "off"  — no check (legacy behavior).
-#   "warn" — log to _CONTAINMENT_VIOLATIONS list, allow assertion.
-#   "raise" — reject the assertion (strict; hardest mode).
-# Default is "warn" so the unification audit can surface gaps without
-# breaking existing sampler paths. Flip to "raise" once containment.jsonl
-# is comprehensive enough.
-_CONTAINMENT_VALIDATE = _os.environ.get(
-    "ESPLLM_CONTAINMENT_VALIDATION", "warn").lower()
-# Collected violations in warn mode — callers (audit scripts, tests)
-# can read this to see what's missing. Reset by tooling between runs.
-_CONTAINMENT_VIOLATIONS: list[tuple[str, str, str]] = []
+# Relations that have at least one rule in containment.jsonl. Computed
+# from the lexicon's facts so validate_relation knows which relations
+# to consult containment rules for — no hardcoded "en"/"sur" names.
+# A new containment-validated relation (e.g. a future `pendi`) joins
+# this set automatically by virtue of having rules added.
+_CONTAINMENT_RELS_CACHE: dict[int, frozenset[str]] = {}
 
 
 def _containment_index_for(lex):
@@ -67,6 +58,18 @@ def _containment_index_for(lex):
         from .containment import resolve_containment
         cached = resolve_containment(lex)
         _CONTAINMENT_IDX_CACHE[key] = cached
+    return cached
+
+
+def _containment_validated_relations(lex) -> frozenset[str]:
+    """Set of relation names that have rules in containment.jsonl.
+    `validate_relation` consults containment rules iff the relation is
+    in this set — discovered from the data, not hardcoded."""
+    key = id(lex)
+    cached = _CONTAINMENT_RELS_CACHE.get(key)
+    if cached is None:
+        cached = frozenset(f.relation for f in lex.containment)
+        _CONTAINMENT_RELS_CACHE[key] = cached
     return cached
 
 
@@ -299,17 +302,18 @@ class Trace:
     # ---------- relation helpers ----------
     def validate_relation(
         self, name: str, args: tuple[str, ...], lexicon: Lexicon,
-        *, strict_containment: bool = False,
     ) -> Optional[str]:
         """Run every check `assert_relation` would do; return None when
         the assertion is permissible, or a short reason string when it
         isn't. No mutation, no exceptions for predictable rejections.
         Raises only on programming errors (unknown relation/entity).
 
-        `strict_containment=True` ignores the global validation mode and
-        always rejects containment violations — for callers (seeders,
-        planners) that want a principled answer regardless of whether
-        the runtime is in `warn` or `raise` mode."""
+        The full check set is unconditional — containment.jsonl rules
+        are always consulted. Single source of truth: the planner, the
+        seeder, and assert_relation all reach the same verdict via
+        this function (or its boolean wrapper `is_relation_permitted`).
+        Anything that wants to bypass containment should not be using
+        `en`/`sur` at all."""
         rel = lexicon.relations.get(name)
         if rel is None:
             raise KeyError(f"unknown relation {name!r}")
@@ -346,12 +350,10 @@ class Trace:
                             f"part of another entity, can't appear here")
         # Containment registry: source of truth for what can plausibly
         # be in/on what. Two-tier check (no required violation AND
-        # afforded by at least one entry). `strict_containment` bypasses
-        # the global warn/off mode for callers that want a principled
-        # answer regardless of runtime configuration.
-        check_containment = (
-            strict_containment or _CONTAINMENT_VALIDATE != "off")
-        if check_containment and name in ("en", "sur") and len(args) == 2:
+        # afforded by at least one entry). The set of relations this
+        # applies to is data-driven — any relation with rules in
+        # containment.jsonl is validated here, no hardcoded names.
+        if name in _containment_validated_relations(lexicon):
             from .containment import (
                 containment_relations_for, required_fact_violations,
             )
@@ -382,35 +384,21 @@ class Trace:
 
     def is_relation_permitted(
         self, name: str, args: tuple[str, ...], lexicon: Lexicon,
-        *, strict_containment: bool = True,
     ) -> bool:
-        """Bool view of `validate_relation`. Defaults to strict
-        containment so callers get the principled answer ("would this
-        assertion violate any declared rule?") regardless of whether
-        the runtime is configured to warn or raise on violations."""
-        return self.validate_relation(
-            name, args, lexicon,
-            strict_containment=strict_containment) is None
+        """Bool view of `validate_relation`. Single principled answer
+        — see `validate_relation` for the unified semantics."""
+        return self.validate_relation(name, args, lexicon) is None
 
     def assert_relation(
         self, name: str, args: tuple[str, ...], lexicon: Lexicon,
     ) -> RelationAssertion:
-        # Hard checks (arity/type/excludes/parts) raise. Containment
-        # check honors the runtime mode: "raise" hard-rejects, "warn"
-        # logs to `_CONTAINMENT_VIOLATIONS` for audit, "off" skips.
+        # All validity checks raise on failure — single principled
+        # answer with no mode-dependent dispatch. Callers that want to
+        # detect-without-raising consult validate_relation or
+        # is_relation_permitted first.
         reason = self.validate_relation(name, args, lexicon)
         if reason is not None:
-            is_containment = reason.startswith("containment ")
-            if not is_containment:
-                raise ValueError(reason)
-            if _CONTAINMENT_VALIDATE == "raise":
-                raise ValueError(reason)
-            # warn mode: collect for audit, then continue.
-            if len(args) == 2:
-                contained_lemma = self.entities[args[0]].concept_lemma
-                container_lemma = self.entities[args[1]].concept_lemma
-                _CONTAINMENT_VIOLATIONS.append(
-                    (contained_lemma, name, container_lemma))
+            raise ValueError(reason)
         ra = RelationAssertion(relation=name, args=args)
         self.relations.append(ra)
         # Maintain the parts index for the arg_not_part check above.

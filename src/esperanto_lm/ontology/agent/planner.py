@@ -198,7 +198,8 @@ def _entity_satisfies_pattern(entity, pattern, lex, trace=None, derived=None) ->
     return True
 
 
-def _find_role_filler(role_spec, trace, lex, derived=None, exclude=None):
+def _find_role_filler(role_spec, trace, lex, derived=None, exclude=None,
+                      *, action=None, role_name=None):
     """Find a trace entity matching the verb's RoleSpec (type +
     property constraints). Reads current+derived state with
     set-membership semantics so an entity with locomotion=[walk,swim]
@@ -206,9 +207,12 @@ def _find_role_filler(role_spec, trace, lex, derived=None, exclude=None):
 
     When no in-trace entity matches AND the `_ENTITY_RESOLVER`
     ContextVar holds a callable, the planner asks the resolver to
-    spawn one. Resolver returns a freshly-added eid or None. This is
-    the spawn-on-demand hook the seeder uses to materialize entities
-    the planner discovers it needs."""
+    spawn one. The resolver receives `(role_spec, trace, lex,
+    exclude, action, role_name)` — the `action` and `role_name` give
+    the resolver enough context to do verb-aware setup (gate-biased
+    concept pick, non-target initial state for effect targets,
+    if_property gate forcing). Resolver returns a freshly-added eid
+    or None."""
     exclude = exclude or set()
     for eid, ent in trace.entities.items():
         if eid in exclude:
@@ -229,7 +233,8 @@ def _find_role_filler(role_spec, trace, lex, derived=None, exclude=None):
         return eid
     resolver = _ENTITY_RESOLVER.get()
     if resolver is not None:
-        return resolver(role_spec, trace, lex, exclude)
+        return resolver(role_spec, trace, lex, exclude,
+                        action=action, role_name=role_name)
     return None
 
 
@@ -278,7 +283,9 @@ def plan_action(agent_id, trace, lex, rules):
                 if role_spec.name in roles:
                     continue
                 eid = _find_role_filler(
-                    role_spec, trace, lex, exclude=set(roles.values()))
+                    role_spec, trace, lex,
+                    exclude=set(roles.values()),
+                    action=action, role_name=role_spec.name)
                 if eid is None:
                     ok = False
                     break
@@ -386,27 +393,17 @@ def _has_relation(relation, args, trace, derived=None, lex=None) -> bool:
 
 
 def _relation_args_admissible(relation, concrete, trace, lex) -> bool:
-    """True if `relation(*concrete)` would satisfy the relation
-    schema's arg_types and arg_excludes — i.e., asserting it would
-    not be rejected by `Trace.assert_relation` at runtime. Used to
-    pre-skip derivation candidates whose subgoaled patterns would be
-    schema-impossible: prevents the planner from backchaining
-    havi_implies_samloke into havi(actor, location), which is rejected
-    upstream and would only contribute noise to the failure reason."""
-    rel_def = lex.relations.get(relation)
-    if rel_def is None or len(concrete) != rel_def.arity:
+    """True if `relation(*concrete)` would be accepted by
+    `Trace.assert_relation` — single principled answer via
+    `is_relation_permitted` (which checks arg_types, arg_excludes,
+    arg_not_part, AND containment.jsonl rules). The planner uses this
+    to pre-skip subgoals it would only fail at execution time. Single
+    source of truth: any constraint added to `validate_relation` is
+    automatically respected here — no separate planner-side schema
+    duplication."""
+    if not all(eid in trace.entities for eid in concrete):
         return True
-    for i, arg_eid in enumerate(concrete):
-        ent = trace.entities.get(arg_eid)
-        if ent is None:
-            continue
-        if not lex.types.is_subtype(ent.entity_type, rel_def.arg_types[i]):
-            return False
-        if i < len(rel_def.arg_excludes):
-            for forbidden in rel_def.arg_excludes[i]:
-                if lex.types.is_subtype(ent.entity_type, forbidden):
-                    return False
-    return True
+    return trace.is_relation_permitted(relation, tuple(concrete), lex)
 
 
 # ---------- havas_parton is static: subgoaling it is futile -----------
@@ -2116,7 +2113,8 @@ def _plan_to_establish_relation_impl(
                 exclude = exclude - {roles["agent"]}
             eid = _find_role_filler(
                 role_spec, trace, lex, derived=derived,
-                exclude=exclude)
+                exclude=exclude,
+                action=action, role_name=role_spec.name)
             if eid is None:
                 ok = False
                 break
@@ -2867,7 +2865,8 @@ def _plan_specific_action(action, role_bindings, actor_id, trace, lex,
             exclude = exclude - {roles["agent"]}
         eid = _find_role_filler(
             role_spec, trace, lex, derived=derived,
-            exclude=exclude)
+            exclude=exclude,
+            action=action, role_name=role_spec.name)
         if eid is None:
             return None
         roles[role_spec.name] = eid
@@ -2959,7 +2958,8 @@ def plan_event_firing(verb, requested_roles, actor_id,
             continue
         eid = _find_role_filler(
             role_spec, trace, lex, derived=derived,
-            exclude=set(roles.values()))
+            exclude=set(roles.values()),
+            action=action, role_name=role_spec.name)
         if eid is None:
             return None
         roles[role_spec.name] = eid
@@ -3143,7 +3143,8 @@ def _plan_to_achieve_impl(goal_entity_id, goal_slot, goal_value,
                 continue
             eid = _find_role_filler(
                 role_spec, trace, lex, derived=derived,
-                exclude=set(roles.values()))
+                exclude=set(roles.values()),
+                action=action, role_name=role_spec.name)
             if eid is None:
                 ok = False
                 break

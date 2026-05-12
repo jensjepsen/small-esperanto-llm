@@ -203,86 +203,20 @@ def regress_for_verb(verb_name, lex, rng):
             return None
         role_eids[role.name] = eid
 
-    # Place each role-entity in scene_id, EXCEPT: the effect target
-    # gets placed in away_id with high probability (when distinct).
-    # Placing the target away forces samloke(agent, theme) preconditions
-    # to subgoal via iri, surfacing locomotion chains for verbs like
-    # kuiri/akvumi/fermi that don't otherwise need to move the agent.
-    # The 0.85 rate (up from 0.5) keeps a small fraction of co-located
-    # scenes for variety while pushing most scenes into multi-event
-    # chains — the dedup analysis showed bare 1-event property scenes
-    # accumulating from the coin-flip case.
-    #
-    # Within the chosen scene location, route through any non-location
-    # container the concept affords (vestaĵo en valizo, manĝebla en
-    # korbo, surfaco-affordable thing sur tablo). The lazy-place helper
-    # materializes the intermediate container and asserts its location
-    # placement. Falls back to direct under the scene location when no
-    # affordance fits — keeping non-routed concepts (animates, plain
-    # ingredients) behaving as before.
-    for role_name, eid in role_eids.items():
-        if (role_name == eff.target_role
-                and away_id != scene_id
-                and rng.random() < 0.85):
-            placement = away_id
-        else:
-            placement = scene_id
-        ent = t.entities.get(eid)
-        concept_lemma = ent.concept_lemma if ent is not None else None
-        if not _route_through_container(
-                t, eid, concept_lemma, placement, lex, rng):
-            try:
-                t.assert_relation("en", (eid, placement), lex)
-            except (KeyError, ValueError):
-                return None
+    # Hand the rest of the setup off to apply_scene_parameters: it
+    # handles placement, non-target initial state, conditional gate
+    # forcing, chain-dependency scaffolding, indoor lamp, and
+    # priskribas scaffolding — all parameterized via SceneParameters
+    # so the goal-first sampler can produce identically-shaped
+    # scenes with the same setup logic.
+    from .scene_params import sample_scene_parameters, apply_scene_parameters
+    params = sample_scene_parameters(rng)
+    apply_scene_parameters(
+        t, scene_id, away_id, action, role_eids, lex, rng, params)
 
-    # Set theme's effect-slot to a non-target value so the verb has
-    # work to do. Other role.properties are deliberately NOT preset —
-    # the planner subgoals on them, growing the chain.
     target_eid = role_eids.get(eff.target_role)
-    if target_eid is None:
-        return None
-    slot_def = lex.slots.get(eff.property)
-    if slot_def is not None and slot_def.vocabulary:
-        non_target = [v for v in slot_def.vocabulary if v != eff.value]
-        if non_target:
-            t.entities[target_eid].set_property(
-                eff.property, rng.choice(non_target))
-
-    # Force conditional preconditions to fire so chains land reliably.
-    # For each IfPropertyPrecondition, set the gate's if_property to
-    # if_value (so the gate fires) and then_property to a non-target
-    # value (so the planner subgoals on a producer verb). Without
-    # this, gate firing depends on randomization — pordo's lock_state
-    # randomizes 50/50 and only locked half lands a chain.
-    _force_conditional_gates(t, action, role_eids, lex, rng)
-
-    # Forward-chain seeding: walk action.preconditions and pre-place
-    # ingredients (chiefly instruments) for any verb the planner might
-    # subgoal on. Ingredients go in `away_id` so the planner has to
-    # locomote and retrieve, not just bind everything in one room.
-    _seed_chain_dependencies(
-        t, action, role_eids, scene_id, lex, rng, away_id=away_id)
-
-    # Indoor-scene lighting: planner-subgoaled vidi requires
-    # `illuminated=yes`, which is only derivable from an aktiva lamp
-    # in indoor locations. Seed a lampo only when the target verb's
-    # chain might involve vidi — havi/scias_lokon/konas preconditions
-    # all backchain through it. Otherwise the lamp clutters the prose
-    # for chains that never look at anything.
-    if _action_might_need_light(action):
-        _seed_indoor_lamp(t, scene_id, away_id, lex, rng)
-
-    # Probabilistic priskribas scaffolding: places a readable text
-    # describing the theme's en-location somewhere in the scene.
-    # The planner may pick legi(text) as a way to satisfy
-    # scias_lokon when direct vidi isn't viable (theme in another
-    # room). Surfaces "iri to text → legi → iri to theme" chains.
-    if target_eid is not None and rng.random() < 0.15:
-        _seed_priskribas_about_theme(t, target_eid, lex, rng)
-
     agent_eid = role_eids.get("agent")
-    if agent_eid is None:
+    if target_eid is None or agent_eid is None:
         return None
     drive = ("entity_slot", agent_eid, target_eid,
              eff.property, eff.value)
