@@ -202,7 +202,13 @@ def _find_role_filler(role_spec, trace, lex, derived=None, exclude=None):
     """Find a trace entity matching the verb's RoleSpec (type +
     property constraints). Reads current+derived state with
     set-membership semantics so an entity with locomotion=[walk,swim]
-    satisfies a role spec requiring locomotion=[walk]."""
+    satisfies a role spec requiring locomotion=[walk].
+
+    When no in-trace entity matches AND the `_ENTITY_RESOLVER`
+    ContextVar holds a callable, the planner asks the resolver to
+    spawn one. Resolver returns a freshly-added eid or None. This is
+    the spawn-on-demand hook the seeder uses to materialize entities
+    the planner discovers it needs."""
     exclude = exclude or set()
     for eid, ent in trace.entities.items():
         if eid in exclude:
@@ -221,6 +227,9 @@ def _find_role_filler(role_spec, trace, lex, derived=None, exclude=None):
             if not ok:
                 continue
         return eid
+    resolver = _ENTITY_RESOLVER.get()
+    if resolver is not None:
+        return resolver(role_spec, trace, lex, exclude)
     return None
 
 
@@ -1422,6 +1431,22 @@ def _resolve_preconditions_in_order(action, event_pat, roles, actor_id,
 
 _PLANNER_RNG: contextvars.ContextVar = contextvars.ContextVar(
     "_PLANNER_RNG", default=None)
+
+
+# Optional callback the seeder installs to materialize a missing
+# role-binding entity on demand. When `_find_role_filler` exhausts
+# in-trace candidates AND this resolver is set, the planner invokes
+# it with the role_spec (and the in-flight trace + exclude set) and
+# the resolver returns a freshly-spawned eid or None. Lets the
+# seeder start from a minimal scene and let the planner request
+# entities as it discovers it needs them — see project_seeder_redesign
+# memory for the three-layer design.
+#
+# Signature: resolver(role_spec, trace, lex, exclude) -> eid | None.
+# Default None preserves current behavior (no spawning; missing
+# entities cause the candidate plan to fail).
+_ENTITY_RESOLVER: contextvars.ContextVar = contextvars.ContextVar(
+    "_ENTITY_RESOLVER", default=None)
 
 # Constraints that any candidate sub-plan must preserve, accumulated
 # by `_resolve_preconditions` as each precondition resolves. Inner
