@@ -56,6 +56,12 @@ def make_spawner(
 
     def resolver(role_spec, trace, lex_arg, exclude,
                  action=None, role_name=None):
+        # Budget exhausted: bail before any expensive work
+        # (`_concepts_matching_role` walks the full concept dict, and
+        # `_place_respecting_containment` recursively walks containment).
+        # The planner can call us many times per plan; without this
+        # short-circuit, post-budget calls keep paying the walk cost
+        # just to return None at the end.
         if state["spawned"] >= budget:
             return None
         from .seeders import (
@@ -64,39 +70,58 @@ def make_spawner(
         )
 
         # Concept pick. Verb-aware bias when caller supplied action +
-        # role_name; uniform random otherwise.
-        candidates = _concepts_matching_role(lex_arg, role_spec)
-        # When this is the effect target of `action`, require the
-        # concept to declare the effect slot (pervasive slots
-        # excepted — for those, every applies-to-type qualifies).
+        # role_name; uniform random otherwise. The role spec's
+        # type+properties already constrain candidates to concepts
+        # compatible with the verb (animate for sidi.agent, lock_capable
+        # for ŝlosi.theme). The slot's `applies_to` adds an entity-type
+        # check downstream. We deliberately DON'T require the concept
+        # to declare the effect slot in `c.properties` — that gate
+        # would reject every host whose state slot is lifted from a
+        # part by a derivation (pordo inheriting lock_state from
+        # seruro), and every concept whose `varies` slot value lands
+        # at instance creation (lock_state itself).
         eff = None
         if action is not None and role_name is not None:
             for e in action.effects:
                 if e.target_role == role_name:
                     eff = e
                     break
-        if eff is not None:
-            slot_def = lex_arg.slots.get(eff.property)
-            if slot_def is None or not getattr(slot_def, "pervasive", False):
-                candidates = [c for c in candidates
-                              if eff.property in lex_arg.concepts[c].properties]
+        candidates = _concepts_matching_role(lex_arg, role_spec)
         if not candidates:
             return None
         weights = None
         if action is not None and role_name is not None:
             weights = _candidate_weights(
                 candidates, role_name, action, lex_arg)
+        # Weighted shuffle: draw the entire candidate list ordered by
+        # weight, so we can retry the next-best concept when the first
+        # pick has no valid containment host (seruro for ŝlosi.theme,
+        # motoro for ŝalti.theme — part-only concepts that satisfy the
+        # role spec but can't be placed standalone). Without this
+        # retry, a single unlucky `rng.choice` aborts the whole
+        # spawn; with it, we naturally fall back to the host concept.
         if weights is not None:
-            concept = rng.choices(candidates, weights=weights, k=1)[0]
+            order = []
+            pool = list(zip(candidates, weights))
+            while pool:
+                pick = rng.choices(pool, weights=[w for _, w in pool],
+                                    k=1)[0]
+                order.append(pick[0])
+                pool.remove(pick)
         else:
-            concept = rng.choice(candidates)
+            order = list(candidates)
+            rng.shuffle(order)
 
-        # Materialize via recursive containment placement. This may
-        # spawn intermediate containers (a pomarbo for a pomo, a
-        # kuirejo for a forno) as siblings of the scene.
-        eid = _place_respecting_containment(
-            trace, lex_arg, scene_id, concept, rng,
-            preferred_id=scene_id)
+        eid = None
+        for concept in order:
+            # Materialize via recursive containment placement. This
+            # may spawn intermediate containers (a pomarbo for a pomo,
+            # a kuirejo for a forno) as siblings of the scene.
+            eid = _place_respecting_containment(
+                trace, lex_arg, scene_id, concept, rng,
+                preferred_id=scene_id)
+            if eid is not None:
+                break
         if eid is None:
             return None
 

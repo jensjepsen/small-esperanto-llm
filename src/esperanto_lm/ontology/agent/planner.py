@@ -406,6 +406,211 @@ def _relation_args_admissible(relation, concrete, trace, lex) -> bool:
     return trace.is_relation_permitted(relation, tuple(concrete), lex)
 
 
+# Per-(rules, lex) cache of producer-type tables. The set is recomputed
+# rarely (rules and lex are treated as immutable after load) so a small
+# dict keyed by their id() is enough.
+_PRODUCER_TYPES_CACHE: dict[tuple, dict] = {}
+
+
+def _var_type_constraint(pattern, target_var, lex) -> set[str]:
+    """Walk `pattern` for entity(...) and rel(...) patterns binding
+    `target_var`, return the set of acceptable entity types.
+
+    Entity-pattern source: the literal `type` constraint, OR the
+    declared `entity_type` of a `concept=` constraint.
+
+    Rel-pattern source: if `target_var` is bound at some arg_name of
+    a `rel(R, ...)` pattern, the source relation R's `arg_types` at
+    that position becomes an accepted type for `target_var`. Walks
+    the dsl-level type rather than the schema's entity_type spine,
+    so subtype checks downstream still work.
+    """
+    types: set[str] = set()
+    for ep in _walk_for_entity_patterns_binding(pattern, target_var):
+        t = ep.constraints.get("type")
+        if isinstance(t, str):
+            types.add(t)
+        c = ep.constraints.get("concept")
+        if isinstance(c, str):
+            concept = lex.concepts.get(c)
+            if concept is not None:
+                types.add(concept.entity_type)
+    # rel(...) pattern bindings — walk the pattern for RelPattern
+    # subtrees and check each named arg's bound Var.
+    def _walk_rel_patterns(p):
+        from ..dsl.patterns import (
+            AndPattern, BindPattern, EntityPattern, NotPattern, OrPattern,
+            RelPattern,
+        )
+        if isinstance(p, RelPattern):
+            yield p
+        elif isinstance(p, AndPattern):
+            yield from _walk_rel_patterns(p.left)
+            yield from _walk_rel_patterns(p.right)
+        elif isinstance(p, OrPattern):
+            yield from _walk_rel_patterns(p.left)
+            yield from _walk_rel_patterns(p.right)
+        elif isinstance(p, NotPattern):
+            yield from _walk_rel_patterns(p.inner)
+    for rp in _walk_rel_patterns(pattern):
+        rel_def = lex.relations.get(rp.relation)
+        if rel_def is None:
+            continue
+        for arg_name, sub_pat in rp.arg_patterns.items():
+            v = _bind_var_in_pattern(sub_pat)
+            if v is None or v is not target_var:
+                continue
+            if arg_name not in rel_def.arg_names:
+                continue
+            position = rel_def.arg_names.index(arg_name)
+            if position < len(rel_def.arg_types):
+                types.add(rel_def.arg_types[position])
+    return types
+
+
+def _relation_producer_types(rules, derivations, lex) -> dict:
+    """For each relation produced by some rule's `AddRelation` OR
+    some derivation's `RelationImplication`, the set of entity types
+    acceptable at each argument position.
+
+    Symmetric relations get their position-0 and position-1 sets
+    unioned — apud(animate, location) implicitly works as
+    apud(location, animate) given symmetric semantics.
+
+    Returns dict mapping relation name → tuple of sets (one per
+    position). Relation names not in the dict have NO known producer
+    — subgoals targeting them can only succeed if the relation
+    already holds in the trace.
+    """
+    key = (id(rules), id(derivations) if derivations is not None else 0,
+           id(lex))
+    cached = _PRODUCER_TYPES_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    out: dict[str, list[set]] = {}
+
+    def _add_type(rel_name: str, position: int, type_name: str) -> None:
+        rel_def = lex.relations.get(rel_name)
+        if rel_def is None:
+            return
+        if rel_name not in out:
+            out[rel_name] = [set() for _ in range(rel_def.arity)]
+        if position < len(out[rel_name]):
+            out[rel_name][position].add(type_name)
+
+    # 1. Rule producers: walk rule.then for AddRelation / TransferN.
+    for rule in rules:
+        event_pat = _trigger_event_pattern(rule)
+        if event_pat is None:
+            continue
+        action = lex.actions.get(event_pat.action)
+        role_types = (
+            {r.name: r.type for r in action.roles}
+            if action is not None else {})
+        var_to_role = _build_var_to_role(event_pat)
+        effects = (rule.then if isinstance(rule.then, (list, tuple))
+                   else [rule.then])
+        var_to_created_type: dict[int, str] = {}
+        for eff in effects:
+            if isinstance(eff, CreateEntity):
+                v = getattr(eff, "as_var", None)
+                if isinstance(v, Var):
+                    concept = lex.concepts.get(eff.concept)
+                    if concept is not None:
+                        var_to_created_type[id(v)] = concept.entity_type
+        for eff in effects:
+            rel_name: str | None = None
+            args: tuple = ()
+            if isinstance(eff, AddRelation):
+                rel_name = eff.relation
+                args = eff.args
+            elif isinstance(eff, TransferN):
+                rel_name = "havi"
+                args = (eff.target, eff.source)
+            else:
+                continue
+            for i, arg in enumerate(args):
+                if not isinstance(arg, Var):
+                    continue
+                role_name = var_to_role.get(id(arg))
+                if role_name is not None and role_name in role_types:
+                    _add_type(rel_name, i, role_types[role_name])
+                    continue
+                created_type = var_to_created_type.get(id(arg))
+                if created_type is not None:
+                    _add_type(rel_name, i, created_type)
+
+    # 2. Derivation producers: walk derivation.implies for
+    # RelationImplication. Each Var's type comes from the entity(...)
+    # patterns in the derivation's `when` + `given` that bind it.
+    for d in (derivations or ()):
+        implies = (d.implies if isinstance(d.implies, (list, tuple))
+                   else [d.implies])
+        patterns = [d.when] + list(d.given or ())
+        for impl in implies:
+            if not isinstance(impl, RelationImplication):
+                continue
+            for i, arg in enumerate(impl.args):
+                if not isinstance(arg, Var):
+                    continue
+                for pat in patterns:
+                    for t in _var_type_constraint(pat, arg, lex):
+                        _add_type(impl.name, i, t)
+
+    # Symmetric relations: union the position sets.
+    for rel_name, positions in out.items():
+        rel_def = lex.relations.get(rel_name)
+        if rel_def is not None and getattr(rel_def, "symmetric", False) \
+                and len(positions) == 2:
+            unioned = positions[0] | positions[1]
+            out[rel_name] = [unioned, unioned]
+
+    result = {k: tuple(v) for k, v in out.items()}
+    _PRODUCER_TYPES_CACHE[key] = result
+    return result
+
+
+def _relation_subgoal_producible(
+    relation, concrete, trace, rules, derivations, lex,
+) -> bool:
+    """True if some producer rule or derivation could plausibly bind
+    the args at the given positions, based on entity types. False
+    means the subgoal is structurally hopeless: no producer's
+    type-pattern accepts these types at the corresponding positions,
+    so no plan can establish the relation for these specific
+    entities.
+
+    Generalizes the `havas_parton is static` special case: relations
+    with no producers (rules nor derivations) yield False — but the
+    existing downstream `_has_relation` check still lets already-
+    asserted facts pass.
+    """
+    producers = _relation_producer_types(rules, derivations, lex).get(relation)
+    if producers is None:
+        # No rule or derivation produces this relation. Subgoal is
+        # only satisfiable if already asserted — caller checks
+        # _has_relation separately at the top of
+        # plan_to_establish_relation.
+        return False
+    for i, eid in enumerate(concrete):
+        if i >= len(producers):
+            continue
+        type_set = producers[i]
+        if not type_set:
+            # No type info at this position — don't reject. Could
+            # happen if all producer rules bind this arg from a
+            # `given` clause (handled elsewhere).
+            continue
+        ent = trace.entities.get(eid)
+        if ent is None:
+            continue
+        if not any(lex.types.is_subtype(ent.entity_type, t)
+                   for t in type_set):
+            return False
+    return True
+
+
 # ---------- havas_parton is static: subgoaling it is futile -----------
 #
 # `havas_parton` is materialized at scene-build time from each entity's
@@ -975,6 +1180,53 @@ def _slot_value_producible(slot: str, value: str, lex) -> bool:
                 break
     cache[key] = found
     return found
+
+
+def _spawn_for_derivation_freevar(identity, slots_to_subgoal, fv_id,
+                                    trace, lex):
+    """Ask the entity resolver to materialize a free-var binding for
+    a derivation backchain. Build a synthetic RoleSpec from the
+    derivation's literal constraints — identity (type/concept) plus
+    immutable positive slot constraints (those whose value is not
+    producible by any verb/derivation; the candidate concept must
+    declare them up-front). Mutable slots get subgoaled later against
+    the spawned entity, so we deliberately omit them — including them
+    would shrink the concept pool to those already declaring the
+    target value (a lampo with `power_state=aktiva` is rare; one
+    with `lights_when_on=yes` is the right filter).
+
+    The resolver's own budget caps the total spawns per plan, so we
+    don't need a planner-side cache; without budget the cache would
+    let DFS explore many more chains using the same reused eid,
+    which was empirically slower than re-spawning past the cap.
+
+    Returns the eid on success, None when no resolver is available,
+    no concept matches, or the resolver declined."""
+    from ..schemas import RoleSpec
+
+    resolver = _ENTITY_RESOLVER.get()
+    if resolver is None:
+        return None
+    spec_props: dict[str, list[str]] = {}
+    for entry in slots_to_subgoal:
+        v_local, slot, value, sign = entry
+        if id(v_local) != fv_id or sign != "pos":
+            continue
+        if _slot_value_producible(slot, value, lex):
+            continue
+        spec_props[slot] = [value]
+    if not spec_props and not identity:
+        return None
+    spec_type = identity.get("type", "physical")
+    try:
+        spec = RoleSpec(name="_derivation_freevar",
+                        type=spec_type, properties=spec_props)
+    except Exception:
+        return None
+    try:
+        return resolver(spec, trace, lex, set(trace.entities.keys()))
+    except Exception:
+        return None
 
 
 def _filter_candidates_by_slots(candidates, fv_id, slots_to_subgoal,
@@ -1805,6 +2057,24 @@ def _plan_to_establish_relation_impl(
                         ("relation", relation, tuple(target_args)),
                         depth=_depth)
                     return None
+    # Producer-type impossibility: if no rule or derivation's
+    # role/var spec can ever bind these entity types at the relation's
+    # argument positions, the subgoal is structurally hopeless.
+    # Examples this catches:
+    #   apud(artifact, _) — only animate/location are accepted at
+    #     position 0 (via locomotion-rule producers + symmetry).
+    #   havas_parton(_, _) — no producer at all; the existing
+    #     "static relation" special-case downstream still applies
+    #     but is now redundant with this generic check.
+    # Subsumes the previous per-relation special cases; one rule
+    # of inference, all relations.
+    if all(eid in trace.entities for eid in target_args):
+        if not _relation_subgoal_producible(
+                relation, target_args, trace, rules, derivations, lex):
+            _record_failure(
+                ("relation", relation, tuple(target_args)),
+                depth=_depth)
+            return None
     # Movement-verb impossibility: apud(X, Y) is unreachable from
     # current state if X is already `en Y`. Every movement verb
     # (iri/veni/kuri/flugi/...) carries a NotPattern `~rel("en", IA,
@@ -3277,6 +3547,19 @@ def _plan_property_via_derivation(entity_id, slot, value, actor_id,
                     candidates = list(trace.entities.keys())
                 candidates = _filter_candidates_by_slots(
                     candidates, fv_id, slots_to_subgoal, trace, lex)
+                if not candidates:
+                    # Nothing in trace satisfies the free-var's identity
+                    # + immutable-slot constraints. Ask the entity
+                    # resolver (the seeder's spawner closure) to
+                    # materialize one. Common case: indoor `lit_state=
+                    # luma` needs an entity with `lights_when_on=yes`
+                    # — no lampo in scene, no producer chain can change
+                    # that, so spawn one and let the planner subgoal
+                    # `ŝalti` on its mutable `power_state`.
+                    spawned = _spawn_for_derivation_freevar(
+                        identity, slots_to_subgoal, fv_id, trace, lex)
+                    if spawned is not None:
+                        candidates = [spawned]
                 assignments = [{fv_id: c} for c in candidates]
 
             for assignment in assignments:

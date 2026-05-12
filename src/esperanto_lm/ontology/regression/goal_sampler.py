@@ -115,24 +115,40 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     except (KeyError, ValueError):
         return None
 
-    # Drive: the planner needs a target eid. The spawner will fill
-    # it in when invoked. To wire this, we leave the target as a
-    # placeholder concept-lemma; the planner will lookup by role_spec.
-    # NB: we DO pre-spawn the theme entity here, because the drive
-    # tuple needs a concrete eid, AND we want the spawner to set its
-    # non-target state. Easiest: invoke the spawner directly to pick
-    # the theme with full verb-awareness, then bind it to the drive.
-    from .spawner import make_spawner
-    setup_spawner = make_spawner(scene_id, lex, rng, budget=1)
-    target_role_spec = next(
-        (r for r in action.roles if r.name == eff.target_role), None)
-    if target_role_spec is None:
-        return None
-    target_eid = setup_spawner(
-        target_role_spec, t, lex, set(t.entities.keys()),
-        action=action, role_name=eff.target_role)
-    if target_eid is None:
-        return None
+    # Drive: the planner needs a target eid. For reflexive verbs
+    # (sidi, stari, kuŝi, dormi) the effect's target IS the agent —
+    # there's no separate theme to spawn, the actor is BOTH the
+    # subject and the thing changing state. For non-reflexive verbs
+    # (ŝlosi/lavi/varmigi/...) we invoke the spawner to materialize
+    # a target with the same verb-aware setup (non-target initial
+    # state, if_property gates) regress_for_verb does inline.
+    if eff.target_role == "agent":
+        target_eid = actor_eid
+        # Mirror the spawner's "non-target initial state": flip the
+        # actor's effect slot to a non-eff.value vocabulary entry so
+        # the verb has work to do. The actor concept doesn't declare
+        # the slot (`posture` on `persono` etc.), but set_property
+        # writes to the instance state regardless and the runtime
+        # engine reads it back via property_at.
+        slot_def = lex.slots.get(eff.property)
+        if slot_def is not None and slot_def.vocabulary:
+            non_target = [v for v in slot_def.vocabulary
+                          if v != eff.value]
+            if non_target:
+                t.entities[actor_eid].set_property(
+                    eff.property, rng.choice(non_target))
+    else:
+        from .spawner import make_spawner
+        setup_spawner = make_spawner(scene_id, lex, rng, budget=1)
+        target_role_spec = next(
+            (r for r in action.roles if r.name == eff.target_role), None)
+        if target_role_spec is None:
+            return None
+        target_eid = setup_spawner(
+            target_role_spec, t, lex, set(t.entities.keys()),
+            action=action, role_name=eff.target_role)
+        if target_eid is None:
+            return None
 
     drive = ("entity_slot", actor_eid, target_eid, slot, target_value)
     return t, scene_id, drive

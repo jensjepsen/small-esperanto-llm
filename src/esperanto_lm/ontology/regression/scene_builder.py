@@ -173,17 +173,24 @@ class SceneBuilder:
         container_id = self._resolve(container_slot)
         if container_id is None:
             return False
-        from .seeders import _route_through_container
+        from .seeders import (
+            _place_respecting_containment, _route_through_container,
+        )
         ent = self.t.entities.get(eid)
         concept_lemma = ent.concept_lemma if ent is not None else None
         if _route_through_container(
                 self.t, eid, concept_lemma, container_id, self.lex, self.rng):
             return True
-        try:
-            self.t.assert_relation("en", (eid, container_id), self.lex)
-            return True
-        except (KeyError, ValueError):
+        # Strict placement via containment.jsonl. Tries the requested
+        # container first, then any in-trace entity, then materializes
+        # a valid container. None means no host exists for this concept;
+        # caller treats as scene failure rather than silently orphaning.
+        scene_id = self.slots.get(self._scene_slot) if self._scene_slot else container_id
+        if concept_lemma is None:
             return False
+        return _place_respecting_containment(
+            self.t, self.lex, scene_id, concept_lemma, self.rng,
+            preferred_id=container_id, existing_eid=eid) is not None
 
     # ---------- placement ----------
 
@@ -1064,14 +1071,21 @@ class SceneBuilder:
             return
         # Place under the scene location. Use the routing helper so
         # vehicles land en the location's terrain-compatible part
-        # when applicable; falls back to bare en assertion.
-        from .seeders import _route_through_container
-        if not _route_through_container(
+        # when applicable; falls back to the strict placer which walks
+        # containment.jsonl. Decoration step: failed placement just
+        # drops the loose instrument (no impact on the drive).
+        from .seeders import (
+            _place_respecting_containment, _route_through_container,
+        )
+        if _route_through_container(
                 self.t, eid, concept, scene_id, self.lex, self.rng):
-            try:
-                self.t.assert_relation("en", (eid, scene_id), self.lex)
-            except (KeyError, ValueError):
-                pass
+            return
+        if _place_respecting_containment(
+                self.t, self.lex, scene_id, concept, self.rng,
+                preferred_id=scene_id, existing_eid=eid) is None:
+            # Decorator step — drop the orphan rather than leaving it
+            # floating; the scene survives without this instrument.
+            self.t.entities.pop(eid, None)
 
     def _assert_kin_relations(self, *, probability: float = 0.25):
         """With `probability`, pick two in-scene person entities and

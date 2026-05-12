@@ -169,17 +169,15 @@ def regress_for_verb(verb_name, lex, rng):
         candidates = _concepts_matching_role(lex, role)
         weights: list[float] | None = None
         if role.name == eff.target_role:
-            # Effect target must declare the effect slot — otherwise
-            # set_property writes a slot the concept doesn't claim and
-            # nothing in the engine will treat it as state to flip.
-            # Pervasive slots (hunger, wetness, ...) skip this check:
-            # their default-derivation makes the slot meaningful for
-            # every concept of the slot's applies_to type.
-            slot_def = lex.slots.get(eff.property)
-            if slot_def is None or not getattr(
-                    slot_def, "pervasive", False):
-                candidates = [c for c in candidates
-                              if eff.property in lex.concepts[c].properties]
+            # We don't filter candidates here on whether the effect
+            # slot appears in `c.properties`. The role spec's
+            # type+properties and the slot's `applies_to` are the
+            # principled gates; an extra "concept declares the slot
+            # on disk" filter would falsely reject hosts whose state
+            # is lifted from a part by a derivation (pordo getting
+            # lock_state from seruro) and every `varies` slot (whose
+            # value lands at instance creation, never on disk).
+            #
             # Soft bias toward candidates that trigger a conditional
             # precondition: gate-able candidates collectively get ~half
             # the probability mass, the rest split the other half.
@@ -211,8 +209,12 @@ def regress_for_verb(verb_name, lex, rng):
     # scenes with the same setup logic.
     from .scene_params import sample_scene_parameters, apply_scene_parameters
     params = sample_scene_parameters(rng)
-    apply_scene_parameters(
-        t, scene_id, away_id, action, role_eids, lex, rng, params)
+    if not apply_scene_parameters(
+            t, scene_id, away_id, action, role_eids, lex, rng, params):
+        # A role-entity has no valid containment host — abort and let
+        # `sample_regression_scene` retry with a different verb/concept
+        # pick.
+        return None
 
     target_eid = role_eids.get(eff.target_role)
     agent_eid = role_eids.get("agent")
@@ -317,7 +319,17 @@ def _seed_priskribas_about_theme(t, theme_eid, lex, rng) -> None:
         text_id = f"{text_lemma}_priskribas{sfx if sfx > 1 else ''}"
     try:
         _add_entity_randomized(t, text_lemma, lex, rng, entity_id=text_id)
-        t.assert_relation("en", (text_id, text_loc_eid), lex)
+    except (KeyError, ValueError):
+        return
+    # Strict placement via containment.jsonl. Readables (libro, letero)
+    # need indoor hosts; outdoor pick falls back through the placer.
+    placed = _place_respecting_containment(
+        t, lex, text_loc_eid, text_lemma, rng,
+        preferred_id=text_loc_eid, existing_eid=text_id)
+    if placed is None:
+        t.entities.pop(text_id, None)
+        return
+    try:
         t.assert_relation("priskribas", (text_id, fakto_id), lex)
     except (KeyError, ValueError):
         return
@@ -779,74 +791,86 @@ def _route_through_container(
 
 def _place_respecting_containment(
     t, lex, scene_id, concept_lemma, rng, *, preferred_id=None,
+    existing_eid: str | None = None,
     _depth: int = 0,
 ):
-    """Place a fresh `concept_lemma` instance under a container that
+    """Place a `concept_lemma` instance under a container that
     `Trace.is_relation_permitted` accepts on both axes — afforded by
     containment.jsonl AND no `required` entry violated. Mirrors
     `assert_relation`'s strict check so seeders can't smuggle in
     placements that would silently fail under raise mode.
 
-    Resolution:
-      1. Already in trace → return that eid (caller reuses it).
-      2. `preferred_id` (typically scene_id or away_id) — if a relation
+    When `existing_eid` is None, the entity is fresh: the function
+    adds it (eid = concept_lemma), attempts placement, and rolls back
+    (pop) on total failure. When `existing_eid` is provided, the
+    entity is already in trace (added bare by an earlier seeder step
+    that owns its lifecycle); this function only attempts placement
+    and returns None without rolling back. The caller decides whether
+    to remove the orphan.
+
+    Resolution (existing_eid case skips Tier 0):
+      0. (fresh only) Already in trace → return that eid.
+      1. `preferred_id` (typically scene_id or away_id) — if a relation
          is permitted, place there.
-      3. Any other in-trace entity — first valid container wins.
-      4. Walk `containers_for(concept_lemma)` and recursively place a
+      2. Any other in-trace entity — first valid container wins.
+      3. Walk `containers_for(concept_lemma)` and recursively place a
          valid container, then put the entity inside it. Recursion
          climbs the containment graph (forno → kuirejo → domo) until
          it bottoms out at a top-level location, which gets placed
-         apud the scene via Tier 5.
-      5. Top-level location with no further container → place apud
+         apud the scene via Tier 4.
+      4. Top-level location with no further container → place apud
          the scene (sibling). Only fires for location concepts; non-
          location orphans are rejected so the trace stays clean.
-      6. None — every option failed; caller skips this producer.
+      5. None — every option failed; caller skips this producer.
 
-    Uses `concept_lemma` as the eid (no suffix) since the cases that
-    need this helper are unique-per-scene appliances/instruments —
-    multiple fornoj in one scene have no narrative use.
+    Uses `concept_lemma` as the eid for fresh entities (no suffix) —
+    the cases that need this helper are unique-per-scene appliances/
+    instruments and multiple fornoj in one scene have no narrative use.
 
     `_depth` guards recursion (caps at 4) under cyclic containment."""
     if _depth > 4:
         return None
     from ..containment import containers_for, resolve_containment
     from ..sampler import _add_entity_randomized
-    if concept_lemma in t.entities:
-        return concept_lemma
+
+    if existing_eid is not None:
+        eid = existing_eid
+        added_here = False
+    else:
+        eid = concept_lemma
+        if concept_lemma in t.entities:
+            return concept_lemma
+        _add_entity_randomized(t, concept_lemma, lex, rng,
+                                entity_id=concept_lemma)
+        added_here = True
 
     def _try_relation(container_eid: str):
         for rel in ("en", "sur"):
             if t.is_relation_permitted(
-                    rel, (concept_lemma, container_eid), lex):
+                    rel, (eid, container_eid), lex):
                 return rel
         return None
-
-    # Need to add the entity before checking permission (validation
-    # looks up entity types in trace). Add, attempt placements, then
-    # roll back on total failure.
-    _add_entity_randomized(t, concept_lemma, lex, rng,
-                            entity_id=concept_lemma)
 
     # Tier 1: preferred container.
     if preferred_id is not None and preferred_id in t.entities:
         rel = _try_relation(preferred_id)
         if rel is not None:
             try:
-                t.assert_relation(rel, (concept_lemma, preferred_id), lex)
-                return concept_lemma
+                t.assert_relation(rel, (eid, preferred_id), lex)
+                return eid
             except (KeyError, ValueError):
                 pass
 
     # Tier 2: any other in-trace entity.
-    for eid in list(t.entities.keys()):
-        if eid in (concept_lemma, preferred_id):
+    for other_eid in list(t.entities.keys()):
+        if other_eid in (eid, preferred_id):
             continue
-        rel = _try_relation(eid)
+        rel = _try_relation(other_eid)
         if rel is None:
             continue
         try:
-            t.assert_relation(rel, (concept_lemma, eid), lex)
-            return concept_lemma
+            t.assert_relation(rel, (eid, other_eid), lex)
+            return eid
         except (KeyError, ValueError):
             continue
 
@@ -886,8 +910,8 @@ def _place_respecting_containment(
         if cont_eid is None:
             continue
         try:
-            t.assert_relation(valid_rel, (concept_lemma, cont_eid), lex)
-            return concept_lemma
+            t.assert_relation(valid_rel, (eid, cont_eid), lex)
+            return eid
         except (KeyError, ValueError):
             continue
 
@@ -899,16 +923,18 @@ def _place_respecting_containment(
     concept_def = lex.concepts.get(concept_lemma)
     if (concept_def is not None
             and concept_def.entity_type == "location"
-            and concept_lemma != scene_id):
+            and eid != scene_id):
         try:
-            t.assert_relation("apud", (concept_lemma, scene_id), lex)
-            return concept_lemma
+            t.assert_relation("apud", (eid, scene_id), lex)
+            return eid
         except (KeyError, ValueError):
             pass
 
-    # Roll back: no valid placement found. Removing the orphan keeps
-    # the trace clean (no entity floating without a container).
-    t.entities.pop(concept_lemma, None)
+    # Roll back the entity ONLY if we added it here. When the caller
+    # passed `existing_eid`, they own the entity's lifecycle and must
+    # decide whether to remove it on placement failure.
+    if added_here:
+        t.entities.pop(eid, None)
     return None
 
 

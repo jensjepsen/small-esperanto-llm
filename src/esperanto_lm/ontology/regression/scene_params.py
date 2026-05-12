@@ -80,7 +80,7 @@ def apply_scene_parameters(
     trace, scene_id: str, away_id: str,
     action, role_eids: dict, lex, rng: random.Random,
     params: SceneParameters,
-) -> None:
+) -> bool:
     """Materialize sampled parameters into the trace.
 
     Idempotently places each role-bound entity (effect target goes
@@ -91,11 +91,21 @@ def apply_scene_parameters(
     expected to be pre-populated by the caller; this function
     completes the scene shape that previously lived inline in
     `regress_for_verb`.
+
+    Returns True on success, False when any role-entity has no valid
+    placement under containment.jsonl — caller should abort the scene
+    so the planner never sees an orphan. The previous silent-pass
+    behavior produced orphans that the planner couldn't reason about
+    (no `apud`/`en` producer for `(artifact, location)`), accounting
+    for ~half of the failed-drive cases. Containment is now the
+    single source of truth: a concept that has no valid host is
+    excluded from the scene altogether.
     """
     from .seeders import (
         _action_might_need_light, _force_conditional_gates,
-        _route_through_container, _seed_chain_dependencies,
-        _seed_indoor_lamp, _seed_priskribas_about_theme,
+        _place_respecting_containment, _route_through_container,
+        _seed_chain_dependencies, _seed_indoor_lamp,
+        _seed_priskribas_about_theme,
     )
 
     eff = action.effects[0] if action.effects else None
@@ -114,12 +124,18 @@ def apply_scene_parameters(
             placement = scene_id
         ent = trace.entities.get(eid)
         concept_lemma = ent.concept_lemma if ent is not None else None
-        if not _route_through_container(
+        if _route_through_container(
                 trace, eid, concept_lemma, placement, lex, rng):
-            try:
-                trace.assert_relation("en", (eid, placement), lex)
-            except (KeyError, ValueError):
-                pass
+            continue
+        # Strict placement via containment.jsonl. Tries the preferred
+        # location first, then any in-trace entity, then materializes
+        # a valid container as a sibling of the scene. Returns None
+        # iff containment offers no host — surface the gap as scene
+        # rejection rather than silently orphaning the entity.
+        if concept_lemma is None or _place_respecting_containment(
+                trace, lex, scene_id, concept_lemma, rng,
+                preferred_id=placement, existing_eid=eid) is None:
+            return False
 
     # Effect-target non-target initial state.
     if eff is not None:
@@ -146,3 +162,5 @@ def apply_scene_parameters(
         target_eid = role_eids.get(eff.target_role)
         if target_eid is not None and rng.random() < params.priskribas_probability:
             _seed_priskribas_about_theme(trace, target_eid, lex, rng)
+
+    return True
