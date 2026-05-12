@@ -1132,12 +1132,17 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
                 exclude=exclude, action=action,
                 role_name=role_spec.name)
             if filler is None:
-                # Call resolver directly with the same signature
-                # _find_role_filler would have used (it falls back
-                # to resolver only if context var is set; we don't
-                # rely on that here — pass resolver explicitly).
+                # Tools want their natural habitat: a najlilo in the
+                # laborejo, a forno in the kuirejo. We push instruments
+                # off the scene so Tier 3 spawns the proper workshop
+                # apud-scene, producing iri(workshop) -> preni(tool)
+                # -> iri(scene) -> use chains. For other roles
+                # (theme, destination), scene-preference still applies
+                # — the planner expects the target near the actor.
+                prefer = role_spec.name != "instrument"
                 filler = resolver(role_spec, trace, lex, exclude,
-                                  action=action, role_name=role_spec.name)
+                                  action=action, role_name=role_spec.name,
+                                  prefer_scene=prefer)
             if filler is not None:
                 exclude.add(filler)
 

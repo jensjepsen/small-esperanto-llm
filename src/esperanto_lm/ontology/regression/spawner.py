@@ -55,7 +55,8 @@ def make_spawner(
     state = {"spawned": 0}
 
     def resolver(role_spec, trace, lex_arg, exclude,
-                 action=None, role_name=None):
+                 action=None, role_name=None, *,
+                 prefer_scene: bool = True):
         # Budget exhausted: bail before any expensive work
         # (`_concepts_matching_role` walks the full concept dict, and
         # `_place_respecting_containment` recursively walks containment).
@@ -117,9 +118,17 @@ def make_spawner(
             # Materialize via recursive containment placement. This
             # may spawn intermediate containers (a pomarbo for a pomo,
             # a kuirejo for a forno) as siblings of the scene.
+            # `prefer_scene=False` makes the spawner skip BOTH Tier 1
+            # (preferred=scene) and Tier 2's fallback to scene, so the
+            # concept lands in its natural containment habitat
+            # (purigilo in laborejo, forno in kuirejo, najlilo in
+            # laborejo, ...). The forward planner's pre-spawn uses this
+            # to recreate the spatial spread BP's lazy spawning produced
+            # as a side effect of being called in different trace states.
             eid = _place_respecting_containment(
                 trace, lex_arg, scene_id, concept, rng,
-                preferred_id=scene_id)
+                preferred_id=scene_id if prefer_scene else None,
+                avoid=None if prefer_scene else frozenset({scene_id}))
             if eid is not None:
                 break
         if eid is None:

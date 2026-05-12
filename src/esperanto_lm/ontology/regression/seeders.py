@@ -792,6 +792,7 @@ def _route_through_container(
 def _place_respecting_containment(
     t, lex, scene_id, concept_lemma, rng, *, preferred_id=None,
     existing_eid: str | None = None,
+    avoid: frozenset[str] | None = None,
     _depth: int = 0,
 ):
     """Place a `concept_lemma` instance under a container that
@@ -861,9 +862,15 @@ def _place_respecting_containment(
             except (KeyError, ValueError):
                 pass
 
-    # Tier 2: any other in-trace entity.
+    # Tier 2: any other in-trace entity (except `avoid`-listed ones,
+    # used by callers that want the concept to land in its natural
+    # habitat rather than fall back to the scene as a default
+    # container).
+    avoid = avoid or frozenset()
     for other_eid in list(t.entities.keys()):
         if other_eid in (eid, preferred_id):
+            continue
+        if other_eid in avoid:
             continue
         rel = _try_relation(other_eid)
         if rel is None:
