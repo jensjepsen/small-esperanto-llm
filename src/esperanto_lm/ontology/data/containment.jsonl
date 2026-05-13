@@ -247,3 +247,10 @@
 {"container": "kuirejo", "contained": "frostilo", "relation": "en"}
 {"container": "olivarbo", "contained": "olivo", "relation": "sur"}
 {"container": "palmo", "contained": "daktilo", "relation": "sur"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "pentraĵo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "skulptaĵo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "statuo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "masko", "relation": "en"}
+{"container_pattern": {"category": "surfaco"}, "contained": "skulptaĵo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "statuo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "pentraĵo", "relation": "sur"}
