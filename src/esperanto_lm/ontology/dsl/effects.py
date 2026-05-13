@@ -14,7 +14,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .patterns import Var
+from .patterns import Var, VarList
 
 
 class Effect:
@@ -266,3 +266,65 @@ class RemoveRelation(Effect):
 def remove_relation(relation: str, *args: Var | str) -> RemoveRelation:
     """Retract a previously-asserted relation."""
     return RemoveRelation(relation, tuple(args))
+
+
+# ----------------------------- for_each ----------------------------
+
+@dataclass
+class ForEach(Effect):
+    """Iterate over a list-valued binding, applying inner effects once
+    per item.
+
+    At firing time, the engine reads `bindings[list_var]` (a list of
+    entity ids), and for each element runs `effects` with `item_var`
+    bound to that element. Inner effects close over outer-scope vars
+    (the cause event's roles, the rule's other binds) plus `item_var`.
+
+    Used by construction rules that attach N parts to a created whole:
+
+        for_each(Ps, item=(P := var("P_item")),
+            add_relation("havas_parton", T, P),
+            remove_relation("havi", A, P))
+    """
+    list_var: VarList
+    item_var: Var
+    effects: tuple[Effect, ...]
+
+    def reads(self) -> set[Var]:
+        out: set[Var] = {self.list_var}
+        for inner in self.effects:
+            out |= inner.reads()
+        # The item_var is locally bound by the loop, not read from
+        # outer scope.
+        out.discard(self.item_var)
+        return out
+
+    def writes(self) -> set[Var]:
+        # The loop binds item_var per iteration (locally) but doesn't
+        # leak it to outer scope; surface writes from inner effects.
+        out: set[Var] = set()
+        for inner in self.effects:
+            out |= inner.writes()
+        out.discard(self.item_var)
+        return out
+
+
+def for_each(list_var: VarList, item: Var, *effects: Effect) -> ForEach:
+    """Iterate `list_var` (a VarList binding) applying `effects` once
+    per item, with `item` bound to that element each iteration.
+
+        for_each(Ps, item=(P := var("P_item")),
+            add_relation("havas_parton", T, P),
+            remove_relation("havi", A, P))
+    """
+    if not isinstance(list_var, VarList):
+        raise TypeError(
+            f"for_each: list_var must be VarList, got "
+            f"{type(list_var).__name__}: {list_var!r}")
+    if not isinstance(item, Var):
+        raise TypeError(
+            f"for_each: item must be Var, got {type(item).__name__}: {item!r}")
+    if isinstance(item, VarList):
+        raise TypeError(
+            f"for_each: item must be a scalar Var, not VarList: {item!r}")
+    return ForEach(list_var, item, tuple(effects))

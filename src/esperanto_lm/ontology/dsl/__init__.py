@@ -27,9 +27,9 @@ changes.
 """
 from .effects import (
     AddRelation, Change, ConsumeOne, CreateEntity, DestroyEntity, Effect, Emit,
-    RemoveRelation, TransferN,
+    ForEach, RemoveRelation, TransferN,
     add_relation, change, consume_one, create_entity, destroy_entity, emit,
-    remove_relation, transfer_n,
+    for_each, remove_relation, transfer_n,
 )
 from .engine import (
     Derivation, Rule, collect_rules, compute_derived_state, derive, rule,
@@ -43,9 +43,9 @@ from .implications import (
 from .patterns import (
     AndPattern, BindPattern, CausedByPattern, ClosurePattern, EntityPattern,
     EventPattern, HasConceptFieldPattern, NotPattern, OrPattern,
-    PastEventPattern, Pattern, RelPattern, Var,
-    bind, caused_by, closure, entity, event, has_concept_field, past_event,
-    rel, var,
+    PastEventPattern, Pattern, RelPattern, Var, VarList,
+    bind, bind_list, caused_by, closure, entity, event, has_concept_field,
+    past_event, rel, var, var_list,
 )
 from .unifier import DerivedState, MatchContext, enumerate_bindings, resolve
 
@@ -53,14 +53,14 @@ __all__ = [
     # patterns + constructors
     "AndPattern", "BindPattern", "CausedByPattern", "ClosurePattern",
     "EntityPattern", "EventPattern", "HasConceptFieldPattern", "NotPattern",
-    "OrPattern", "PastEventPattern", "Pattern", "RelPattern", "Var",
-    "bind", "caused_by", "closure", "entity", "event", "has_concept_field",
-    "past_event", "rel", "var",
+    "OrPattern", "PastEventPattern", "Pattern", "RelPattern", "Var", "VarList",
+    "bind", "bind_list", "caused_by", "closure", "entity", "event",
+    "has_concept_field", "past_event", "rel", "var", "var_list",
     # effects
     "AddRelation", "Change", "ConsumeOne", "CreateEntity", "DestroyEntity",
-    "Effect", "Emit", "RemoveRelation", "TransferN",
+    "Effect", "Emit", "ForEach", "RemoveRelation", "TransferN",
     "add_relation", "change", "consume_one", "create_entity",
-    "destroy_entity", "emit", "remove_relation", "transfer_n",
+    "destroy_entity", "emit", "for_each", "remove_relation", "transfer_n",
     # implications
     "CategoryImplication", "Implication", "PartImplication",
     "PropertyImplication", "RelationImplication",

@@ -60,6 +60,24 @@ def var(name: str = "_anon") -> Var:
     return Var(name)
 
 
+class VarList(Var):
+    """A match variable whose binding is a list of entities, not a single
+    one. Used for variadic event roles like `fari.parts` where the
+    binding holds one entity per declared part of the theme concept.
+
+    Identity-compared exactly like Var; subclass purely so downstream
+    code (engine effect application, rule effects index, realizer)
+    can dispatch on `isinstance(v, VarList)` to iterate the binding."""
+    __slots__ = ()
+
+
+def var_list(name: str = "_anon") -> VarList:
+    """Construct a fresh list-valued match variable. Pair with
+    `bind(Ps := var_list("P"))` on a list-kind event role; pass to
+    `for_each(Ps, item_var, *effects)` in the rule's then-clause."""
+    return VarList(name)
+
+
 Bindings = dict[Var, Any]
 
 
@@ -156,6 +174,20 @@ def bind(target: Var | BindPattern) -> BindPattern:
     if not isinstance(target, Var):
         raise TypeError(
             f"bind() expects Var, got {type(target).__name__}: {target!r}")
+    return BindPattern(target)
+
+
+def bind_list(target: VarList) -> BindPattern:
+    """Bind a list-valued event role to a VarList. The matcher writes
+    the role's value (a list of entity ids) into bindings[target] as-is.
+    Downstream effect application (for_each) iterates the bound list.
+
+    Validates the target is actually a VarList; ordinary `bind()` would
+    silently accept it but downstream loops expect list semantics."""
+    if not isinstance(target, VarList):
+        raise TypeError(
+            f"bind_list() expects VarList, got {type(target).__name__}: "
+            f"{target!r}")
     return BindPattern(target)
 
 
