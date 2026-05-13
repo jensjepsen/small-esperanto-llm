@@ -131,3 +131,20 @@
 {"container_pattern": {"category": "surfaco"}, "contained": "kajero", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "markilo", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "gumo", "relation": "sur"}
+{"container": "domo", "contained": "muzikejo", "relation": "en"}
+{"container": "muzikejo", "contained": "gitaro", "relation": "en"}
+{"container": "muzikejo", "contained": "fluto", "relation": "en"}
+{"container": "muzikejo", "contained": "fortepiano", "relation": "en"}
+{"container": "muzikejo", "contained": "violono", "relation": "en"}
+{"container": "muzikejo", "contained": "tamburo", "relation": "en"}
+{"container": "muzikejo", "contained": "harpo", "relation": "en"}
+{"container": "muzikejo", "contained": "trumpeto", "relation": "en"}
+{"container": "muzikejo", "contained": "partituro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "gitaro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "fluto", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "fortepiano", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "violono", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "tamburo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "harpo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "trumpeto", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "partituro", "relation": "en"}

@@ -331,3 +331,9 @@
 {"lemma": "inko", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["likva"]}}
 {"lemma": "gumo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["ilo"]}
 {"lemma": "markilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "functional_signature": ["skribi"]}, "category": ["ilo"]}
+{"lemma": "muzikejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "violono", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
+{"lemma": "tamburo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
+{"lemma": "harpo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
+{"lemma": "trumpeto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
+{"lemma": "partituro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"]}}
