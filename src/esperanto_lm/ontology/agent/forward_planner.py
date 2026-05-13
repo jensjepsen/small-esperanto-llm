@@ -1021,15 +1021,29 @@ def _heuristic_and_helpful(
 
     from collections import deque
     worklist = deque(cost.keys())
+    # Build producer maps incrementally to avoid a second full pass
+    # over all_consumers. Each (fact, consumer) firing updates
+    # producers_cheapest (resets on strict improvement, appends on
+    # tie) and producers_all (always appends).
+    producers_cheapest: dict[tuple, list] = {}
+    producers_all: dict[tuple, list] = {}
 
     for base, pres, effs, cid_ in all_consumers:
         if pres:
             continue
         for e in effs:
-            if e not in cost or base < cost[e]:
+            prev = cost.get(e, _HEURISTIC_INF)
+            if base < prev:
                 cost[e] = base
                 producer[e] = cid_
                 worklist.append(e)
+                producers_cheapest[e] = [cid_]
+                producers_all.setdefault(e, []).append(cid_)
+            elif base == prev:
+                producers_cheapest.setdefault(e, []).append(cid_)
+                producers_all.setdefault(e, []).append(cid_)
+            else:
+                producers_all.setdefault(e, []).append(cid_)
 
     iter_cap = 200_000
     iters = 0
@@ -1049,10 +1063,18 @@ def _heuristic_and_helpful(
                 continue
             new_cost = base + total_pre
             for e in effs:
-                if e not in cost or new_cost < cost[e]:
+                prev = cost.get(e, _HEURISTIC_INF)
+                if new_cost < prev:
                     cost[e] = new_cost
                     producer[e] = cid_
                     worklist.append(e)
+                    producers_cheapest[e] = [cid_]
+                    producers_all.setdefault(e, []).append(cid_)
+                elif new_cost == prev:
+                    producers_cheapest.setdefault(e, []).append(cid_)
+                    producers_all.setdefault(e, []).append(cid_)
+                else:
+                    producers_all.setdefault(e, []).append(cid_)
 
     if goal[0] == "property":
         _, eid, slot, value = goal
@@ -1071,32 +1093,9 @@ def _heuristic_and_helpful(
         if cost.get(g, _HEURISTIC_INF) >= _HEURISTIC_INF:
             return _HEURISTIC_INF, set()
 
-    # Two producer maps:
-    # - producers_cheapest: for h_FF count. One producer per fact
-    #   at cheapest cost. Drives heuristic value.
-    # - producers_all: for helpful-action set. All valid producers
-    #   so search can try alternative paths (eniri/iri when
-    #   relaxation prefers naĝi).
-    producers_cheapest: dict[tuple, list] = {}
-    producers_all: dict[tuple, list] = {}
-    for base, pres, effs, cid_ in all_consumers:
-        ready = True
-        total_pre = 0
-        for p in pres:
-            if p not in cost:
-                ready = False
-                break
-            total_pre += cost[p]
-        if not ready:
-            continue
-        c = base + total_pre
-        for e in effs:
-            if e not in cost:
-                continue
-            producers_all.setdefault(e, []).append(cid_)
-            if cost[e] == c:
-                producers_cheapest.setdefault(e, []).append(cid_)
-
+    # producers_cheapest / producers_all built incrementally during
+    # the worklist above — no second pass needed.
+    #
     # h_FF: walk back from goal through CHEAPEST producers,
     # collecting unique action cids. h = |unique actions|.
     relaxed_action_cids: set = set()
