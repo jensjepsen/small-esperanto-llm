@@ -38,9 +38,49 @@ def _init_worker():
     _DERIVATIONS = list(RUNTIME_DERIVATIONS)
 
 
+def _drive_summary(drive, t):
+    """Compact dict describing the drive in concept terms."""
+    if not drive:
+        return {}
+    kind = drive[0]
+    if kind == "entity_slot":
+        _, actor, target, slot, val = drive
+        return {
+            "kind": kind,
+            "actor": t.entities[actor].concept_lemma,
+            "target": t.entities[target].concept_lemma,
+            "slot": slot, "value": val}
+    if kind == "event_fire":
+        _, actor, verb, _ = drive
+        return {"kind": kind, "actor": t.entities[actor].concept_lemma,
+                "verb": verb}
+    return {"kind": kind, "raw": str(drive)}
+
+
+def _plan_summary(plan, t):
+    """Plan as list of (lemma, {role: concept_lemma}) for logging."""
+    out = []
+    for lemma, roles in plan:
+        out.append({
+            "verb": lemma,
+            "roles": {rn: t.entities[e].concept_lemma
+                      for rn, e in roles.items()}})
+    return out
+
+
+def _entities_summary(t):
+    """List in-scene concept lemmas (skipping body parts)."""
+    return sorted(
+        {e.concept_lemma for eid, e in t.entities.items()
+         if e.entity_type != "inanimate" and eid != "mondo"})
+
+
 def _run_batch(args):
-    """Process one batch. args = (seed, n, sampler_name, max_depth)."""
-    seed, n, sampler_name, max_depth = args
+    """Process one batch. args = (seed, n, sampler_name, max_depth,
+    capture_samples). Returns (fired, failed, no_sample, failures,
+    samples) where samples is a list of {kind, scene, drive, plan?,
+    entities} dicts (cap at ~3 per batch each for fired/failed)."""
+    seed, n, sampler_name, max_depth, capture = args
     import os
     use_forward = os.environ.get("USE_FORWARD") == "1"
     from esperanto_lm.ontology.agent.dispatcher import plan_for_drive
@@ -57,6 +97,10 @@ def _run_batch(args):
     failed = 0
     no_sample = 0
     failures: list[tuple] = []
+    samples: list = []
+    SAMPLES_PER_KIND = 3
+    fired_seen = 0
+    failed_seen = 0
     for _ in range(n):
         if sampler_name == "verb":
             sample = sample_regression_scene(_LEX, rng, rules=_RULES)
@@ -73,7 +117,8 @@ def _run_batch(args):
             if use_forward:
                 plan = plan_for_goal(
                     drive, t, _LEX, _RULES, _DERIVATIONS,
-                    max_states=300, entity_resolver=spawner)
+                    max_states=int(os.environ.get("MAX_STATES", "300")),
+                    entity_resolver=spawner)
             else:
                 plan = plan_for_drive(
                     drive, t, _LEX, _RULES, _DERIVATIONS, rng=rng,
@@ -83,6 +128,14 @@ def _run_batch(args):
             plan = None
         if plan:
             fired += 1
+            if capture and fired_seen < SAMPLES_PER_KIND:
+                samples.append({
+                    "kind": "fired",
+                    "scene": scene_id,
+                    "drive": _drive_summary(drive, t),
+                    "entities": _entities_summary(t),
+                    "plan": _plan_summary(plan, t)})
+                fired_seen += 1
         else:
             failed += 1
             leaf = get_planner_failure_reason()
@@ -105,7 +158,15 @@ def _run_batch(args):
             else:
                 key = leaf[:2]
             failures.append(key)
-    return fired, failed, no_sample, failures
+            if capture and failed_seen < SAMPLES_PER_KIND:
+                samples.append({
+                    "kind": "failed",
+                    "scene": scene_id,
+                    "drive": _drive_summary(drive, t),
+                    "entities": _entities_summary(t),
+                    "leaf": str(leaf) if leaf is not None else None})
+                failed_seen += 1
+    return fired, failed, no_sample, failures, samples
 
 
 def main():
@@ -119,25 +180,36 @@ def main():
                    help="Which sampler(s) to bench")
     p.add_argument("--max-depth", type=int, default=8,
                    help="Planner DFS depth budget")
+    p.add_argument("--samples-out", type=str, default=None,
+                   help="Write captured fired+failed plan samples as "
+                        "JSONL to this path (one entry per scene)")
+    p.add_argument("--show-samples", type=int, default=0,
+                   help="Print N fired and N failed samples to stdout")
     args = p.parse_args()
 
+    import json
     from collections import Counter
     n_tasks = (args.scenes + args.batch - 1) // args.batch
     samplers = ("verb", "goal") if args.sampler == "both" else (args.sampler,)
+    capture = bool(args.samples_out or args.show_samples)
     for sampler in samplers:
-        tasks = [(args.seed + i, args.batch, sampler, args.max_depth)
+        tasks = [(args.seed + i, args.batch, sampler,
+                  args.max_depth, capture)
                  for i in range(n_tasks)]
         start = time.time()
         fired = failed = no_sample = 0
         all_failures: Counter = Counter()
+        all_samples: list = []
         with Pool(processes=args.workers,
                    initializer=_init_worker) as pool:
-            for f, fa, ns, failures in pool.imap_unordered(_run_batch, tasks):
+            for f, fa, ns, failures, samples in (
+                    pool.imap_unordered(_run_batch, tasks)):
                 fired += f
                 failed += fa
                 no_sample += ns
                 for k in failures:
                     all_failures[k] += 1
+                all_samples.extend(samples)
         elapsed = time.time() - start
         total = fired + failed
         yld = fired / total if total > 0 else 0.0
@@ -148,6 +220,34 @@ def main():
         print(f"    top failures:")
         for k, v in all_failures.most_common(10):
             print(f"      {v}x {k}")
+
+        if args.samples_out:
+            path = args.samples_out
+            if len(samplers) > 1:
+                base, _, ext = path.rpartition(".")
+                path = f"{base}.{sampler}.{ext}" if ext else f"{path}.{sampler}"
+            with open(path, "w") as f:
+                for s in all_samples:
+                    f.write(json.dumps(s, ensure_ascii=False) + "\n")
+            print(f"    wrote {len(all_samples)} samples to {path}")
+
+        if args.show_samples:
+            for kind in ("fired", "failed"):
+                shown = 0
+                print(f"    --- {kind} samples ---")
+                for s in all_samples:
+                    if s["kind"] != kind:
+                        continue
+                    print(f"      scene={s['scene']} drive={s['drive']}")
+                    if kind == "fired":
+                        for step in s["plan"]:
+                            print(f"        > {step['verb']}({step['roles']})")
+                    else:
+                        print(f"        leaf={s.get('leaf')}")
+                        print(f"        entities={s['entities']}")
+                    shown += 1
+                    if shown >= args.show_samples:
+                        break
 
 
 if __name__ == "__main__":

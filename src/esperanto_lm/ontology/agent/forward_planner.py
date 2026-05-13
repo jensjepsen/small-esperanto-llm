@@ -1129,11 +1129,257 @@ def _trace_signature(trace: Trace) -> tuple:
     return (ents, rels, evs)
 
 
+def _infra_prespawn(action, role_map, trace, lex, derivations, resolver,
+                     rule_effects, derivable_slots, depth):
+    """Recursive infrastructure pre-spawn: ensure `action` is plannable
+    by walking its preconditions and role.properties, spawning enabling
+    entities for derivable requirements.
+
+    Only recurses on RelationPreconditions whose producer verbs have
+    role-properties on a derivable slot — i.e., chains that need
+    infrastructure (perception → illumination → lampo). Skips normal
+    action chains the planner can subgoal directly (havi via preni,
+    samloke via iri)."""
+    if depth <= 0:
+        return
+    from ..schemas import RelationPrecondition
+    from ..dsl.implications import PropertyImplication
+    derived = _cached_compute_derived_state(trace, derivations, lex)
+    facts = set(_state_facts(trace, derived))
+
+    # (a) Role.property requirements: derivable + not already true.
+    for role_spec in action.roles:
+        eid = role_map.get(role_spec.name)
+        if eid is None:
+            continue
+        ent_type = trace.entities[eid].entity_type
+        for slot, vals in (role_spec.properties or {}).items():
+            if not vals:
+                continue
+            target_val = vals[0]
+            if ("prop", eid, slot, target_val) in facts:
+                continue
+            applicable = derivable_slots.get(slot, ())
+            if not any(lex.types.is_subtype(ent_type, t)
+                       for t in applicable):
+                continue
+            for d in derivations:
+                if not any(isinstance(imp, PropertyImplication)
+                           and imp.slot == slot
+                           and imp.value == target_val
+                           for imp in d.implies):
+                    continue
+                _spawn_for_derivation(
+                    d, eid, trace, lex, derivations, resolver,
+                    rule_effects, derivable_slots, depth)
+                break
+
+    # (b) RelationPreconditions whose synthesized producer needs infra.
+    for pc in action.preconditions:
+        if not isinstance(pc, RelationPrecondition):
+            continue
+        eids = tuple(role_map.get(r) for r in pc.roles)
+        if any(e is None for e in eids):
+            continue
+        if ("rel", pc.rel, eids) in facts:
+            continue
+        # Find a producer verb whose synthesized adds include this relation.
+        for prod_verb, entry in rule_effects.items():
+            chose = None
+            for relation, role_args in entry.get("adds", []):
+                if relation != pc.rel:
+                    continue
+                prod_action = lex.actions.get(prod_verb)
+                if prod_action is None:
+                    continue
+                chose = (prod_action, role_args)
+                break
+            if chose is None:
+                continue
+            prod_action, role_args = chose
+            # Map producer's role args to goal's eids positionally.
+            prod_role_map: dict = {}
+            for goal_role, prod_role in zip(pc.roles, role_args):
+                if goal_role in role_map:
+                    prod_role_map[prod_role] = role_map[goal_role]
+            # Spawn producer's missing roles.
+            derived_now = _cached_compute_derived_state(
+                trace, derivations, lex)
+            exclude = set(prod_role_map.values())
+            for rs in prod_action.roles:
+                if rs.name in prod_role_map:
+                    continue
+                filler = _find_role_filler(
+                    rs, trace, lex, derived=derived_now,
+                    exclude=exclude, action=prod_action,
+                    role_name=rs.name)
+                if filler is None:
+                    filler = resolver(
+                        rs, trace, lex, exclude,
+                        action=prod_action, role_name=rs.name)
+                if filler is not None:
+                    prod_role_map[rs.name] = filler
+                    exclude.add(filler)
+            # Recurse: ensure producer's own preconds + role-props.
+            _infra_prespawn(
+                prod_action, prod_role_map, trace, lex, derivations,
+                resolver, rule_effects, derivable_slots, depth - 1)
+            break  # one producer per precondition
+
+
+def _spawn_for_derivation(d, eid, trace, lex, derivations, resolver,
+                            rule_effects, derivable_slots, depth):
+    """For derivation `d` (which produces a property on eid), walk its
+    given clauses and spawn supporting entities for any EntityPattern
+    & bind() that binds a NON-target var (i.e. the supporting entity)."""
+    if depth <= 0:
+        return
+    from ..dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern, Var,
+    )
+    from ..dsl.implications import PropertyImplication
+
+    target_var = None
+    for imp in d.implies:
+        if isinstance(imp, PropertyImplication) and isinstance(imp.entity, Var):
+            target_var = imp.entity
+            break
+    if target_var is None:
+        return
+
+    def _walk_eps(pat):
+        if isinstance(pat, AndPattern):
+            if (isinstance(pat.left, EntityPattern)
+                    and isinstance(pat.right, BindPattern)):
+                yield (pat.left, pat.right.target)
+            elif (isinstance(pat.right, EntityPattern)
+                    and isinstance(pat.left, BindPattern)):
+                yield (pat.right, pat.left.target)
+            else:
+                yield from _walk_eps(pat.left)
+                yield from _walk_eps(pat.right)
+
+    class _SynthRole:
+        def __init__(self, type_, properties):
+            self.type = type_
+            self.properties = properties
+            self.name = "<infra>"
+
+    for given in d.given:
+        for ep, bv in _walk_eps(given):
+            if bv is target_var:
+                continue
+            constraints = ep.constraints
+            type_ = constraints.get("type", "physical")
+            props: dict = {}
+            for k, v in constraints.items():
+                if k in ("type", "concept", "has_suffix"):
+                    continue
+                if isinstance(v, str):
+                    props[k] = [v]
+            # Skip if a matching entity exists. Derived properties
+            # don't show in concept.properties directly; for now
+            # treat any matching-type entity as fulfilling the
+            # static-property part — if the entity needs further
+            # derived state, we'll spawn another via recursion.
+            matched = False
+            for other_eid, other_ent in trace.entities.items():
+                if not lex.types.is_subtype(other_ent.entity_type, type_):
+                    continue
+                ok = True
+                for slot, vals in props.items():
+                    if slot in derivable_slots:
+                        continue  # check derivation separately
+                    cvals = other_ent.properties.get(slot, [])
+                    if not (set(vals) & set(cvals)):
+                        ok = False
+                        break
+                if ok:
+                    matched = True
+                    # If derived properties needed, recurse on this
+                    # existing entity to ensure they become reachable.
+                    for slot, vals in props.items():
+                        if slot in derivable_slots and vals:
+                            _ensure_prop_reachable(
+                                other_eid, slot, vals[0], trace, lex,
+                                derivations, resolver, rule_effects,
+                                derivable_slots, depth - 1)
+                    break
+            if matched:
+                continue
+            # Need a fresh entity.
+            synth = _SynthRole(type_, props)
+            filler = resolver(
+                synth, trace, lex, set(),
+                action=None, role_name=None)
+            if filler is None:
+                continue
+            # The spawner randomizes varies-slot values; force the
+            # property values our derivation needs (e.g. power_state=
+            # aktiva on a freshly-spawned lampo). Without this the
+            # planner has to subgoal ŝalti, which it can do — but in
+            # practice the deeper chain blows past the search cap.
+            # No-op for slots that aren't varies (the spawner just
+            # left the concept's declared value).
+            ent = trace.entities.get(filler)
+            if ent is not None:
+                for slot, vals in props.items():
+                    if not vals:
+                        continue
+                    slot_def = lex.slots.get(slot)
+                    if slot_def is not None and slot_def.varies:
+                        ent.set_property(slot, vals[0])
+            # Recurse on derivable properties of the new entity.
+            for slot, vals in props.items():
+                if slot in derivable_slots and vals:
+                    _ensure_prop_reachable(
+                        filler, slot, vals[0], trace, lex, derivations,
+                        resolver, rule_effects, derivable_slots, depth - 1)
+
+
+def _ensure_prop_reachable(eid, slot, value, trace, lex, derivations,
+                              resolver, rule_effects, derivable_slots, depth):
+    """Ensure ("prop", eid, slot, value) becomes derivable in trace.
+    Tries every derivation producing (slot, value), not just the
+    first — different derivations apply to different entity contexts
+    (outdoor_luma_during_day vs location_lit_by_active_lamp both
+    produce lit_state=luma but for different entity shapes)."""
+    if depth <= 0:
+        return
+    from ..dsl.implications import PropertyImplication
+    derived = _cached_compute_derived_state(trace, derivations, lex)
+    if ("prop", eid, slot, value) in set(_state_facts(trace, derived)):
+        return
+    for d in derivations:
+        if not any(isinstance(imp, PropertyImplication)
+                   and imp.slot == slot and imp.value == value
+                   for imp in d.implies):
+            continue
+        _spawn_for_derivation(
+            d, eid, trace, lex, derivations, resolver,
+            rule_effects, derivable_slots, depth)
+        # Re-check; stop once the property becomes reachable.
+        derived = _cached_compute_derived_state(trace, derivations, lex)
+        if ("prop", eid, slot, value) in set(_state_facts(trace, derived)):
+            return
+
+
 def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
     """For each action whose effects could produce `goal`, ensure all
     role types have at least one matching entity. Missing roles are
     filled by calling `resolver`. Mirrors what the backward planner's
-    `_find_role_filler` does lazily during search."""
+    `_find_role_filler` does lazily during search.
+
+    Then runs `_infra_prespawn` recursively to handle
+    derivation-chain infrastructure (e.g., spawn a lampo when the
+    chain requires illuminated agents)."""
+    from ..regression.seeders import _fully_derivable_slots
+    rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
+    if rule_effects is None:
+        rule_effects = _build_rule_effects_index(rules)
+        _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
+    derivable_slots = _fully_derivable_slots(lex, derivations)
+
     if goal[0] == "event_fire":
         # Specific verb already chosen; just fill any unbound roles.
         _, gv_verb, gv_bindings_frozen = goal
@@ -1144,6 +1390,7 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
         derived_now = _cached_compute_derived_state(
             trace, derivations, lex)
         exclude = set(gv_bindings.values())
+        role_map = dict(gv_bindings)
         for role_spec in action.roles:
             if role_spec.name in gv_bindings:
                 continue
@@ -1156,7 +1403,11 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
                                   action=action,
                                   role_name=role_spec.name)
             if filler is not None:
+                role_map[role_spec.name] = filler
                 exclude.add(filler)
+        _infra_prespawn(
+            action, role_map, trace, lex, derivations, resolver,
+            rule_effects, derivable_slots, depth=6)
         return
     if goal[0] != "property":
         return
@@ -1187,6 +1438,7 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
         # For each non-target role, check whether an in-trace entity
         # already fills it; if not, ask the resolver to spawn one.
         exclude = {target_eid}
+        role_map = {target_role_name: target_eid}
         for role_spec in action.roles:
             if role_spec.name == target_role_name:
                 continue
@@ -1202,7 +1454,11 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
                 filler = resolver(role_spec, trace, lex, exclude,
                                   action=action, role_name=role_spec.name)
             if filler is not None:
+                role_map[role_spec.name] = filler
                 exclude.add(filler)
+        _infra_prespawn(
+            action, role_map, trace, lex, derivations, resolver,
+            rule_effects, derivable_slots, depth=6)
 
 
 def plan_for_goal(
