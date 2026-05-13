@@ -270,3 +270,16 @@
 {"container": "banĉambro", "contained": "razilo", "relation": "en"}
 {"container": "banĉambro", "contained": "odoraĵo", "relation": "en"}
 {"container": "banĉambro", "contained": "fardilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "ŝovelilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "rastilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "mezurilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "fadeno", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "magneto", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "ŝnuro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "pinglo", "relation": "en"}
+{"container": "laborejo", "contained": "ŝovelilo", "relation": "en"}
+{"container": "laborejo", "contained": "rastilo", "relation": "en"}
+{"container": "laborejo", "contained": "mezurilo", "relation": "en"}
+{"container": "laborejo", "contained": "ŝtupetaro", "relation": "en"}
+{"container": "ĝardeno", "contained": "ŝovelilo", "relation": "en"}
+{"container": "ĝardeno", "contained": "rastilo", "relation": "en"}
