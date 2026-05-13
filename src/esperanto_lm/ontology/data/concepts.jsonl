@@ -377,3 +377,11 @@
 {"lemma": "mielo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
 {"lemma": "olivoleo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
 {"lemma": "vinagaro", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}}
+{"lemma": "libelo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "skarabo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}]}
+{"lemma": "vespo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "flugilo"}, {"concept": "kapo"}]}
+{"lemma": "grilo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}]}
+{"lemma": "cikado", "entity_type": "animal", "properties": {}, "parts": [{"concept": "flugilo"}, {"concept": "kapo"}]}
+{"lemma": "araneo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}]}
+{"lemma": "lumvermo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}]}
+{"lemma": "mevo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "flugilo"}, {"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
