@@ -180,27 +180,13 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                      slot, target_value)
             return t, scene_id, drive
         else:
-            # event_fire: spawn each non-actor role separately via
-            # setup_spawner, collect bindings, emit event_fire drive.
-            from .spawner import make_spawner
-            setup_spawner = make_spawner(
-                scene_id, lex, rng,
-                budget=max(1, len(action.roles) - 1))
-            bindings: dict = {actor_role_name: actor_eid}
-            failed = False
-            for role_spec in action.roles:
-                if role_spec.name == actor_role_name:
-                    continue
-                filler = setup_spawner(
-                    role_spec, t, lex, set(t.entities.keys()),
-                    action=action, role_name=role_spec.name)
-                if filler is None:
-                    failed = True
-                    break
-                bindings[role_spec.name] = filler
-            if failed:
-                continue
+            # event_fire: only bind the actor here. The planner's
+            # _prespawn_for_goal fills the remaining roles via the
+            # session spawner (same closure used during search), so
+            # the sampler doesn't have to commit to specific theme/
+            # instrument/recipient up front. Reduces no_sample bails
+            # for verbs with many roles.
             drive = ("event_fire", actor_eid, verb_lemma,
-                     tuple(sorted(bindings.items())))
+                     ((actor_role_name, actor_eid),))
             return t, scene_id, drive
     return None
