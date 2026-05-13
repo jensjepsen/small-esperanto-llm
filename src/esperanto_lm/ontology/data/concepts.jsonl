@@ -393,3 +393,11 @@
 {"lemma": "agendo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"]}}
 {"lemma": "kalendaro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"]}}
 {"lemma": "arkivilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "openness": ["fermita"]}, "parts": [{"concept": "seruro"}], "category": ["meblo", "ujo"]}
+{"lemma": "telereto", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "posture": ["kuŝanta"]}}
+{"lemma": "tetiero", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "openness": ["fermita"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "fullness": ["malplena"], "liquid_holder": ["yes"], "posture": ["staranta"]}, "category": ["ujo"]}
+{"lemma": "kafmaŝino", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["neaktiva"]}, "category": ["meblo"]}
+{"lemma": "rostujo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["neaktiva"]}, "category": ["meblo"]}
+{"lemma": "kaserolo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "fullness": ["malplena"], "liquid_holder": ["yes"], "posture": ["staranta"]}, "category": ["ilo"]}
+{"lemma": "korktirilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"]}, "category": ["ilo"]}
+{"lemma": "salujo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "openness": ["fermita"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "posture": ["staranta"]}, "category": ["ujo"]}
+{"lemma": "spico", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}

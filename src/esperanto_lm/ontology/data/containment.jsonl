@@ -223,3 +223,19 @@
 {"container": "arkivilo", "contained": "agendo", "relation": "en"}
 {"container": "arkivilo", "contained": "kalendaro", "relation": "en"}
 {"container": "arkivilo", "contained": "kajero", "relation": "en"}
+{"container": "kuirejo", "contained": "telereto", "relation": "en"}
+{"container": "kuirejo", "contained": "tetiero", "relation": "en"}
+{"container": "kuirejo", "contained": "kafmaŝino", "relation": "en"}
+{"container": "kuirejo", "contained": "rostujo", "relation": "en"}
+{"container": "kuirejo", "contained": "kaserolo", "relation": "en"}
+{"container": "kuirejo", "contained": "korktirilo", "relation": "en"}
+{"container": "kuirejo", "contained": "salujo", "relation": "en"}
+{"container": "kuirejo", "contained": "spico", "relation": "en"}
+{"container_pattern": {"category": "surfaco"}, "contained": "telereto", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "tetiero", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "kaserolo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "salujo", "relation": "sur"}
+{"container": "tetiero", "contained": "teo", "relation": "en"}
+{"container": "kaserolo", "contained": "supo", "relation": "en"}
+{"container": "kaserolo", "contained": "akvo", "relation": "en"}
+{"container": "salujo", "contained": "spico", "relation": "en"}
