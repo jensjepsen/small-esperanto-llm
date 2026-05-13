@@ -30,7 +30,7 @@ from ..causal import EntityInstance, Event, Trace, make_event
 from ..loader import Lexicon
 from .effects import (
     AddRelation, Change, ConsumeOne, CreateEntity, DestroyEntity, Effect, Emit,
-    RemoveRelation, TransferN,
+    ForEach, RemoveRelation, TransferN,
 )
 from .implications import (
     CategoryImplication, Implication, PartImplication, PropertyImplication,
@@ -497,13 +497,22 @@ def _run_causal_phase(
             else:
                 binding_iter = enumerate_bindings(r.when, r.given, ctx)
             for bindings in [dict(b) for b in binding_iter]:
-                key = (r.name, ev.id, frozenset(bindings.items()))
+                # List-valued bindings (variadic event roles like
+                # fari.parts) are unhashable in the dedup frozenset;
+                # tuple-coerce just for the key. The bindings dict
+                # itself keeps lists so ForEach can mutate-iterate.
+                key = (r.name, ev.id, frozenset(
+                    (k, tuple(v) if isinstance(v, list) else v)
+                    for k, v in bindings.items()))
                 if key in fired_bindings:
                     continue
                 fired_bindings.add(key)
                 if _apply_effects(r, bindings, trace, lexicon, counter, ev):
                     changed = True
     return changed
+
+
+_UNSET = object()
 
 
 def _apply_effects(
@@ -517,8 +526,44 @@ def _apply_effects(
     binds S so the next effect can use it.
     """
     b = dict(bindings)
+    return _apply_effect_list(
+        r.then, b, trace, lexicon, counter, cause_event)
+
+
+def _apply_effect_list(
+    effects, b: dict[Var, Any], trace: Trace,
+    lexicon: Lexicon, counter: _CreatedEntities, cause_event: Event,
+) -> bool:
+    """Inner dispatcher — applies an arbitrary list of effects with a
+    given (shared) bindings dict. Extracted from `_apply_effects` so
+    ForEach can recursively dispatch its inner effect list per
+    iteration."""
     changed = False
-    for eff in r.then:
+    for eff in effects:
+        if isinstance(eff, ForEach):
+            # Iterate the list binding, running inner effects with
+            # item_var locally bound. Mutate-and-restore on the shared
+            # bindings dict (same pattern BindPattern uses to avoid
+            # copying bindings per iteration).
+            items = b.get(eff.list_var, ())
+            if isinstance(items, str):
+                items = (items,)
+            elif not isinstance(items, (list, tuple)):
+                items = (items,)
+            prior = b.get(eff.item_var, _UNSET)
+            try:
+                for item in items:
+                    b[eff.item_var] = item
+                    if _apply_effect_list(
+                            eff.effects, b, trace, lexicon, counter,
+                            cause_event):
+                        changed = True
+            finally:
+                if prior is _UNSET:
+                    b.pop(eff.item_var, None)
+                else:
+                    b[eff.item_var] = prior
+            continue
         if isinstance(eff, Emit):
             roles = {k: resolve(v, b) for k, v in eff.role_vars.items()}
             pc = {

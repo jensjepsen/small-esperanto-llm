@@ -143,7 +143,10 @@ class Event:
     """
     id: str
     action: str
-    roles: dict[str, str]               # role_name -> entity_id
+    # Role values are entity ids, OR a list of entity ids for variadic
+    # roles (kind="list" in the action schema — e.g. fari.parts holds
+    # one eid per declared part of the constructed concept).
+    roles: dict[str, str | list[str]]
     caused_by: tuple[str, ...] = ()
     creates: list["EntityInstance"] = field(default_factory=list)
     property_changes: dict[tuple[str, str], Any] = field(default_factory=dict)
@@ -198,7 +201,15 @@ def make_event(
     NOT in the id — they're outputs of what fired.
     """
     causes = tuple(sorted(caused_by))
-    role_str = ",".join(f"{k}={v}" for k, v in sorted(roles.items()))
+    # List-valued roles (variadic parts on fari) hash by joining
+    # elements with `+`; the brackets prevent ambiguity with scalar
+    # ids that happen to contain a "+" character.
+    def _role_to_str(v):
+        if isinstance(v, (list, tuple)):
+            return "[" + "+".join(str(x) for x in v) + "]"
+        return str(v)
+    role_str = ",".join(
+        f"{k}={_role_to_str(v)}" for k, v in sorted(roles.items()))
     qty_str = "" if quantity == 1 else f"|q={quantity}"
     h = hashlib.sha1(
         f"{action}|{role_str}|{','.join(causes)}{qty_str}".encode("utf-8")
