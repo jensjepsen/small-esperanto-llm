@@ -337,3 +337,12 @@
 {"lemma": "harpo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
 {"lemma": "trumpeto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
 {"lemma": "partituro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"]}}
+{"lemma": "plaĝo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "sablo"}, {"concept": "akvo"}]}
+{"lemma": "klifo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "ŝtono"}]}
+{"lemma": "dezerto", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "sablo"}]}
+{"lemma": "valeo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "tero"}, {"concept": "vojo"}]}
+{"lemma": "sablo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["stone"]}}
+{"lemma": "glacio", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["water"]}}
+{"lemma": "gantoj", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "botoj", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "zono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}

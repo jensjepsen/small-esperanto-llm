@@ -148,3 +148,12 @@
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "harpo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "trumpeto", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "partituro", "relation": "en"}
+{"container": "plaĝo", "contained": "sablo", "relation": "en"}
+{"container": "dezerto", "contained": "sablo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "nebulo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "glacio", "relation": "en"}
+{"container": "bankuvo", "contained": "glacio", "relation": "en"}
+{"container": "lavabo", "contained": "glacio", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "gantoj", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "botoj", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "zono", "relation": "en"}
