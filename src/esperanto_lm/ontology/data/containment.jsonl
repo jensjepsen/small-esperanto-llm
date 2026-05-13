@@ -157,3 +157,16 @@
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "gantoj", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "botoj", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "zono", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "monujo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "okulvitroj", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "telefono", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "kamerao", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lupeo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "enkluvo", "relation": "en"}
+{"container": "monujo", "contained": "monero", "relation": "en"}
+{"container_pattern": {"category": "surfaco"}, "contained": "okulvitroj", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "telefono", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "kamerao", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "lupeo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "enkluvo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "monujo", "relation": "sur"}

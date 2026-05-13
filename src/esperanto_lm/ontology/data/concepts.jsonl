@@ -354,3 +354,11 @@
 {"lemma": "struto", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["besto"]}
 {"lemma": "pingveno", "entity_type": "animal", "properties": {"terrain": ["water", "land"], "locomotion": ["walk", "swim"]}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["besto"]}
 {"lemma": "delfeno", "entity_type": "animal", "properties": {"terrain": ["water"], "locomotion": ["swim"]}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["besto"]}
+{"lemma": "monujo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"], "made_of": ["fabric"]}, "category": ["ujo"]}
+{"lemma": "okulvitroj", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["glass"], "transforms_on_break": ["vitropecetoj"]}}
+{"lemma": "telefono", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["aktiva"]}, "category": ["ilo"]}
+{"lemma": "kamerao", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["aktiva"]}, "category": ["ilo"]}
+{"lemma": "lupeo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["glass"], "transforms_on_break": ["vitropecetoj"]}, "category": ["ilo"]}
+{"lemma": "pantoflo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "sandalo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "enkluvo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "openness": ["fermita"]}}
