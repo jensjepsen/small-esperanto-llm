@@ -11,10 +11,10 @@ from __future__ import annotations
 from ..loader import Lexicon
 from .engine import Rule
 from . import (
-    add_relation, bind, category, caused_by, closure, consume_one,
-    create_entity, derive, destroy_entity, emit, entity, event,
+    add_relation, bind, bind_list, category, caused_by, closure, consume_one,
+    create_entity, derive, destroy_entity, emit, entity, event, for_each,
     has_concept_field, part, past_event, property, rel, relation,
-    remove_relation, rule, transfer_n, var,
+    remove_relation, rule, transfer_n, var, var_list,
 )
 
 
@@ -300,6 +300,36 @@ verŝi_into_container_transfers = rule(
         add_relation("en", VCT, VCD),
     ],
     name="verŝi_into_container_transfers",
+)
+
+
+# ---------- causal: fari_creates_constructable -------------------------
+#
+# Construction. The agent has gathered the parts (one entity per
+# declared part of the theme concept's `parts` field) and the planner
+# has pre-staged the to-be-created theme as a real entity in the trace
+# (so we can refer to it). The rule transfers havi to the agent and
+# attaches each gathered part as a havas_parton of the new whole,
+# detaching the parts from the agent's havi.
+#
+# Variadic over the theme concept's parts list — driven by the
+# event's `parts` role (kind="list" in actions.jsonl), which the
+# matcher binds as a VarList. The for_each effect iterates per
+# element. Future variadic verbs (decompose, miksi, ŝarĝi) plug into
+# the same pattern.
+
+fari_creates_constructable = rule(
+    when=event("fari",
+               agent=bind(FA := var("A")),
+               theme=bind(FT := var("T")),
+               parts=bind_list(FPs := var_list("P"))),
+    then=[
+        add_relation("havi", FA, FT),
+        for_each(FPs, (FP := var("P_item")),
+            add_relation("havas_parton", FT, FP),
+            remove_relation("havi", FA, FP)),
+    ],
+    name="fari_creates_constructable",
 )
 
 
@@ -2771,4 +2801,5 @@ DEFAULT_DSL_RULES: list[Rule] = [
     malplenigi_releases_contents,
     verŝi_into_location_emits_fali,
     verŝi_into_container_transfers,
+    fari_creates_constructable,
 ]
