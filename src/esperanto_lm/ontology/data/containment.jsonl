@@ -245,3 +245,5 @@
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "frostigilo", "relation": "en"}
 {"container": "kuirejo", "contained": "varmilo", "relation": "en"}
 {"container": "kuirejo", "contained": "frostilo", "relation": "en"}
+{"container": "olivarbo", "contained": "olivo", "relation": "sur"}
+{"container": "palmo", "contained": "daktilo", "relation": "sur"}
