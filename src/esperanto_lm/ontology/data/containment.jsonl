@@ -198,3 +198,28 @@
 {"container": "fridujo", "contained": "supo", "relation": "en"}
 {"container": "fridujo", "contained": "mielo", "relation": "en"}
 {"container": "fridujo", "contained": "ŝampano", "relation": "en"}
+{"container": "oficejo", "contained": "komputilo", "relation": "en"}
+{"container": "oficejo", "contained": "klavaro", "relation": "en"}
+{"container": "oficejo", "contained": "ekrano", "relation": "en"}
+{"container": "oficejo", "contained": "presilo", "relation": "en"}
+{"container": "oficejo", "contained": "kalkulilo", "relation": "en"}
+{"container": "oficejo", "contained": "agendo", "relation": "en"}
+{"container": "oficejo", "contained": "kalendaro", "relation": "en"}
+{"container": "oficejo", "contained": "arkivilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "komputilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "kalkulilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "agendo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "kalendaro", "relation": "en"}
+{"container_pattern": {"category": "surfaco"}, "contained": "komputilo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "klavaro", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "ekrano", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "presilo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "kalkulilo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "agendo", "relation": "sur"}
+{"container_pattern": {"category": "surfaco"}, "contained": "kalendaro", "relation": "sur"}
+{"container": "arkivilo", "contained": "papero", "relation": "en"}
+{"container": "arkivilo", "contained": "letero", "relation": "en"}
+{"container": "arkivilo", "contained": "enkluvo", "relation": "en"}
+{"container": "arkivilo", "contained": "agendo", "relation": "en"}
+{"container": "arkivilo", "contained": "kalendaro", "relation": "en"}
+{"container": "arkivilo", "contained": "kajero", "relation": "en"}
