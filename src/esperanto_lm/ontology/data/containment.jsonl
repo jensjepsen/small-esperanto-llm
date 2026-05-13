@@ -239,3 +239,9 @@
 {"container": "kaserolo", "contained": "supo", "relation": "en"}
 {"container": "kaserolo", "contained": "akvo", "relation": "en"}
 {"container": "salujo", "contained": "spico", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "varmilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "varmigilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "frostilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "frostigilo", "relation": "en"}
+{"container": "kuirejo", "contained": "varmilo", "relation": "en"}
+{"container": "kuirejo", "contained": "frostilo", "relation": "en"}

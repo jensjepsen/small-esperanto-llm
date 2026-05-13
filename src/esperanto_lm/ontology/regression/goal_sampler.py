@@ -173,6 +173,17 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 if slot_def is not None and slot_def.vocabulary:
                     non_target = [v for v in slot_def.vocabulary
                                   if v != eff.value]
+                    # Intersect with role.properties on the same slot
+                    # (varmigi.theme=malvarma, etc.) so the chosen
+                    # initial state actually lets the verb fire.
+                    role_required = (
+                        agent_role_spec.properties or {}).get(
+                        eff.property, ())
+                    if role_required:
+                        candidates = [v for v in non_target
+                                       if v in role_required]
+                        if candidates:
+                            non_target = candidates
                     if non_target:
                         t.entities[actor_eid].set_property(
                             eff.property, rng.choice(non_target))

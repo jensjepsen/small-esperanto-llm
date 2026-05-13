@@ -151,6 +151,19 @@ def make_spawner(
                 if slot_def is not None and slot_def.vocabulary:
                     non_target = [v for v in slot_def.vocabulary
                                   if v != eff.value]
+                    # If the role spec ALSO constrains this slot (e.g.
+                    # varmigi.theme requires temperature=malvarma to fire),
+                    # intersect — pick a value the verb can actually run
+                    # on, not a random non-target. Without this, varmigi
+                    # often picks varmega as the initial state, so the
+                    # verb can never fire (theme isn't malvarma).
+                    role_required = (role_spec.properties or {}).get(
+                        eff.property, ())
+                    if role_required:
+                        candidates = [v for v in non_target
+                                       if v in role_required]
+                        if candidates:
+                            non_target = candidates
                     if non_target:
                         ent.set_property(eff.property, rng.choice(non_target))
             # Walk preconditions for if_property gates referencing this
