@@ -1336,6 +1336,33 @@ legi_extracts_fakto = rule(
 )
 
 
+# `mezuri` (measure) extracts a fakto about a theme's size. Same
+# shape as vidi/legi — perception verb that creates a fakto and
+# konas-links the agent to it. Doesn't bind subjekto's location
+# (a measuring tape tells you size, not location), so no objekto
+# relation; pri_relacio="grandeco" distinguishes the fakto kind.
+# The forward planner's synthesized scias_lokon-from-perception
+# pass picks this up via the create-fakto + subjekto + konas
+# pattern, so mezuri counts as a perception event that also lets
+# downstream verbs (preni/etc) see the theme.
+mezuri_learns_dimension = rule(
+    when=event("mezuri",
+               agent=bind(MEA := var("A")),
+               theme=bind(MET := var("T"))),
+    then=[
+        create_entity(
+            concept="fakto",
+            as_var=(MEF := var("F")),
+            id_parts=("mezuri", MET),
+            initial_properties={"pri_relacio": "grandeco"},
+        ),
+        add_relation("subjekto", MEF, MET),
+        add_relation("konas", MEA, MEF),
+    ],
+    name="mezuri_learns_dimension",
+)
+
+
 # ---------- derivation: flammable as a derived property -----------------
 #
 # Demo: lexicon currently tags flammability directly on ligno/libro/etc.;
@@ -2694,6 +2721,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     montri_shows_location,
     instrui_transfers_fakto,
     legi_extracts_fakto,
+    mezuri_learns_dimension,
     hungry_eats_sated,
     thirsty_drinks_quenched,
     manĝi_consumes_theme,
