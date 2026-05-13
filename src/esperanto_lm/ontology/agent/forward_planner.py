@@ -127,23 +127,16 @@ def _preconditions_hold(action, roles, trace, derived, lex) -> bool:
     derived facts. Mirrors `_resolve_preconditions_in_order`'s
     CHECK side, without the subgoaling branch.
 
-    `scias_lokon`/`konas` are NOT enforced — these are derived
-    through entity-creation chains (vidi creates a fakto entity)
-    that the relaxed planning graph can't model. Skipping them here
-    keeps the actual-applicability check consistent with the h_add
-    encoding (see `_ground_action_facts`). Plans emitted by forward
-    search may therefore include `preni` without a preceding
-    `vidi`; the engine accepts this since preni's RULE only
-    requires samloke. Narrative cohesion suffers slightly — fixable
-    by encoding vidi's fakto-creation in the relaxed graph (out of
-    POC scope)."""
+    `scias_lokon`/`konas` ARE enforced; the relaxed encoding
+    synthesizes them as direct effects of perception verbs (vidi/
+    aŭdi/flari/montri) via `_build_rule_effects_index`, so the
+    fact-set search can plan through preni/kapti/veki's perception
+    preconditions without modeling fakto-entity creation."""
     from ..schemas import (
         IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
     )
     for pc in action.preconditions:
         if isinstance(pc, RelationPrecondition):
-            if pc.rel in ("scias_lokon", "konas"):
-                continue
             eids = tuple(roles.get(r) for r in pc.roles)
             if any(e is None for e in eids):
                 return False
@@ -258,16 +251,6 @@ def _ground_action_facts(action, roles, lex, rule_effects):
     # Action-level preconditions.
     for pc in action.preconditions:
         if isinstance(pc, RelationPrecondition):
-            # scias_lokon / konas are derived through entity-
-            # creation chains (vidi creates a fakto entity, then
-            # konas+subjekto+objekto derive scias_lokon). The
-            # relaxed graph can't model entity creation; treating
-            # these preconditions as always satisfiable here lets
-            # h_add propagate through chains that need perception.
-            # Acceptable POC simplification — every animate in a
-            # lit room can perceive nearby objects in practice.
-            if pc.rel in ("scias_lokon", "konas"):
-                continue
             eids = tuple(roles.get(r) for r in pc.roles)
             if any(e is None for e in eids):
                 continue
@@ -688,8 +671,21 @@ def _build_rule_effects_index(rules) -> dict:
     verb_lemma → {'adds': [(relation, (role_name, ...))], 'dels':
     [...]}. Both lists are used: 'adds' for the relaxed graph
     (delete-relaxation drops dels there), 'dels' for the
-    fact-set incremental simulator (which DOES apply dels)."""
-    from ..dsl.effects import AddRelation, RemoveRelation, TransferN
+    fact-set incremental simulator (which DOES apply dels).
+
+    Synthesizes `scias_lokon` adds for perception verbs (vidi, aŭdi,
+    flari, montri) by detecting the canonical pattern:
+       create_entity(fakto, as_var=F)
+       add_relation(subjekto, F, X)
+       add_relation(konas, K, F)
+    The runtime engine derives `scias_lokon(K, X)` from these via
+    the konas+subjekto rule chain; we collapse that chain into a
+    direct relation effect so the fact-set search can plan through
+    perception preconditions on preni/kapti/veki/etc. without
+    modeling fakto-entity creation."""
+    from ..dsl.effects import (
+        AddRelation, CreateEntity, RemoveRelation, TransferN,
+    )
     from ..dsl.patterns import (
         AndPattern, BindPattern, EntityPattern, EventPattern, Var,
     )
@@ -761,6 +757,42 @@ def _build_rule_effects_index(rules) -> dict:
                 if src_role and tgt_role:
                     entry["adds"].append(
                         ("havi", (tgt_role, src_role)))
+        # Synthesize scias_lokon from the create-fakto+konas+subjekto
+        # pattern. We need: a CreateEntity(fakto, as_var=F), an
+        # AddRelation(subjekto, F, X) where X maps to a role, and an
+        # AddRelation(konas, K, F) where K maps to a role. Then add
+        # ("scias_lokon", (K_role, X_role)).
+        fakto_vars: set = set()
+        for eff in effects:
+            if isinstance(eff, CreateEntity):
+                concept = getattr(eff, "concept", None)
+                if concept != "fakto":
+                    continue
+                av = getattr(eff, "as_var", None)
+                if isinstance(av, Var):
+                    fakto_vars.add(id(av))
+        if not fakto_vars:
+            continue
+        for fv in fakto_vars:
+            subj_role = None
+            knower_role = None
+            for eff in effects:
+                if not isinstance(eff, AddRelation):
+                    continue
+                if eff.relation == "subjekto" and len(eff.args) == 2:
+                    if isinstance(eff.args[0], Var) and id(eff.args[0]) == fv:
+                        target = eff.args[1]
+                        if isinstance(target, Var):
+                            subj_role = var_to_role.get(id(target))
+                elif eff.relation == "konas" and len(eff.args) == 2:
+                    if isinstance(eff.args[1], Var) and id(eff.args[1]) == fv:
+                        knower = eff.args[0]
+                        if isinstance(knower, Var):
+                            knower_role = var_to_role.get(id(knower))
+            if subj_role and knower_role:
+                synth = ("scias_lokon", (knower_role, subj_role))
+                if synth not in entry["adds"]:
+                    entry["adds"].append(synth)
     return out
 
 
