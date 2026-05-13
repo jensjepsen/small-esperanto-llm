@@ -437,3 +437,12 @@
 {"lemma": "salmo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
 {"lemma": "karpo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
 {"lemma": "sardino", "entity_type": "animal", "properties": {}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "ŝtrumpoj", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "helmo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "skarpo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "kapuĉo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "bluzo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "veŝto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "ŝalo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "antaŭtuko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
+{"lemma": "naztuko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
