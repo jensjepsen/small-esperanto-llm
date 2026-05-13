@@ -227,6 +227,13 @@ _HEURISTIC_INF = 10_000
 # memoization with safe invalidation on a fresh lexicon load.
 _RULE_EFFECTS_CACHE: dict = {}
 
+# Per-grounded_derivations cache for the pres-fact inverted index
+# used by _apply_delta's worklist re-derivation. Keyed by
+# id(derivation_pseudos) — caller is plan_for_goal which builds
+# grounded_derivs once per plan and reuses for ~hundreds of
+# _apply_delta calls during search.
+_DERIV_PRES_IDX_CACHE: dict = {}
+
 
 def _ground_action_facts(action, roles, lex, rule_effects):
     """Return (precondition_facts, effect_facts) for a grounded
@@ -635,33 +642,67 @@ def _apply_delta(facts: frozenset, adds: set, dels: set,
                             and g[1] == eid and g[2] == slot)
                 }
     new_facts |= adds
-    # Re-derive to fixed point (cheap for our small derivation set).
-    # Scalar-slot policy: a derivation's `("prop", eid, slot, val)`
-    # effect is suppressed if the entity already has any value for
-    # that scalar slot — explicit state (from trace + actions) shadows
-    # default derivations. Without this, multiple posture/temperature/
-    # etc. derivations all fire freely and the goal check
-    # `goal_fact in facts` succeeds trivially.
-    changed = True
-    iters = 0
-    while changed and iters < 100:
-        iters += 1
-        changed = False
-        for _info, _binding, pres, effs in derivation_pseudos:
-            if not all(p in new_facts for p in pres):
+    # (eid, slot) -> set of values, for O(1) scalar shadow checks.
+    prop_index: dict = {}
+    for g in new_facts:
+        if g[0] == "prop":
+            prop_index.setdefault((g[1], g[2]), set()).add(g[3])
+    # Worklist-based re-derivation. fact -> [pseudo_idx] inverted
+    # index is built lazily by id(derivation_pseudos) and stashed in
+    # a module-level cache — building this is the dominant cost if
+    # we let it run per call. Pseudos with empty pres are always-
+    # firable; collected separately so the initial pass triggers
+    # them once.
+    pres_idx = _DERIV_PRES_IDX_CACHE.get(id(derivation_pseudos))
+    if pres_idx is None:
+        fact_to: dict = {}
+        no_pres_pseudos: list = []
+        for i, (_info, _binding, pres, _effs) in enumerate(
+                derivation_pseudos):
+            if not pres:
+                no_pres_pseudos.append(i)
                 continue
-            for e in effs:
-                if e in new_facts:
-                    continue
-                if e[0] == "prop":
-                    _, eid, slot, _ = e
-                    if slot_vocab.get(slot, {}).get("scalar", True):
-                        # Already populated → derivation shadowed.
-                        if any(g[0] == "prop" and g[1] == eid
-                               and g[2] == slot for g in new_facts):
-                            continue
-                new_facts.add(e)
-                changed = True
+            for p in pres:
+                fact_to.setdefault(p, []).append(i)
+        pres_idx = (fact_to, no_pres_pseudos)
+        _DERIV_PRES_IDX_CACHE[id(derivation_pseudos)] = pres_idx
+    fact_to, no_pres_pseudos = pres_idx
+
+    fired: set = set()
+
+    def _try_fire(pi, worklist):
+        if pi in fired:
+            return
+        _info, _binding, pres, effs = derivation_pseudos[pi]
+        for p in pres:
+            if p not in new_facts:
+                return
+        fired.add(pi)
+        for e in effs:
+            if e in new_facts:
+                continue
+            if e[0] == "prop":
+                _, e_eid, e_slot, _ = e
+                if slot_vocab.get(e_slot, {}).get("scalar", True):
+                    if prop_index.get((e_eid, e_slot)):
+                        continue  # scalar-shadowed
+                    prop_index.setdefault(
+                        (e_eid, e_slot), set()).add(e[3])
+            new_facts.add(e)
+            worklist.append(e)
+
+    # Seed worklist: every current fact. The fact_to index then only
+    # surfaces pseudos that actually need a fact we have. Pseudos
+    # with empty pres get a separate one-shot pass — they fire iff
+    # not shadowed.
+    from collections import deque
+    worklist: deque = deque(new_facts)
+    for pi in no_pres_pseudos:
+        _try_fire(pi, worklist)
+    while worklist:
+        f = worklist.popleft()
+        for pi in fact_to.get(f, ()):
+            _try_fire(pi, worklist)
     return frozenset(new_facts)
 
 
