@@ -38,41 +38,60 @@ def _cached_goal_index(lex, rules):
 
 
 def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
-    """Pick a property goal, pick a verb from its producers, build a
-    minimal trace (scene location + actor), return (trace, scene_id,
-    drive). The spawner — invoked by the planner via the entity_
-    resolver hook — materializes everything else with verb-aware
-    setup.
+    """Pick a goal, pick a verb from its producers, build a minimal
+    trace, return (trace, scene_id, drive). The spawner — invoked by
+    the planner via the entity_resolver hook — materializes everything
+    else with verb-aware setup.
 
-    Property goals only for now; relation goals (locomotion, knowledge
-    via create-relate) will join when their drive shapes get wired
-    into the dispatcher's goal interpretation."""
+    Two goal kinds:
+      - Property goals: ("property", slot, value). Drive shape is
+        `entity_slot`. The verb's effect mutates the target's slot.
+      - CREATED-role relation goals: ("relation", rel, role_tuple)
+        where role_tuple includes the `<created>` sentinel. Used for
+        verbs whose effect is CreateEntity + AddRelation (skribi,
+        vidi, aŭdi, flari, montri, krii, ludi, …). Drive shape is
+        `event_fire`; the planner just has to fire the verb with the
+        appropriate role bindings — the rule creates the entity.
+    """
     from ..sampler import _add_entity_randomized, _ensure_world
     from .seeders import _concepts_matching_role
+    from .goals import CREATED_ROLE
 
     index = _cached_goal_index(lex, rules)
-    property_goals = [
-        (g, verbs) for g, verbs in index.items()
-        if g[0] == "property" and verbs
-    ]
-    if not property_goals:
+    all_goals = []
+    for g, verbs in index.items():
+        if not verbs:
+            continue
+        if g[0] == "property":
+            all_goals.append((g, verbs))
+        elif g[0] == "relation":
+            # Only include relation goals where some role is
+            # `<created>` — those resolve to event_fire drives.
+            _, _rel, role_args = g
+            if CREATED_ROLE in role_args:
+                all_goals.append((g, verbs))
+    if not all_goals:
         return None
-    # Weight goals by producer count: cleanliness=pura with 5 verbs
-    # outweighs lock_state=ŝlosita with 1, surfacing multi-producer
-    # goals more often. Within a goal, the planner's chain-richness
-    # weight handles verb selection at runtime.
-    weights = [len(verbs) for _, verbs in property_goals]
+    # Weight by producer count.
+    weights = [len(verbs) for _, verbs in all_goals]
     chosen_goal, producers = rng.choices(
-        property_goals, weights=weights, k=1)[0]
-    _, slot, target_value = chosen_goal
+        all_goals, weights=weights, k=1)[0]
     verb_lemma = rng.choice(producers)
-
     action = lex.actions.get(verb_lemma)
-    if action is None or not action.effects:
+    if action is None:
         return None
-    eff = next((e for e in action.effects
-                if e.property == slot and e.value == target_value),
-               action.effects[0])
+
+    if chosen_goal[0] == "property":
+        _, slot, target_value = chosen_goal
+        if not action.effects:
+            return None
+        eff = next((e for e in action.effects
+                    if e.property == slot and e.value == target_value),
+                   action.effects[0])
+    else:
+        # event_fire path — no slot/value/eff; we just need to fire
+        # the verb. Setup spawns non-agent roles via setup_spawner.
+        slot = target_value = eff = None
 
     # Pick an actor concept. Normally that's the "agent" role; for
     # intransitive verbs (fali, bruli, satiĝi, morti, pluvi, …) there
@@ -132,29 +151,56 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         except (KeyError, ValueError):
             continue
 
-        if eff.target_role == actor_role_name:
-            target_eid = actor_eid
-            slot_def = lex.slots.get(eff.property)
-            if slot_def is not None and slot_def.vocabulary:
-                non_target = [v for v in slot_def.vocabulary
-                              if v != eff.value]
-                if non_target:
-                    t.entities[actor_eid].set_property(
-                        eff.property, rng.choice(non_target))
+        if chosen_goal[0] == "property":
+            if eff.target_role == actor_role_name:
+                target_eid = actor_eid
+                slot_def = lex.slots.get(eff.property)
+                if slot_def is not None and slot_def.vocabulary:
+                    non_target = [v for v in slot_def.vocabulary
+                                  if v != eff.value]
+                    if non_target:
+                        t.entities[actor_eid].set_property(
+                            eff.property, rng.choice(non_target))
+            else:
+                from .spawner import make_spawner
+                setup_spawner = make_spawner(
+                    scene_id, lex, rng, budget=1)
+                target_role_spec = next(
+                    (r for r in action.roles
+                     if r.name == eff.target_role), None)
+                if target_role_spec is None:
+                    return None  # schema issue, not placement
+                target_eid = setup_spawner(
+                    target_role_spec, t, lex,
+                    set(t.entities.keys()),
+                    action=action, role_name=eff.target_role)
+                if target_eid is None:
+                    continue  # try another scene location
+            drive = ("entity_slot", actor_eid, target_eid,
+                     slot, target_value)
+            return t, scene_id, drive
         else:
+            # event_fire: spawn each non-actor role separately via
+            # setup_spawner, collect bindings, emit event_fire drive.
             from .spawner import make_spawner
-            setup_spawner = make_spawner(scene_id, lex, rng, budget=1)
-            target_role_spec = next(
-                (r for r in action.roles
-                 if r.name == eff.target_role), None)
-            if target_role_spec is None:
-                return None  # schema issue, not placement
-            target_eid = setup_spawner(
-                target_role_spec, t, lex, set(t.entities.keys()),
-                action=action, role_name=eff.target_role)
-            if target_eid is None:
-                continue  # try another scene location
-
-        drive = ("entity_slot", actor_eid, target_eid, slot, target_value)
-        return t, scene_id, drive
+            setup_spawner = make_spawner(
+                scene_id, lex, rng,
+                budget=max(1, len(action.roles) - 1))
+            bindings: dict = {actor_role_name: actor_eid}
+            failed = False
+            for role_spec in action.roles:
+                if role_spec.name == actor_role_name:
+                    continue
+                filler = setup_spawner(
+                    role_spec, t, lex, set(t.entities.keys()),
+                    action=action, role_name=role_spec.name)
+                if filler is None:
+                    failed = True
+                    break
+                bindings[role_spec.name] = filler
+            if failed:
+                continue
+            drive = ("event_fire", actor_eid, verb_lemma,
+                     tuple(sorted(bindings.items())))
+            return t, scene_id, drive
     return None

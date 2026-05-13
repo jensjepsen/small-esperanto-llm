@@ -900,6 +900,10 @@ def _heuristic_and_helpful(
             _, relation, args = goal
             if ("rel", relation, tuple(args)) in facts:
                 return 0, set()
+        elif goal[0] == "event_fire":
+            _, verb_lemma, bindings_frozen = goal
+            if ("event_fired", verb_lemma, bindings_frozen) in facts:
+                return 0, set()
 
     rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
     if rule_effects is None:
@@ -983,6 +987,9 @@ def _heuristic_and_helpful(
     elif goal[0] == "relation":
         _, relation, args = goal
         goal_facts = [("rel", relation, tuple(args))]
+    elif goal[0] == "event_fire":
+        _, verb_lemma, bindings_frozen = goal
+        goal_facts = [("event_fired", verb_lemma, bindings_frozen)]
     else:
         return _HEURISTIC_INF, set()
 
@@ -1095,6 +1102,30 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
     role types have at least one matching entity. Missing roles are
     filled by calling `resolver`. Mirrors what the backward planner's
     `_find_role_filler` does lazily during search."""
+    if goal[0] == "event_fire":
+        # Specific verb already chosen; just fill any unbound roles.
+        _, gv_verb, gv_bindings_frozen = goal
+        gv_bindings = dict(gv_bindings_frozen)
+        action = lex.actions.get(gv_verb)
+        if action is None:
+            return
+        derived_now = _cached_compute_derived_state(
+            trace, derivations, lex)
+        exclude = set(gv_bindings.values())
+        for role_spec in action.roles:
+            if role_spec.name in gv_bindings:
+                continue
+            filler = _find_role_filler(
+                role_spec, trace, lex, derived=derived_now,
+                exclude=exclude, action=action,
+                role_name=role_spec.name)
+            if filler is None:
+                filler = resolver(role_spec, trace, lex, exclude,
+                                  action=action,
+                                  role_name=role_spec.name)
+            if filler is not None:
+                exclude.add(filler)
+        return
     if goal[0] != "property":
         return
     _, target_eid, slot, value = goal
@@ -1186,6 +1217,56 @@ def plan_for_goal(
     grounded_derivs = _ground_derivations(
         derivations, initial_trace, lex)
 
+    # Event-fire goals: the goal is "fire verb V with these role
+    # bindings". Lacking direct property/relation effects (legi/
+    # skribi/vidi/flari/aŭdi all create a fakto + konas relation
+    # via the rule body, which the goal-index can't trace through
+    # role variables), we synthesize an `event_fired` pseudo-fact
+    # that the goal verb's grounding produces. The relaxed graph
+    # then has something to aim for; the search satisfies when the
+    # fact lands in the state.
+    if goal[0] == "event_fire":
+        _, gv_verb, gv_bindings_frozen = goal
+        gv_bindings = dict(gv_bindings_frozen)
+        event_fired_fact = ("event_fired", gv_verb, gv_bindings_frozen)
+        action_obj = lex.actions.get(gv_verb)
+        if action_obj is None:
+            return None
+        # Enumerate role bindings for gv_verb. Constrained roles are
+        # forced to the drive's eid; unconstrained roles enumerate
+        # all type-compatible entities in trace.
+        per_role: list = []
+        ok = True
+        for role_spec in action_obj.roles:
+            forced = gv_bindings.get(role_spec.name)
+            if forced is not None:
+                ent = initial_trace.entities.get(forced)
+                if ent is None or not lex.types.is_subtype(
+                        ent.entity_type, role_spec.type):
+                    ok = False
+                    break
+                per_role.append([forced])
+                continue
+            cand = []
+            for eid, ent in initial_trace.entities.items():
+                if not lex.types.is_subtype(
+                        ent.entity_type, role_spec.type):
+                    continue
+                cand.append(eid)
+            if not cand:
+                ok = False
+                break
+            per_role.append(cand)
+        if ok:
+            for combo in itertools.product(*per_role):
+                if len(set(combo)) != len(combo):
+                    continue
+                roles = {r.name: e for r, e in zip(action_obj.roles, combo)}
+                pres, effs = _ground_action_facts(
+                    action_obj, roles, lex, rule_effects)
+                effs = set(effs) | {event_fired_fact}
+                grounded.append((action_obj, roles, pres, effs))
+
     # Goal-aware filter: shrink the consumer set to only those that
     # could reach the goal in the relaxed graph. Walk back from the
     # goal facts collecting any consumer whose effects intersect
@@ -1198,6 +1279,8 @@ def plan_for_goal(
     elif goal[0] == "relation":
         _, relation, args = goal
         seed_goal = {("rel", relation, tuple(args))}
+    elif goal[0] == "event_fire":
+        seed_goal = {event_fired_fact}
     else:
         seed_goal = set()
 
@@ -1261,6 +1344,8 @@ def plan_for_goal(
     elif goal[0] == "relation":
         _, relation, args = goal
         goal_fact = ("rel", relation, tuple(args))
+    elif goal[0] == "event_fire":
+        goal_fact = event_fired_fact
     else:
         return None
 
@@ -1312,6 +1397,13 @@ def plan_for_goal(
             if not all(p in facts for p in pres):
                 continue
             adds, dels = _action_delta(action, roles, rule_effects, lex)
+            # For event-fire goal entries, the synthetic event_fired
+            # fact lives in the grounded `effs` set; inject it so the
+            # action can fire even when its native delta is empty
+            # (legi/skribi have no property changes, only rule-mediated
+            # CreateEntity that the fact-set search can't represent).
+            if goal[0] == "event_fire" and goal_fact in _effs:
+                adds = set(adds) | {goal_fact}
             if not adds and not dels:
                 continue
             new_facts = _apply_delta(
@@ -1342,8 +1434,16 @@ def plan_for_goal(
 def _drive_to_goal(drive, trace, lex):
     """Translate the dispatcher's drive shape into a forward-planner
     goal. Currently supports entity_slot, self_slot, location,
-    possession, wearing. Returns the goal tuple or None for
-    unsupported shapes."""
+    possession, wearing, event_fire. Returns the goal tuple or None
+    for unsupported shapes.
+
+    event_fire: ("event_fire", actor_eid, verb_lemma, role_bindings)
+    where role_bindings is an iterable of (role_name, eid) pairs.
+    Goal becomes "the plan must fire `verb_lemma` with these roles
+    bound" — used for verbs whose postcondition is CreateEntity +
+    AddRelation with a `<created>` sentinel (legi, skribi, vidi,
+    flari, aŭdi), which the property-shape goal index can't express.
+    """
     kind = drive[0]
     if kind == "entity_slot":
         _, _actor, target, slot, value = drive
@@ -1360,4 +1460,7 @@ def _drive_to_goal(drive, trace, lex):
     if kind == "wearing":
         _, actor, garment = drive
         return ("relation", "vestita", (actor, garment))
+    if kind == "event_fire":
+        _, _actor, verb_lemma, role_bindings = drive
+        return ("event_fire", verb_lemma, frozenset(role_bindings))
     return None
