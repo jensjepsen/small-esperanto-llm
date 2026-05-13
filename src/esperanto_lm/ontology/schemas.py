@@ -198,6 +198,23 @@ class RoleSpec(_Frozen):
     name: str                           # "agent", "theme", "instrument", ...
     type: str                           # entity-type constraint
     properties: dict[str, list[str]] = Field(default_factory=dict)
+    # Role kinds beyond the default "single entity bound at plan time":
+    #   "single"  — one entity (default)
+    #   "created" — to-be-created entity of concept named by from_field
+    #               in the theme concept's properties; engine mints
+    #               the entity at event-firing time
+    #   "list"    — N entities, one per concept named in the theme
+    #               concept's `from_field`. Binds to a list var.
+    kind: Literal["single", "created", "list"] = "single"
+    # Which field of the *theme* concept (or another previously-bound
+    # role) the grounder reads to populate this role. For kind="list"
+    # this is the parts-list field (e.g. "parts"); for an instrument
+    # tied to a recipe it's "crafted_with". Ignored for kind="single"
+    # without a from_field source.
+    from_field: Optional[str] = None
+    # Soft role: planner allows leaving it unbound. Used for the
+    # instrument role when a recipe has no crafted_with.
+    optional: bool = False
 
 
 class Effect(_Frozen):
