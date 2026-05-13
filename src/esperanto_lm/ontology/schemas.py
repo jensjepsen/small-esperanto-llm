@@ -121,6 +121,14 @@ class Concept(_Frozen):
     # of verbs in its own right. Distinct from old-style capability
     # markers — the part is a real entity, not a slot value.
     parts: list[ConceptPart] = Field(default_factory=list)
+    # For constructable concepts: tool concepts the agent uses to
+    # make this entity. Each entry names a tool lemma (e.g. "forno"
+    # for bulko); the planner picks one and binds it as fari's
+    # instrument role. The verb to render in surface text comes from
+    # the picked tool's `functional_signature`. Empty/missing means
+    # no tool needed — the construction is performed with bare hands
+    # (sandviĉo, salato).
+    crafted_with: list[str] = Field(default_factory=list)
     # Superordinate concept lemmas this one is-a. Walks transitively at
     # rendering time so a `papago` can be referred to as "birdo" or
     # "animalo" if `papago.category=["birdo"]` and
