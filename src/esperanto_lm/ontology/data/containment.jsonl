@@ -186,3 +186,15 @@
 {"container": "fridujo", "contained": "glacio", "relation": "en"}
 {"container": "lavmaŝino", "contained_pattern": {"category": "vestaĵo"}, "relation": "en"}
 {"container_pattern": {"category": "surfaco"}, "contained": "telefono", "relation": "sur"}
+{"container": "kuirejo", "contained": "koktelo", "relation": "en"}
+{"container": "kuirejo", "contained": "ŝampano", "relation": "en"}
+{"container": "kuirejo", "contained": "brando", "relation": "en"}
+{"container": "kuirejo", "contained": "jogurto", "relation": "en"}
+{"container": "kuirejo", "contained": "supo", "relation": "en"}
+{"container": "kuirejo", "contained": "mielo", "relation": "en"}
+{"container": "kuirejo", "contained": "olivoleo", "relation": "en"}
+{"container": "kuirejo", "contained": "vinagaro", "relation": "en"}
+{"container": "fridujo", "contained": "jogurto", "relation": "en"}
+{"container": "fridujo", "contained": "supo", "relation": "en"}
+{"container": "fridujo", "contained": "mielo", "relation": "en"}
+{"container": "fridujo", "contained": "ŝampano", "relation": "en"}
