@@ -75,6 +75,28 @@ def inflect(verb_lemma: str, tense: str) -> str:
     return verb_lemma + tense
 
 
+def _surface_verb_lemma(ev, trace, lex) -> str:
+    """Pick the verb lemma to render. For most events this is just
+    ev.action. For `fari` events, swap to the instrument concept's
+    functional_signature when bound — so bulko-with-forno reads
+    "bakas" rather than "faras", and martelo-driven construction
+    reads "marteli". Sandwich-style assemblies (no instrument) stay
+    on "fari"."""
+    if ev.action != "fari":
+        return ev.action
+    instr_eid = ev.roles.get("instrument")
+    if not instr_eid:
+        return "fari"
+    instr_ent = trace.entities.get(instr_eid)
+    if instr_ent is None:
+        return "fari"
+    concept = lex.concepts.get(instr_ent.concept_lemma)
+    if concept is None:
+        return "fari"
+    fs = concept.properties.get("functional_signature", ())
+    return fs[0] if fs else "fari"
+
+
 def past_tense(verb_lemma: str) -> str:
     """Backwards-compat alias. Prefer `inflect(lemma, 'is')`."""
     return inflect(verb_lemma, "is")
@@ -1013,7 +1035,7 @@ def _render_event_phrase(
             return None
         loc_form = ctx.name_for(loc)
         ctx.note_mention(loc)
-        return f"En {loc_form} {inflect(ev.action, ctx.tense)}."
+        return f"En {loc_form} {inflect(_surface_verb_lemma(ev, ctx.trace, ctx.lexicon), ctx.tense)}."
     else:
         return None
 
@@ -1030,7 +1052,8 @@ def _render_event_phrase(
         # Skip subject; but still mark as mentioned for downstream
         # anaphora consistency.
         ctx.note_mention(subject)
-    parts.append(inflect(ev.action, ctx.tense))
+    parts.append(inflect(_surface_verb_lemma(ev, ctx.trace, ctx.lexicon),
+                          ctx.tense))
 
     recipient_handled = False
 
@@ -1211,6 +1234,28 @@ def _render_event_phrase(
             parts.append(
                 f"per {ctx.name_for(instr, count_override=instr_count)}")
             ctx.note_mention(instr)
+
+    # `fari.parts` (kind="list") renders as "el X, Y kaj Z" — the
+    # source materials the constructed entity is made from. Only fari
+    # uses a list role today, so the role-name check is sufficient;
+    # if more variadic verbs land, generalize via role_spec.kind.
+    parts_role = ev.roles.get("parts")
+    if isinstance(parts_role, (list, tuple)) and parts_role:
+        rendered_parts: list[str] = []
+        for peid in parts_role:
+            pent = ctx.trace.entity(peid)
+            if pent is None:
+                continue
+            rendered_parts.append(ctx.name_for(pent))
+            ctx.note_mention(pent)
+            ctx.mark_nonperson_mention(pent)
+        if rendered_parts:
+            if len(rendered_parts) == 1:
+                joined = rendered_parts[0]
+            else:
+                joined = ", ".join(rendered_parts[:-1]) + (
+                    f" kaj {rendered_parts[-1]}")
+            parts.append(f"el {joined}")
 
     if ev.roles.get("recipient") and not recipient_handled:
         recip_id = ev.roles["recipient"]
