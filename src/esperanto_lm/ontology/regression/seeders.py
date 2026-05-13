@@ -75,6 +75,121 @@ def _verb_chain_weight(action) -> float:
     return float(score)
 
 
+# Relations that are concept-time identity, not runtime-mutable: the
+# planner can't subgoal these because no rule produces or removes them
+# after instance creation. (havas_parton is asserted from
+# concept.parts at instance time. Add others here when they appear.)
+_STATIC_RELATIONS = frozenset({"havas_parton"})
+
+_DERIVABLE_CACHE: dict = {}
+
+
+def _fully_derivable_slots(lex, derivations) -> dict:
+    """Returns {slot_name: [type_name, ...]} — slots whose value is
+    produced by a derivation whose `when`/`given` constrain the
+    implied entity only via dynamic (runtime-mutable) state. The
+    planner can subgoal any dynamic constraint, so any concept of
+    one of the listed types is eligible to satisfy a role-property
+    requirement on that slot.
+
+    A derivation like `agent_illuminated` (when=animate, given=samloke
+    + lit_state=luma location) qualifies: samloke is runtime-mutable.
+    A derivation like `host_lock_state_from_seruro` (given havas_parton
+    on the host) doesn't: havas_parton is concept-time. Banano can't
+    be subgoaled into having a seruro part."""
+    key = id(lex)
+    cached = _DERIVABLE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    from ..dsl.implications import PropertyImplication
+    from ..dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern, NotPattern,
+        RelPattern, Var,
+    )
+
+    def _entity_patterns_binding(pat, target_var):
+        """EntityPatterns co-bound with target_var via `& bind(target)`."""
+        if isinstance(pat, AndPattern):
+            if (isinstance(pat.left, EntityPattern)
+                    and isinstance(pat.right, BindPattern)
+                    and pat.right.target is target_var):
+                yield pat.left
+            elif (isinstance(pat.right, EntityPattern)
+                    and isinstance(pat.left, BindPattern)
+                    and pat.left.target is target_var):
+                yield pat.right
+            else:
+                yield from _entity_patterns_binding(pat.left, target_var)
+                yield from _entity_patterns_binding(pat.right, target_var)
+
+    def _rel_patterns(pat):
+        """Yield RelPatterns in conjunctions; skip negations."""
+        if isinstance(pat, RelPattern):
+            yield pat
+        elif isinstance(pat, AndPattern):
+            yield from _rel_patterns(pat.left)
+            yield from _rel_patterns(pat.right)
+
+    def _arg_uses(arg_pat, var):
+        """Does this rel arg reference var directly or via bind?"""
+        if arg_pat is var:
+            return True
+        if isinstance(arg_pat, BindPattern) and arg_pat.target is var:
+            return True
+        if isinstance(arg_pat, AndPattern):
+            return (_arg_uses(arg_pat.left, var)
+                    or _arg_uses(arg_pat.right, var))
+        return False
+
+    out: dict = {}
+    for d in derivations:
+        for imp in d.implies:
+            if not isinstance(imp, PropertyImplication):
+                continue
+            if not isinstance(imp.entity, Var):
+                continue
+            target = imp.entity
+            # Find target's type constraint via EntityPattern bound to it.
+            type_constraint = None
+            for ep in _entity_patterns_binding(d.when, target):
+                t = ep.constraints.get("type")
+                if isinstance(t, str):
+                    type_constraint = t
+            if type_constraint is None:
+                for clause in d.given:
+                    for ep in _entity_patterns_binding(clause, target):
+                        t = ep.constraints.get("type")
+                        if isinstance(t, str):
+                            type_constraint = t
+                            break
+                    if type_constraint is not None:
+                        break
+            if type_constraint is None:
+                continue
+            # Any given clause that puts target on a STATIC relation
+            # disqualifies — concept-time identity, planner can't change.
+            has_static = False
+            for clause in d.given:
+                for rp in _rel_patterns(clause):
+                    if rp.relation not in _STATIC_RELATIONS:
+                        continue
+                    for arg in rp.arg_patterns.values():
+                        if _arg_uses(arg, target):
+                            has_static = True
+                            break
+                    if has_static:
+                        break
+                if has_static:
+                    break
+            if has_static:
+                continue
+            out.setdefault(imp.slot, []).append(type_constraint)
+
+    _DERIVABLE_CACHE[key] = out
+    return out
+
+
 def _concepts_matching_role(lex, role_spec) -> list[str]:
     """Concepts compatible with role_spec: subtype-correct AND every
     role.properties slot is meaningful for the concept.
@@ -85,7 +200,15 @@ def _concepts_matching_role(lex, role_spec) -> list[str]:
     For varies=True slots, the value gets randomized at instance-time —
     but only if the concept declares the slot. A concept that doesn't
     declare openness can't be a meaningful malfermi.theme even though
-    the type spine allows it."""
+    the type spine allows it.
+
+    For slots whose value is fully produced by a runtime-mutable
+    derivation (see `_fully_derivable_slots`), the concept doesn't
+    need to declare it — the planner can establish the underlying
+    state. illuminated, water_body, and any future derivation-only
+    slots end up here."""
+    from ..dsl.rules import RUNTIME_DERIVATIONS
+    derivable = _fully_derivable_slots(lex, RUNTIME_DERIVATIONS)
     out = []
     for lemma, concept in lex.concepts.items():
         if not lex.types.is_subtype(concept.entity_type, role_spec.type):
@@ -96,6 +219,12 @@ def _concepts_matching_role(lex, role_spec) -> list[str]:
             if slot_def is None:
                 continue
             cvals = concept.properties.get(slot, [])
+            # Slot is fully derivable for some type T that includes
+            # this concept's type → runtime can establish.
+            deriv_types = derivable.get(slot, ())
+            if any(lex.types.is_subtype(concept.entity_type, t)
+                   for t in deriv_types):
+                continue
             if slot_def.varies:
                 # Pervasive slots (hunger, wetness, etc.) apply to every
                 # concept of the slot's applies_to type via a default

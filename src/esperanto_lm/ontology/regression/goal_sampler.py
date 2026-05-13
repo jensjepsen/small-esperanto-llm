@@ -105,17 +105,28 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     if agent_role_spec is None:
         return None
     actor_role_name = agent_role_spec.name
+    # When the actor role is itself a location (pluvi, where the verb
+    # operates on a location), don't spawn a separate location entity
+    # — use the scene itself. The scene picker constrains to locations
+    # that satisfy the role's properties (ekstera for pluvi).
+    actor_is_scene = lex.types.is_subtype(
+        agent_role_spec.type, "location")
     agent_candidates = _concepts_matching_role(lex, agent_role_spec)
     if not agent_candidates:
         return None
-    agent_concept = rng.choice(agent_candidates)
+    agent_concept = (None if actor_is_scene
+                     else rng.choice(agent_candidates))
 
     # Scene location. Retry with different locations on placement
     # failure — actor or target may be incompatible with the
     # randomly-picked scene's containment affordances.
-    locations = [l for l, c in lex.concepts.items()
-                 if lex.types.is_subtype(c.entity_type, "location")
-                 and not getattr(c, "is_category_stub", False)]
+    if actor_is_scene:
+        # Constrain scene pool to concepts that satisfy actor role.
+        locations = list(agent_candidates)
+    else:
+        locations = [l for l, c in lex.concepts.items()
+                     if lex.types.is_subtype(c.entity_type, "location")
+                     and not getattr(c, "is_category_stub", False)]
     if not locations:
         return None
     tried: set = set()
@@ -138,18 +149,22 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             continue
         scene_id = scene_lemma
 
-        actor_eid = agent_concept
+        if actor_is_scene:
+            actor_eid = scene_id
+        else:
+            actor_eid = agent_concept
         suffix = 0
-        while actor_eid in t.entities:
+        while not actor_is_scene and actor_eid in t.entities:
             suffix += 1
             actor_eid = (
                 f"{agent_concept}_actor{suffix if suffix > 1 else ''}")
-        try:
-            _add_entity_randomized(t, agent_concept, lex, rng,
-                                    entity_id=actor_eid)
-            t.assert_relation("en", (actor_eid, scene_id), lex)
-        except (KeyError, ValueError):
-            continue
+        if not actor_is_scene:
+            try:
+                _add_entity_randomized(t, agent_concept, lex, rng,
+                                        entity_id=actor_eid)
+                t.assert_relation("en", (actor_eid, scene_id), lex)
+            except (KeyError, ValueError):
+                continue
 
         if chosen_goal[0] == "property":
             if eff.target_role == actor_role_name:
