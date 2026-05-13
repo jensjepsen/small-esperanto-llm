@@ -58,13 +58,20 @@ def _drive_summary(drive, t):
 
 
 def _plan_summary(plan, t):
-    """Plan as list of (lemma, {role: concept_lemma}) for logging."""
+    """Plan as list of (lemma, {role: concept_lemma}) for logging.
+
+    List-valued role bindings (fari.parts) render as a comma-joined
+    string of concept lemmas so the summary stays JSON-serializable."""
+    def _render(e):
+        if isinstance(e, (list, tuple)):
+            return [t.entities[x].concept_lemma if x in t.entities else x
+                    for x in e]
+        return t.entities[e].concept_lemma if e in t.entities else e
     out = []
     for lemma, roles in plan:
         out.append({
             "verb": lemma,
-            "roles": {rn: t.entities[e].concept_lemma
-                      for rn, e in roles.items()}})
+            "roles": {rn: _render(e) for rn, e in roles.items()}})
     return out
 
 

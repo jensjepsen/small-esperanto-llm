@@ -248,7 +248,12 @@ def _ground_action_facts(action, roles, lex, rule_effects):
     pres: set = set()
     effs: set = set()
     # Role property requirements: pre `("prop", eid, slot, value)`.
+    # Skip list-kind roles — their property requirements would need to
+    # apply to each list element, which the spawner enforces at scene
+    # time (each ingredient already matches its role.properties).
     for role_spec in action.roles:
+        if getattr(role_spec, "kind", "single") == "list":
+            continue
         eid = roles.get(role_spec.name)
         if eid is None:
             continue
@@ -258,10 +263,29 @@ def _ground_action_facts(action, roles, lex, rule_effects):
     # Action-level preconditions.
     for pc in action.preconditions:
         if isinstance(pc, RelationPrecondition):
-            eids = tuple(roles.get(r) for r in pc.roles)
-            if any(e is None for e in eids):
-                continue
-            pres.add(("rel", pc.rel, eids))
+            # List-role expansion: if any precondition role name maps
+            # to a list-valued role binding (fari.parts), emit one
+            # precondition per element. Optional roles (instrument
+            # when crafted_with is empty) drop out via None binding.
+            list_roles = [r for r in pc.roles
+                           if isinstance(roles.get(r), list)]
+            if list_roles:
+                # Only support one list role per precondition for now
+                # — fari's preconditions have at most parts as a list.
+                lrole = list_roles[0]
+                list_pos = pc.roles.index(lrole)
+                for item in roles[lrole]:
+                    eids = tuple(
+                        item if i == list_pos else roles.get(r)
+                        for i, r in enumerate(pc.roles))
+                    if any(e is None for e in eids):
+                        continue
+                    pres.add(("rel", pc.rel, eids))
+            else:
+                eids = tuple(roles.get(r) for r in pc.roles)
+                if any(e is None for e in eids):
+                    continue
+                pres.add(("rel", pc.rel, eids))
         elif isinstance(pc, IfPropertyPrecondition):
             # Skipped in relaxed encoding. The gate is conditional
             # — fires only when `if_property=if_value` holds on the
@@ -287,11 +311,48 @@ def _ground_action_facts(action, roles, lex, rule_effects):
     entry = rule_effects.get(action.lemma)
     if entry is not None:
         for relation, role_arg_names in entry["adds"]:
-            eids = tuple(roles.get(r) for r in role_arg_names)
-            if any(e is None for e in eids):
-                continue
-            effs.add(("rel", relation, eids))
+            for eids in _expand_list_role_args(role_arg_names, roles):
+                if any(e is None for e in eids):
+                    continue
+                effs.add(("rel", relation, eids))
     return pres, effs
+
+
+def _expand_list_role_args(role_arg_names, roles):
+    """Yield one tuple of eids per element of a list-marked arg
+    position. If no arg is a `("<list>", role_name)` marker, yield
+    a single tuple (the trivial expansion). Used by both the
+    relaxed-graph grounding and the fact-set delta computation so
+    fari's variadic havas_parton / havi-detach effects emit one
+    fact per gathered part."""
+    # Find list-marker positions and resolve to their list role values.
+    list_positions: list = []
+    for i, arg in enumerate(role_arg_names):
+        if (isinstance(arg, tuple) and len(arg) == 2
+                and arg[0] == "<list>"):
+            list_role = arg[1]
+            list_val = roles.get(list_role)
+            if list_val is None or not isinstance(list_val, (list, tuple)):
+                # List role unbound (e.g. optional instrument with no
+                # crafted_with) — drop this effect by yielding nothing.
+                return
+            list_positions.append((i, list_val))
+    if not list_positions:
+        yield tuple(roles.get(r) for r in role_arg_names)
+        return
+    # For our actual fari usage there's only one list arg per effect;
+    # support multiple by element-wise zipping the list values.
+    n = max(len(vals) for _, vals in list_positions)
+    for k in range(n):
+        out: list = []
+        for i, arg in enumerate(role_arg_names):
+            list_match = next((vals for pos, vals in list_positions
+                               if pos == i), None)
+            if list_match is not None:
+                out.append(list_match[k] if k < len(list_match) else None)
+            else:
+                out.append(roles.get(arg))
+        yield tuple(out)
 
 
 def _ground_derivations(derivations, trace, lex) -> list:
@@ -617,6 +678,18 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
             this_dels: list = []
             fires = True
             for relation, role_arg_names in rule_entry["dels"]:
+                # `<list>` markers (variadic dels like fari's
+                # per-part havi-detach) expand to one del per element.
+                has_list = any(
+                    isinstance(a, tuple) and a and a[0] == "<list>"
+                    for a in role_arg_names)
+                if has_list:
+                    for eids in _expand_list_role_args(
+                            role_arg_names, roles):
+                        if any(e is None for e in eids):
+                            continue
+                        this_dels.append(("rel", relation, eids))
+                    continue
                 if None in role_arg_names:
                     if facts is None:
                         # Caller doesn't need accurate dels (relaxed
@@ -649,10 +722,10 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
             if not fires:
                 continue
             for relation, role_arg_names in rule_entry["adds"]:
-                eids = tuple(roles.get(r) for r in role_arg_names)
-                if any(e is None for e in eids):
-                    continue
-                adds.add(("rel", relation, eids))
+                for eids in _expand_list_role_args(role_arg_names, roles):
+                    if any(e is None for e in eids):
+                        continue
+                    adds.add(("rel", relation, eids))
             for d in this_dels:
                 dels.add(d)
     return adds, dels
@@ -767,7 +840,7 @@ def _build_rule_effects_index(rules) -> dict:
     perception preconditions on preni/kapti/veki/etc. without
     modeling fakto-entity creation."""
     from ..dsl.effects import (
-        AddRelation, CreateEntity, RemoveRelation, TransferN,
+        AddRelation, CreateEntity, ForEach, RemoveRelation, TransferN,
     )
     from ..dsl.patterns import (
         AndPattern, BindPattern, EntityPattern, EventPattern, Var,
@@ -812,12 +885,36 @@ def _build_rule_effects_index(rules) -> dict:
             verb, {"adds": [], "dels": [], "rules": []})
         rule_adds: list = []
         rule_dels: list = []
+        # Flatten ForEach effects: each inner effect's args use the
+        # for-loop's item_var, which the planner resolves at grounding
+        # time by reading the event's list-valued role binding. Encode
+        # the substitution as a `("<list>", role_name)` marker so the
+        # downstream grounder / _action_delta can expand the variadic
+        # effects per element.
+        flat_effects: list = []
         for eff in effects:
+            if isinstance(eff, ForEach):
+                list_role = var_to_role.get(id(eff.list_var))
+                if list_role is None:
+                    # for_each over a list_var not bound by any event
+                    # role pattern — skip (rule misconfigured or
+                    # using a var bound elsewhere we don't model).
+                    continue
+                list_marker = ("<list>", list_role)
+                # Snapshot var_to_role with the item_var pinned to the
+                # list marker so the inner-effect walk substitutes it.
+                inner_var_to_role = dict(var_to_role)
+                inner_var_to_role[id(eff.item_var)] = list_marker
+                for inner in eff.effects:
+                    flat_effects.append((inner, inner_var_to_role))
+            else:
+                flat_effects.append((eff, var_to_role))
+        for eff, eff_var_to_role in flat_effects:
             if isinstance(eff, AddRelation):
                 role_args = []
                 ok = True
                 for arg in eff.args:
-                    role_name = var_to_role.get(id(arg))
+                    role_name = eff_var_to_role.get(id(arg))
                     if role_name is None:
                         ok = False
                         break
@@ -834,14 +931,14 @@ def _build_rule_effects_index(rules) -> dict:
                 # expands wildcards by querying the current fact set.
                 role_args = []
                 for arg in eff.args:
-                    role_name = var_to_role.get(id(arg))
+                    role_name = eff_var_to_role.get(id(arg))
                     role_args.append(role_name)  # None = wildcard
                 rule_dels.append((eff.relation, tuple(role_args)))
                 entry["dels"].append(
                     (eff.relation, tuple(role_args)))
             elif isinstance(eff, TransferN):
-                src_role = var_to_role.get(id(eff.source))
-                tgt_role = var_to_role.get(id(eff.target))
+                src_role = eff_var_to_role.get(id(eff.source))
+                tgt_role = eff_var_to_role.get(id(eff.target))
                 if src_role and tgt_role:
                     rule_adds.append(("havi", (tgt_role, src_role)))
                     entry["adds"].append(
@@ -1199,7 +1296,11 @@ def _heuristic_and_helpful(
                 continue
             verb, roles, pres, _effs = info
             if verb is not None:
-                helpful.add((verb, frozenset(roles.items())))
+                # List-valued role bindings (fari.parts) are unhashable
+                # in the frozenset key; tuple-coerce them.
+                helpful.add((verb, frozenset(
+                    (k, tuple(v) if isinstance(v, list) else v)
+                    for k, v in roles.items())))
             for p in pres:
                 if p not in visited_all:
                     stack.append(p)
@@ -1255,6 +1356,12 @@ def _infra_prespawn(action, role_map, trace, lex, derivations, resolver,
     for role_spec in action.roles:
         eid = role_map.get(role_spec.name)
         if eid is None:
+            continue
+        # List-kind roles bind to a list of eids; the property
+        # requirements apply to each. We don't recurse for derivation
+        # planting on list roles — the parts already exist as scene
+        # entities with their declared properties.
+        if isinstance(eid, (list, tuple)):
             continue
         ent_type = trace.entities[eid].entity_type
         for slot, vals in (role_spec.properties or {}).items():
@@ -1493,10 +1600,26 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
             return
         derived_now = _cached_compute_derived_state(
             trace, derivations, lex)
-        exclude = set(gv_bindings.values())
+        # Flatten list-valued bindings (fari.parts) when building the
+        # exclude set — set members must be hashable.
+        exclude: set = set()
+        for v in gv_bindings.values():
+            if isinstance(v, (list, tuple)):
+                exclude.update(v)
+            else:
+                exclude.add(v)
         role_map = dict(gv_bindings)
         for role_spec in action.roles:
             if role_spec.name in gv_bindings:
+                continue
+            # Optional roles (fari.instrument when crafted_with is
+            # empty) are intentionally left unbound — don't burn the
+            # spawner budget hunting for a random artifact.
+            if getattr(role_spec, "optional", False):
+                continue
+            # List-kind roles must be pre-bound by the goal sampler;
+            # the planner doesn't synthesize variadic lists.
+            if getattr(role_spec, "kind", "single") == "list":
                 continue
             filler = _find_role_filler(
                 role_spec, trace, lex, derived=derived_now,
@@ -1627,10 +1750,20 @@ def plan_for_goal(
         # Enumerate role bindings for gv_verb. Constrained roles are
         # forced to the drive's eid; unconstrained roles enumerate
         # all type-compatible entities in trace.
+        #
+        # List-kind roles (fari.parts) carry a tuple of eids in the
+        # drive; we keep the list intact (not enumerable as a single
+        # entity) and downstream grounding/expansion handles it.
+        # Optional unbound roles get a None placeholder so the combo
+        # enumeration emits a single grounding where the role is None.
         per_role: list = []
         ok = True
         for role_spec in action_obj.roles:
             forced = gv_bindings.get(role_spec.name)
+            if isinstance(forced, (list, tuple)):
+                # List role; keep as a single combinatorial element.
+                per_role.append([list(forced)])
+                continue
             if forced is not None:
                 ent = initial_trace.entities.get(forced)
                 if ent is None or not lex.types.is_subtype(
@@ -1638,6 +1771,11 @@ def plan_for_goal(
                     ok = False
                     break
                 per_role.append([forced])
+                continue
+            if getattr(role_spec, "optional", False):
+                # Unbound optional role: emit one grounding with this
+                # role absent from the binding dict.
+                per_role.append([None])
                 continue
             cand = []
             for eid, ent in initial_trace.entities.items():
@@ -1651,9 +1789,18 @@ def plan_for_goal(
             per_role.append(cand)
         if ok:
             for combo in itertools.product(*per_role):
-                if len(set(combo)) != len(combo):
+                # Hashable dedup: skip combos where two scalar roles
+                # bind the same entity. List/None elements don't
+                # participate in this check.
+                scalar = [c for c in combo
+                           if not isinstance(c, list) and c is not None]
+                if len(set(scalar)) != len(scalar):
                     continue
-                roles = {r.name: e for r, e in zip(action_obj.roles, combo)}
+                roles = {}
+                for r, e in zip(action_obj.roles, combo):
+                    if e is None:
+                        continue
+                    roles[r.name] = e
                 pres, effs = _ground_action_facts(
                     action_obj, roles, lex, rule_effects)
                 effs = set(effs) | {event_fired_fact}

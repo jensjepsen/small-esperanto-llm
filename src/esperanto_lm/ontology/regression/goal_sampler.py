@@ -37,6 +37,140 @@ def _cached_goal_index(lex, rules):
     return cached
 
 
+def _construct_goal_scene(lex, rng: random.Random) -> Optional[tuple]:
+    """Build a scene for a construction drive: pick a constructable
+    concept, materialize the actor + each part + (optional) instrument
+    + a stub theme entity, then return the drive that fires `fari`
+    with all roles pre-bound.
+
+    Roles in the drive's bindings tuple:
+      - agent: actor_eid
+      - theme: stub_eid for the to-be-constructed entity
+      - parts: tuple of part eids (one per concept.parts entry)
+      - instrument: tool eid (only when concept.crafted_with is set)
+
+    Returns None if any setup step fails (incompatible scene location,
+    missing ingredient concept, etc.). Caller falls back to property/
+    relation goals.
+    """
+    from ..causal import Trace
+    from ..sampler import _add_entity_randomized, _ensure_world
+
+    fari = lex.actions.get("fari")
+    if fari is None:
+        return None
+    # Pick a constructable concept (one whose properties carry
+    # constructable=yes and that declares parts).
+    constructables = [
+        l for l, c in lex.concepts.items()
+        if "yes" in c.properties.get("constructable", ())
+        and c.parts]
+    if not constructables:
+        return None
+    theme_concept = rng.choice(constructables)
+    theme_def = lex.concepts[theme_concept]
+    part_concepts = [p.concept for p in theme_def.parts]
+    crafted_with = list(theme_def.crafted_with)
+
+    # Pick agent + scene location.
+    agent_role = next(
+        (r for r in fari.roles if r.name == "agent"), None)
+    if agent_role is None:
+        return None
+    from .seeders import _concepts_matching_role
+    agent_candidates = _concepts_matching_role(lex, agent_role)
+    if not agent_candidates:
+        return None
+    agent_concept = rng.choice(agent_candidates)
+    locations = [l for l, c in lex.concepts.items()
+                 if lex.types.is_subtype(c.entity_type, "location")
+                 and not getattr(c, "is_category_stub", False)]
+    if not locations:
+        return None
+    for _ in range(5):
+        scene_lemma = rng.choice(locations)
+        t = Trace()
+        _ensure_world(t, lex, rng)
+        try:
+            _add_entity_randomized(t, scene_lemma, lex, rng,
+                                    entity_id=scene_lemma)
+        except (KeyError, ValueError):
+            continue
+        scene_id = scene_lemma
+        actor_eid = agent_concept
+        try:
+            _add_entity_randomized(t, agent_concept, lex, rng,
+                                    entity_id=actor_eid)
+            t.assert_relation("en", (actor_eid, scene_id), lex)
+        except (KeyError, ValueError):
+            continue
+        # Spawn one entity per part concept, owned by the actor (havi).
+        # Each part is placed by _place_respecting_containment to honor
+        # containment rules — fadeno/pasto may need a kitchen, etc.
+        from .seeders import _place_respecting_containment
+        part_eids: list = []
+        ok = True
+        for i, pc in enumerate(part_concepts):
+            part_eid = f"{pc}_part{i}"
+            placed = _place_respecting_containment(
+                t, lex, scene_id, pc, rng,
+                preferred_id=scene_id, existing_eid=None)
+            if placed is None:
+                ok = False
+                break
+            # Rename to deterministic eid? `_place_respecting_containment`
+            # uses concept_lemma as eid by default; if the concept is
+            # already placed it returns that eid, so duplicates collapse.
+            # That's fine — each part_concept appears once per recipe.
+            part_eids.append(placed)
+        if not ok:
+            continue
+        # Agent owns each part (havi).
+        try:
+            for peid in part_eids:
+                t.assert_relation("havi", (actor_eid, peid), lex)
+        except (KeyError, ValueError):
+            continue
+        # Pre-stage the to-be-created theme as a bare entity. The
+        # fari rule transfers havi to the agent and attaches parts;
+        # the entity exists before firing so the planner can reason
+        # about it.
+        stub_eid = f"{theme_concept}_planned"
+        if stub_eid not in t.entities:
+            try:
+                _add_entity_randomized(
+                    t, theme_concept, lex, rng, entity_id=stub_eid)
+            except (KeyError, ValueError):
+                continue
+        # Optional instrument: pick the first concept from crafted_with
+        # we can place. Skip when crafted_with is empty.
+        instrument_eid = None
+        if crafted_with:
+            for tool_concept in crafted_with:
+                placed = _place_respecting_containment(
+                    t, lex, scene_id, tool_concept, rng,
+                    preferred_id=scene_id, existing_eid=None)
+                if placed is not None:
+                    instrument_eid = placed
+                    break
+            if instrument_eid is None:
+                continue  # no tool slot worked
+
+        # Build drive role-bindings tuple. parts is a tuple (hashable)
+        # of eids; the engine + planner both accept list/tuple values
+        # for list-kind roles.
+        bindings: list = [
+            ("agent", actor_eid),
+            ("theme", stub_eid),
+            ("parts", tuple(part_eids)),
+        ]
+        if instrument_eid is not None:
+            bindings.append(("instrument", instrument_eid))
+        drive = ("event_fire", actor_eid, "fari", tuple(bindings))
+        return t, scene_id, drive
+    return None
+
+
 def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     """Pick a goal, pick a verb from its producers, build a minimal
     trace, return (trace, scene_id, drive). The spawner — invoked by
@@ -56,6 +190,17 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     from ..sampler import _add_entity_randomized, _ensure_world
     from .seeders import _concepts_matching_role
     from .goals import CREATED_ROLE
+
+    # With probability ~15%, emit a construction drive instead of a
+    # property/relation goal. Construction has its own path because
+    # the recipe (parts list + optional crafted_with tool) is concept-
+    # driven rather than effect-driven, so it doesn't slot into
+    # build_goal_index's effect-walking logic.
+    if "fari" in lex.actions and rng.random() < 0.15:
+        result = _construct_goal_scene(lex, rng)
+        if result is not None:
+            return result
+        # fall through if construction setup failed
 
     index = _cached_goal_index(lex, rules)
     all_goals = []
