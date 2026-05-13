@@ -576,7 +576,7 @@ def _ground_derivations(derivations, trace, lex) -> list:
     return out
 
 
-def _action_delta(action, roles, rule_effects, lex):
+def _action_delta(action, roles, rule_effects, lex, facts=None):
     """Compute (adds, dels) fact deltas for firing this grounded
     action. Used by the fact-set incremental simulator. Far cheaper
     than `_simulate_from_scratch` (no Trace fork, no engine rerun)
@@ -591,6 +591,13 @@ def _action_delta(action, roles, rule_effects, lex):
       - rule effects: RemoveRelation
       - For scalar slot writes, the previous value on that slot is
         implicitly displaced (caller treats slot=value as scalar).
+
+    When `facts` is supplied, dels with wildcard positions (None in
+    the role-arg tuple, indicating a given-bound var like iri's "from"
+    container) are expanded by querying the fact set for matching
+    relations. Without this, iri/veni/flugi would leave their old
+    en(agent, origin) fact in place and downstream movement actions
+    could fire spuriously from the stale origin.
     """
     adds: set = set()
     dels: set = set()
@@ -600,19 +607,54 @@ def _action_delta(action, roles, rule_effects, lex):
         if eid is None:
             continue
         adds.add(("prop", eid, eff.property, eff.value))
-    # Rule-level effects.
+    # Rule-level effects: apply per-rule so cascade rules with
+    # wildcard pres (porti_drop_when_carrier_falls) don't gate the
+    # main rule's effects. A rule "fires" iff its wildcard dels
+    # match — same semantics as the engine's `given` patterns.
     entry = rule_effects.get(action.lemma)
     if entry is not None:
-        for relation, role_arg_names in entry["adds"]:
-            eids = tuple(roles.get(r) for r in role_arg_names)
-            if any(e is None for e in eids):
+        for rule_entry in entry.get("rules", ()):
+            this_dels: list = []
+            fires = True
+            for relation, role_arg_names in rule_entry["dels"]:
+                if None in role_arg_names:
+                    if facts is None:
+                        # Caller doesn't need accurate dels (relaxed
+                        # graph). Skip — adds still flow through.
+                        continue
+                    pattern = tuple(roles.get(r) if r else None
+                                    for r in role_arg_names)
+                    matched = 0
+                    for f in facts:
+                        if (f[0] == "rel" and f[1] == relation
+                                and len(f[2]) == len(pattern)
+                                and all(p is None or p == a
+                                        for p, a in zip(pattern, f[2]))):
+                            this_dels.append(f)
+                            matched += 1
+                    if matched == 0:
+                        # Rule's `given` doesn't hold — engine wouldn't
+                        # fire this rule, so neither its adds nor dels
+                        # apply. The action itself may still progress
+                        # (event_fire injection, schema effects); the
+                        # search loop's `not adds and not dels` check
+                        # skips pure no-ops.
+                        fires = False
+                        break
+                else:
+                    eids = tuple(roles.get(r) for r in role_arg_names)
+                    if any(e is None for e in eids):
+                        continue
+                    this_dels.append(("rel", relation, eids))
+            if not fires:
                 continue
-            adds.add(("rel", relation, eids))
-        for relation, role_arg_names in entry["dels"]:
-            eids = tuple(roles.get(r) for r in role_arg_names)
-            if any(e is None for e in eids):
-                continue
-            dels.add(("rel", relation, eids))
+            for relation, role_arg_names in rule_entry["adds"]:
+                eids = tuple(roles.get(r) for r in role_arg_names)
+                if any(e is None for e in eids):
+                    continue
+                adds.add(("rel", relation, eids))
+            for d in this_dels:
+                dels.add(d)
     return adds, dels
 
 
@@ -766,7 +808,10 @@ def _build_rule_effects_index(rules) -> dict:
         # Walk rule.then for AddRelation / RemoveRelation / TransferN.
         effects = (rule.then if isinstance(rule.then, (list, tuple))
                    else [rule.then])
-        entry = out.setdefault(verb, {"adds": [], "dels": []})
+        entry = out.setdefault(
+            verb, {"adds": [], "dels": [], "rules": []})
+        rule_adds: list = []
+        rule_dels: list = []
         for eff in effects:
             if isinstance(eff, AddRelation):
                 role_args = []
@@ -778,26 +823,32 @@ def _build_rule_effects_index(rules) -> dict:
                         break
                     role_args.append(role_name)
                 if ok:
+                    rule_adds.append((eff.relation, tuple(role_args)))
                     entry["adds"].append(
                         (eff.relation, tuple(role_args)))
             elif isinstance(eff, RemoveRelation):
+                # Args may include given-bound vars (e.g. iri's "from"
+                # container O, matched against rel("en", agent, var(O)) in
+                # `given`). Those positions can't be resolved until
+                # simulation time. Encode them as None; _action_delta
+                # expands wildcards by querying the current fact set.
                 role_args = []
-                ok = True
                 for arg in eff.args:
                     role_name = var_to_role.get(id(arg))
-                    if role_name is None:
-                        ok = False
-                        break
-                    role_args.append(role_name)
-                if ok:
-                    entry["dels"].append(
-                        (eff.relation, tuple(role_args)))
+                    role_args.append(role_name)  # None = wildcard
+                rule_dels.append((eff.relation, tuple(role_args)))
+                entry["dels"].append(
+                    (eff.relation, tuple(role_args)))
             elif isinstance(eff, TransferN):
                 src_role = var_to_role.get(id(eff.source))
                 tgt_role = var_to_role.get(id(eff.target))
                 if src_role and tgt_role:
+                    rule_adds.append(("havi", (tgt_role, src_role)))
                     entry["adds"].append(
                         ("havi", (tgt_role, src_role)))
+        if rule_adds or rule_dels:
+            entry["rules"].append(
+                {"adds": rule_adds, "dels": rule_dels})
         # Synthesize scias_lokon from the create-fakto+konas+subjekto
         # pattern. We need: a CreateEntity(fakto, as_var=F), an
         # AddRelation(subjekto, F, X) where X maps to a role, and an
@@ -834,6 +885,12 @@ def _build_rule_effects_index(rules) -> dict:
                 synth = ("scias_lokon", (knower_role, subj_role))
                 if synth not in entry["adds"]:
                     entry["adds"].append(synth)
+                    # Mirror in a synthetic rule so the per-rule
+                    # _action_delta loop still emits it. Without this
+                    # the fact-set simulator drops scias_lokon and
+                    # downstream preni/kapti can't fire.
+                    entry["rules"].append(
+                        {"adds": [synth], "dels": []})
     return out
 
 
@@ -1731,7 +1788,8 @@ def plan_for_goal(
         for action, roles, pres, _effs in grounded:
             if not all(p in facts for p in pres):
                 continue
-            adds, dels = _action_delta(action, roles, rule_effects, lex)
+            adds, dels = _action_delta(
+                action, roles, rule_effects, lex, facts=facts)
             # For event-fire goal entries, the synthetic event_fired
             # fact lives in the grounded `effs` set; inject it so the
             # action can fire even when its native delta is empty
