@@ -180,9 +180,11 @@ def main():
                    help="Which sampler(s) to bench")
     p.add_argument("--max-depth", type=int, default=8,
                    help="Planner DFS depth budget")
-    p.add_argument("--samples-out", type=str, default=None,
+    p.add_argument("--samples-out", type=str,
+                   default="runs/bench_samples.jsonl",
                    help="Write captured fired+failed plan samples as "
-                        "JSONL to this path (one entry per scene)")
+                        "JSONL to this path (one entry per scene). "
+                        "Pass empty string to disable.")
     p.add_argument("--show-samples", type=int, default=0,
                    help="Print N fired and N failed samples to stdout")
     args = p.parse_args()
