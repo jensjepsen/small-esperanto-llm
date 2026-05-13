@@ -254,3 +254,19 @@
 {"container_pattern": {"category": "surfaco"}, "contained": "skulptaĵo", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "statuo", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "pentraĵo", "relation": "sur"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lipruĝo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "kremo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "parfumo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "ungopolurilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "losiono", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "razilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "odoraĵo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "fardilo", "relation": "en"}
+{"container": "banĉambro", "contained": "lipruĝo", "relation": "en"}
+{"container": "banĉambro", "contained": "kremo", "relation": "en"}
+{"container": "banĉambro", "contained": "parfumo", "relation": "en"}
+{"container": "banĉambro", "contained": "ungopolurilo", "relation": "en"}
+{"container": "banĉambro", "contained": "losiono", "relation": "en"}
+{"container": "banĉambro", "contained": "razilo", "relation": "en"}
+{"container": "banĉambro", "contained": "odoraĵo", "relation": "en"}
+{"container": "banĉambro", "contained": "fardilo", "relation": "en"}
