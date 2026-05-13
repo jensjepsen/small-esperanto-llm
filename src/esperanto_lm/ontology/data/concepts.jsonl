@@ -362,3 +362,11 @@
 {"lemma": "pantoflo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
 {"lemma": "sandalo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
 {"lemma": "enkluvo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "openness": ["fermita"]}}
+{"lemma": "fridujo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["aktiva"], "openness": ["fermita"]}, "category": ["meblo"]}
+{"lemma": "lavmaŝino", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["neaktiva"], "openness": ["fermita"]}, "category": ["meblo"]}
+{"lemma": "mikroondejo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["neaktiva"], "openness": ["fermita"]}, "category": ["meblo"]}
+{"lemma": "ventumilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["neaktiva"]}, "category": ["meblo"]}
+{"lemma": "kameno", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["stone"], "power_state": ["neaktiva"], "lights_when_on": ["yes"]}, "category": ["meblo"]}
+{"lemma": "ŝtuparo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"]}, "category": ["meblo"]}
+{"lemma": "divano", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "sittable": ["yes"]}, "category": ["meblo"]}
+{"lemma": "bretaro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"]}, "category": ["meblo", "lignaĵo", "surfaco"]}

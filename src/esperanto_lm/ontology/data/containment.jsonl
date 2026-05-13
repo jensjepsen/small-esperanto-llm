@@ -170,3 +170,19 @@
 {"container_pattern": {"category": "surfaco"}, "contained": "lupeo", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "enkluvo", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "monujo", "relation": "sur"}
+{"container": "kuirejo", "contained": "fridujo", "relation": "en"}
+{"container": "kuirejo", "contained": "mikroondejo", "relation": "en"}
+{"container": "lavejo", "contained": "lavmaŝino", "relation": "en"}
+{"container": "banĉambro", "contained": "lavmaŝino", "relation": "en"}
+{"container": "salono", "contained": "kameno", "relation": "en"}
+{"container": "salono", "contained": "divano", "relation": "en"}
+{"container": "biblioteko", "contained": "bretaro", "relation": "en"}
+{"container": "salono", "contained": "bretaro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "ventumilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "ŝtuparo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "divano", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "bretaro", "relation": "en"}
+{"container": "fridujo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "fridujo", "contained": "glacio", "relation": "en"}
+{"container": "lavmaŝino", "contained_pattern": {"category": "vestaĵo"}, "relation": "en"}
+{"container_pattern": {"category": "surfaco"}, "contained": "telefono", "relation": "sur"}
