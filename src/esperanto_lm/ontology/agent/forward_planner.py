@@ -915,19 +915,17 @@ def _build_consumer_index(actions, derivations):
     all_consumers: list = []
     cid = 0
     for _, _, pres, effs in actions:
-        consumer = (1, frozenset(pres), frozenset(effs), cid)
+        pres_set = frozenset(pres)
+        consumer = (1, pres_set, frozenset(effs), cid)
         all_consumers.append(consumer)
-        for p in pres:
+        for p in pres_set:
             fact_to.setdefault(p, []).append(consumer)
-        if not pres:
-            # No-pre actions: fire at layer 0 (cost 1). Used by
-            # passive/cascade verbs with empty action.preconditions.
-            pass
         cid += 1
     for _, _, pres, effs in derivations:
-        consumer = (0, frozenset(pres), frozenset(effs), cid)
+        pres_set = frozenset(pres)
+        consumer = (0, pres_set, frozenset(effs), cid)
         all_consumers.append(consumer)
-        for p in pres:
+        for p in pres_set:
             fact_to.setdefault(p, []).append(consumer)
         cid += 1
     return fact_to, all_consumers
@@ -1020,53 +1018,67 @@ def _heuristic_and_helpful(
     producer: dict = {}
 
     from collections import deque
-    worklist = deque(cost.keys())
     # producers_cheapest[fact] = consumer cids that achieved the
     # current cheapest cost for that fact. On strict cost
     # improvement, reset to [new_cid]; on tie, append. Used for
     # both h_FF count and the helpful set.
     producers_cheapest: dict[tuple, list] = {}
 
+    # Counter-based h_add propagation. Maintain per-consumer:
+    #   unsat[cid] = number of pres still at INF (consumer fires
+    #                when this hits 0)
+    #   pre_sum[cid] = sum of cost[p] for known pres
+    # Avoids re-scanning a consumer's pres on every fact-pop —
+    # the dominant cost in the previous worklist loop.
+    pre_sum: dict = {}
+    unsat: dict = {}
+    ready_consumers: deque = deque()
     for base, pres, effs, cid_ in all_consumers:
-        if pres:
-            continue
-        for e in effs:
-            prev = cost.get(e, _HEURISTIC_INF)
-            if base < prev:
-                cost[e] = base
-                producer[e] = cid_
-                worklist.append(e)
-                producers_cheapest[e] = [cid_]
-            elif base == prev:
-                producers_cheapest.setdefault(e, []).append(cid_)
+        pre_sum[cid_] = 0
+        n = len(pres)
+        unsat[cid_] = n
+        if n == 0:
+            ready_consumers.append(cid_)
+
+    # Seed: each cost-0 fact decrements unsat for its consumers.
+    # pre_sum stays 0 since cost is 0.
+    for f in cost:
+        for _base, _pres, _effs, cid_ in fact_to.get(f, ()):
+            unsat[cid_] -= 1
+            if unsat[cid_] == 0:
+                ready_consumers.append(cid_)
 
     iter_cap = 200_000
     iters = 0
-    while worklist and iters < iter_cap:
+    INF = _HEURISTIC_INF
+    while ready_consumers and iters < iter_cap:
         iters += 1
-        f = worklist.popleft()
-        consumers = fact_to.get(f, ())
-        for base, pres, effs, cid_ in consumers:
-            ready = True
-            total_pre = 0
-            for p in pres:
-                pc = cost.get(p, _HEURISTIC_INF)
-                if pc >= _HEURISTIC_INF:
-                    ready = False
-                    break
-                total_pre += pc
-            if not ready:
-                continue
-            new_cost = base + total_pre
-            for e in effs:
-                prev = cost.get(e, _HEURISTIC_INF)
-                if new_cost < prev:
-                    cost[e] = new_cost
-                    producer[e] = cid_
-                    worklist.append(e)
-                    producers_cheapest[e] = [cid_]
-                elif new_cost == prev:
-                    producers_cheapest.setdefault(e, []).append(cid_)
+        cid_ = ready_consumers.popleft()
+        base, _pres, effs, _ = all_consumers[cid_]
+        new_cost = base + pre_sum[cid_]
+        for e in effs:
+            prev = cost.get(e, INF)
+            if new_cost < prev:
+                cost[e] = new_cost
+                producer[e] = cid_
+                producers_cheapest[e] = [cid_]
+                # Emit fact-cost event for consumers of e.
+                if prev >= INF:
+                    # First time e is reached.
+                    for _b2, _p2, _e2, cid2_ in fact_to.get(e, ()):
+                        unsat[cid2_] -= 1
+                        pre_sum[cid2_] += new_cost
+                        if unsat[cid2_] == 0:
+                            ready_consumers.append(cid2_)
+                else:
+                    # Cost improvement; pres already counted.
+                    delta = prev - new_cost
+                    for _b2, _p2, _e2, cid2_ in fact_to.get(e, ()):
+                        pre_sum[cid2_] -= delta
+                        if unsat[cid2_] == 0:
+                            ready_consumers.append(cid2_)
+            elif new_cost == prev:
+                producers_cheapest.setdefault(e, []).append(cid_)
 
     if goal[0] == "property":
         _, eid, slot, value = goal
