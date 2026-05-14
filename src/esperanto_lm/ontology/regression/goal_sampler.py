@@ -37,7 +37,7 @@ def _cached_goal_index(lex, rules):
     return cached
 
 
-def _construct_goal_scene(lex, rng: random.Random) -> Optional[tuple]:
+def _construct_goal_scene(lex, rng: random.Random, rules) -> Optional[tuple]:
     """Build a scene for a construction drive: pick a constructable
     concept, materialize the actor + each part + (optional) instrument
     + a stub theme entity, then return the drive that fires `fari`
@@ -87,6 +87,7 @@ def _construct_goal_scene(lex, rng: random.Random) -> Optional[tuple]:
                  and not getattr(c, "is_category_stub", False)]
     if not locations:
         return None
+    goal_index = _cached_goal_index(lex, rules)
     for _ in range(5):
         scene_lemma = rng.choice(locations)
         t = Trace()
@@ -156,34 +157,81 @@ def _construct_goal_scene(lex, rng: random.Random) -> Optional[tuple]:
             if instrument_eid is None:
                 continue  # no tool slot worked
 
-        # Downstream drive: agent USES the constructed thing. Pick
-        # the use-verb's target slot+value from a small menu sized
-        # by what's plausible for the concept's declared/pervasive
-        # slots. The planner discovers fari as a producer of
-        # havi(agent, theme) via the construct-aware grounding pass
-        # and chains it into the use-verb.
-        #
-        # Each entry: (weight, slot, value, gate-predicate). Filtered
-        # to viable options: the gate-predicate runs against
-        # theme_def.properties to keep e.g. integrity drives off
-        # concepts that don't declare integrity.
-        is_edible = "manĝebla" in theme_def.properties.get(
-            "edibility", ())
-        has_integrity = "integrity" in theme_def.properties
-        # temperature is pervasive on physical → always available
-        use_drives: list = []
-        if is_edible:
-            use_drives.append((40, "presence", "manĝita"))
-        if has_integrity:
-            use_drives.append((25, "integrity", "tranĉita"))
-            use_drives.append((10, "integrity", "rompita"))
-        # Warm-the-constructed-thing — works for any physical.
-        use_drives.append((15, "temperature", "varmega"))
-        use_drives.append((10, "cleanliness", "malpura"))
-        if not use_drives:
+        # Downstream drive: agent USES the constructed thing. Walk
+        # the property-goal index and keep any (slot, value) for
+        # which at least one producer verb's theme role accepts the
+        # constructable concept — that's exactly the same filter
+        # `regress_for_goal` applies, scoped to our chosen theme.
+        # Weight by producer count so common drives surface naturally.
+        # Auto-extends: adding a new verb whose effect produces a
+        # state change on theme.type=physical immediately becomes a
+        # candidate use-verb here.
+        viable_drives: list = []
+        for goal_key, producer_verbs in goal_index.items():
+            if goal_key[0] != "property":
+                continue
+            _, slot, value = goal_key
+            for v in producer_verbs:
+                pa = lex.actions.get(v)
+                if pa is None:
+                    continue
+                # Find the producer's theme role (the one whose
+                # property the effect writes to). Use any effect role
+                # whose slot/value matches the goal — that's the role
+                # bound to our constructable.
+                target_role = None
+                for eff in pa.effects:
+                    if eff.property == slot and eff.value == value:
+                        target_role = next(
+                            (r for r in pa.roles
+                             if r.name == eff.target_role), None)
+                        if target_role is not None:
+                            break
+                if target_role is None:
+                    continue
+                # Same accept-check the spawner uses: subtype +
+                # role.properties compatibility against the concept.
+                if not lex.types.is_subtype(
+                        theme_def.entity_type, target_role.type):
+                    continue
+                ok = True
+                for s, vals in (target_role.properties or {}).items():
+                    if not vals:
+                        continue
+                    slot_def = lex.slots.get(s)
+                    cvals = theme_def.properties.get(s, [])
+                    if slot_def is None:
+                        continue
+                    if slot_def.varies:
+                        if getattr(slot_def, "pervasive", False):
+                            continue
+                        if not cvals:
+                            ok = False
+                            break
+                        continue
+                    if not (set(vals) & set(cvals)):
+                        ok = False
+                        break
+                if ok:
+                    viable_drives.append((slot, value, len(producer_verbs)))
+                    break
+        if not viable_drives:
             return None
-        weights = [w for w, *_ in use_drives]
-        _w, slot, value = rng.choices(use_drives, weights=weights, k=1)[0]
+        weights = [w for *_, w in viable_drives]
+        slot, value, _w = rng.choices(viable_drives, weights=weights, k=1)[0]
+        # Force the stub's current value on this slot to be NON-target
+        # so the drive isn't trivially already-satisfied. The stub was
+        # built via _add_entity_randomized which randomizes varies-true
+        # slots, so it may have rolled the target value (e.g.
+        # integrity=tranĉita matches the tranĉi drive). Mirrors the
+        # verb-aware setup the regular spawner applies for effect-target
+        # roles.
+        slot_def = lex.slots.get(slot)
+        if slot_def is not None and slot_def.vocabulary:
+            non_target = [v for v in slot_def.vocabulary if v != value]
+            if non_target:
+                t.entities[stub_eid].set_property(
+                    slot, rng.choice(non_target))
         drive = ("entity_slot", actor_eid, stub_eid, slot, value)
         return t, scene_id, drive
     return None
@@ -215,7 +263,7 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     # driven rather than effect-driven, so it doesn't slot into
     # build_goal_index's effect-walking logic.
     if "fari" in lex.actions and rng.random() < 0.15:
-        result = _construct_goal_scene(lex, rng)
+        result = _construct_goal_scene(lex, rng, rules)
         if result is not None:
             return result
         # fall through if construction setup failed
