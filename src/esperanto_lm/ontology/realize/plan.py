@@ -983,6 +983,15 @@ def aggregate_relations(messages: list[Message]) -> list[Message]:
                     buckets[key] = []
                     bucket_order.append(key)
                 buckets[key].append(rel.args[0])
+            elif rel.relation == "havi" and len(rel.args) == 2:
+                # Same shape as en/sur but flipped: havi(owner, theme)
+                # — bucket by owner so "Kantisto havis pano, viando
+                # kaj fromaĝo" collapses three sequential lines.
+                key = ("havi", rel.args[0])
+                if key not in buckets:
+                    buckets[key] = []
+                    bucket_order.append(key)
+                buckets[key].append(rel.args[1])
             else:
                 leftover.append(m)
         elif isinstance(m, SceneGroundingMessage) and inferred_scene:
@@ -1007,11 +1016,15 @@ def aggregate_relations(messages: list[Message]) -> list[Message]:
         else:
             # Singleton: fall back to a regular RelationMessage so
             # the existing renderer with its template variation kicks
-            # in.
+            # in. For havi the arg order is (owner, theme); en/sur is
+            # (contained, container) — swap accordingly.
             from ..causal import RelationAssertion
+            args = ((container_id, contained_ids[0])
+                    if rel_name == "havi"
+                    else (contained_ids[0], container_id))
             out.append(RelationMessage(
                 relation=RelationAssertion(
-                    relation=rel_name, args=(contained_ids[0], container_id))))
+                    relation=rel_name, args=args)))
     out.extend(leftover)
     out.extend(rest)
     return out

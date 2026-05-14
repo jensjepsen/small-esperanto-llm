@@ -1517,6 +1517,17 @@ def _render_grouped_relation(
     if not contained_forms:
         return None
 
+    # `havi` flips structure: OWNER fronts, contents are accusative
+    # ("Kantisto havis la panon, la viandon kaj la fromaĝon"). The
+    # `contained_forms` collected above are nominative — replace with
+    # accusative for the havi shape.
+    if m.relation == "havi":
+        contained_forms = []
+        for cid in m.contained_ids:
+            ent = ctx.trace.entities.get(cid)
+            if ent is None:
+                continue
+            contained_forms.append(to_accusative(ctx.name_for(ent)))
     if len(contained_forms) == 1:
         list_str = contained_forms[0]
     elif len(contained_forms) == 2:
@@ -1524,6 +1535,9 @@ def _render_grouped_relation(
     else:
         head = ", ".join(contained_forms[:-1])
         list_str = f"{head}, kaj {contained_forms[-1]}"
+
+    if m.relation == "havi":
+        return f"{container_form} hav{ctx.tense} {list_str}."
 
     prep = "En" if m.relation == "en" else "Sur"
     # Single-contained animates with a derived posture → use that
