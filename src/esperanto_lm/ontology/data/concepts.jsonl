@@ -34,7 +34,7 @@
 {"lemma": "ligno", "entity_type": "substance", "properties": {"fragility": ["fortika"], "attachment": ["loza"], "state_of_matter": ["solida"], "made_of": ["wood"]}}
 {"lemma": "najlo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["metalaĵo"]}
 {"lemma": "sofo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "sittable": ["yes"], "lieable": ["yes"]}, "category": ["meblo", "surfaco"]}
-{"lemma": "libro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"]}}
+{"lemma": "libro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"], "constructable": ["yes"]}, "parts": [{"concept": "papero"}, {"concept": "ŝnuro"}]}
 {"lemma": "papero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "count": ["1"], "posture": ["kuŝanta"]}}
 {"lemma": "ĵurnalo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"]}}
 {"lemma": "letero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "count": ["1"], "posture": ["kuŝanta"]}}
@@ -471,3 +471,5 @@
 {"lemma": "sablokastelo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "parts": [{"concept": "sablo"}, {"concept": "ŝtono"}]}
 {"lemma": "florkrono", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "parts": [{"concept": "floro"}, {"concept": "herbo"}]}
 {"lemma": "fajro", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "parts": [{"concept": "ligno"}, {"concept": "ŝtono"}]}
+{"lemma": "fruktosalato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pomo"}, {"concept": "banano"}, {"concept": "ĉerizo"}]}
+{"lemma": "buterpano", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pano"}, {"concept": "butero"}]}
