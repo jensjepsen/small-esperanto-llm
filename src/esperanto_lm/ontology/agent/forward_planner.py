@@ -790,6 +790,7 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
     """
     adds: set = set()
     dels: set = set()
+    sym = _symmetric_relations(lex)
     # Schema-level effects (property writes).
     for eff in action.effects:
         eid = roles.get(eff.target_role)
@@ -816,7 +817,9 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
                             role_arg_names, roles):
                         if any(e is None for e in eids):
                             continue
-                        this_dels.append(("rel", relation, eids))
+                        this_dels.append(
+                            ("rel", relation,
+                             _canon_rel(relation, eids, sym)))
                     continue
                 if None in role_arg_names:
                     if facts is None:
@@ -846,14 +849,18 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
                     eids = tuple(roles.get(r) for r in role_arg_names)
                     if any(e is None for e in eids):
                         continue
-                    this_dels.append(("rel", relation, eids))
+                    this_dels.append(
+                        ("rel", relation,
+                         _canon_rel(relation, eids, sym)))
             if not fires:
                 continue
             for relation, role_arg_names in rule_entry["adds"]:
                 for eids in _expand_list_role_args(role_arg_names, roles):
                     if any(e is None for e in eids):
                         continue
-                    adds.add(("rel", relation, eids))
+                    adds.add(
+                        ("rel", relation,
+                         _canon_rel(relation, eids, sym)))
             for d in this_dels:
                 dels.add(d)
     return adds, dels
