@@ -229,39 +229,33 @@ def _concept_aliases(
     entity_id: Optional[str] = None,
     derived=None,
 ) -> list[str]:
-    """Transitively walk `concept.category` to collect superordinate
-    lemmas that can stand in for `concept_lemma` on a back-reference.
-    pomo → frukto → manĝaĵo: a `pomo` entity yields ["frukto", "manĝaĵo"].
+    """Collect superordinate lemmas that can stand in for
+    `concept_lemma` on a back-reference. Restricted to DIRECT parents
+    (depth 1 in the category graph) so a `papago` entity yields just
+    `birdo`, not the full chain `birdo → animalo → biologia_estulo` —
+    deeper aliases lose specificity ("la animalo" could be anything)
+    and inflate the available pool, making alias drift louder in a
+    narrative.
 
     When `entity_id` and `derived` are given, also folds in any
     contextual category labels the engine has tagged on the entity —
     e.g. a viro entity in `gepatro(this, ?)` carries the derived
-    `patro` label. Derived labels each get their own concept-category
-    chain walked so "patro → viro" still surfaces as a deeper alias.
-
-    Cycle-safe via a visit set. Returns lemmas in the order encountered
-    (most-specific parent first), so the caller's random choice
-    naturally surfaces both levels with similar frequency."""
+    `patro` label. Contextual labels are kept as-is (the engine
+    already issues them at the appropriate specificity)."""
     out: list[str] = []
     visited: set[str] = {concept_lemma}
-    frontier = [concept_lemma]
     if derived is not None and entity_id is not None:
         for label in derived.categories_for(entity_id):
             if label not in visited:
                 visited.add(label)
                 out.append(label)
-                frontier.append(label)
-    while frontier:
-        cur = frontier.pop(0)
-        concept = lex.concepts.get(cur)
-        if concept is None:
-            continue
+    concept = lex.concepts.get(concept_lemma)
+    if concept is not None:
         for parent in getattr(concept, "category", ()):
             if parent in visited:
                 continue
             visited.add(parent)
             out.append(parent)
-            frontier.append(parent)
     return out
 
 
@@ -336,17 +330,24 @@ def _name_for(
         # ALIAS_RATE / cycle-through-history shape as the non-person
         # case below. Falls through to pronoun / name when the
         # rng / mentioned / derived gates don't all line up.
+        # At most one alias per entity per scene — once we've used a
+        # category alias for this entity, every subsequent mention
+        # sticks with the name. The point is a single coreference
+        # signal, not repeated genus-substitution that drowns the
+        # specific noun. Also disallow reusing an alias across
+        # entities: "la trinkaĵo" referring to teo AND akvo in the
+        # same narrative is the confusion to avoid.
         if (rng is not None
                 and entity.id in mentioned
                 and alias_history is not None
+                and not alias_history.get(entity.id)
                 and derived is not None
                 and rng.random() < ALIAS_RATE):
             cats = list(derived.categories_for(entity.id))
+            taken = set().union(*alias_history.values()) if alias_history else set()
+            cats = [c for c in cats if c not in taken]
             if cats:
-                used = alias_history.get(entity.id, set())
-                fresh = [c for c in cats if c not in used]
-                pool = fresh if fresh else cats
-                chosen = rng.choice(pool)
+                chosen = rng.choice(cats)
                 alias_history.setdefault(entity.id, set()).add(chosen)
                 return f"la {chosen}"
         if (rng is not None and trace is not None
@@ -356,26 +357,27 @@ def _name_for(
             return PRONOUN_OF_NAME[name]
         return name.capitalize()
     lemma = entity.concept_lemma
-    # On back-references, sometimes substitute a superordinate
+    # On back-references, sometimes substitute a direct-parent
     # category alias for the bare lemma — "la pomo" → "la frukto".
     # First mentions keep the specific lemma so the model gets a
-    # binding anchor; back-references vary so it learns the
-    # genus-species coreference. Cycle through the available
-    # parents per entity via `alias_history` so we don't repeat.
-    # Folds in derived categories (e.g. role-from-relation labels)
-    # alongside concept.category so contextual roles surface here too.
+    # binding anchor. Capped at one alias per entity per scene: the
+    # genus-species training signal lands once, then the narrative
+    # settles back on the specific noun — without the cap, longer
+    # chains (tea: vidi+preni+boli+fari+trinki akvon) drift into
+    # "la trinkaĵo" on multiple back-refs, drowning the specific
+    # noun. Pool is direct parents only (see _concept_aliases).
     if (rng is not None and lexicon is not None
             and entity.id in mentioned
             and alias_history is not None
+            and not alias_history.get(entity.id)
             and rng.random() < ALIAS_RATE):
         aliases = _concept_aliases(
             lemma, lexicon,
             entity_id=entity.id, derived=derived)
+        taken = set().union(*alias_history.values()) if alias_history else set()
+        aliases = [a for a in aliases if a not in taken]
         if aliases:
-            used = alias_history.get(entity.id, set())
-            fresh = [a for a in aliases if a not in used]
-            pool = fresh if fresh else aliases
-            chosen = rng.choice(pool)
+            chosen = rng.choice(aliases)
             alias_history.setdefault(entity.id, set()).add(chosen)
             lemma = chosen
     # `count_override` is set by event-rendering for consumption /
