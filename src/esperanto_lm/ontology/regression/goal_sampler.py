@@ -37,6 +37,60 @@ def _cached_goal_index(lex, rules):
     return cached
 
 
+_AGENT_GATES_CACHE: dict[int, dict[str, list[tuple[str, str]]]] = {}
+
+
+def _agent_cascade_gates(verb_lemma: str, rules) -> list[tuple[str, str]]:
+    """Slot-value pairs that, when set on the actor pre-plan, cause
+    `verb_lemma`'s cascade rules to fire as follow-up events. Walks
+    rules looking for the pattern `event(verb, agent=entity(slot=val))`
+    and returns each (slot, val) found.
+
+    Used by the construct sampler to chain a follow-up state-change on
+    the actor after the primary use-drive: setting actor.hunger=malsata
+    before a manĝi-use-drive makes hungry_eats_sated emit satiĝi.
+    """
+    key = id(rules)
+    cached = _AGENT_GATES_CACHE.get(key)
+    if cached is not None:
+        return cached.get(verb_lemma, [])
+
+    from ..dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern, EventPattern,
+    )
+
+    def _entity_constraints(patt) -> dict | None:
+        if isinstance(patt, EntityPattern):
+            return patt.constraints
+        if isinstance(patt, AndPattern):
+            left = _entity_constraints(patt.left)
+            right = _entity_constraints(patt.right)
+            merged: dict = {}
+            for c in (left, right):
+                if c:
+                    merged.update(c)
+            return merged or None
+        return None
+
+    out: dict[str, list[tuple[str, str]]] = {}
+    for rule in rules:
+        if not isinstance(rule.when, EventPattern):
+            continue
+        verb = rule.when.action
+        agent_pat = rule.when.role_patterns.get("agent")
+        if agent_pat is None:
+            continue
+        constraints = _entity_constraints(agent_pat) or {}
+        for slot, val in constraints.items():
+            if slot in ("type", "concept", "has_suffix"):
+                continue
+            if not isinstance(val, str):
+                continue
+            out.setdefault(verb, []).append((slot, val))
+    _AGENT_GATES_CACHE[key] = out
+    return out.get(verb_lemma, [])
+
+
 def _construct_goal_scene(lex, rng: random.Random, rules,
                           theme_concept: Optional[str] = None,
                           ) -> Optional[tuple]:
@@ -292,12 +346,24 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
                         ok = False
                         break
                 if ok:
-                    viable_drives.append((slot, value, len(producer_verbs)))
+                    viable_drives.append(
+                        (slot, value, v, len(producer_verbs)))
                     break
         if not viable_drives:
             return None
         weights = [w for *_, w in viable_drives]
-        slot, value, _w = rng.choices(viable_drives, weights=weights, k=1)[0]
+        slot, value, use_verb, _w = rng.choices(
+            viable_drives, weights=weights, k=1)[0]
+        # Sampler-side chain: if the picked use-verb has an agent-side
+        # cascade gate (e.g. manĝi when malsata cascades to satiĝi,
+        # trinki when soifa cascades to sensoifiĝi), force the actor
+        # into that gate state so the cascade fires as a follow-up
+        # event. The primary drive is unchanged — the cascade adds
+        # extra events to the trace at engine-run time, chaining the
+        # narrative: "fari teon → trinkis la teon → sensoifiĝis."
+        cascade_gates = _agent_cascade_gates(use_verb, rules)
+        for gate_slot, gate_val in cascade_gates:
+            t.entities[actor_eid].set_property(gate_slot, gate_val)
         # Force the stub's current value on this slot to be NON-target
         # so the drive isn't trivially already-satisfied. The stub was
         # built via _add_entity_randomized which randomizes varies-true
