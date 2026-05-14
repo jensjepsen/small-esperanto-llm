@@ -156,21 +156,36 @@ def _construct_goal_scene(lex, rng: random.Random) -> Optional[tuple]:
             if instrument_eid is None:
                 continue  # no tool slot worked
 
-        # Downstream drive: the agent wants to USE the construct
-        # (eat it / share it / similar). The planner discovers fari
-        # as a producer of havi(agent, theme) via the construct-
-        # aware grounding pass and chains it into the use-verb.
+        # Downstream drive: agent USES the constructed thing. Pick
+        # the use-verb's target slot+value from a small menu sized
+        # by what's plausible for the concept's declared/pervasive
+        # slots. The planner discovers fari as a producer of
+        # havi(agent, theme) via the construct-aware grounding pass
+        # and chains it into the use-verb.
         #
-        # Pick the use-verb from the theme concept's properties.
-        # Edible substances (sandviĉo/salato/bulko) → "manĝi a
-        # constructable" drive with slot=presence, value=manĝita.
-        # Other constructables could use doni / vendi / etc. — for
-        # now only the manĝi path is implemented.
-        if "manĝebla" in theme_def.properties.get("edibility", ()):
-            drive = ("entity_slot", actor_eid, stub_eid,
-                     "presence", "manĝita")
-            return t, scene_id, drive
-        return None
+        # Each entry: (weight, slot, value, gate-predicate). Filtered
+        # to viable options: the gate-predicate runs against
+        # theme_def.properties to keep e.g. integrity drives off
+        # concepts that don't declare integrity.
+        is_edible = "manĝebla" in theme_def.properties.get(
+            "edibility", ())
+        has_integrity = "integrity" in theme_def.properties
+        # temperature is pervasive on physical → always available
+        use_drives: list = []
+        if is_edible:
+            use_drives.append((40, "presence", "manĝita"))
+        if has_integrity:
+            use_drives.append((25, "integrity", "tranĉita"))
+            use_drives.append((10, "integrity", "rompita"))
+        # Warm-the-constructed-thing — works for any physical.
+        use_drives.append((15, "temperature", "varmega"))
+        use_drives.append((10, "cleanliness", "malpura"))
+        if not use_drives:
+            return None
+        weights = [w for w, *_ in use_drives]
+        _w, slot, value = rng.choices(use_drives, weights=weights, k=1)[0]
+        drive = ("entity_slot", actor_eid, stub_eid, slot, value)
+        return t, scene_id, drive
     return None
 
 
