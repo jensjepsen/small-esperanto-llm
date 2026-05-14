@@ -259,18 +259,63 @@ def _concept_aliases(
     return out
 
 
+def _compute_relevant_slots(trace, lexicon) -> dict[str, set[str]]:
+    """Per-entity set of adjectival slot names that any event in the
+    trace touches — either as an effect target, or as a constraint on
+    the role the entity fills. Used by `_pick_adjective` to skip
+    adjectives that don't relate to the unfolding action ("fragila
+    glaso" when nobody breaks the glass = noise).
+
+    For each event:
+      - role_spec.properties: every slot constrained on the role-bound
+        entity. Captures gate-firing context (dormi.agent requires
+        posture=kuŝanta → agent's posture is the reason dormi works).
+      - action.effects: every slot the action writes on the target
+        role's entity. Captures change-in-progress (boli sets
+        akvo.temperature → akvo's pre-boli temperature is the
+        change-about-to-happen).
+    """
+    out: dict[str, set[str]] = {}
+    if lexicon is None or not getattr(trace, "events", None):
+        return out
+    for ev in trace.events:
+        action = lexicon.actions.get(ev.action)
+        if action is None:
+            continue
+        for role_spec in action.roles:
+            bound = ev.roles.get(role_spec.name)
+            if bound is None:
+                continue
+            # List-valued roles (fari.parts) — each element is an eid.
+            bound_eids = (
+                bound if isinstance(bound, (list, tuple)) else [bound])
+            for eid in bound_eids:
+                slots = out.setdefault(eid, set())
+                for slot_name in (role_spec.properties or {}).keys():
+                    slots.add(slot_name)
+        for eff in action.effects:
+            target_eid = ev.roles.get(eff.target_role)
+            if target_eid is None or isinstance(
+                    target_eid, (list, tuple)):
+                continue
+            out.setdefault(target_eid, set()).add(eff.property)
+    return out
+
+
 def _pick_adjective(
     entity, *, lexicon, rng: Optional[random.Random],
     history: Optional[dict[str, set[str]]] = None,
+    relevant_slots: Optional[set[str]] = None,
 ) -> Optional[str]:
     """Return a slot value to render attributively for `entity`, or None.
 
     Picks among slots flagged `adjectival: true` in the lexicon whose
-    value is set on this entity. Persons and entities without rng are
-    skipped — adjectives on bare names ("la malsata Maria") read
-    stilted. The `history` map lets the caller cycle through different
-    slots across multiple mentions of the same entity, so we don't get
-    "fragila pomo … fragila pomo" two clauses apart.
+    value is set on this entity AND that some event in the trace
+    actually touches (see `_compute_relevant_slots`). Persons and
+    entities without rng are skipped — adjectives on bare names ("la
+    malsata Maria") read stilted. The `history` map lets the caller
+    cycle through different slots across multiple mentions of the
+    same entity so we don't get "fragila pomo … fragila pomo".
     """
     if rng is None or lexicon is None:
         return None
@@ -284,6 +329,10 @@ def _pick_adjective(
         if slot_def is None or not getattr(slot_def, "adjectival", False):
             continue
         if not values:
+            continue
+        # Relevance gate: no event in this trace touches this slot on
+        # this entity, so the adjective is narratively orphaned.
+        if relevant_slots is not None and slot_name not in relevant_slots:
             continue
         value = values[0]
         # Skip unmarked / default values — saying "fortika lampo" or
@@ -321,6 +370,7 @@ def _name_for(
     adjective_history: Optional[dict[str, set[str]]] = None,
     alias_history: Optional[dict[str, set[str]]] = None,
     derived=None,
+    relevant_slots: Optional[set[str]] = None,
 ) -> str:
     if entity.entity_type == "person":
         name = entity.id
@@ -402,7 +452,8 @@ def _name_for(
     # slots across mentions via `adjective_history`. Skipped for
     # persons inside `_pick_adjective`.
     adj = _pick_adjective(
-        entity, lexicon=lexicon, rng=rng, history=adjective_history)
+        entity, lexicon=lexicon, rng=rng, history=adjective_history,
+        relevant_slots=relevant_slots)
     if count > 1:
         plural_lemma = to_plural(lemma)
         numeral = int_to_esperanto(count)
@@ -431,7 +482,7 @@ class _Ctx:
     __slots__ = ("trace", "lexicon", "mentioned", "rng", "tense",
                  "scene_location_id", "rendered_event_ids",
                  "last_nonperson", "adjective_history",
-                 "alias_history", "derived")
+                 "alias_history", "derived", "relevant_slots")
 
     def __init__(self, trace, lexicon, *, scene_location_id, rng, tense,
                  derived=None):
@@ -457,6 +508,14 @@ class _Ctx:
         # entity tagged with category=["frukto"] and (transitively)
         # "manĝaĵo" alternates between both.
         self.alias_history: dict[str, set[str]] = {}
+        # entity_id -> set of slot names that some event in this trace
+        # touches on this entity (either as effect-target, or as a
+        # role.properties constraint). Adjectives only surface for
+        # slots in this set — saying "fragila glaso" when nobody acts
+        # on the glaso's integrity is noise. Computed once here so
+        # _pick_adjective doesn't re-walk the trace per mention.
+        self.relevant_slots: dict[str, set[str]] = (
+            _compute_relevant_slots(trace, lexicon))
 
     def name_for(self, entity, *,
                  count_override: Optional[int] = None) -> str:
@@ -468,7 +527,8 @@ class _Ctx:
             lexicon=self.lexicon,
             adjective_history=self.adjective_history,
             alias_history=self.alias_history,
-            derived=self.derived)
+            derived=self.derived,
+            relevant_slots=self.relevant_slots.get(entity.id, frozenset()))
 
     def theme_form(self, entity, *,
                    count_override: Optional[int] = None) -> str:
