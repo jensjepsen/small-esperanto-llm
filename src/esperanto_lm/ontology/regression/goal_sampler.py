@@ -37,6 +37,29 @@ def _cached_goal_index(lex, rules):
     return cached
 
 
+def _drive_is_degenerate(target_concept_lemma: str, slot: str, lex) -> bool:
+    """A drive ("write slot=value on this target") is degenerate when
+    the target's concept doesn't model the slot. Mechanically the
+    verb can still set the property — but "salato attachment=fiksita"
+    or "vortaro presence=manĝita" reads as nonsense in narrative
+    terms; the concept isn't a thing that meaningfully has the slot.
+
+    Pervasive slots (hunger, wetness, temperature, cleanliness,
+    sleep_state) are always applicable to every concept of the slot's
+    applies_to type — so we don't require an explicit declaration.
+
+    Returns True for drives to skip; False for drives to keep."""
+    target_concept = lex.concepts.get(target_concept_lemma)
+    if target_concept is None:
+        return True  # unknown concept — drop
+    slot_def = lex.slots.get(slot)
+    if slot_def is None:
+        return True  # unknown slot — drop
+    if getattr(slot_def, "pervasive", False):
+        return False  # pervasive: applies broadly, keep
+    return slot not in target_concept.properties
+
+
 _AGENT_GATES_CACHE: dict[int, dict[str, list[tuple[str, str]]]] = {}
 
 
@@ -304,6 +327,11 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
             if goal_key[0] != "property":
                 continue
             _, slot, value = goal_key
+            # Skip drives whose effect slot the constructed theme
+            # doesn't model — "salato attachment=fiksita" reads as
+            # nonsense.
+            if _drive_is_degenerate(theme_concept, slot, lex):
+                continue
             for v in producer_verbs:
                 pa = lex.actions.get(v)
                 if pa is None:
@@ -525,6 +553,13 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         if chosen_goal[0] == "property":
             if eff.target_role == actor_role_name:
                 target_eid = actor_eid
+                # Same degenerate-drive check as the target branch
+                # below: skip drives whose effect slot the actor's
+                # concept doesn't model (e.g. kuniklido posture=
+                # staranta where kuniklido never declares posture).
+                if _drive_is_degenerate(
+                        agent_concept, eff.property, lex):
+                    continue
                 slot_def = lex.slots.get(eff.property)
                 if slot_def is not None and slot_def.vocabulary:
                     non_target = [v for v in slot_def.vocabulary
@@ -558,6 +593,11 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                     action=action, role_name=eff.target_role)
                 if target_eid is None:
                     continue  # try another scene location
+                target_ent = t.entities.get(target_eid)
+                if (target_ent is not None
+                        and _drive_is_degenerate(
+                            target_ent.concept_lemma, eff.property, lex)):
+                    continue  # degenerate drive — retry
             drive = ("entity_slot", actor_eid, target_eid,
                      slot, target_value)
             return t, scene_id, drive
