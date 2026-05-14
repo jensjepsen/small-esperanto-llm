@@ -1728,13 +1728,14 @@ def _infra_prespawn(action, role_map, trace, lex, derivations, resolver,
                 break
 
     # (b) RelationPreconditions whose synthesized producer needs infra.
+    sym = _symmetric_relations(lex)
     for pc in action.preconditions:
         if not isinstance(pc, RelationPrecondition):
             continue
         eids = tuple(role_map.get(r) for r in pc.roles)
         if any(e is None for e in eids):
             continue
-        if ("rel", pc.rel, eids) in facts:
+        if ("rel", pc.rel, _canon_rel(pc.rel, eids, sym)) in facts:
             continue
         # Find a producer verb whose synthesized adds include this relation.
         for prod_verb, entry in rule_effects.items():
