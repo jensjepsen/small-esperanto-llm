@@ -268,7 +268,7 @@ def _ground_action_facts(action, roles, lex, rule_effects):
             # precondition per element. Optional roles (instrument
             # when crafted_with is empty) drop out via None binding.
             list_roles = [r for r in pc.roles
-                           if isinstance(roles.get(r), list)]
+                           if isinstance(roles.get(r), (list, tuple))]
             if list_roles:
                 # Only support one list role per precondition for now
                 # — fari's preconditions have at most parts as a list.
@@ -1027,6 +1027,13 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     for action in lex.actions.values():
         if not action.roles:
             continue
+        # Actions with list-kind roles (fari.parts) can't be enumerated
+        # combinatorially — the role binds to a TUPLE of entities, not
+        # to one entity per slot. `_ground_constructable_actions`
+        # handles them separately by walking the constructable concept
+        # graph for valid recipes.
+        if any(getattr(r, "kind", "single") == "list" for r in action.roles):
+            continue
         per_role: list[list[str]] = []
         ok = True
         for role_spec in action.roles:
@@ -1051,6 +1058,96 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
             if not effs:
                 continue  # No-effect actions don't add facts.
             out.append((action, roles, pres, effs))
+    return out
+
+
+def _ground_constructable_actions(
+    trace, lex, rule_effects,
+) -> list:
+    """Emit grounded fari (and any future construct-style) actions
+    by walking the constructable concepts whose recipe components are
+    materialized in the trace.
+
+    For each in-trace entity whose concept declares `constructable=yes`
+    AND has a `parts` recipe, try to bind one in-trace entity per
+    declared part concept. Combined with each animate agent and (if
+    `crafted_with` is set) each available tool concept, this becomes
+    a regular grounded-action tuple that the search loop treats no
+    differently from preni / kuiri / iri.
+
+    Without this, fari can only fire when explicitly nominated by an
+    event_fire drive — the goal-driven path (manĝi a constructable,
+    doni a constructable, …) wouldn't discover it as a producer of
+    havi facts."""
+    fari = lex.actions.get("fari")
+    if fari is None:
+        return []
+    # Index entities by concept_lemma once for the inner per-part
+    # matching loop.
+    by_concept: dict[str, list[str]] = {}
+    for eid, ent in trace.entities.items():
+        by_concept.setdefault(ent.concept_lemma, []).append(eid)
+    # Agent candidates: any in-trace animate.
+    animate_eids = [
+        eid for eid, ent in trace.entities.items()
+        if lex.types.is_subtype(ent.entity_type, "animate")]
+    if not animate_eids:
+        return []
+    out: list = []
+    for theme_eid, theme_ent in trace.entities.items():
+        concept = lex.concepts.get(theme_ent.concept_lemma)
+        if concept is None:
+            continue
+        if "yes" not in concept.properties.get("constructable", ()):
+            continue
+        if not concept.parts:
+            continue
+        # Match one entity per part concept. We don't enumerate all
+        # permutations — pick the first matching eid per part, skipping
+        # the theme itself. Enumerating all combinations would explode
+        # for multi-part recipes; deterministic-first is sufficient
+        # because each part concept usually has one or two instances.
+        part_eids: list[str] = []
+        for part_spec in concept.parts:
+            cands = by_concept.get(part_spec.concept, ())
+            chosen = next(
+                (eid for eid in cands
+                 if eid != theme_eid and eid not in part_eids),
+                None)
+            if chosen is None:
+                break
+            part_eids.append(chosen)
+        if len(part_eids) != len(concept.parts):
+            continue
+        # Tool candidates: first eid matching any concept in
+        # crafted_with. Skip when crafted_with is empty.
+        instrument_eid: Optional[str] = None
+        if concept.crafted_with:
+            for tool_concept in concept.crafted_with:
+                cand = next(
+                    (eid for eid in by_concept.get(tool_concept, ())
+                     if eid != theme_eid and eid not in part_eids),
+                    None)
+                if cand is not None:
+                    instrument_eid = cand
+                    break
+        for agent_eid in animate_eids:
+            if agent_eid == theme_eid or agent_eid in part_eids:
+                continue
+            if agent_eid == instrument_eid:
+                continue
+            roles = {
+                "agent": agent_eid,
+                "theme": theme_eid,
+                "parts": tuple(part_eids),
+            }
+            if instrument_eid is not None:
+                roles["instrument"] = instrument_eid
+            pres, effs = _ground_action_facts(
+                fari, roles, lex, rule_effects)
+            if not effs:
+                continue
+            out.append((fari, roles, pres, effs))
     return out
 
 
@@ -1729,6 +1826,8 @@ def plan_for_goal(
         _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
     grounded = _ground_all_actions(
         initial_trace, lex, initial_derived, rule_effects)
+    grounded.extend(_ground_constructable_actions(
+        initial_trace, lex, rule_effects))
     grounded_derivs = _ground_derivations(
         derivations, initial_trace, lex)
 

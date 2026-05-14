@@ -156,18 +156,21 @@ def _construct_goal_scene(lex, rng: random.Random) -> Optional[tuple]:
             if instrument_eid is None:
                 continue  # no tool slot worked
 
-        # Build drive role-bindings tuple. parts is a tuple (hashable)
-        # of eids; the engine + planner both accept list/tuple values
-        # for list-kind roles.
-        bindings: list = [
-            ("agent", actor_eid),
-            ("theme", stub_eid),
-            ("parts", tuple(part_eids)),
-        ]
-        if instrument_eid is not None:
-            bindings.append(("instrument", instrument_eid))
-        drive = ("event_fire", actor_eid, "fari", tuple(bindings))
-        return t, scene_id, drive
+        # Downstream drive: the agent wants to USE the construct
+        # (eat it / share it / similar). The planner discovers fari
+        # as a producer of havi(agent, theme) via the construct-
+        # aware grounding pass and chains it into the use-verb.
+        #
+        # Pick the use-verb from the theme concept's properties.
+        # Edible substances (sandviĉo/salato/bulko) → "manĝi a
+        # constructable" drive with slot=presence, value=manĝita.
+        # Other constructables could use doni / vendi / etc. — for
+        # now only the manĝi path is implemented.
+        if "manĝebla" in theme_def.properties.get("edibility", ()):
+            drive = ("entity_slot", actor_eid, stub_eid,
+                     "presence", "manĝita")
+            return t, scene_id, drive
+        return None
     return None
 
 
