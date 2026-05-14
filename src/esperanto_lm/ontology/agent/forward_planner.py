@@ -1872,16 +1872,16 @@ def plan_for_goal(
     # sur_implies_samloke_…) are sufficient for the relaxed plan
     # since iri/eniri/preni still establish the en/havi facts.
     _SKIP_IN_HEURISTIC = {
-        # The transitive samloke chains add ~12K bindings on top of
-        # the direct (shared-container, shared-apud) variants and
-        # mostly produce facts that the direct variants also produce
-        # via en/apud + chain → eventually one of the simpler
-        # derivations covers the same path. Worth re-enabling if
-        # plans regress.
+        # The cross-room samloke chains (en, sur) add ~12K bindings
+        # and rarely contribute to the relaxed plan since iri/eniri
+        # establishes the en facts that the direct variants consume.
+        # samloke_propagates_through_artifact_parts is also skipped —
+        # 3K bindings for negligible yield gain (+0.2 in 500-scene
+        # bench when re-enabled; ~2× slower). location_parts (~1.2K)
+        # is cheap and stays.
         "samloke_chains_through_en",
         "samloke_chains_through_sur",
         "samloke_propagates_through_artifact_parts",
-        "samloke_propagates_through_location_parts",
     }
     heuristic_derivations = [
         d for d in derivations
