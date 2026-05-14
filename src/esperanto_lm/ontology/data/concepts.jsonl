@@ -70,7 +70,7 @@
 {"lemma": "fromaĝo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
 {"lemma": "legomo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["manĝaĵo"]}
 {"lemma": "frukto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["manĝaĵo"]}
-{"lemma": "kuko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["manĝaĵo"]}
+{"lemma": "kuko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "ovo"}, {"concept": "butero"}, {"concept": "lakto"}], "crafted_with": ["forno"]}
 {"lemma": "vino", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
 {"lemma": "kafo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
 {"lemma": "teo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
@@ -235,7 +235,7 @@
 {"lemma": "salato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "constructable": ["yes"]}, "category": ["legomo"], "parts": [{"concept": "laktuko"}, {"concept": "tomato"}, {"concept": "kukumo"}]}
 {"lemma": "fungo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["legomo"]}
 {"lemma": "rizo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "requires_cooking": ["yes"], "cooking_state": ["kruda"]}, "category": ["manĝaĵo"]}
-{"lemma": "supo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["manĝaĵo"]}
+{"lemma": "supo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "karoto"}, {"concept": "cepo"}, {"concept": "akvo"}], "crafted_with": ["forno", "kameno"]}
 {"lemma": "ŝafo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "haro"}], "category": ["besto"]}
 {"lemma": "domo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "ĉambro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
@@ -265,7 +265,7 @@
 {"lemma": "kolbaso", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "requires_cooking": ["yes"], "cooking_state": ["kruda"]}, "category": ["manĝaĵo"]}
 {"lemma": "pasto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "requires_cooking": ["yes"], "cooking_state": ["kruda"]}, "category": ["manĝaĵo"]}
 {"lemma": "ŝinko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
-{"lemma": "limonado", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
+{"lemma": "limonado", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "constructable": ["yes"]}, "category": ["trinkaĵo"], "parts": [{"concept": "akvo"}, {"concept": "citrono"}]}
 {"lemma": "mento", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"]}, "category": ["planto"]}
 {"lemma": "bazilo", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"]}, "category": ["planto"]}
 {"lemma": "kafejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
@@ -463,3 +463,4 @@
 {"lemma": "pinglo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "count": ["1"], "functional_signature": ["kudri"]}, "category": ["ilo", "metalaĵo"]}
 {"lemma": "sandviĉo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pano"}, {"concept": "viando"}, {"concept": "fromaĝo"}]}
 {"lemma": "bulko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pasto"}], "crafted_with": ["forno", "kameno"]}
+{"lemma": "omleto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "ovo"}, {"concept": "butero"}], "crafted_with": ["forno", "kameno"]}
