@@ -398,10 +398,30 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
         # slots, so it may have rolled the target value (e.g.
         # integrity=tranĉita matches the tranĉi drive). Mirrors the
         # verb-aware setup the regular spawner applies for effect-target
-        # roles.
+        # roles. Also intersect with the use-verb's role.properties on
+        # the slot — varmigi.theme requires temperature=malvarma, so
+        # picking varmega as the non-target leaves varmigi inapplicable
+        # and the planner dead-ends. Same fix as regress_for_goal's
+        # actor-target branch.
         slot_def = lex.slots.get(slot)
         if slot_def is not None and slot_def.vocabulary:
             non_target = [v for v in slot_def.vocabulary if v != value]
+            use_action = lex.actions.get(use_verb)
+            if use_action is not None:
+                use_target_role = next(
+                    (r for r in use_action.roles
+                     for eff in use_action.effects
+                     if eff.target_role == r.name
+                     and eff.property == slot
+                     and eff.value == value), None)
+                if use_target_role is not None:
+                    role_required = (use_target_role.properties
+                                      or {}).get(slot, ())
+                    if role_required:
+                        narrowed = [v for v in non_target
+                                    if v in role_required]
+                        if narrowed:
+                            non_target = narrowed
             if non_target:
                 t.entities[stub_eid].set_property(
                     slot, rng.choice(non_target))
