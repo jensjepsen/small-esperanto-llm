@@ -132,12 +132,11 @@ def _construct_goal_scene(lex, rng: random.Random, rules) -> Optional[tuple]:
             t.entities[placed].set_property("count", "1")
         if not ok:
             continue
-        # Agent owns each part (havi).
-        try:
-            for peid in part_eids:
-                t.assert_relation("havi", (actor_eid, peid), lex)
-        except (KeyError, ValueError):
-            continue
+        # No pre-havi: each ingredient sits in the scene at its
+        # natural-habitat location; the planner finds them and emits
+        # vidi+preni per part before fari fires. This produces richer
+        # gather-then-construct chains in SFT data than starting with
+        # everything already on the agent.
         # Pre-stage the to-be-created theme as a bare entity. The
         # fari rule transfers havi to the agent and attaches parts;
         # the entity exists before firing so the planner can reason
@@ -149,6 +148,19 @@ def _construct_goal_scene(lex, rng: random.Random, rules) -> Optional[tuple]:
                     t, theme_concept, lex, rng, entity_id=stub_eid)
             except (KeyError, ValueError):
                 continue
+            # Drop the auto-materialized sub-parts that
+            # _add_entity_randomized created from theme.parts. The fari
+            # rule attaches the standalone gathered parts instead; the
+            # auto-parts are unused noise that bloats the relaxed-graph
+            # grounding (~25× derivation blow-up before this cleanup).
+            stub_parts = [
+                p_eid for p_eid in list(t.entities.keys())
+                if p_eid.startswith(stub_eid + "_")]
+            for p_eid in stub_parts:
+                del t.entities[p_eid]
+            t.relations = [
+                r for r in t.relations
+                if not any(a in stub_parts for a in r.args)]
         # Pin count=1 on the constructed entity — fari produces ONE
         # whole, not a stack. Without this, the realizer renders
         # "kvin sandviĉoj" because the stub's count rolled to 5 at
