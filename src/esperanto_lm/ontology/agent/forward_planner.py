@@ -355,7 +355,10 @@ def _expand_list_role_args(role_arg_names, roles):
         yield tuple(out)
 
 
-def _ground_derivations(derivations, trace, lex) -> list:
+def _ground_derivations(
+    derivations, trace, lex,
+    relevant_entities: set | None = None,
+) -> list:
     """Compile derivations into grounded pseudo-actions for the
     relaxed graph. Each binding of a derivation's variables to
     entities becomes one pseudo-action:
@@ -363,6 +366,13 @@ def _ground_derivations(derivations, trace, lex) -> list:
              vars for inline EntityPattern args) + property constraints
              from EntityPattern constraints
       effs = facts from implies clause
+
+    `relevant_entities` (optional) restricts var domains to a subset of
+    trace.entities. Used by the heuristic to cut the cubic samloke-
+    chain blow-up: with 19 derivation-relevant entities the four
+    samloke derivations alone generate 23k bindings (19³ each);
+    restricting to action-mentioned entities (typically 6-10) cuts
+    that 5-10×.
 
     Pseudo-actions are cost-0 — derived facts get the same layer as
     their producing fact, modeling "if X holds, samloke(X, Y) also
@@ -564,6 +574,9 @@ def _ground_derivations(derivations, trace, lex) -> list:
                     continue
                 if ent.entity_type == "inanimate":
                     continue  # body parts
+                if (relevant_entities is not None
+                        and eid not in relevant_entities):
+                    continue
                 if type_ is not None:
                     if not lex.types.is_subtype(
                             ent.entity_type, type_):
@@ -1828,8 +1841,54 @@ def plan_for_goal(
         initial_trace, lex, initial_derived, rule_effects)
     grounded.extend(_ground_constructable_actions(
         initial_trace, lex, rule_effects))
+    # Restrict derivation var domains to entities that actually
+    # participate in some action's pres/effs. This is the cubic
+    # samloke-chain bound: a scene with 19 non-inanimate entities
+    # yields 19³ samloke bindings per chain derivation; restricting
+    # to action-mentioned eids (typically 6-10) cuts that ~5-10×.
+    relevant_entities: set = set()
+    for _action, _roles, pres, effs in grounded:
+        for f in pres:
+            if f[0] == "rel":
+                relevant_entities.update(f[2])
+            elif f[0] == "prop":
+                relevant_entities.add(f[1])
+        for f in effs:
+            if f[0] == "rel":
+                relevant_entities.update(f[2])
+            elif f[0] == "prop":
+                relevant_entities.add(f[1])
+    # Include goal-target entity even if no action mentions it
+    # (uncommon but possible for synthetic goals).
+    if goal[0] == "property":
+        relevant_entities.add(goal[1])
+    elif goal[0] == "relation":
+        relevant_entities.update(goal[2])
+    # Skip cubic samloke chain derivations in the heuristic — they
+    # alone contribute 19³ ≈ 6000 bindings each on a 19-entity scene
+    # (4 × 6000 = 24K of 30K total), and the heuristic doesn't need
+    # exact samloke chain reachability: the direct 2-var variants
+    # (en_implies_samloke_with_container, havi_implies_samloke_…,
+    # sur_implies_samloke_…) are sufficient for the relaxed plan
+    # since iri/eniri/preni still establish the en/havi facts.
+    _SKIP_IN_HEURISTIC = {
+        # The transitive samloke chains add ~12K bindings on top of
+        # the direct (shared-container, shared-apud) variants and
+        # mostly produce facts that the direct variants also produce
+        # via en/apud + chain → eventually one of the simpler
+        # derivations covers the same path. Worth re-enabling if
+        # plans regress.
+        "samloke_chains_through_en",
+        "samloke_chains_through_sur",
+        "samloke_propagates_through_artifact_parts",
+        "samloke_propagates_through_location_parts",
+    }
+    heuristic_derivations = [
+        d for d in derivations
+        if getattr(d, "name", None) not in _SKIP_IN_HEURISTIC]
     grounded_derivs = _ground_derivations(
-        derivations, initial_trace, lex)
+        heuristic_derivations, initial_trace, lex,
+        relevant_entities=relevant_entities)
 
     # Event-fire goals: the goal is "fire verb V with these role
     # bindings". Lacking direct property/relation effects (legi/
