@@ -21,7 +21,7 @@
 {"name": "sleep_state", "vocabulary": ["vekita", "dormanta"], "applies_to": ["animate"], "scalar": true, "pervasive": true, "adjectival": true, "unmarked": "vekita"}
 {"name": "readability", "vocabulary": ["legebla"], "applies_to": ["physical"], "scalar": true}
 {"name": "locomotion", "vocabulary": ["walk", "fly", "swim", "slither"], "applies_to": ["animate"], "scalar": false}
-{"name": "is_vehicle", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
+{"name": "is_vehicle", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
 {"name": "can_use_tools", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
 {"name": "pri_relacio", "vocabulary": null, "applies_to": ["abstract"], "scalar": true}
 {"name": "lock_capable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
