@@ -227,6 +227,44 @@ _HEURISTIC_INF = 10_000
 # memoization with safe invalidation on a fresh lexicon load.
 _RULE_EFFECTS_CACHE: dict = {}
 
+# Static (relation, arg_idx) → {slot: frozenset[forbidden_values]} index
+# lifted from Relation.arg_patterns NotPattern shapes. Used to prune
+# action groundings whose effects would produce a forbidden relation
+# (havi(person, fajro) where fajro is nemovebla=yes) without
+# constructing the trace. Same gate is enforced at runtime by
+# Trace.validate_relation — single source of truth.
+_REL_ARG_EXCLUDES_CACHE: dict = {}
+
+
+def _grounding_violates_arg_pattern(effs, trace, lex) -> bool:
+    """True iff any ("rel", name, args) effect would produce a relation
+    forbidden by `relation_arg_excludes` given the entities' static
+    properties. Cheap O(|effs| * |arg-positions-with-forbids|) lookup;
+    typical effs sets are < 10."""
+    excludes = _REL_ARG_EXCLUDES_CACHE.get(id(lex))
+    if excludes is None:
+        from ..dsl.introspect import relation_arg_excludes
+        excludes = relation_arg_excludes(lex)
+        _REL_ARG_EXCLUDES_CACHE[id(lex)] = excludes
+    if not excludes:
+        return False
+    for fact in effs:
+        if fact[0] != "rel":
+            continue
+        _, rname, args = fact
+        for i, eid in enumerate(args):
+            slot_map = excludes.get((rname, i))
+            if not slot_map:
+                continue
+            ent = trace.entities.get(eid)
+            if ent is None:
+                continue
+            for slot, forbidden in slot_map.items():
+                vals = ent.properties.get(slot, ())
+                if any(v in forbidden for v in vals):
+                    return True
+    return False
+
 # Per-grounded_derivations cache for the pres-fact inverted index
 # used by _apply_delta's worklist re-derivation. Keyed by
 # id(derivation_pseudos) — caller is plan_for_goal which builds
@@ -1290,6 +1328,8 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 action, roles, lex, rule_effects)
             if not effs:
                 continue  # No-effect actions don't add facts.
+            if _grounding_violates_arg_pattern(effs, trace, lex):
+                continue
             out.append((action, roles, pres, effs))
     return out
 
@@ -1379,6 +1419,8 @@ def _ground_constructable_actions(
             pres, effs = _ground_action_facts(
                 fari, roles, lex, rule_effects)
             if not effs:
+                continue
+            if _grounding_violates_arg_pattern(effs, trace, lex):
                 continue
             # Per-part state requirements (e.g. teo's akvo must be
             # bolanta). The planner has to achieve these property

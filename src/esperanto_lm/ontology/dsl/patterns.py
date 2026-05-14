@@ -825,3 +825,100 @@ class NotPattern(Pattern):
         for _ in self.inner.search(ctx, bindings):
             return
         yield bindings
+
+
+# ---------------------------- static evaluation -------------------
+# A trace-free evaluator + JSON compiler used by relation arg patterns
+# (Relation.arg_patterns) and the corresponding static introspection
+# index (introspect.relation_arg_excludes). Lets `validate_relation`
+# and the forward planner share one source of truth for schema-level
+# entity gates without needing a full DSL context.
+
+
+def entity_matches_static(entity, pattern, lex) -> bool:
+    """Evaluate `pattern` against an EntityInstance using only its
+    static (asserted) properties + lexicon types. Supports the
+    pattern shapes meaningful as a relation arg gate: EntityPattern,
+    NotPattern, AndPattern, OrPattern.
+
+    No trace, no derived state, no var bindings — invariants must hold
+    on the entity's own static attributes, not on transient derived
+    facts. (A varies-slot value is technically derived per-instance,
+    but it lives in entity.properties after randomization, so this
+    still sees it.)"""
+    if isinstance(pattern, EntityPattern):
+        return _entity_static_matches(entity, pattern.constraints, lex)
+    if isinstance(pattern, NotPattern):
+        return not entity_matches_static(entity, pattern.inner, lex)
+    if isinstance(pattern, AndPattern):
+        return (entity_matches_static(entity, pattern.left, lex)
+                and entity_matches_static(entity, pattern.right, lex))
+    if isinstance(pattern, OrPattern):
+        return (entity_matches_static(entity, pattern.left, lex)
+                or entity_matches_static(entity, pattern.right, lex))
+    raise TypeError(
+        f"entity_matches_static: unsupported pattern "
+        f"{type(pattern).__name__}")
+
+
+def _entity_static_matches(entity, constraints: dict, lex) -> bool:
+    from ..containment import _concept_in_category
+    for key, expected in constraints.items():
+        if key == "type":
+            if not lex.types.is_subtype(entity.entity_type, expected):
+                return False
+        elif key == "has_suffix":
+            if not entity.concept_lemma.endswith(expected):
+                return False
+        elif key == "concept":
+            if entity.concept_lemma != expected:
+                return False
+        elif key == "category":
+            concept = lex.concepts.get(entity.concept_lemma)
+            if concept is None:
+                return False
+            if not _concept_in_category(concept, expected, lex):
+                return False
+        else:
+            vals = entity.properties.get(key, [])
+            if expected is Ellipsis:
+                if not vals:
+                    return False
+            elif not _value_matches(vals, expected):
+                return False
+    return True
+
+
+def compile_arg_pattern(d):
+    """Parse a JSON-encoded arg pattern into a Pattern object. Supported
+    shapes:
+      None                              → None (no constraint)
+      {"entity": {slot: val, ...}}      → EntityPattern(constraints)
+      {"not": <pattern>}                → NotPattern(inner)
+      {"and": [<pat>, <pat>]}           → AndPattern(left, right)
+      {"or":  [<pat>, <pat>]}           → OrPattern(left, right)
+    Used by the loader to compile `Relation.arg_patterns` entries from
+    relations.jsonl."""
+    if d is None:
+        return None
+    if not isinstance(d, dict) or len(d) != 1:
+        raise ValueError(
+            f"arg pattern must be a single-key dict, got {d!r}")
+    key, body = next(iter(d.items()))
+    if key == "entity":
+        if not isinstance(body, dict):
+            raise ValueError(f"entity pattern body must be dict: {body!r}")
+        return EntityPattern(dict(body))
+    if key == "not":
+        return NotPattern(compile_arg_pattern(body))
+    if key == "and":
+        if not isinstance(body, list) or len(body) != 2:
+            raise ValueError(f"and pattern needs 2-element list: {body!r}")
+        return AndPattern(compile_arg_pattern(body[0]),
+                          compile_arg_pattern(body[1]))
+    if key == "or":
+        if not isinstance(body, list) or len(body) != 2:
+            raise ValueError(f"or pattern needs 2-element list: {body!r}")
+        return OrPattern(compile_arg_pattern(body[0]),
+                         compile_arg_pattern(body[1]))
+    raise ValueError(f"unknown arg pattern key: {key!r}")

@@ -55,3 +55,4 @@
 {"name": "planted_state", "vocabulary": ["neplantita", "plantita"], "applies_to": ["physical"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "neplantita", "weights": [0.7, 0.3]}
 {"name": "imposes_pose", "vocabulary": ["staranta", "sidanta", "kuŝanta", "penda"], "applies_to": ["physical"], "scalar": true}
 {"name": "constructable", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "nemovebla", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}

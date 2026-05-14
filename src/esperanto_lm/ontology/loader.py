@@ -517,8 +517,17 @@ def load_lexicon(
     # would be a slot-validation violation, so skip those.
     concepts = _inherit_via_category(concepts, slots, spine)
 
+    from .dsl.patterns import compile_arg_pattern
     relations: dict[str, Relation] = {}
     for d in _read_jsonl(data_dir / "relations.jsonl"):
+        # arg_patterns is JSON in the source; compile each entry into
+        # a Pattern object (or None) before constructing the Relation.
+        # Pydantic's arbitrary_types_allowed lets the tuple hold Pattern
+        # instances directly.
+        raw_patterns = d.pop("arg_patterns", None)
+        if raw_patterns is not None:
+            compiled = tuple(compile_arg_pattern(p) for p in raw_patterns)
+            d["arg_patterns"] = compiled
         r = Relation(**d)
         if r.name in relations:
             raise ValueError(f"duplicate relation {r.name!r}")
@@ -538,6 +547,10 @@ def load_lexicon(
             if not spine.known(t):
                 raise ValueError(
                     f"relation {r.name!r}: unknown arg type {t!r}")
+        if r.arg_patterns and len(r.arg_patterns) != r.arity:
+            raise ValueError(
+                f"relation {r.name!r}: arity={r.arity} but "
+                f"arg_patterns has {len(r.arg_patterns)} entries")
         relations[r.name] = r
 
     actions: dict[str, Action] = {}

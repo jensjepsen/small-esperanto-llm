@@ -594,3 +594,57 @@ def _given_satisfied_by_parts(
             if not ok:
                 return False
     return True
+
+
+def relation_arg_excludes(lex) -> dict:
+    """Static index of property values forbidden at each (relation, arg)
+    position. Walks `lex.relations[*].arg_patterns` and lifts simple
+    NotPattern(EntityPattern(slot=val)) shapes to a lookup table.
+
+    Returns `{(rel_name, arg_idx): {slot: frozenset[forbidden_values]}}`.
+    Used by the forward planner to prune action groundings before
+    search: any grounding whose role binding would produce a relation
+    matching a forbidden entry is discarded statically, without
+    constructing the trace.
+
+    Compound shapes (And/Or/non-EntityPattern NotPattern) are skipped —
+    they still gate at runtime via `validate_relation`, but don't
+    contribute to the static cheap-pruning index. This is the same
+    pattern as cascade introspection: narrow shape supported by the
+    index, full DSL behind runtime checks."""
+    out: dict = {}
+    for rel_name, rel in lex.relations.items():
+        if not rel.arg_patterns:
+            continue
+        for i, pat in enumerate(rel.arg_patterns):
+            if pat is None:
+                continue
+            forbidden = _extract_forbidden_from_not(pat)
+            if not forbidden:
+                continue
+            key = (rel_name, i)
+            slot_map = out.setdefault(key, {})
+            for slot, vals in forbidden.items():
+                existing = slot_map.get(slot, frozenset())
+                slot_map[slot] = existing | frozenset(vals)
+    return out
+
+
+def _extract_forbidden_from_not(pattern) -> dict:
+    """If `pattern` is `NotPattern(EntityPattern(slot=val, ...))`, return
+    `{slot: [val], ...}` — the slot/value pairs whose presence on the
+    entity makes the NotPattern fail. Returns {} for other shapes."""
+    if not isinstance(pattern, NotPattern):
+        return {}
+    inner = pattern.inner
+    if not isinstance(inner, EntityPattern):
+        return {}
+    out: dict = {}
+    for slot, val in inner.constraints.items():
+        if slot in ("type", "concept", "category", "has_suffix"):
+            continue  # not a slot-level forbid
+        if isinstance(val, list):
+            out[slot] = list(val)
+        else:
+            out[slot] = [val]
+    return out

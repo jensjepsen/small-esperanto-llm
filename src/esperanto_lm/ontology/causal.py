@@ -359,6 +359,26 @@ class Trace:
                 if arg in self._parts_index:
                     return (f"relation {name!r}: arg {i} ({arg!r}) is a "
                             f"part of another entity, can't appear here")
+        # arg_patterns: per-arg Pattern (NotPattern, EntityPattern,
+        # And/Or) evaluated against the entity. Lets schema-level
+        # invariants like "havi.theme cannot be nemovebla=yes" live
+        # next to the relation definition. Static evaluator — no
+        # trace/derived state — so the same gate is used both at
+        # assert time and (via introspect.relation_arg_excludes) at
+        # planner grounding time.
+        if rel.arg_patterns:
+            from .dsl.patterns import entity_matches_static
+            for i, arg in enumerate(args):
+                if i >= len(rel.arg_patterns):
+                    continue
+                pat = rel.arg_patterns[i]
+                if pat is None:
+                    continue
+                ent = self.entities[arg]
+                if not entity_matches_static(ent, pat, lexicon):
+                    return (f"relation {name!r}: arg {i} ({arg!r} "
+                            f"concept {ent.concept_lemma!r}) violates "
+                            f"arg pattern")
         # Containment registry: source of truth for what can plausibly
         # be in/on what. Two-tier check (no required violation AND
         # afforded by at least one entry). The set of relations this

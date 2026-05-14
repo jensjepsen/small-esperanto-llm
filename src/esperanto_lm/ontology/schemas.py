@@ -206,6 +206,21 @@ class Relation(_Frozen):
     # from their host (Petro can't `havi` Mikael's mano). The check
     # at `assert_relation` is O(1) via Trace._parts_index.
     arg_not_part: list[bool] = Field(default_factory=list)
+    # Per-arg-position pattern (Pattern | None). Evaluated against the
+    # entity at that arg position via `entity_matches_static`. NotPattern
+    # expresses "must not match" — havi.theme uses
+    # `~entity(nemovebla="yes")` to forbid owning fixtures (forno, fajro,
+    # kameno) without per-verb gating.
+    #
+    # Stored as Python Pattern objects, parsed from JSON dicts by the
+    # loader (`{"not": {"entity": {"slot": "val"}}}`). Empty/omitted =
+    # no patterns. Same constraint is also lifted to a static index in
+    # `introspect.relation_arg_excludes` for grounding-time pruning in
+    # the forward planner — one source of truth.
+    arg_patterns: tuple = ()
+
+    model_config = ConfigDict(frozen=True, extra="forbid",
+                              arbitrary_types_allowed=True)
 
 
 class RoleSpec(_Frozen):
