@@ -62,7 +62,7 @@
 {"lemma": "ĉevalo", "entity_type": "animal", "properties": {"is_vehicle": ["yes"], "terrain": ["land"]}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
 {"lemma": "bovo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
 {"lemma": "porko", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
-{"lemma": "fiŝo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "fiŝo", "entity_type": "animal", "properties": {"edibility": ["manĝebla"], "state_of_matter": ["solida"], "requires_cooking": ["yes"], "cooking_state": ["kruda"]}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
 {"lemma": "lito", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "lieable": ["yes"], "constructable": ["yes"]}, "category": ["meblo", "lignaĵo"], "parts": [{"concept": "ligno"}, {"concept": "najlo"}, {"concept": "matraco"}], "crafted_with": ["najlilo"]}
 {"lemma": "forno", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "functional_signature": ["kuiri"]}, "category": ["meblo"]}
 {"lemma": "ŝranko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"]}, "parts": [{"concept": "seruro"}], "category": ["meblo", "lignaĵo", "ujo"]}
@@ -440,9 +440,9 @@
 {"lemma": "kostumo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
 {"lemma": "kolombo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
 {"lemma": "korvo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
-{"lemma": "salmo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "karpo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "sardino", "entity_type": "animal", "properties": {}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
+{"lemma": "salmo", "entity_type": "animal", "category": ["fiŝo"]}
+{"lemma": "karpo", "entity_type": "animal", "category": ["fiŝo"]}
+{"lemma": "sardino", "entity_type": "animal", "category": ["fiŝo"]}
 {"lemma": "ŝtrumpoj", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
 {"lemma": "helmo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
 {"lemma": "skarpo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
