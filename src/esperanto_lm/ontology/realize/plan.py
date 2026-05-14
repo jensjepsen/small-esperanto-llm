@@ -795,6 +795,14 @@ def aggregate_same_subject(
             out.append(m)
             i += 1
             continue
+        # Events with a kind="created" role (fari and any future
+        # construction verb) stay standalone — their role structure
+        # (created theme, list parts, optional instrument) is too
+        # rich to elide into a coordinated "faris X kaj Yis Z" phrase.
+        if _has_created_role(m.event, lexicon):
+            out.append(m)
+            i += 1
+            continue
 
         run: list[EventMessage] = [m]
         base_subject = _event_subject(m.event, lexicon)
@@ -807,6 +815,8 @@ def aggregate_same_subject(
         while j < len(messages) and isinstance(messages[j], EventMessage):
             nxt: EventMessage = messages[j]
             if _event_subject(nxt.event, lexicon) != base_subject:
+                break
+            if _has_created_role(nxt.event, lexicon):
                 break
             run.append(nxt)
             j += 1
@@ -836,6 +846,19 @@ def _event_subject(ev: Event, lexicon: Lexicon) -> Optional[str]:
     if "theme" in role_names and ev.roles.get("theme"):
         return ev.roles["theme"]
     return None
+
+
+def _has_created_role(ev: Event, lexicon: Lexicon) -> bool:
+    """True if this event's action declares any role of kind="created"
+    (fari today, future construction verbs). Used by aggregation to
+    keep construction events as standalone sentences — their role
+    structure is too rich (created theme, list parts, optional tool)
+    to elide gracefully into a `X faris ... kaj Yis ...` coordination."""
+    action = lexicon.actions.get(ev.action)
+    if action is None:
+        return False
+    return any(
+        getattr(r, "kind", "single") == "created" for r in action.roles)
 
 
 def subordinate_creations(messages: list[Message]) -> list[Message]:
