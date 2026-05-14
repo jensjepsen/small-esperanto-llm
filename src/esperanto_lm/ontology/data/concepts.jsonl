@@ -24,7 +24,7 @@
 {"lemma": "pordo", "entity_type": "artifact", "properties": {"openness": ["fermita"], "state_of_matter": ["solida"]}, "parts": [{"concept": "seruro"}]}
 {"lemma": "seruro", "entity_type": "artifact", "properties": {"lock_state": ["ŝlosita"], "lock_capable": ["yes"], "state_of_matter": ["solida"]}}
 {"lemma": "fenestro", "entity_type": "artifact", "properties": {"openness": ["fermita"], "fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
-{"lemma": "muro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}
+{"lemma": "muro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "constructable": ["yes"]}, "parts": [{"concept": "ligno"}, {"concept": "najlo"}], "crafted_with": ["najlilo"]}
 {"lemma": "glaso", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "fullness": ["malplena"], "liquid_holder": ["yes"], "posture": ["staranta"]}, "category": ["ujo"]}
 {"lemma": "botelo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "openness": ["fermita"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "fullness": ["malplena"], "liquid_holder": ["yes"], "posture": ["staranta"]}, "category": ["ujo"]}
 {"lemma": "korbo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "openness": ["malfermita"], "state_of_matter": ["solida"], "made_of": ["wicker"]}, "category": ["ujo"]}
@@ -37,7 +37,7 @@
 {"lemma": "libro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"], "constructable": ["yes"]}, "parts": [{"concept": "papero"}, {"concept": "ŝnuro"}]}
 {"lemma": "papero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "count": ["1"], "posture": ["kuŝanta"]}}
 {"lemma": "ĵurnalo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"]}}
-{"lemma": "letero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "count": ["1"], "posture": ["kuŝanta"]}}
+{"lemma": "letero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "count": ["1"], "posture": ["kuŝanta"], "constructable": ["yes"]}, "parts": [{"concept": "papero"}, {"concept": "ŝnuro"}]}
 {"lemma": "revuo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"]}}
 {"lemma": "pilko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["rubber"]}}
 {"lemma": "pupo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "integrity": ["tuta"]}}
@@ -473,3 +473,4 @@
 {"lemma": "fajro", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "parts": [{"concept": "ligno"}, {"concept": "ŝtono"}]}
 {"lemma": "fruktosalato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pomo"}, {"concept": "banano"}, {"concept": "ĉerizo"}]}
 {"lemma": "buterpano", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pano"}, {"concept": "butero"}]}
+{"lemma": "kremkafo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "constructable": ["yes"]}, "category": ["trinkaĵo"], "parts": [{"concept": "kafo"}, {"concept": "kremo"}]}
