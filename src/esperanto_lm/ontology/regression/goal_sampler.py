@@ -132,6 +132,56 @@ def _construct_goal_scene(lex, rng: random.Random, rules) -> Optional[tuple]:
             t.entities[placed].set_property("count", "1")
         if not ok:
             continue
+        # When a part has `requires` (e.g. teo's akvo must be bolanta),
+        # the planner must achieve that property via another verb (boli)
+        # before fari fires. Place a tool that supports the producing
+        # verb so the scene is plannable. Walks goal_index → producer
+        # verb → producer's instrument signature → concept matching
+        # that signature. Stays generic: a new (slot, value) requirement
+        # auto-resolves if there's a producer verb in the lexicon.
+        for part_spec in theme_def.parts:
+            for slot, allowed in part_spec.requires.items():
+                if not ok:
+                    break
+                for value in allowed:
+                    producers = goal_index.get(
+                        ("property", slot, value), ())
+                    placed_tool = False
+                    for v_lemma in producers:
+                        action = lex.actions.get(v_lemma)
+                        if action is None:
+                            continue
+                        instr_role = next(
+                            (r for r in action.roles
+                             if r.name == "instrument"), None)
+                        if instr_role is None:
+                            continue
+                        sigs = instr_role.properties.get(
+                            "functional_signature", [])
+                        if not sigs:
+                            continue
+                        for tool_lemma, tool_def in lex.concepts.items():
+                            if getattr(tool_def, "is_category_stub", False):
+                                continue
+                            tool_sigs = tool_def.properties.get(
+                                "functional_signature", [])
+                            if not any(s in tool_sigs for s in sigs):
+                                continue
+                            if _place_respecting_containment(
+                                    t, lex, scene_id, tool_lemma, rng,
+                                    preferred_id=scene_id,
+                                    existing_eid=None) is not None:
+                                placed_tool = True
+                                break
+                        if placed_tool:
+                            break
+                    if not placed_tool:
+                        ok = False
+                        break
+            if not ok:
+                break
+        if not ok:
+            continue
         # No pre-havi: each ingredient sits in the scene at its
         # natural-habitat location; the planner finds them and emits
         # vidi+preni per part before fari fires. This produces richer

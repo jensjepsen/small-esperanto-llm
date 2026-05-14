@@ -107,6 +107,12 @@ class ConceptPart(_Frozen):
     # ("same_container" for detachable parts, etc.) can be added when
     # needed.
     placement: Literal["intrinsic"] = "intrinsic"
+    # For constructable-recipe parts: per-part property requirements
+    # the planner must satisfy before fari fires. Maps slot name → list
+    # of acceptable values. Used for "teo's akvo must be bolanta": the
+    # planner must boli the akvo before fari(teo). Empty = no extra
+    # requirement beyond havi(agent, part).
+    requires: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class Concept(_Frozen):

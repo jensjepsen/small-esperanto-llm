@@ -1026,30 +1026,43 @@ def _place_respecting_containment(
         containment_relations_for, required_fact_violations,
     )
     idx = resolve_containment(lex)
-    for cont_lemma, _afforded_rel in containers_for(
-            concept_lemma, idx, lex):
-        cont_concept = lex.concepts.get(cont_lemma)
-        if cont_concept is None or cont_concept.entity_type != "location":
-            continue
-        valid_rel: Optional[str] = None
-        for candidate_rel in containment_relations_for(
-                cont_lemma, concept_lemma, idx, lex):
-            if not required_fact_violations(
-                    cont_lemma, concept_lemma, candidate_rel, idx, lex):
-                valid_rel = candidate_rel
-                break
-        if valid_rel is None:
-            continue
-        cont_eid = _place_respecting_containment(
-            t, lex, scene_id, cont_lemma, rng, preferred_id=scene_id,
-            _depth=_depth + 1)
-        if cont_eid is None:
-            continue
-        try:
-            t.assert_relation(valid_rel, (eid, cont_eid), lex)
-            return eid
-        except (KeyError, ValueError):
-            continue
+    # Two-pass: locations first (preferred — a pomo prefers ĝardeno
+    # over a korbo). When no location works (e.g. akvo's required-rule
+    # rejects every bare-location placement because liquids must sit
+    # in a liquid_holder), fall back to artifact containers. The
+    # recursive _place_respecting_containment call walks the artifact
+    # up the containment graph (kaserolo → kuirejo → domo → apud
+    # scene) so the artifact lands somewhere coherent.
+    for require_location in (True, False):
+        for cont_lemma, _afforded_rel in containers_for(
+                concept_lemma, idx, lex):
+            cont_concept = lex.concepts.get(cont_lemma)
+            if cont_concept is None:
+                continue
+            is_location = cont_concept.entity_type == "location"
+            if require_location and not is_location:
+                continue
+            if not require_location and is_location:
+                continue
+            valid_rel: Optional[str] = None
+            for candidate_rel in containment_relations_for(
+                    cont_lemma, concept_lemma, idx, lex):
+                if not required_fact_violations(
+                        cont_lemma, concept_lemma, candidate_rel, idx, lex):
+                    valid_rel = candidate_rel
+                    break
+            if valid_rel is None:
+                continue
+            cont_eid = _place_respecting_containment(
+                t, lex, scene_id, cont_lemma, rng, preferred_id=scene_id,
+                _depth=_depth + 1)
+            if cont_eid is None:
+                continue
+            try:
+                t.assert_relation(valid_rel, (eid, cont_eid), lex)
+                return eid
+            except (KeyError, ValueError):
+                continue
 
     # Tier 4: top-level location with no valid container of its own
     # (e.g. domo) → place as a sibling apud the scene. Only fires for

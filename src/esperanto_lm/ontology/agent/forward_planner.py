@@ -247,6 +247,7 @@ def _ground_action_facts(action, roles, lex, rule_effects):
     )
     pres: set = set()
     effs: set = set()
+    sym = _symmetric_relations(lex)
     # Role property requirements: pre `("prop", eid, slot, value)`.
     # Skip list-kind roles — their property requirements would need to
     # apply to each list element, which the spawner enforces at scene
@@ -280,12 +281,12 @@ def _ground_action_facts(action, roles, lex, rule_effects):
                         for i, r in enumerate(pc.roles))
                     if any(e is None for e in eids):
                         continue
-                    pres.add(("rel", pc.rel, eids))
+                    pres.add(("rel", pc.rel, _canon_rel(pc.rel, eids, sym)))
             else:
                 eids = tuple(roles.get(r) for r in pc.roles)
                 if any(e is None for e in eids):
                     continue
-                pres.add(("rel", pc.rel, eids))
+                pres.add(("rel", pc.rel, _canon_rel(pc.rel, eids, sym)))
         elif isinstance(pc, IfPropertyPrecondition):
             # Skipped in relaxed encoding. The gate is conditional
             # — fires only when `if_property=if_value` holds on the
@@ -314,7 +315,7 @@ def _ground_action_facts(action, roles, lex, rule_effects):
             for eids in _expand_list_role_args(role_arg_names, roles):
                 if any(e is None for e in eids):
                     continue
-                effs.add(("rel", relation, eids))
+                effs.add(("rel", relation, _canon_rel(relation, eids, sym)))
     return pres, effs
 
 
@@ -390,6 +391,7 @@ def _ground_derivations(
     from .planner import (
         _walk_for_rel_patterns, _extract_bind_vars,
     )
+    sym_local = _symmetric_relations(lex)
 
     def _bind_target_var(arg_pat):
         """If arg_pat is a Var, returns it. If it's a BindPattern,
@@ -590,10 +592,43 @@ def _ground_derivations(
         if not all(domains):
             continue
 
+        # Chain-derivation filter: samloke_chains_through_{en,sur} have
+        # 3 free vars (A=contained, B=bridge, C=other-endpoint) and
+        # generate cubic bindings. Almost all goal-relevant samloke
+        # facts have one endpoint that's the agent (or some animate).
+        # Restricting bindings to those where A or C is animate cuts
+        # the per-chain count ~6×, with no observable yield loss (the
+        # missing chains were all object×object×object which the
+        # planner rarely needs).
+        chain_filter_vids: list = []
+        if d.name in (
+                "samloke_chains_through_en", "samloke_chains_through_sur",
+                "shared_container_means_samloke",
+                "shared_apud_means_samloke"):
+            for spec in impl_specs:
+                if spec[0] == "rel" and spec[1] == "samloke":
+                    from ..dsl.patterns import Var as _Var
+                    for a in spec[2]:
+                        if isinstance(a, _Var) and id(a) in all_vars:
+                            chain_filter_vids.append(id(a))
+
         for combo in itertools.product(*domains):
             if len(set(combo)) != len(combo):
                 continue
             binding = {vid: combo[i] for i, vid in enumerate(var_ids)}
+            if chain_filter_vids:
+                has_animate = False
+                for vid in chain_filter_vids:
+                    eid = binding.get(vid)
+                    if eid is None:
+                        continue
+                    ent = trace.entities.get(eid)
+                    if ent is not None and lex.types.is_subtype(
+                            ent.entity_type, "animate"):
+                        has_animate = True
+                        break
+                if not has_animate:
+                    continue
 
             # pres: each rel pattern grounded with binding, plus
             # property constraints on each Var.
@@ -609,7 +644,8 @@ def _ground_derivations(
                     args.append(eid)
                 if not ok:
                     break
-                pres.add(("rel", rp.relation, tuple(args)))
+                pres.add(("rel", rp.relation,
+                          _canon_rel(rp.relation, tuple(args), sym_local)))
             if not ok:
                 continue
             # Property constraints from each Var → pres.
@@ -643,7 +679,8 @@ def _ground_derivations(
                             args.append(a)
                     if not ok:
                         continue
-                    effs.add(("rel", name, tuple(args)))
+                    effs.add(("rel", name,
+                              _canon_rel(name, tuple(args), sym_local)))
 
             if effs:
                 out.append((None, binding, pres, effs))
@@ -1004,21 +1041,55 @@ def _build_rule_effects_index(rules) -> dict:
     return out
 
 
-def _state_facts(trace, derived) -> set:
+def _symmetric_relations(lex) -> frozenset:
+    """Cache symmetric-arity-2 relation names for canonicalization
+    in the fact-tuple representation."""
+    cache = getattr(lex, "_fwd_planner_sym_cache", None)
+    if cache is not None:
+        return cache
+    result = frozenset(
+        name for name, rel_def in lex.relations.items()
+        if getattr(rel_def, "symmetric", False)
+        and rel_def.arity == 2)
+    try:
+        object.__setattr__(lex, "_fwd_planner_sym_cache", result)
+    except Exception:
+        pass
+    return result
+
+
+def _canon_rel(rel_name: str, args: tuple, sym: frozenset) -> tuple:
+    """Canonicalize a symmetric arity-2 relation's args (alphabetical
+    order). Live engine matches symmetric relations by trying both
+    orderings; the forward planner uses fact-tuple equality, so we
+    canonicalize once at emission and reuse the canonical form
+    everywhere."""
+    if rel_name in sym and len(args) == 2 and args[0] > args[1]:
+        return (args[1], args[0])
+    return args
+
+
+def _state_facts(trace, derived, lex=None) -> set:
     """Snapshot of state facts (property + relation) for the
-    relaxed graph's layer 0."""
+    relaxed graph's layer 0. Symmetric arity-2 relation tuples are
+    canonicalized to a single ordering — every emission point uses
+    `_canon_rel`, so fact-tuple equality finds matches regardless
+    of the order in which a derivation or pre wrote the relation."""
     facts: set = set()
+    sym = _symmetric_relations(lex) if lex is not None else frozenset()
     for eid, ent in trace.entities.items():
         for slot, values in ent.properties.items():
             for v in values:
                 facts.add(("prop", eid, slot, v))
     for r in trace.relations:
-        facts.add(("rel", r.relation, tuple(r.args)))
+        facts.add(("rel", r.relation,
+                   _canon_rel(r.relation, tuple(r.args), sym)))
     # Derived state — relations + properties.
     if derived is not None:
         for rel_tuple in derived.relations:
-            # `compute_derived_state` returns tuples (relation, args).
-            facts.add(("rel", rel_tuple[0], tuple(rel_tuple[1])))
+            args = tuple(rel_tuple[1])
+            facts.add(("rel", rel_tuple[0],
+                       _canon_rel(rel_tuple[0], args, sym)))
         for (eid, slot), val in (
                 getattr(derived, "properties", {}) or {}).items():
             if isinstance(val, list):
@@ -1160,6 +1231,18 @@ def _ground_constructable_actions(
                 fari, roles, lex, rule_effects)
             if not effs:
                 continue
+            # Per-part state requirements (e.g. teo's akvo must be
+            # bolanta). The planner has to achieve these property
+            # values before fari can fire — typically via a separate
+            # verb that sets the slot (boli for temperature=bolanta).
+            # Fact-tuple key is "prop" (relaxed-graph convention), not
+            # "property" (goal tuple convention).
+            for part_spec, part_eid in zip(concept.parts, part_eids):
+                for slot, allowed in part_spec.requires.items():
+                    if not allowed:
+                        continue
+                    pres = pres | {
+                        ("prop", part_eid, slot, v) for v in allowed}
             out.append((fari, roles, pres, effs))
     return out
 
@@ -1233,7 +1316,9 @@ def _heuristic_and_helpful(
                 return 0, set()
         elif goal[0] == "relation":
             _, relation, args = goal
-            if ("rel", relation, tuple(args)) in facts:
+            _sym_h = _symmetric_relations(lex)
+            if ("rel", relation,
+                    _canon_rel(relation, tuple(args), _sym_h)) in facts:
                 return 0, set()
         elif goal[0] == "event_fire":
             _, verb_lemma, bindings_frozen = goal
@@ -1277,7 +1362,7 @@ def _heuristic_and_helpful(
     if facts is not None:
         cost: dict = {f: 0 for f in facts}
     else:
-        cost: dict = {f: 0 for f in _state_facts(trace, derived)}
+        cost: dict = {f: 0 for f in _state_facts(trace, derived, lex)}
     # producer[fact] = cid of the consumer that achieved cost[fact].
     producer: dict = {}
 
@@ -1349,7 +1434,9 @@ def _heuristic_and_helpful(
         goal_facts = [("prop", eid, slot, value)]
     elif goal[0] == "relation":
         _, relation, args = goal
-        goal_facts = [("rel", relation, tuple(args))]
+        goal_facts = [("rel", relation,
+                       _canon_rel(relation, tuple(args),
+                                   _symmetric_relations(lex)))]
     elif goal[0] == "event_fire":
         _, verb_lemma, bindings_frozen = goal
         goal_facts = [("event_fired", verb_lemma, bindings_frozen)]
@@ -1460,7 +1547,7 @@ def _infra_prespawn(action, role_map, trace, lex, derivations, resolver,
     from ..schemas import RelationPrecondition
     from ..dsl.implications import PropertyImplication
     derived = _cached_compute_derived_state(trace, derivations, lex)
-    facts = set(_state_facts(trace, derived))
+    facts = set(_state_facts(trace, derived, lex))
 
     # (a) Role.property requirements: derivable + not already true.
     for role_spec in action.roles:
@@ -1669,7 +1756,7 @@ def _ensure_prop_reachable(eid, slot, value, trace, lex, derivations,
         return
     from ..dsl.implications import PropertyImplication
     derived = _cached_compute_derived_state(trace, derivations, lex)
-    if ("prop", eid, slot, value) in set(_state_facts(trace, derived)):
+    if ("prop", eid, slot, value) in set(_state_facts(trace, derived, lex)):
         return
     for d in derivations:
         if not any(isinstance(imp, PropertyImplication)
@@ -1681,7 +1768,7 @@ def _ensure_prop_reachable(eid, slot, value, trace, lex, derivations,
             rule_effects, derivable_slots, depth)
         # Re-check; stop once the property becomes reachable.
         derived = _cached_compute_derived_state(trace, derivations, lex)
-        if ("prop", eid, slot, value) in set(_state_facts(trace, derived)):
+        if ("prop", eid, slot, value) in set(_state_facts(trace, derived, lex)):
             return
 
 
@@ -1872,15 +1959,11 @@ def plan_for_goal(
     # sur_implies_samloke_…) are sufficient for the relaxed plan
     # since iri/eniri/preni still establish the en/havi facts.
     _SKIP_IN_HEURISTIC = {
-        # The cross-room samloke chains (en, sur) add ~12K bindings
-        # and rarely contribute to the relaxed plan since iri/eniri
-        # establishes the en facts that the direct variants consume.
-        # samloke_propagates_through_artifact_parts is also skipped —
-        # 3K bindings for negligible yield gain (+0.2 in 500-scene
-        # bench when re-enabled; ~2× slower). location_parts (~1.2K)
-        # is cheap and stays.
-        "samloke_chains_through_en",
-        "samloke_chains_through_sur",
+        # samloke_propagates_through_artifact_parts stays skipped —
+        # 3K bindings for negligible yield gain. The en/sur chains
+        # are re-enabled but with an animate-endpoint filter in
+        # _ground_derivations that drops object×object×object combos
+        # (~6× fewer bindings per chain), making them cheap enough.
         "samloke_propagates_through_artifact_parts",
     }
     heuristic_derivations = [
@@ -1970,12 +2053,14 @@ def plan_for_goal(
     # with the reachable-fact frontier; recurse via their pres.
     # Reduces 1300+5000 → typically a few hundred consumers,
     # cutting per-heuristic-call cost ~5-10×.
+    sym_goal = _symmetric_relations(lex)
     if goal[0] == "property":
         _, eid, slot, value = goal
         seed_goal = {("prop", eid, slot, value)}
     elif goal[0] == "relation":
         _, relation, args = goal
-        seed_goal = {("rel", relation, tuple(args))}
+        seed_goal = {("rel", relation,
+                      _canon_rel(relation, tuple(args), sym_goal))}
     elif goal[0] == "event_fire":
         seed_goal = {event_fired_fact}
     else:
@@ -2040,7 +2125,8 @@ def plan_for_goal(
         goal_fact = ("prop", eid, slot, value)
     elif goal[0] == "relation":
         _, relation, args = goal
-        goal_fact = ("rel", relation, tuple(args))
+        goal_fact = ("rel", relation,
+                     _canon_rel(relation, tuple(args), sym_goal))
     elif goal[0] == "event_fire":
         goal_fact = event_fired_fact
     else:
@@ -2054,7 +2140,7 @@ def plan_for_goal(
     H_WEIGHT = 2
 
     initial_facts = frozenset(
-        _state_facts(initial_trace, initial_derived))
+        _state_facts(initial_trace, initial_derived, lex))
     # Apply derivations to layer-0 to get full derived layer.
     initial_facts = _apply_delta(
         initial_facts, set(), set(),
