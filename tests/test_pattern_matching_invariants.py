@@ -147,7 +147,7 @@ def test_weather_preamble_renders(lex):
             id="ĉambro", concept_lemma="ĉambro", entity_type="location",
             properties={k: list(v) for k, v in ĉambro_c.properties.items()})
         prose = realize_trace(t, lex, scene_location_id="ĉambro",
-                               rng=random.Random(0), tense="is")
+                               rng=random.Random(0), tense="is", setup_relations=list(t.relations))
         if expected:
             assert prose.startswith(expected), (weather, prose)
         else:

@@ -63,10 +63,26 @@ def realize_trace(
         iri) leave `trace.relations` in the post-trace state; pass the
         snapshot for correct scene-setup rendering. Also enables
         relation-change narration (Maria ne plu havis la libron).
+
+        Required when `trace.events` is non-empty: without it the
+        preamble walks post-trace relations and would narrate
+        rule-added havi as if it held at scene start
+        ("Kuzo havis sandviĉon" before fari fires). Static traces
+        (no events, scene-description only) may omit it.
+
       `rng` — per-trace variation (templates, connectives, pronouns,
         tense). None makes the realizer fully deterministic.
       `tense` — explicit override ('is' past, 'as' present).
     """
+    if setup_relations is None and trace.events:
+        raise ValueError(
+            "realize_trace: setup_relations is required when "
+            "trace.events is non-empty. Take a snapshot before "
+            "running the engine: `setup_rels = list(t.relations)` "
+            "after scene setup, before run_dsl / event seeding. "
+            "Pass as `setup_relations=setup_rels`. Without it the "
+            "preamble would describe post-event ownership as if it "
+            "held at scene start.")
     # Compute derived state once for the whole render pass. The render
     # consults it for context-dependent surface forms — e.g. an animate
     # `en` a water_body has posture=naĝanta via the

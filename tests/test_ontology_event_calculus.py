@@ -398,6 +398,7 @@ def test_realizer_introduces_created_entity_via_appearance_line(lex):
         properties={"sharpness": ["akra"]},
         created_at_event=1)
     t.entities["vitropecetoj"] = shards
+    setup = list(t.relations)
     # Event 0: glass falls.
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
     # Event 1: glass breaks, creating shards.
@@ -407,7 +408,8 @@ def test_realizer_introduces_created_entity_via_appearance_line(lex):
         creates=[shards],
     ))
 
-    prose = realize_trace(t, lex, scene_location_id="kuirejo")
+    prose = realize_trace(t, lex, scene_location_id="kuirejo",
+                          setup_relations=setup)
     # Prose must reference "vitropecetoj" — first mention, so it's
     # introduced via an appearance phrase, not a setup line.
     assert "vitropecetoj" in prose.lower(), prose
@@ -429,6 +431,7 @@ def test_realizer_subsequent_mention_of_created_entity_is_definite(lex):
         id="vitropecetoj", concept_lemma="vitropecetoj",
         entity_type="inanimate", created_at_event=1)
     t.entities["vitropecetoj"] = shards
+    setup = list(t.relations)
     # Sequence: glass falls → glass breaks creating shards → person falls
     # (caused-by shards, simulating the hazard rule for testing).
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
@@ -440,7 +443,8 @@ def test_realizer_subsequent_mention_of_created_entity_is_definite(lex):
         "fali", roles={"theme": "petro"},
         caused_by=[t.events[1].id]))
 
-    prose = realize_trace(t, lex, scene_location_id="kuirejo")
+    prose = realize_trace(t, lex, scene_location_id="kuirejo",
+                          setup_relations=setup)
     # After the appearance line, references should be definite.
     # We don't pin the exact wording, but we expect "la vitropecetoj" or
     # similar to appear if we want to refer back. For this test, just
@@ -463,6 +467,7 @@ def test_realizer_synthetic_grounding_skips_created_entities(lex):
         id="vitropecetoj", concept_lemma="vitropecetoj",
         entity_type="inanimate", created_at_event=1)
     t.entities["vitropecetoj"] = shards
+    setup = list(t.relations)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
     t.events.append(make_event(
         "rompiĝi", roles={"theme": "glaso"},
@@ -473,7 +478,8 @@ def test_realizer_synthetic_grounding_skips_created_entities(lex):
         "fali", roles={"theme": "vitropecetoj"},
         caused_by=[t.events[1].id]))
 
-    prose = realize_trace(t, lex, scene_location_id="kuirejo")
+    prose = realize_trace(t, lex, scene_location_id="kuirejo",
+                          setup_relations=setup)
     # No synthetic 'estis en la kuirejo' line for the created entity.
     assert "Vitropecetoj estis en la kuirejo" not in prose, prose
     assert "vitropecetoj estis en la kuirejo" not in prose.lower(), prose

@@ -62,9 +62,10 @@ def test_same_subject_events_aggregate_into_coordinated_message(lex):
 def test_aggregated_prose_uses_kaj(lex):
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
+    setup = list(t.relations)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
     run_dsl(t, _rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
-    prose = realize_trace(t, lex)
+    prose = realize_trace(t, lex, setup_relations=setup)
     assert "falis kaj rompiĝis" in prose, prose
 
 
@@ -75,10 +76,11 @@ def test_different_subjects_do_not_aggregate(lex):
     t.add_entity("glaso", lex, entity_id="glaso")
     t.add_entity("akvo", lex, entity_id="akvo")
     t.assert_relation("en", ("akvo", "glaso"), lex)
+    setup = list(t.relations)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
     run_dsl(t, _rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
 
-    prose = realize_trace(t, lex)
+    prose = realize_trace(t, lex, setup_relations=setup)
     # glaso's fali + rompiĝi coordinate; akvo's fali stays separate.
     assert "glaso falis kaj rompiĝis" in prose, prose
     assert "akvo falis" in prose
@@ -155,6 +157,7 @@ def test_manĝi_narrates_destruction(lex):
     t = Trace()
     t.add_entity("kato", lex, entity_id="kato")
     t.add_entity("muso", lex, entity_id="muso")
+    setup = list(t.relations)
     roles = {"agent": "kato", "theme": "muso"}
     t.events.append(make_event(
         "manĝi", roles=roles,
@@ -165,7 +168,7 @@ def test_manĝi_narrates_destruction(lex):
     dests = [m for m in messages if isinstance(m, DestructionMessage)]
     assert any(m.entity_id == "muso" for m in dests)
 
-    prose = realize_trace(t, lex)
+    prose = realize_trace(t, lex, setup_relations=setup)
     assert "malaperis" in prose, prose
 
 
@@ -221,6 +224,7 @@ def test_coordinated_children_share_theme_elide(lex):
     t.add_entity("pano",    lex, entity_id="pano")
     t.assert_relation("havi", ("maria", "pano"), lex)
     t.entities["maria"].set_property("hunger", "malsata")
+    setup = list(t.relations)
     roles = {"agent": "maria", "theme": "pano"}
     t.events.append(make_event(
         "kuiri", roles=roles,
@@ -230,7 +234,7 @@ def test_coordinated_children_share_theme_elide(lex):
         property_changes=effect_changes("manĝi", roles, lex)))
     run_dsl(t, _rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
 
-    prose = realize_trace(t, lex)
+    prose = realize_trace(t, lex, setup_relations=setup)
     # Both verbs render, but "la panon" only once in the coordinated
     # phrase (initial havi setup also mentions panon).
     coord_part = prose.split(".")[2] if len(prose.split(".")) > 2 else ""
@@ -333,6 +337,7 @@ def test_cascade_creation_subordinates_with_el_kio(lex):
     'La glaso falis kaj rompiĝis, el kio aperis vitropecetoj.'"""
     t = Trace()
     t.add_entity("glaso", lex, entity_id="glaso")
+    setup = list(t.relations)
     t.events.append(make_event("fali", roles={"theme": "glaso"}))
     run_dsl(t, _rules(lex), DEFAULT_DSL_DERIVATIONS, lex)
 
@@ -344,7 +349,7 @@ def test_cascade_creation_subordinates_with_el_kio(lex):
     assert len(subs) == 1, [type(m).__name__ for m in messages]
     assert subs[0].conjunction == "el kio"
 
-    prose = realize_trace(t, lex)
+    prose = realize_trace(t, lex, setup_relations=setup)
     assert "el kio" in prose, prose
     assert "vitropecetoj" in prose
     # The main and subordinate share one sentence, not two.

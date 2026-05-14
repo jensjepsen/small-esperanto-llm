@@ -123,7 +123,7 @@ def test_realize_canonical_kitchen_trace(lex):
     run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
-    prose = realize_trace(t, lex)
+    prose = realize_trace(t, lex, setup_relations=list(t.relations))
     assert "tranĉis" in prose
     assert "panon" in prose
     assert "en kuirejo" in prose, "kuirejo first-mention is bare"
@@ -138,7 +138,7 @@ def test_realize_returns_string_for_random_traces(lex):
         t, _ = sample_scene(lex, rng)
         run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
-        prose = realize_trace(t, lex)
+        prose = realize_trace(t, lex, setup_relations=list(t.relations))
         assert isinstance(prose, str) and prose
         assert prose.endswith(".")
 
@@ -163,7 +163,7 @@ def test_first_mention_indefinite_subsequent_definite(lex):
     run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
-    prose = realize_trace(t, lex)
+    prose = realize_trace(t, lex, setup_relations=list(t.relations))
     # First-mention bare. The salience filter suppresses pure-decoration
     # quality grounding, so the bare first mention happens in the
     # havi/event sentences as it always did.
@@ -183,7 +183,7 @@ def test_no_la_on_location_first_mention(lex):
     kuirejo = t.add_entity("kuirejo", lex, entity_id="kuirejo")
     t.assert_relation("en", (sara.id, kuirejo.id), lex)
 
-    prose = realize_trace(t, lex)
+    prose = realize_trace(t, lex, setup_relations=list(t.relations))
     assert prose == "Sara estis en kuirejo.", prose
 
 
@@ -200,7 +200,7 @@ def test_setup_introduces_then_event_uses_definite(lex):
     run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
-    prose = realize_trace(t, lex)
+    prose = realize_trace(t, lex, setup_relations=list(t.relations))
     # Setup line: both indefinite (akvo bare, glaso bare).
     assert "Akvo estis en glaso." in prose, \
         f"setup line should have both bare; got: {prose!r}"
@@ -264,7 +264,7 @@ def test_scene_location_definite_from_first_mention(lex):
     kuirejo = t.add_entity("kuirejo", lex, entity_id="kuirejo")
     t.assert_relation("en", (sara.id, kuirejo.id), lex)
 
-    prose = realize_trace(t, lex, scene_location_id="kuirejo")
+    prose = realize_trace(t, lex, scene_location_id="kuirejo", setup_relations=list(t.relations))
     assert prose == "Sara estis en la kuirejo.", prose
 
 
@@ -280,7 +280,7 @@ def test_synthetic_grounding_for_agentless_drop(lex):
     run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
-    prose = realize_trace(t, lex, scene_location_id="kuirejo")
+    prose = realize_trace(t, lex, scene_location_id="kuirejo", setup_relations=list(t.relations))
     # Synthetic setup: glaso grounded to la kuirejo.
     assert prose.startswith("Glaso estis en la kuirejo."), prose
     # Then the events.
@@ -301,7 +301,7 @@ def test_synthetic_grounding_skips_entities_already_in_relations(lex):
     run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
-    prose = realize_trace(t, lex, scene_location_id="kuirejo")
+    prose = realize_trace(t, lex, scene_location_id="kuirejo", setup_relations=list(t.relations))
     # Both akvo (subject) and glaso (object) are in the en relation, so
     # neither gets a synthetic kitchen-grounding line.
     assert "estis en la kuirejo" not in prose, prose
@@ -323,7 +323,7 @@ def test_no_synthetic_grounding_when_explicit_relation_present(lex):
     run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
-    prose = realize_trace(t, lex, scene_location_id="kuirejo")
+    prose = realize_trace(t, lex, scene_location_id="kuirejo", setup_relations=list(t.relations))
     # Sara's `havi pano` introduces pano; no synthetic 'Pano estis en la kuirejo'.
     assert "Pano estis en la kuirejo." not in prose, prose
     # Kitchen mentioned just once via the en relation.
@@ -414,7 +414,7 @@ def test_realize_variation_changes_with_rng_seed(lex):
         # Re-resolve trace context for each render: render_trace is pure,
         # the trace itself isn't mutated by realization.
         prose = realize_trace(t, lex, scene_location_id="kuirejo",
-                              rng=random.Random(seed))
+                              rng=random.Random(seed), setup_relations=list(t.relations))
         outputs.add(prose)
     assert len(outputs) >= 3, \
         f"variation didn't happen: only {len(outputs)} unique outputs:\n" + "\n".join(outputs)
@@ -438,7 +438,7 @@ def test_realize_pronoun_substitution_for_lone_person(lex):
     saw_pronoun = False
     for seed in range(30):
         prose = realize_trace(t, lex, scene_location_id="kuirejo",
-                              rng=random.Random(seed))
+                              rng=random.Random(seed), setup_relations=list(t.relations))
         if " Ŝi " in prose or "ŝi " in prose.split(". ", 1)[-1]:
             saw_pronoun = True
             break
@@ -464,7 +464,7 @@ def test_realize_no_pronoun_when_two_same_gender_persons(lex):
 
     for seed in range(30):
         prose = realize_trace(t, lex, scene_location_id="kuirejo",
-                              rng=random.Random(seed))
+                              rng=random.Random(seed), setup_relations=list(t.relations))
         # No ambiguous pronoun should appear.
         assert " Ŝi " not in prose and " ŝi " not in prose, \
             f"ambiguous ŝi appeared at seed {seed}: {prose}"
@@ -490,7 +490,7 @@ def test_realize_variation_uses_alternate_connectives(lex):
     seen_connectives = set()
     for seed in range(40):
         prose = realize_trace(t, lex, scene_location_id="kuirejo",
-                              rng=random.Random(seed))
+                              rng=random.Random(seed), setup_relations=list(t.relations))
         for c in ("Tial", "Sekve", "Pro tio"):
             if c in prose:
                 seen_connectives.add(c)
@@ -512,8 +512,8 @@ def test_realize_deterministic_when_rng_is_none(lex):
     run_dsl(t, list(DEFAULT_DSL_RULES),
             DEFAULT_DSL_DERIVATIONS, lex)
 
-    a = realize_trace(t, lex, scene_location_id="kuirejo")
-    b = realize_trace(t, lex, scene_location_id="kuirejo")
+    a = realize_trace(t, lex, scene_location_id="kuirejo", setup_relations=list(t.relations))
+    b = realize_trace(t, lex, scene_location_id="kuirejo", setup_relations=list(t.relations))
     assert a == b, "rng=None should be deterministic"
 
 
