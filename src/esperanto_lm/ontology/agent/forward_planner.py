@@ -1801,6 +1801,8 @@ def _spawn_for_derivation(d, eid, trace, lex, derivations, resolver,
     if target_var is None:
         return
 
+    from ..dsl.patterns import RelPattern
+
     def _walk_eps(pat):
         if isinstance(pat, AndPattern):
             if (isinstance(pat.left, EntityPattern)
@@ -1812,6 +1814,14 @@ def _spawn_for_derivation(d, eid, trace, lex, derivations, resolver,
             else:
                 yield from _walk_eps(pat.left)
                 yield from _walk_eps(pat.right)
+        # Descend into RelPattern arg_patterns. The lieable bind for
+        # animate_lying_when_on_lieable lives inside the sur rel's
+        # container arg, which the AndPattern-only walker missed —
+        # so the planner couldn't pre-spawn a lit/sofo for sleep
+        # drives.
+        if isinstance(pat, RelPattern):
+            for arg_pat in pat.arg_patterns.values():
+                yield from _walk_eps(arg_pat)
 
     class _SynthRole:
         def __init__(self, type_, properties):
