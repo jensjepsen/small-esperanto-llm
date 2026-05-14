@@ -18,7 +18,7 @@
 {"lemma": "vojo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["stone"]}}
 {"lemma": "relo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["metalaĵo"]}
 {"lemma": "lakto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
-{"lemma": "tablo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["meblo", "lignaĵo", "surfaco"]}
+{"lemma": "tablo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "constructable": ["yes"]}, "category": ["meblo", "lignaĵo", "surfaco"], "parts": [{"concept": "ligno"}, {"concept": "najlo"}], "crafted_with": ["najlilo"]}
 {"lemma": "seĝo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "sittable": ["yes"], "constructable": ["yes"]}, "category": ["meblo", "lignaĵo"], "parts": [{"concept": "ligno"}, {"concept": "najlo"}], "crafted_with": ["najlilo"]}
 {"lemma": "breto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["meblo", "lignaĵo", "surfaco"]}
 {"lemma": "pordo", "entity_type": "artifact", "properties": {"openness": ["fermita"], "state_of_matter": ["solida"]}, "parts": [{"concept": "seruro"}]}
@@ -469,3 +469,5 @@
 {"lemma": "pico", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pasto"}, {"concept": "tomato"}, {"concept": "fromaĝo"}], "crafted_with": ["forno"]}
 {"lemma": "kaĉo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "rizo"}, {"concept": "akvo"}], "crafted_with": ["forno", "kameno"]}
 {"lemma": "sablokastelo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "parts": [{"concept": "sablo"}, {"concept": "ŝtono"}]}
+{"lemma": "florkrono", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "parts": [{"concept": "floro"}, {"concept": "herbo"}]}
+{"lemma": "fajro", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "parts": [{"concept": "ligno"}, {"concept": "ŝtono"}]}
