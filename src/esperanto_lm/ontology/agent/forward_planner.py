@@ -447,7 +447,70 @@ def _ground_derivations(
                 ep = _walk_for_ep_binding_local(side, target_var)
                 if ep is not None:
                     return ep
+        # Descend into RelPattern arg_patterns — Vars co-bound with
+        # EntityPatterns inside `rel("en", container=entity(...) & bind(B))`
+        # would otherwise be invisible to the walker.
+        from ..dsl.patterns import RelPattern
+        if isinstance(pattern, RelPattern):
+            for arg_pat in pattern.arg_patterns.values():
+                ep = _walk_for_ep_binding_local(arg_pat, target_var)
+                if ep is not None:
+                    return ep
         return None
+
+    def _flatten_conj(pat) -> list:
+        """Flatten an AndPattern tree into a list of non-And leaf
+        patterns. `a & b & c` → [a, b, c]. Used to find sibling
+        constraints of a `bind(v)` within one rel-arg conjunction."""
+        if isinstance(pat, AndPattern):
+            return _flatten_conj(pat.left) + _flatten_conj(pat.right)
+        return [pat]
+
+    def _exclusions_for_var(target_var, when, given) -> list[dict]:
+        """Collect NotPattern(EntityPattern(...)) conjuncts that sit
+        alongside `bind(target_var)` within the same rel-arg
+        conjunction. Lets the samloke chain's `~entity(type="location")`
+        actually narrow the bridge var."""
+        from ..dsl.patterns import NotPattern, RelPattern
+        out: list[dict] = []
+        for pat in [when] + list(given):
+            for rp in _walk_for_rel_patterns(pat):
+                for arg_pat in rp.arg_patterns.values():
+                    conjuncts = _flatten_conj(arg_pat)
+                    has_target_bind = any(
+                        isinstance(c, BindPattern)
+                        and c.target is target_var
+                        for c in conjuncts)
+                    if not has_target_bind:
+                        continue
+                    for c in conjuncts:
+                        if (isinstance(c, NotPattern)
+                                and isinstance(c.inner, EntityPattern)):
+                            out.append(dict(c.inner.constraints))
+        return out
+
+    def _entity_matches_constraints(ent, constraints, lex) -> bool:
+        """Does ent satisfy ALL literal type/concept/slot constraints
+        in the dict? Mirrors the matcher in dsl/patterns.py but without
+        Var or has_suffix support (negated exclusions use literals)."""
+        for k, v in constraints.items():
+            if isinstance(v, Var):
+                continue
+            if k == "type":
+                if not lex.types.is_subtype(ent.entity_type, v):
+                    return False
+            elif k == "concept":
+                if ent.concept_lemma != v:
+                    return False
+            elif k in lex.slots:
+                vals = ent.properties.get(k, [])
+                if isinstance(v, (list, tuple)):
+                    if not any(x in vals for x in v):
+                        return False
+                else:
+                    if v not in vals:
+                        return False
+        return True
 
     def _constraints_from_ep(ep, lex):
         """Pull literal type/concept/property constraints from an
@@ -502,9 +565,14 @@ def _ground_derivations(
                         all_vars[id(a)] = a
 
         # Gather constraints for each explicit Var.
+        var_exclusions: dict = {}
         for vid, v in all_vars.items():
             ep = _ep_for_var(v, d.when, d.given)
             var_constraints[vid] = _constraints_from_ep(ep, lex)
+            # NotPattern siblings of bind(v) — entities matching these
+            # are excluded from v's domain. Critical for the samloke
+            # chains' `~entity(type="location")` to actually narrow B.
+            var_exclusions[vid] = _exclusions_for_var(v, d.when, d.given)
 
         # RelPatterns in when+given. For each rel-arg that's an
         # inline EntityPattern (no Var), synthesize a free Var so we
@@ -570,6 +638,7 @@ def _ground_derivations(
         var_ids = list(all_vars.keys())
         for vid in var_ids:
             type_, concept_, _props = var_constraints[vid]
+            exclusions = var_exclusions.get(vid, [])
             cands = []
             for eid, ent in trace.entities.items():
                 if eid == "mondo":
@@ -586,6 +655,15 @@ def _ground_derivations(
                 if concept_ is not None:
                     if ent.concept_lemma != concept_:
                         continue
+                # NotPattern exclusion: if the entity matches ALL of any
+                # excluded EntityPattern's literal constraints, skip.
+                excluded = False
+                for excl in exclusions:
+                    if _entity_matches_constraints(ent, excl, lex):
+                        excluded = True
+                        break
+                if excluded:
+                    continue
                 cands.append(eid)
             domains.append(cands)
 
@@ -781,6 +859,56 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
     return adds, dels
 
 
+_DERIV_RELDEP_CACHE: dict = {}
+
+
+def _derived_strip_set(
+    derivation_pseudos, dels: set, adds: set,
+) -> frozenset:
+    """Given a delta (dels+adds) and the derivation list, return the
+    set of relation names whose facts should be stripped before
+    re-derivation. A relation R is stripped iff some derivation has
+    R in its effs AND has some seed_rel in its pres that the delta
+    changes. Cached per `id(derivation_pseudos)`.
+
+    Closure-based: a derivation may produce R1 which feeds another
+    derivation producing R2 — both R1 and R2 get stripped when any
+    seed of R1 changes."""
+    key = id(derivation_pseudos)
+    closure = _DERIV_RELDEP_CACHE.get(key)
+    if closure is None:
+        # rel_to_producers[r] = set of relations the derivation also
+        # produces in its effs (so changing r might invalidate them
+        # transitively).
+        direct: dict[str, set[str]] = {}
+        for _info, _binding, pres, effs in derivation_pseudos:
+            in_rels = {p[1] for p in pres if p[0] == "rel"}
+            out_rels = {e[1] for e in effs if e[0] == "rel"}
+            for r in in_rels:
+                direct.setdefault(r, set()).update(out_rels)
+        # Transitive closure: if R1 → R2 and R2 → R3, also R1 → R3.
+        closure = {r: set(outs) for r, outs in direct.items()}
+        changed = True
+        while changed:
+            changed = False
+            for r, outs in closure.items():
+                new_outs = set(outs)
+                for o in outs:
+                    new_outs.update(direct.get(o, ()))
+                if new_outs != outs:
+                    closure[r] = new_outs
+                    changed = True
+        closure = {r: frozenset(outs) for r, outs in closure.items()}
+        _DERIV_RELDEP_CACHE[key] = closure
+    changed_rels = {
+        f[1] for f in dels if f[0] == "rel"} | {
+        f[1] for f in adds if f[0] == "rel"}
+    result: set[str] = set()
+    for r in changed_rels:
+        result.update(closure.get(r, ()))
+    return frozenset(result)
+
+
 def _apply_delta(facts: frozenset, adds: set, dels: set,
                   derivation_pseudos: list, slot_vocab: dict) -> frozenset:
     """Apply an event's delta to a fact set and re-derive.
@@ -796,6 +924,20 @@ def _apply_delta(facts: frozenset, adds: set, dels: set,
     """
     new_facts = set(facts)
     new_facts -= dels
+    # Strip stale derived relations: when the delta changes a relation
+    # that some derivation's pres depend on, the derivation's output
+    # relation must be recomputed (otherwise stale facts from earlier
+    # states latch — e.g. samloke(agent, akvo) derived when agent was
+    # in salono persists after iri+eniri'd kuirejo). The strip-set is
+    # computed once per derivation list via _derived_strip_set: for
+    # each input relation, the set of relations any derivation chain
+    # would invalidate.
+    strip_targets = _derived_strip_set(
+        derivation_pseudos, dels, adds)
+    if strip_targets:
+        new_facts = {
+            f for f in new_facts
+            if not (f[0] == "rel" and f[1] in strip_targets)}
     # Scalar slot displacement: replace other values on same slot.
     for f in adds:
         if f[0] == "prop":
