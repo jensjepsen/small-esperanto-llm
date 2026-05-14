@@ -124,6 +124,12 @@ def _construct_goal_scene(lex, rng: random.Random, rules) -> Optional[tuple]:
             # already placed it returns that eid, so duplicates collapse.
             # That's fine — each part_concept appears once per recipe.
             part_eids.append(placed)
+            # Pin count=1 on each part — _add_entity_randomized rolls
+            # count to anything 1..5, so the recipe might otherwise
+            # contain "three loaves of bread" as a single ingredient.
+            # Recipes today encode WHICH concepts, not how many of each
+            # — a single unit per part is the consistent reading.
+            t.entities[placed].set_property("count", "1")
         if not ok:
             continue
         # Agent owns each part (havi).
@@ -143,6 +149,11 @@ def _construct_goal_scene(lex, rng: random.Random, rules) -> Optional[tuple]:
                     t, theme_concept, lex, rng, entity_id=stub_eid)
             except (KeyError, ValueError):
                 continue
+        # Pin count=1 on the constructed entity — fari produces ONE
+        # whole, not a stack. Without this, the realizer renders
+        # "kvin sandviĉoj" because the stub's count rolled to 5 at
+        # _add_entity_randomized time.
+        t.entities[stub_eid].set_property("count", "1")
         # Optional instrument: pick the first concept from crafted_with
         # we can place. Skip when crafted_with is empty.
         instrument_eid = None
