@@ -37,11 +37,16 @@ def _cached_goal_index(lex, rules):
     return cached
 
 
-def _construct_goal_scene(lex, rng: random.Random, rules) -> Optional[tuple]:
-    """Build a scene for a construction drive: pick a constructable
-    concept, materialize the actor + each part + (optional) instrument
-    + a stub theme entity, then return the drive that fires `fari`
-    with all roles pre-bound.
+def _construct_goal_scene(lex, rng: random.Random, rules,
+                          theme_concept: Optional[str] = None,
+                          ) -> Optional[tuple]:
+    """Build a scene for a construction drive: materialize the actor +
+    each part + (optional) instrument + a stub theme entity, then
+    return the drive that fires `fari` with all roles pre-bound.
+
+    `theme_concept` selects which constructable to build. When None,
+    picks one randomly — kept for legacy callers; the unified
+    `regress_for_goal` path passes the theme from the goal index.
 
     Roles in the drive's bindings tuple:
       - agent: actor_eid
@@ -59,16 +64,17 @@ def _construct_goal_scene(lex, rng: random.Random, rules) -> Optional[tuple]:
     fari = lex.actions.get("fari")
     if fari is None:
         return None
-    # Pick a constructable concept (one whose properties carry
-    # constructable=yes and that declares parts).
-    constructables = [
-        l for l, c in lex.concepts.items()
-        if "yes" in c.properties.get("constructable", ())
-        and c.parts]
-    if not constructables:
+    if theme_concept is None:
+        constructables = [
+            l for l, c in lex.concepts.items()
+            if "yes" in c.properties.get("constructable", ())
+            and c.parts]
+        if not constructables:
+            return None
+        theme_concept = rng.choice(constructables)
+    theme_def = lex.concepts.get(theme_concept)
+    if theme_def is None or not theme_def.parts:
         return None
-    theme_concept = rng.choice(constructables)
-    theme_def = lex.concepts[theme_concept]
     part_concepts = [p.concept for p in theme_def.parts]
     crafted_with = list(theme_def.crafted_with)
 
@@ -330,17 +336,6 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     from .seeders import _concepts_matching_role
     from .goals import CREATED_ROLE
 
-    # With probability ~15%, emit a construction drive instead of a
-    # property/relation goal. Construction has its own path because
-    # the recipe (parts list + optional crafted_with tool) is concept-
-    # driven rather than effect-driven, so it doesn't slot into
-    # build_goal_index's effect-walking logic.
-    if "fari" in lex.actions and rng.random() < 0.15:
-        result = _construct_goal_scene(lex, rng, rules)
-        if result is not None:
-            return result
-        # fall through if construction setup failed
-
     index = _cached_goal_index(lex, rules)
     all_goals = []
     for g, verbs in index.items():
@@ -354,12 +349,23 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             _, _rel, role_args = g
             if CREATED_ROLE in role_args:
                 all_goals.append((g, verbs))
+        elif g[0] == "construct":
+            all_goals.append((g, verbs))
     if not all_goals:
         return None
-    # Weight by producer count.
+    # Weight by producer count. Construct goals each have 1 producer
+    # (fari) so a single constructable carries the same weight as a
+    # weakly-supported property goal — fine, plenty of property goals
+    # have just one or two producers too.
     weights = [len(verbs) for _, verbs in all_goals]
     chosen_goal, producers = rng.choices(
         all_goals, weights=weights, k=1)[0]
+    if chosen_goal[0] == "construct":
+        # Dispatch to the construct-scene builder. Goal carries the
+        # theme concept; the builder picks an actor, scene, and use-
+        # drive on the constructed theme.
+        return _construct_goal_scene(
+            lex, rng, rules, theme_concept=chosen_goal[1])
     verb_lemma = rng.choice(producers)
     action = lex.actions.get(verb_lemma)
     if action is None:

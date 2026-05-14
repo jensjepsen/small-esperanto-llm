@@ -44,7 +44,8 @@ CREATED_ROLE = "<created>"
 # on the tag.
 PropertyGoal = tuple[str, str, str]      # ("property", slot, value)
 RelationGoal = tuple[str, str, tuple[str, ...]]  # ("relation", rel, role_tuple)
-Goal = PropertyGoal | RelationGoal
+ConstructGoal = tuple[str, str]          # ("construct", theme_concept)
+Goal = PropertyGoal | RelationGoal | ConstructGoal
 
 
 @dataclass(frozen=True)
@@ -177,4 +178,17 @@ def build_goal_index(lex, rules) -> dict[Goal, list[str]]:
             out.setdefault(key, [])
             if verb_lemma not in out[key]:
                 out[key].append(verb_lemma)
+    # Construct goals: one entry per constructable concept, produced
+    # by fari. Lets `regress_for_goal` pick construction the same way
+    # it picks property/relation goals — weighted by producer count
+    # (always 1 here, since fari is the only producer) and uniform
+    # across constructables. Without this, construction would only
+    # surface via a separate hardcoded gate in the sampler.
+    if "fari" in lex.actions:
+        for lemma, concept in lex.concepts.items():
+            if "yes" not in concept.properties.get("constructable", ()):
+                continue
+            if not concept.parts:
+                continue
+            out[("construct", lemma)] = ["fari"]
     return out
