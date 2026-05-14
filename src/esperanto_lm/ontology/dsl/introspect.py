@@ -18,7 +18,7 @@ from .engine import Derivation, Rule
 from .implications import PropertyImplication
 from .patterns import (
     AndPattern, BindPattern, EntityPattern, EventPattern, NotPattern,
-    OrPattern, Var,
+    OrPattern, RelPattern, Var,
 )
 
 
@@ -496,3 +496,101 @@ def verb_relation_kinds(rules: list[Rule]) -> dict[str, frozenset[str]]:
             elif isinstance(eff, (AddRelation, RemoveRelation)):
                 out.setdefault(action, set()).add(eff.relation)
     return {k: frozenset(v) for k, v in out.items()}
+
+
+def slot_reachable_for_concept(
+    concept, slot: str, lex, derivations: list[Derivation],
+) -> bool:
+    """True if some derivation could write to `slot` on `concept` —
+    given the concept's static properties and parts, with no extra
+    entities added.
+
+    Used by drive-validity checks to recognize that varies/derived
+    slots (`lock_state` on `valizo`, `posture` on `onklo`) are
+    meaningful even though the bake skips them: a derivation
+    (`host_lock_state_locked_from_seruro`, `animate_default_standing`)
+    will populate them at runtime.
+
+    Algorithm: walk derivations whose `implies` writes to `slot` with
+    the implication's host bound to a Var. For each, check:
+      1. the host-var's EntityPattern constraints (in `when`) admit
+         `concept` — via `_concept_satisfies_constraints`;
+      2. every `given` pattern is satisfiable from the concept's parts.
+         RelPatterns of `havas_parton` mean a part must exist whose
+         concept satisfies the part-var's EntityPattern (static
+         constraints only — `varies` slots like `lock_state=ŝlosita`
+         on the seruro part get a value at instance time).
+         Other given-patterns (non-part relations) are conservatively
+         accepted; the host-when admittance is the load-bearing
+         check for derivations like `animate_default_standing` which
+         have no `given`."""
+    for d in derivations:
+        for imp in d.implies:
+            if not (isinstance(imp, PropertyImplication)
+                    and imp.slot == slot
+                    and isinstance(imp.entity, Var)):
+                continue
+            host_var = imp.entity
+            when_ep = _entity_pattern_for_var(d.when, host_var)
+            if when_ep is not None:
+                if not _concept_satisfies_constraints(
+                        concept, when_ep.constraints, lex):
+                    continue
+            if _given_satisfied_by_parts(d.given, host_var, concept, lex):
+                return True
+    return False
+
+
+def _given_satisfied_by_parts(
+    given: list, host_var: Var, concept, lex,
+) -> bool:
+    """True if every `havas_parton(host_var, <part-var>)` clause in
+    `given` is matched by some part of `concept`, AND every non-part
+    given is conservatively accepted. Used by
+    `slot_reachable_for_concept`."""
+    # Collect part-var → static-constraints (skip varies).
+    part_var_constraints: dict[int, dict] = {}
+    for given_pat in given:
+        if not isinstance(given_pat, RelPattern):
+            continue
+        if given_pat.relation != "havas_parton":
+            continue
+        # Identify the part-var: the non-host bound var among args.
+        part_var = None
+        for arg in given_pat.arg_patterns.values():
+            bv = _bind_var_in_pattern(arg)
+            if bv is None or bv is host_var:
+                continue
+            part_var = bv
+            break
+        if part_var is not None:
+            part_var_constraints.setdefault(id(part_var), {})
+    # Second pass: collect EntityPattern constraints attached to each
+    # part-var via separate `entity(...) & bind(VAR)` given-clauses.
+    for given_pat in given:
+        if isinstance(given_pat, RelPattern):
+            continue
+        ep = _entity_pattern_in(given_pat)
+        bv = _bind_var_in_pattern(given_pat)
+        if ep is None or bv is None:
+            continue
+        if id(bv) in part_var_constraints:
+            static, _varies = _split_constraints_by_varies(
+                ep.constraints, lex)
+            part_var_constraints[id(bv)] = static
+    # Each part-var's static constraints must be satisfied by some
+    # part of `concept`.
+    if part_var_constraints:
+        for static in part_var_constraints.values():
+            ok = False
+            for part in (concept.parts or []):
+                part_concept = lex.concepts.get(part.concept)
+                if part_concept is None:
+                    continue
+                if _concept_satisfies_constraints(
+                        part_concept, static, lex):
+                    ok = True
+                    break
+            if not ok:
+                return False
+    return True

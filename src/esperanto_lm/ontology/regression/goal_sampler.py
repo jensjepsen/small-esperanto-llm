@@ -27,6 +27,16 @@ from .goals import build_goal_index
 # rule once.
 _GOAL_INDEX_CACHE: dict[int, dict] = {}
 
+# Diagnostic channel: when regress_for_goal returns None, the last
+# return path tags itself here. Bench / debug scripts can read this
+# after each call to classify no_sample causes.
+LAST_NO_SAMPLE_REASON: str | None = None
+
+
+def _bail(reason: str) -> None:
+    global LAST_NO_SAMPLE_REASON
+    LAST_NO_SAMPLE_REASON = reason
+
 
 def _cached_goal_index(lex, rules):
     key = id(lex)
@@ -44,9 +54,14 @@ def _drive_is_degenerate(target_concept_lemma: str, slot: str, lex) -> bool:
     or "vortaro presence=manĝita" reads as nonsense in narrative
     terms; the concept isn't a thing that meaningfully has the slot.
 
-    Pervasive slots (hunger, wetness, temperature, cleanliness,
-    sleep_state) are always applicable to every concept of the slot's
-    applies_to type — so we don't require an explicit declaration.
+    Three sources of "models the slot":
+      1. baked into `concept.properties` directly;
+      2. `pervasive` slots (hunger, wetness, temperature, cleanliness)
+         apply to anything matching the slot's applies_to;
+      3. some runtime derivation could write the slot on this concept
+         given its parts (lock_state on valizo via seruro, posture on
+         onklo via animate_default_standing). The bake skips varies
+         slots; this check fills the gap.
 
     Returns True for drives to skip; False for drives to keep."""
     target_concept = lex.concepts.get(target_concept_lemma)
@@ -57,7 +72,14 @@ def _drive_is_degenerate(target_concept_lemma: str, slot: str, lex) -> bool:
         return True  # unknown slot — drop
     if getattr(slot_def, "pervasive", False):
         return False  # pervasive: applies broadly, keep
-    return slot not in target_concept.properties
+    if slot in target_concept.properties:
+        return False
+    from ..dsl.introspect import slot_reachable_for_concept
+    from ..dsl.rules import RUNTIME_DERIVATIONS
+    if slot_reachable_for_concept(
+            target_concept, slot, lex, RUNTIME_DERIVATIONS):
+        return False
+    return True
 
 
 _AGENT_GATES_CACHE: dict[int, dict[str, list[tuple[str, str]]]] = {}
@@ -378,6 +400,7 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
                         (slot, value, v, len(producer_verbs)))
                     break
         if not viable_drives:
+            _bail(f"construct_no_viable_use_drive:{theme_concept}")
             return None
         weights = [w for *_, w in viable_drives]
         slot, value, use_verb, _w = rng.choices(
@@ -427,6 +450,7 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
                     slot, rng.choice(non_target))
         drive = ("entity_slot", actor_eid, stub_eid, slot, value)
         return t, scene_id, drive
+    _bail(f"construct_loop_exhausted:{theme_concept}")
     return None
 
 
@@ -466,6 +490,7 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         elif g[0] == "construct":
             all_goals.append((g, verbs))
     if not all_goals:
+        _bail("no_goals_in_index")
         return None
     # Weight by producer count. Construct goals each have 1 producer
     # (fari) so a single constructable carries the same weight as a
@@ -478,16 +503,21 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         # Dispatch to the construct-scene builder. Goal carries the
         # theme concept; the builder picks an actor, scene, and use-
         # drive on the constructed theme.
-        return _construct_goal_scene(
+        result = _construct_goal_scene(
             lex, rng, rules, theme_concept=chosen_goal[1])
+        if result is None:
+            _bail(f"construct_scene_none:{chosen_goal[1]}")
+        return result
     verb_lemma = rng.choice(producers)
     action = lex.actions.get(verb_lemma)
     if action is None:
+        _bail(f"unknown_action:{verb_lemma}")
         return None
 
     if chosen_goal[0] == "property":
         _, slot, target_value = chosen_goal
         if not action.effects:
+            _bail(f"no_effects:{verb_lemma}")
             return None
         eff = next((e for e in action.effects
                     if e.property == slot and e.value == target_value),
@@ -507,6 +537,7 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     if agent_role_spec is None and len(action.roles) == 1:
         agent_role_spec = action.roles[0]
     if agent_role_spec is None:
+        _bail(f"no_agent_role:{verb_lemma}")
         return None
     actor_role_name = agent_role_spec.name
     # When the actor role is itself a location (pluvi, where the verb
@@ -517,6 +548,7 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         agent_role_spec.type, "location")
     agent_candidates = _concepts_matching_role(lex, agent_role_spec)
     if not agent_candidates:
+        _bail(f"no_agent_candidates:{verb_lemma}")
         return None
     agent_concept = (None if actor_is_scene
                      else rng.choice(agent_candidates))
@@ -532,8 +564,10 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                      if lex.types.is_subtype(c.entity_type, "location")
                      and not getattr(c, "is_category_stub", False)]
     if not locations:
+        _bail("no_locations")
         return None
     tried: set = set()
+    last_loop_reason = f"no_retry_left:{verb_lemma}"
     for _ in range(5):
         remaining = [l for l in locations if l not in tried]
         if not remaining:
@@ -550,6 +584,7 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             _add_entity_randomized(t, scene_lemma, lex, rng,
                                     entity_id=scene_lemma)
         except (KeyError, ValueError):
+            last_loop_reason = f"scene_add_failed:{scene_lemma}"
             continue
         scene_id = scene_lemma
 
@@ -568,6 +603,8 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                                         entity_id=actor_eid)
                 t.assert_relation("en", (actor_eid, scene_id), lex)
             except (KeyError, ValueError):
+                last_loop_reason = (
+                    f"actor_placement_failed:{agent_concept}@{scene_lemma}")
                 continue
 
         if chosen_goal[0] == "property":
@@ -579,6 +616,8 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 # staranta where kuniklido never declares posture).
                 if _drive_is_degenerate(
                         agent_concept, eff.property, lex):
+                    last_loop_reason = (
+                        f"degenerate_actor_drive:{agent_concept}.{eff.property}")
                     continue
                 slot_def = lex.slots.get(eff.property)
                 if slot_def is not None and slot_def.vocabulary:
@@ -606,17 +645,23 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                     (r for r in action.roles
                      if r.name == eff.target_role), None)
                 if target_role_spec is None:
+                    _bail(f"missing_target_role:{verb_lemma}.{eff.target_role}")
                     return None  # schema issue, not placement
                 target_eid = setup_spawner(
                     target_role_spec, t, lex,
                     set(t.entities.keys()),
                     action=action, role_name=eff.target_role)
                 if target_eid is None:
+                    last_loop_reason = (
+                        f"target_spawn_failed:{verb_lemma}.{eff.target_role}@{scene_lemma}")
                     continue  # try another scene location
                 target_ent = t.entities.get(target_eid)
                 if (target_ent is not None
                         and _drive_is_degenerate(
                             target_ent.concept_lemma, eff.property, lex)):
+                    last_loop_reason = (
+                        f"degenerate_target_drive:"
+                        f"{target_ent.concept_lemma}.{eff.property}")
                     continue  # degenerate drive — retry
             drive = ("entity_slot", actor_eid, target_eid,
                      slot, target_value)
@@ -631,4 +676,5 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             drive = ("event_fire", actor_eid, verb_lemma,
                      ((actor_role_name, actor_eid),))
             return t, scene_id, drive
+    _bail(last_loop_reason)
     return None
