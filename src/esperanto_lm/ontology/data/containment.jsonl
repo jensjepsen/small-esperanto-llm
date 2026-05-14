@@ -12,7 +12,7 @@
 {"container": "kuirejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "manĝejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "salono", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
-{"container": "tablo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "sur"}
+{"container": "tablo", "contained_pattern": {"property": {"edibility": "manĝebla", "state_of_matter": "solida"}, "entity_type": "substance"}, "relation": "sur"}
 {"container": "tablo", "contained": "glaso", "relation": "sur"}
 {"container": "tablo", "contained": "botelo", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained_pattern": {"property": {"readability": "legebla"}}, "relation": "sur"}
