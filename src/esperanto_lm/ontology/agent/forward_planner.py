@@ -1397,16 +1397,25 @@ def _build_consumer_index(actions, derivations):
     the consumers that actually care about it, instead of iterating
     all ~5000 grounded actions+derivations per layer.
 
-    Returns (fact_to_consumers, all_consumers) — the second is
-    needed for the initial pass over consumers with empty pres
-    (axioms / actions with no preconditions that fire from layer 0)."""
+    Returns (fact_to_consumers, all_consumers, cid_to_info,
+    pres_len) — the latter two are per-plan invariants precomputed
+    once and reused across the ~100 h_add calls in one search:
+      - cid_to_info: list indexed by cid → (verb_lemma_or_None,
+        roles, pres, effs). Used by h_add's helpful-action backtrack.
+      - pres_len: list indexed by cid → len(pres). Used to seed
+        unsat[cid] each h_add call without re-iterating all_consumers.
+    """
     fact_to: dict[tuple, list] = {}
     all_consumers: list = []
+    cid_to_info: list = []
+    pres_len: list = []
     cid = 0
-    for _, _, pres, effs in actions:
+    for action, roles, pres, effs in actions:
         pres_set = frozenset(pres)
         consumer = (1, pres_set, frozenset(effs), cid)
         all_consumers.append(consumer)
+        cid_to_info.append((action.lemma, roles, pres, effs))
+        pres_len.append(len(pres_set))
         for p in pres_set:
             fact_to.setdefault(p, []).append(consumer)
         cid += 1
@@ -1414,10 +1423,12 @@ def _build_consumer_index(actions, derivations):
         pres_set = frozenset(pres)
         consumer = (0, pres_set, frozenset(effs), cid)
         all_consumers.append(consumer)
+        cid_to_info.append((None, None, pres, effs))
+        pres_len.append(len(pres_set))
         for p in pres_set:
             fact_to.setdefault(p, []).append(consumer)
         cid += 1
-    return fact_to, all_consumers
+    return fact_to, all_consumers, cid_to_info, pres_len
 
 
 def _heuristic_and_helpful(
@@ -1482,22 +1493,10 @@ def _heuristic_and_helpful(
         derivation_pseudos = _ground_derivations(
             RUNTIME_DERIVATIONS, trace, lex)
     if consumer_index is None:
-        fact_to, all_consumers = _build_consumer_index(
-            actions, derivation_pseudos)
+        fact_to, all_consumers, cid_to_info, pres_len = (
+            _build_consumer_index(actions, derivation_pseudos))
     else:
-        fact_to, all_consumers = consumer_index
-
-    # Map consumer id (cid) → (verb_lemma or None, roles, pres, effs).
-    # Used to reconstruct the producer chain when extracting helpful
-    # actions. Derivations have verb_lemma=None.
-    cid_to_info: dict = {}
-    cid = 0
-    for action, roles, pres, effs in actions:
-        cid_to_info[cid] = (action.lemma, roles, pres, effs)
-        cid += 1
-    for _, _, pres, effs in derivation_pseudos:
-        cid_to_info[cid] = (None, None, pres, effs)
-        cid += 1
+        fact_to, all_consumers, cid_to_info, pres_len = consumer_index
 
     # Layer 0: state facts at cost 0. Either from a fact set
     # (incremental sim) or extracted from the trace+derived.
@@ -1519,17 +1518,14 @@ def _heuristic_and_helpful(
     #   unsat[cid] = number of pres still at INF (consumer fires
     #                when this hits 0)
     #   pre_sum[cid] = sum of cost[p] for known pres
-    # Avoids re-scanning a consumer's pres on every fact-pop —
-    # the dominant cost in the previous worklist loop.
-    pre_sum: dict = {}
-    unsat: dict = {}
-    ready_consumers: deque = deque()
-    for base, pres, effs, cid_ in all_consumers:
-        pre_sum[cid_] = 0
-        n = len(pres)
-        unsat[cid_] = n
-        if n == 0:
-            ready_consumers.append(cid_)
+    # List-indexed-by-cid (cids are sequential from _build_consumer_index)
+    # — faster init and access than dict because the consumer set is
+    # the same across all h_add calls in one plan, only values reset.
+    n_consumers = len(all_consumers)
+    pre_sum = [0] * n_consumers
+    unsat = pres_len[:]  # copy of the precomputed pres lengths
+    ready_consumers: deque = deque(
+        cid_ for cid_, u in enumerate(unsat) if u == 0)
 
     # Seed: each cost-0 fact decrements unsat for its consumers.
     # pre_sum stays 0 since cost is 0.
@@ -1604,9 +1600,9 @@ def _heuristic_and_helpful(
             continue
         visited_cheapest.add(f)
         for cid_ in producers_cheapest.get(f, ()):
-            info = cid_to_info.get(cid_)
-            if info is None:
+            if cid_ < 0 or cid_ >= len(cid_to_info):
                 continue
+            info = cid_to_info[cid_]
             verb, _roles, pres, _effs = info
             if verb is not None:
                 relaxed_action_cids.add(cid_)
@@ -1630,9 +1626,9 @@ def _heuristic_and_helpful(
             continue
         visited_all.add(f)
         for cid_ in producers_cheapest.get(f, ()):
-            info = cid_to_info.get(cid_)
-            if info is None:
+            if cid_ < 0 or cid_ >= len(cid_to_info):
                 continue
+            info = cid_to_info[cid_]
             verb, roles, pres, _effs = info
             if verb is not None:
                 # List-valued role bindings (fari.parts) are unhashable
