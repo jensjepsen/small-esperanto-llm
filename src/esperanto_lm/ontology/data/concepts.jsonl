@@ -63,7 +63,7 @@
 {"lemma": "bovo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
 {"lemma": "porko", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["besto"]}
 {"lemma": "fiŝo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "naĝilo"}, {"concept": "kapo"}, {"concept": "okulo"}]}
-{"lemma": "lito", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "lieable": ["yes"]}, "category": ["meblo", "lignaĵo"]}
+{"lemma": "lito", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "lieable": ["yes"], "constructable": ["yes"]}, "category": ["meblo", "lignaĵo"], "parts": [{"concept": "ligno"}, {"concept": "najlo"}, {"concept": "matraco"}], "crafted_with": ["najlilo"]}
 {"lemma": "forno", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "functional_signature": ["kuiri"]}, "category": ["meblo"]}
 {"lemma": "ŝranko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"]}, "parts": [{"concept": "seruro"}], "category": ["meblo", "lignaĵo", "ujo"]}
 {"lemma": "viando", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["meat"], "requires_cooking": ["yes"], "cooking_state": ["kruda"]}, "category": ["manĝaĵo"]}
@@ -226,7 +226,7 @@
 {"lemma": "planto", "entity_type": "substance", "properties": {}, "is_category_stub": true}
 {"lemma": "ilo", "entity_type": "artifact", "properties": {}, "is_category_stub": true}
 {"lemma": "vestaĵo", "entity_type": "artifact", "properties": {}, "is_category_stub": true}
-{"lemma": "benko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "sittable": ["yes"]}, "category": ["meblo", "lignaĵo"]}
+{"lemma": "benko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "sittable": ["yes"], "constructable": ["yes"]}, "category": ["meblo", "lignaĵo"], "parts": [{"concept": "ligno"}, {"concept": "najlo"}], "crafted_with": ["najlilo"]}
 {"lemma": "fotelo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "sittable": ["yes"]}, "category": ["meblo"]}
 {"lemma": "tabureto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "sittable": ["yes"]}, "category": ["meblo", "lignaĵo"]}
 {"lemma": "ŝtono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["stone"], "sittable": ["yes"]}}
@@ -286,7 +286,7 @@
 {"lemma": "bovaĵo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["meat"], "requires_cooking": ["yes"], "cooking_state": ["kruda"]}, "category": ["manĝaĵo"]}
 {"lemma": "vodko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
 {"lemma": "tapiŝo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"]}, "category": ["meblo"]}
-{"lemma": "skribotablo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}, "category": ["meblo", "lignaĵo", "surfaco"]}
+{"lemma": "skribotablo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "constructable": ["yes"]}, "category": ["meblo", "lignaĵo", "surfaco"], "parts": [{"concept": "ligno"}, {"concept": "najlo"}], "crafted_with": ["najlilo"]}
 {"lemma": "komodo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"]}, "category": ["meblo", "lignaĵo", "ujo"]}
 {"lemma": "mato", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "lieable": ["yes"], "integrity": ["tuta"]}, "category": ["meblo"]}
 {"lemma": "kruĉo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "fullness": ["malplena"], "liquid_holder": ["yes"], "posture": ["staranta"]}, "category": ["ujo"]}
@@ -298,7 +298,7 @@
 {"lemma": "placo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}]}
 {"lemma": "hamako", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "lieable": ["yes"], "integrity": ["tuta"]}, "category": ["meblo"]}
 {"lemma": "apoteko", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "barilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"]}}
+{"lemma": "barilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "constructable": ["yes"]}, "parts": [{"concept": "ligno"}, {"concept": "najlo"}], "crafted_with": ["najlilo"]}
 {"lemma": "horloĝo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["metal"]}}
 {"lemma": "torĉo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "power_state": ["neaktiva"], "lights_when_on": ["yes"]}}
 {"lemma": "alumeto", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["wood"], "count": ["1"]}}
