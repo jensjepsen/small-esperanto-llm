@@ -145,6 +145,13 @@ def make_spawner(
         # Verb-aware setup: non-target initial state for effect targets,
         # if_property gate forcing on this role's preconditions.
         ent = trace.entities.get(eid)
+        if ent is not None and role_name == "instrument":
+            # A single tool is always enough — "kudri per la kvar pingloj"
+            # is grammatically fine but narratively awkward. Pin count=1
+            # for instruments since the verb uses one instance, not a
+            # stack. _add_entity_randomized may have rolled count up
+            # to 5 for countable concepts (pinglo, najlo, …).
+            ent.set_property("count", "1")
         if ent is not None and action is not None and role_name is not None:
             if eff is not None:
                 slot_def = lex_arg.slots.get(eff.property)
