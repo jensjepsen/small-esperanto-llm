@@ -1435,6 +1435,56 @@ mezuri_instruments_default_grandeco = derive(
 )
 
 
+# ---------- derivation: denseco-from-made_of -----------------------------
+#
+# Density defaults from material, in g/cm³. Asserted-wins on scalar so
+# a concept can override (e.g. a hollow object would declare lower
+# denseco directly). Numbers are typical bulk densities; precision
+# beyond one decimal isn't meaningful for the symbolic narrative use
+# case.
+
+denseco_from_wood = derive(
+    when=entity(made_of="wood") & bind(T_dw := var("T")),
+    implies=property(T_dw, "denseco", "0.5"),
+    name="denseco_from_wood",
+)
+denseco_from_metal = derive(
+    when=entity(made_of="metal") & bind(T_dm := var("T")),
+    implies=property(T_dm, "denseco", "7.8"),
+    name="denseco_from_metal",
+)
+denseco_from_paper = derive(
+    when=entity(made_of="paper") & bind(T_dp := var("T")),
+    implies=property(T_dp, "denseco", "0.8"),
+    name="denseco_from_paper",
+)
+denseco_from_stone = derive(
+    when=entity(made_of="stone") & bind(T_ds := var("T")),
+    implies=property(T_ds, "denseco", "2.5"),
+    name="denseco_from_stone",
+)
+denseco_from_fabric = derive(
+    when=entity(made_of="fabric") & bind(T_df := var("T")),
+    implies=property(T_df, "denseco", "0.3"),
+    name="denseco_from_fabric",
+)
+denseco_from_plant = derive(
+    when=entity(made_of="plant") & bind(T_dpl := var("T")),
+    implies=property(T_dpl, "denseco", "0.5"),
+    name="denseco_from_plant",
+)
+denseco_from_wicker = derive(
+    when=entity(made_of="wicker") & bind(T_dwk := var("T")),
+    implies=property(T_dwk, "denseco", "0.3"),
+    name="denseco_from_wicker",
+)
+denseco_from_meat = derive(
+    when=entity(made_of="meat") & bind(T_dme := var("T")),
+    implies=property(T_dme, "denseco", "1.0"),
+    name="denseco_from_meat",
+)
+
+
 # ---------- derivation: meat is edible ---------------------------------
 #
 # Things made of meat are edible. The `meat_is_edible` derivation ties
@@ -2592,6 +2642,14 @@ najbaro_implies_najbarino = derive(
 DEFAULT_DSL_DERIVATIONS = [
     flammability_from_material,
     mezuri_instruments_default_grandeco,
+    denseco_from_wood,
+    denseco_from_metal,
+    denseco_from_paper,
+    denseco_from_stone,
+    denseco_from_fabric,
+    denseco_from_plant,
+    denseco_from_wicker,
+    denseco_from_meat,
     meat_is_edible,
     animate_is_solid,
     person_can_swim,

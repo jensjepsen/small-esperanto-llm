@@ -210,10 +210,73 @@ def bake_concept_derivations(
         _bake_parts_aware(
             concepts, work, derivations, lex_types, slots, relations)
 
+    # ---- pass 3: numeric arithmetic derivations ----
+    # bbox (longeco × larĝeco × alteco in meters) → volumeno in m³.
+    # volumeno × denseco (g/cm³) → maso in kg (units cancel: 1 m³ × 1 g/cm³
+    # = 1000 kg, but using L × g/cm³ = kg keeps the numbers everyday-sized).
+    # Stored as scientific-notation strings to round-trip cleanly.
+    # Asserted values win (manual maso/volumeno on a concept skips the
+    # derivation, same as scalar slot semantics in the earlier passes).
+    _bake_numeric_dimensions(work)
+
     out: dict[str, Concept] = {}
     for lemma, c in concepts.items():
         out[lemma] = c.model_copy(update={"properties": work[lemma]})
     return out
+
+
+def _bake_numeric_dimensions(
+    work: dict[str, dict[str, list[str]]],
+) -> None:
+    """Derive volumeno from bbox and maso from volumeno × denseco.
+
+    Pure arithmetic; the regular pattern-matching DSL has no number
+    primitives, so this runs as a separate pass after the regular bake
+    is done. Opt-in: a concept that doesn't declare all three bbox
+    slots simply doesn't get volumeno; a concept missing denseco
+    doesn't get maso. Manual override wins (asserted maso/volumeno is
+    kept untouched).
+
+    Unit convention:
+      longeco/larĝeco/alteco in meters (str)
+      volumeno = L*W*H, also in m³ (str)
+      denseco in g/cm³ (str) — water = 1.0
+      maso = volumeno (m³) × denseco (g/cm³) × 1000 = kg
+              (since 1 m³ × 1 g/cm³ = 1000 kg)
+    """
+    for lemma, props in work.items():
+        # bbox → volumeno
+        if "volumeno" not in props:
+            try:
+                L = float(props["longeco"][0])
+                W = float(props["larĝeco"][0])
+                H = float(props["alteco"][0])
+            except (KeyError, IndexError, ValueError):
+                pass
+            else:
+                vol = L * W * H
+                props["volumeno"] = [_format_num(vol)]
+        # volumeno × denseco → maso
+        if "maso" not in props:
+            try:
+                vol = float(props["volumeno"][0])
+                dens = float(props["denseco"][0])
+            except (KeyError, IndexError, ValueError):
+                continue
+            mass_kg = vol * dens * 1000.0
+            props["maso"] = [_format_num(mass_kg)]
+
+
+def _format_num(x: float) -> str:
+    """Render a numeric value as a compact string. Plain decimal for the
+    everyday range (1e-3 .. 1e4); scientific otherwise. Avoids
+    "1.0000000000000002" precision noise from float multiplication."""
+    if x == 0:
+        return "0"
+    abs_x = abs(x)
+    if 1e-3 <= abs_x < 1e4:
+        return f"{x:.4g}"
+    return f"{x:.3e}"
 
 
 def _has_negation(derivation) -> bool:

@@ -57,3 +57,9 @@
 {"name": "constructable", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
 {"name": "nemovebla", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
 {"name": "mezuras", "vocabulary": ["grandeco", "temperaturo", "maso", "tempo"], "applies_to": ["artifact"], "scalar": true}
+{"name": "longeco", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
+{"name": "larĝeco", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
+{"name": "alteco", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
+{"name": "volumeno", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
+{"name": "denseco", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
+{"name": "maso", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
