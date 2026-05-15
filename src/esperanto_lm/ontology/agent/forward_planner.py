@@ -236,22 +236,34 @@ _RULE_EFFECTS_CACHE: dict = {}
 _REL_ARG_EXCLUDES_CACHE: dict = {}
 
 
-def _grounding_violates_arg_pattern(effs, trace, lex) -> bool:
-    """True iff any ("rel", name, args) effect would produce a relation
-    forbidden by `relation_arg_excludes` given the entities' static
-    properties. Cheap O(|effs| * |arg-positions-with-forbids|) lookup;
-    typical effs sets are < 10."""
+def _filter_forbidden_effs(effs, trace, lex):
+    """Return `effs` with any ("rel", name, args) fact removed when it
+    would produce a relation forbidden by `relation_arg_excludes`
+    (Relation.arg_patterns NotPattern shapes). Mirrors the runtime
+    engine's behavior at engine.py:778, which swallows ValueError on
+    AddRelation — that effect silently fails at runtime, so the
+    planner should plan as if it weren't there. Other effects on the
+    same action are preserved, so e.g. `fari(muro)` retains its
+    havas_parton attachments while dropping the silently-failing
+    havi(agent, muro). When the filtered effs is empty the caller's
+    existing "no-effect actions are skipped" guard handles it.
+
+    Cheap O(|effs| * |arg-positions-with-forbids|) lookup; typical
+    effs sets are < 10."""
     excludes = _REL_ARG_EXCLUDES_CACHE.get(id(lex))
     if excludes is None:
         from ..dsl.introspect import relation_arg_excludes
         excludes = relation_arg_excludes(lex)
         _REL_ARG_EXCLUDES_CACHE[id(lex)] = excludes
     if not excludes:
-        return False
+        return effs
+    out = set()
     for fact in effs:
         if fact[0] != "rel":
+            out.add(fact)
             continue
         _, rname, args = fact
+        forbidden_hit = False
         for i, eid in enumerate(args):
             slot_map = excludes.get((rname, i))
             if not slot_map:
@@ -262,8 +274,13 @@ def _grounding_violates_arg_pattern(effs, trace, lex) -> bool:
             for slot, forbidden in slot_map.items():
                 vals = ent.properties.get(slot, ())
                 if any(v in forbidden for v in vals):
-                    return True
-    return False
+                    forbidden_hit = True
+                    break
+            if forbidden_hit:
+                break
+        if not forbidden_hit:
+            out.add(fact)
+    return out
 
 # Per-grounded_derivations cache for the pres-fact inverted index
 # used by _apply_delta's worklist re-derivation. Keyed by
@@ -901,7 +918,71 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
                          _canon_rel(relation, eids, sym)))
             for d in this_dels:
                 dels.add(d)
+    # Mirror engine.py:778: AddRelation effects whose validate_relation
+    # check fails are silently swallowed. The fact-set search must do
+    # the same — otherwise `fari(muro)` would add havi(agent, muro) to
+    # the fact set even though the engine wouldn't accept it, leaving
+    # the planner believing in a fact the runtime won't produce.
+    excludes = _REL_ARG_EXCLUDES_CACHE.get(id(lex))
+    if excludes is None:
+        from ..dsl.introspect import relation_arg_excludes
+        excludes = relation_arg_excludes(lex)
+        _REL_ARG_EXCLUDES_CACHE[id(lex)] = excludes
+    if excludes:
+        ent_map = _ENTITIES_FOR_DELTA_CACHE.get(id(lex))
+        if ent_map is None:
+            ent_map = {}
+            _ENTITIES_FOR_DELTA_CACHE[id(lex)] = ent_map
+        filtered_adds: set = set()
+        for fact in adds:
+            if fact[0] != "rel":
+                filtered_adds.add(fact)
+                continue
+            _, rname, args = fact
+            hit = False
+            for i, eid in enumerate(args):
+                slot_map = excludes.get((rname, i))
+                if not slot_map:
+                    continue
+                # _action_delta has no Trace; resolve eid → concept
+                # via the cached entity map populated by the planner's
+                # entry point. Falls back to "no info" if absent.
+                vals_by_slot = ent_map.get(eid, {})
+                for slot, forbidden in slot_map.items():
+                    vals = vals_by_slot.get(slot, ())
+                    if any(v in forbidden for v in vals):
+                        hit = True
+                        break
+                if hit:
+                    break
+            if not hit:
+                filtered_adds.add(fact)
+        adds = filtered_adds
     return adds, dels
+
+
+_ENTITIES_FOR_DELTA_CACHE: dict = {}
+
+
+def _seed_entity_props_for_delta(trace, lex):
+    """Populate `_ENTITIES_FOR_DELTA_CACHE[id(lex)]` with each entity's
+    relevant static slot values, so `_action_delta` can filter
+    forbidden adds without a trace handle. Run once per plan_for_goal
+    invocation (entities don't change during search)."""
+    rel_idx = _REL_ARG_EXCLUDES_CACHE.get(id(lex))
+    if rel_idx is None:
+        from ..dsl.introspect import relation_arg_excludes
+        rel_idx = relation_arg_excludes(lex)
+        _REL_ARG_EXCLUDES_CACHE[id(lex)] = rel_idx
+    relevant_slots: set = set()
+    for slot_map in rel_idx.values():
+        relevant_slots.update(slot_map.keys())
+    ent_map: dict = {}
+    for eid, ent in trace.entities.items():
+        slots = {s: tuple(ent.properties.get(s, ()))
+                 for s in relevant_slots}
+        ent_map[eid] = slots
+    _ENTITIES_FOR_DELTA_CACHE[id(lex)] = ent_map
 
 
 _DERIV_RELDEP_CACHE: dict = {}
@@ -1328,8 +1409,9 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 action, roles, lex, rule_effects)
             if not effs:
                 continue  # No-effect actions don't add facts.
-            if _grounding_violates_arg_pattern(effs, trace, lex):
-                continue
+            effs = _filter_forbidden_effs(effs, trace, lex)
+            if not effs:
+                continue  # All effects forbidden — no-op grounding.
             out.append((action, roles, pres, effs))
     return out
 
@@ -1420,7 +1502,8 @@ def _ground_constructable_actions(
                 fari, roles, lex, rule_effects)
             if not effs:
                 continue
-            if _grounding_violates_arg_pattern(effs, trace, lex):
+            effs = _filter_forbidden_effs(effs, trace, lex)
+            if not effs:
                 continue
             # Per-part state requirements (e.g. teo's akvo must be
             # bolanta). The planner has to achieve these property
@@ -2113,6 +2196,11 @@ def plan_for_goal(
         # Re-derive after spawns may have added entities.
         initial_derived = _cached_compute_derived_state(
             initial_trace, derivations, lex)
+    # Seed the per-entity slot snapshot used by `_action_delta` to
+    # filter forbidden AddRelation effects without a trace handle.
+    # Captures static properties only (varies-slot randomization is
+    # already baked into entity.properties at this point).
+    _seed_entity_props_for_delta(initial_trace, lex)
 
     # Ground actions once for the initial entity set; reuse across
     # all heuristic + applicability calls. Event firing rarely
