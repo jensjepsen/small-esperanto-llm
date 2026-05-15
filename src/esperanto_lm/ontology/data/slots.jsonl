@@ -56,3 +56,4 @@
 {"name": "imposes_pose", "vocabulary": ["staranta", "sidanta", "kuŝanta", "penda"], "applies_to": ["physical"], "scalar": true}
 {"name": "constructable", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
 {"name": "nemovebla", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "mezuras", "vocabulary": ["grandeco", "temperaturo", "maso", "tempo"], "applies_to": ["artifact"], "scalar": true}

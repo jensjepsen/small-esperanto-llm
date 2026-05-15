@@ -505,7 +505,7 @@
 {"lemma": "bandaĝo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"]}}
 {"lemma": "pomado", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
 {"lemma": "pilolo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "count": ["1"]}}
-{"lemma": "termometro", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "readability": ["legebla"]}}
+{"lemma": "termometro", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "readability": ["legebla"], "functional_signature": ["mezuri"], "mezuras": ["temperaturo"]}}
 {"lemma": "oktopodo", "entity_type": "animal", "category": ["fiŝo"]}
 {"lemma": "krabo", "entity_type": "animal", "category": ["fiŝo"]}
 {"lemma": "meduzo", "entity_type": "animal", "category": ["fiŝo"]}

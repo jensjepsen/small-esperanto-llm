@@ -1378,13 +1378,17 @@ legi_extracts_fakto = rule(
 mezuri_learns_dimension = rule(
     when=event("mezuri",
                agent=bind(MEA := var("A")),
-               theme=bind(MET := var("T"))),
+               theme=bind(MET := var("T")),
+               instrument=bind(MEI := var("I"))),
+    given=[
+        has_concept_field(MEI, "mezuras", MES := var("S")),
+    ],
     then=[
         create_entity(
             concept="fakto",
             as_var=(MEF := var("F")),
             id_parts=("mezuri", MET),
-            initial_properties={"pri_relacio": "grandeco"},
+            initial_properties={"pri_relacio": MES},
         ),
         add_relation("subjekto", MEF, MET),
         add_relation("konas", MEA, MEF),
@@ -1409,6 +1413,25 @@ flammability_from_material = derive(
          & bind(T_w := var("T")),
     implies=property(T_w, "flammability", "brulebla"),
     name="flammability_from_material",
+)
+
+
+# ---------- derivation: mezuri-instruments default to measuring grandeco
+#
+# The autoderived `mezurilo` (from `mezuri.derives_instrument=true`)
+# carries `functional_signature=mezuri` but no semantics about WHICH
+# property it reads off the theme. This default fills in
+# `mezuras=grandeco` for any concept that holds the mezuri signature,
+# so the canonical ruler measures length. Concepts that need a
+# different reading (termometro→temperaturo, peso→maso, horloĝo→tempo)
+# can declare their own `mezuras` value — asserted-wins-on-scalar
+# blocks this default for them, same as every other type-keyed
+# derivation default.
+
+mezuri_instruments_default_grandeco = derive(
+    when=entity(functional_signature="mezuri") & bind(M_inst := var("M")),
+    implies=property(M_inst, "mezuras", "grandeco"),
+    name="mezuri_instruments_default_grandeco",
 )
 
 
@@ -2568,6 +2591,7 @@ najbaro_implies_najbarino = derive(
 # auto-registration. Pass to `run_dsl(..., derivations=...)`.
 DEFAULT_DSL_DERIVATIONS = [
     flammability_from_material,
+    mezuri_instruments_default_grandeco,
     meat_is_edible,
     animate_is_solid,
     person_can_swim,
