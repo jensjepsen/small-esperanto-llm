@@ -2594,13 +2594,78 @@ def plan_for_goal(
         return None
 
     import heapq
+    from collections import deque
+
+    # Phase 1: Enforced Hill Climbing (FF-style). From the anchor
+    # state, BFS through helpful actions only until a strictly-
+    # h-improving state is found, then restart from that state.
+    # Tunnels through plateaus that confound weighted A* (every
+    # equal-f sibling gets explored before the anchor advances).
+    # Falls back to weighted A* when EHC dead-ends (helpful set
+    # incomplete) or hits its slice of the search budget.
+    ehc_budget = max_states // 2
+    anchor_facts = initial_facts
+    anchor_h = initial_h
+    anchor_helpful = initial_helpful
+    anchor_plan: list = []
+    ehc_visited: set = {initial_facts}
+    expansions = 0
+    while expansions < ehc_budget and anchor_h > 0:
+        bfs: deque = deque(
+            [(anchor_facts, anchor_plan, anchor_helpful)])
+        found = None
+        while bfs and expansions < ehc_budget:
+            cur_facts, cur_plan, cur_helpful = bfs.popleft()
+            expansions += 1
+            if len(cur_plan) >= max_plan_length:
+                continue
+            for action, roles, pres, _effs in grounded:
+                if not all(p in cur_facts for p in pres):
+                    continue
+                key = (action.lemma, frozenset(
+                    (k, tuple(v) if isinstance(v, list) else v)
+                    for k, v in roles.items()))
+                if cur_helpful and key not in cur_helpful:
+                    continue
+                adds, dels = _action_delta(
+                    action, roles, rule_effects, lex, facts=cur_facts)
+                if goal[0] == "event_fire" and goal_fact in _effs:
+                    adds = set(adds) | {goal_fact}
+                if not adds and not dels:
+                    continue
+                new_facts = _apply_delta(
+                    cur_facts, adds, dels, grounded_derivs, slot_vocab)
+                if new_facts == cur_facts or new_facts in ehc_visited:
+                    continue
+                ehc_visited.add(new_facts)
+                new_plan = cur_plan + [(action.lemma, roles)]
+                if goal_fact in new_facts:
+                    return new_plan
+                new_h, new_helpful = heuristic_and_helpful(new_facts)
+                if new_h >= _HEURISTIC_INF:
+                    continue
+                if new_h < anchor_h:
+                    found = (new_facts, new_h, new_helpful, new_plan)
+                    break
+                bfs.append((new_facts, new_plan, new_helpful))
+            if found:
+                break
+        if not found:
+            break  # EHC plateau — drop to A*.
+        anchor_facts, anchor_h, anchor_helpful, anchor_plan = found
+    if anchor_h == 0:
+        return anchor_plan
+
+    # Phase 2: weighted A* from the deepest EHC anchor reached. The
+    # anchor's facts/h/helpful/plan replace the initial seed so we
+    # don't redo the EHC progress.
     open_list: list = []
     # (f, helpful_priority, tiebreak, g, h, plan, facts, helpful)
     heapq.heappush(open_list, (
-        H_WEIGHT * initial_h, 0, 0, 0, initial_h,
-        [], initial_facts, initial_helpful))
-    visited: dict = {initial_facts: 0}
-    expansions = 0
+        len(anchor_plan) + H_WEIGHT * anchor_h, 0, 0,
+        len(anchor_plan), anchor_h,
+        anchor_plan, anchor_facts, anchor_helpful))
+    visited: dict = {anchor_facts: len(anchor_plan)}
     tiebreak = 1
 
     while open_list and expansions < max_states:
