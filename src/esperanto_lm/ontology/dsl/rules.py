@@ -1974,6 +1974,17 @@ edible_emits_smell = derive(
 )
 
 
+# Flowers emit smell. Lets a nosed animate near rozo/lilio/sunfloro/etc.
+# learn of their presence via flari, paralleling the edible chain. The
+# bouquet-construct (florkrono) inherits via parts when its floro
+# component is samloke with the agent.
+floro_emits_smell = derive(
+    when=entity(category="floro") & bind(T_fs := var("T")),
+    implies=property(T_fs, "emits_smell", "yes"),
+    name="floro_emits_smell",
+)
+
+
 # Animates emit sound (footsteps, breathing, vocalizations). Lets
 # eared animates learn of someone else's presence via aŭdi.
 animate_emits_sound = derive(
@@ -2677,6 +2688,7 @@ DEFAULT_DSL_DERIVATIONS = [
     has_nose_can_smell,
     has_ear_can_hear,
     edible_emits_smell,
+    floro_emits_smell,
     animate_emits_sound,
     vehicle_emits_sound,
     animal_can_bleki,

@@ -517,3 +517,10 @@
 {"lemma": "omaro", "entity_type": "animal", "category": ["fiŝo"]}
 {"lemma": "bileto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "count": ["1"], "longeco": ["0.08"], "larĝeco": ["0.05"], "alteco": ["0.001"]}}
 {"lemma": "kartoj", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "longeco": ["0.06"], "larĝeco": ["0.09"], "alteco": ["0.02"]}}
+{"lemma": "cinamo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"]}, "category": ["manĝaĵo"]}
+{"lemma": "vanilo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
+{"lemma": "pipro", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
+{"lemma": "bazilio", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
+{"lemma": "incenso", "entity_type": "substance", "properties": {"integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_smell": ["yes"]}}
+{"lemma": "sonorilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "emits_sound": ["yes"], "longeco": ["0.2"], "larĝeco": ["0.2"], "alteco": ["0.25"], "maso": ["3.0"]}}
+{"lemma": "alarmilo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["metal"], "emits_sound": ["yes"], "longeco": ["0.12"], "larĝeco": ["0.08"], "alteco": ["0.1"], "maso": ["0.4"]}}
