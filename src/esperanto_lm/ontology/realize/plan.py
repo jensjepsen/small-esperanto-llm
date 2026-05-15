@@ -111,6 +111,14 @@ def plan_messages(
     for ev_id, (entity_id, slot, quality_lemma) in event_preconds.items():
         if entity_id not in referenced:
             continue
+        # Skip preconditions on entities that don't yet exist at scene
+        # init (construct stubs, mid-trace creations). Surfacing "the
+        # chair was clean" before the build sentence reads as the chair
+        # pre-existing; the construct verb's adjective rendering carries
+        # the initial state instead.
+        ent = trace.entities.get(entity_id)
+        if ent is not None and ent.created_at_event is not None:
+            continue
         key = (entity_id, quality_lemma)
         if key in seen_precond:
             continue

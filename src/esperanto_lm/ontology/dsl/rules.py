@@ -323,8 +323,11 @@ fari_creates_constructable = rule(
                agent=bind(FA := var("A")),
                theme=bind(FT := var("T")),
                parts=bind_list(FPs := var_list("P"))),
+    given=[
+        rel("en", contained=FA, container=bind(FL := var("L"))),
+    ],
     then=[
-        add_relation("havi", FA, FT),
+        add_relation("en", FT, FL),
         for_each(FPs, (FP := var("P_item")),
             add_relation("havas_parton", FT, FP),
             remove_relation("havi", FA, FP)),

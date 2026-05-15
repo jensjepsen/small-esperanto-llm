@@ -298,7 +298,27 @@ def plan_action(agent_id, trace, lex, rules):
 
 # ----------------------- general subgoaling -------------------------
 
-def _entity_property_values(entity, slot, trace=None, derived=None) -> set:
+def _entity_has_asserted_scalar(entity, slot, lex) -> bool:
+    """True iff `slot` is a scalar slot AND `entity` has at least one
+    asserted value for it.
+
+    Single source of truth for the "asserted wins over derived" rule
+    on scalar slots — used by the goal check (`_entity_property_values`),
+    the relaxed-graph fact snapshot (`_state_facts`), and the relaxed-
+    graph derivation grounding (`_ground_derivations`). Without
+    centralization these three sites silently diverge — and they all
+    have to agree, or `physical_has_wetness=seka` overrides an asserted
+    `wetness=malseka` in some path but not others."""
+    if lex is None:
+        return False
+    slot_def = lex.slots.get(slot)
+    if slot_def is None or not getattr(slot_def, "scalar", False):
+        return False
+    return bool(entity.properties.get(slot))
+
+
+def _entity_property_values(entity, slot, trace=None, derived=None,
+                              lex=None) -> set:
     """Read all CURRENT values for slot as a set — handles multi-valued
     slots (locomotion=[walk, swim], ...) so callers can do membership
     checks instead of guessing the "primary" value.
@@ -306,8 +326,13 @@ def _entity_property_values(entity, slot, trace=None, derived=None) -> set:
     For multi-valued slots, returns the *union* of asserted and
     derived values (a person's locomotion is asserted=swim from
     concept-bake but walk gets derived from the havas_parton+piedo
-    chain — both are real). For scalar slots, asserted wins (derived
-    is fallback only)."""
+    chain — both are real). For scalar slots, asserted wins: derived
+    is only consulted when nothing is asserted, so e.g. an asserted
+    wetness=malseka isn't poisoned by the `physical_has_wetness=seka`
+    default. `lex` is needed to look up slot scalar-ness; without it
+    we conservatively treat all slots as multi-valued (the historical
+    behavior — kept so callers that haven't migrated don't silently
+    change semantics)."""
     out: set = set()
     asserted = None
     if trace is not None:
@@ -319,6 +344,10 @@ def _entity_property_values(entity, slot, trace=None, derived=None) -> set:
             out.update(asserted)
         else:
             out.add(asserted)
+    if (derived is not None
+            and out
+            and _entity_has_asserted_scalar(entity, slot, lex)):
+        return out
     if derived is not None:
         derived_val = derived.get(entity.id, slot)
         if derived_val is not None:

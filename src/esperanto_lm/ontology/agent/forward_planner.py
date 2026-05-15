@@ -37,9 +37,9 @@ from typing import Optional
 
 from ..causal import Trace
 from .planner import (
-    _cached_compute_derived_state, _entity_property_values,
-    _find_role_filler, _has_relation, _simulate_from_scratch,
-    _step_to_event,
+    _cached_compute_derived_state, _entity_has_asserted_scalar,
+    _entity_property_values, _find_role_filler, _has_relation,
+    _simulate_from_scratch, _step_to_event,
 )
 
 
@@ -182,7 +182,8 @@ def _goal_satisfied(goal, trace, derived, lex) -> bool:
         ent = trace.entities.get(eid)
         if ent is None:
             return False
-        return value in _entity_property_values(ent, slot, trace, derived)
+        return value in _entity_property_values(
+            ent, slot, trace, derived, lex)
     if kind == "relation":
         _, relation, args = goal
         return _has_relation(relation, args, trace, derived, lex)
@@ -255,29 +256,40 @@ def _filter_forbidden_effs(effs, trace, lex):
         from ..dsl.introspect import relation_arg_excludes
         excludes = relation_arg_excludes(lex)
         _REL_ARG_EXCLUDES_CACHE[id(lex)] = excludes
-    if not excludes:
-        return effs
     out = set()
+    from ..dsl.patterns import numeric_args_compare
     for fact in effs:
         if fact[0] != "rel":
             out.add(fact)
             continue
         _, rname, args = fact
         forbidden_hit = False
-        for i, eid in enumerate(args):
-            slot_map = excludes.get((rname, i))
-            if not slot_map:
-                continue
-            ent = trace.entities.get(eid)
-            if ent is None:
-                continue
-            for slot, forbidden in slot_map.items():
-                vals = ent.properties.get(slot, ())
-                if any(v in forbidden for v in vals):
-                    forbidden_hit = True
+        # arg_patterns set-membership (nemovebla etc.)
+        if excludes:
+            for i, eid in enumerate(args):
+                slot_map = excludes.get((rname, i))
+                if not slot_map:
+                    continue
+                ent = trace.entities.get(eid)
+                if ent is None:
+                    continue
+                for slot, forbidden in slot_map.items():
+                    vals = ent.properties.get(slot, ())
+                    if any(v in forbidden for v in vals):
+                        forbidden_hit = True
+                        break
+                if forbidden_hit:
                     break
-            if forbidden_hit:
-                break
+        # arg_compare numeric checks (carry capacity etc.)
+        if not forbidden_hit:
+            rel = lex.relations.get(rname)
+            if rel is not None and rel.arg_compare:
+                ents = tuple(trace.entities.get(e) for e in args)
+                if all(e is not None for e in ents):
+                    for spec in rel.arg_compare:
+                        if not numeric_args_compare(ents, spec):
+                            forbidden_hit = True
+                            break
         if not forbidden_hit:
             out.add(fact)
     return out
@@ -290,13 +302,17 @@ def _filter_forbidden_effs(effs, trace, lex):
 _DERIV_PRES_IDX_CACHE: dict = {}
 
 
-def _ground_action_facts(action, roles, lex, rule_effects):
+def _ground_action_facts(action, roles, lex, rule_effects, facts=None):
     """Return (precondition_facts, effect_facts) for a grounded
     action — both as sets of fact tuples. `rule_effects` is the
     `{verb: [(relation, role_arg_names)]}` index of rule-added
     relations (preni adds havi, vidi adds konas, etc.) — without
     these the relaxed graph misses key transitions and the
-    heuristic returns INF for any chain that depends on them."""
+    heuristic returns INF for any chain that depends on them.
+
+    `facts` (optional) is the initial state fact set used to resolve
+    `<lookup>` markers in adds (given-bound vars like fari's agent
+    location). Without it, lookup-marked adds are skipped."""
     from ..schemas import (
         IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
     )
@@ -367,48 +383,95 @@ def _ground_action_facts(action, roles, lex, rule_effects):
     entry = rule_effects.get(action.lemma)
     if entry is not None:
         for relation, role_arg_names in entry["adds"]:
-            for eids in _expand_list_role_args(role_arg_names, roles):
+            for eids in _expand_list_role_args(
+                    role_arg_names, roles, facts=facts):
                 if any(e is None for e in eids):
                     continue
                 effs.add(("rel", relation, _canon_rel(relation, eids, sym)))
     return pres, effs
 
 
-def _expand_list_role_args(role_arg_names, roles):
-    """Yield one tuple of eids per element of a list-marked arg
-    position. If no arg is a `("<list>", role_name)` marker, yield
-    a single tuple (the trivial expansion). Used by both the
-    relaxed-graph grounding and the fact-set delta computation so
-    fari's variadic havas_parton / havi-detach effects emit one
-    fact per gathered part."""
-    # Find list-marker positions and resolve to their list role values.
-    list_positions: list = []
-    for i, arg in enumerate(role_arg_names):
-        if (isinstance(arg, tuple) and len(arg) == 2
-                and arg[0] == "<list>"):
-            list_role = arg[1]
-            list_val = roles.get(list_role)
-            if list_val is None or not isinstance(list_val, (list, tuple)):
-                # List role unbound (e.g. optional instrument with no
-                # crafted_with) — drop this effect by yielding nothing.
-                return
-            list_positions.append((i, list_val))
-    if not list_positions:
+def _resolve_lookup(rel_name, template, roles, facts):
+    """Find facts matching `("rel", rel_name, args)` where args agree
+    with template at every non-None position (resolved via roles),
+    and return the values at the None position. Mirrors the dels-
+    wildcard resolution in _action_delta."""
+    extract_idx = template.index(None)
+    pattern = tuple(roles.get(t) if t is not None else None
+                    for t in template)
+    out: list = []
+    for f in facts:
+        if (f[0] == "rel" and f[1] == rel_name
+                and len(f[2]) == len(pattern)
+                and all(p is None or p == a
+                        for p, a in zip(pattern, f[2]))):
+            out.append(f[2][extract_idx])
+    return out
+
+
+def _expand_list_role_args(role_arg_names, roles, facts=None):
+    """Yield one eid tuple per resolved combination of marker args:
+
+    - bare role name → single value from `roles`
+    - `("<list>", role)` → element-wise zip across list positions
+      (fari's variadic havas_parton / havi-detach effects, one fact
+      per part).
+    - `("<lookup>", relation, args_template)` → cross-product across
+      lookup positions (given-bound vars in adds; resolved against
+      `facts`). Yields nothing if `facts is None` or no fact matches
+      — the rule's `given` doesn't hold, so the effect is dropped.
+
+    If no list/lookup markers are present, yields a single tuple."""
+    # Fast path: no markers at all (the overwhelmingly common case).
+    if not any(isinstance(a, tuple) for a in role_arg_names):
         yield tuple(roles.get(r) for r in role_arg_names)
         return
-    # For our actual fari usage there's only one list arg per effect;
-    # support multiple by element-wise zipping the list values.
-    n = max(len(vals) for _, vals in list_positions)
-    for k in range(n):
-        out: list = []
-        for i, arg in enumerate(role_arg_names):
-            list_match = next((vals for pos, vals in list_positions
-                               if pos == i), None)
-            if list_match is not None:
-                out.append(list_match[k] if k < len(list_match) else None)
-            else:
-                out.append(roles.get(arg))
-        yield tuple(out)
+    n = len(role_arg_names)
+    per_pos: list = [None] * n
+    is_list = [False] * n
+    is_lookup = [False] * n
+    for i, arg in enumerate(role_arg_names):
+        if isinstance(arg, tuple) and arg:
+            kind = arg[0]
+            if kind == "<list>":
+                lv = roles.get(arg[1])
+                if lv is None or not isinstance(lv, (list, tuple)):
+                    return
+                per_pos[i] = list(lv)
+                is_list[i] = True
+                continue
+            if kind == "<lookup>":
+                if facts is None:
+                    return
+                vals = _resolve_lookup(arg[1], arg[2], roles, facts)
+                if not vals:
+                    return
+                per_pos[i] = list(vals)
+                is_lookup[i] = True
+                continue
+        per_pos[i] = [roles.get(arg)]
+    list_len = max(
+        (len(per_pos[i]) for i in range(n) if is_list[i]),
+        default=1)
+    lookup_indices = [i for i in range(n) if is_lookup[i]]
+    if lookup_indices:
+        from itertools import product
+        lookup_combos = list(product(
+            *(per_pos[i] for i in lookup_indices)))
+    else:
+        lookup_combos = [()]
+    for k in range(list_len):
+        for combo in lookup_combos:
+            out: list = []
+            for i in range(n):
+                if is_list[i]:
+                    out.append(
+                        per_pos[i][k] if k < len(per_pos[i]) else None)
+                elif is_lookup[i]:
+                    out.append(combo[lookup_indices.index(i)])
+                else:
+                    out.append(per_pos[i][0])
+            yield tuple(out)
 
 
 def _ground_derivations(
@@ -796,6 +859,17 @@ def _ground_derivations(
                     eid = binding.get(id(e_var))
                     if eid is None:
                         continue
+                    # Scalar slots: asserted wins. Skip the
+                    # derivation grounding when the entity already has
+                    # an asserted value — otherwise default derivations
+                    # (physical_has_wetness=seka, ...) would shadow it
+                    # at cost 0 in the relaxed graph and make the goal
+                    # trivially reachable (h=0), gutting guidance.
+                    ent = trace.entities.get(eid)
+                    if (ent is not None
+                            and _entity_has_asserted_scalar(
+                                ent, slot, lex)):
+                        continue
                     effs.add(("prop", eid, slot, val))
                 else:
                     _, name, arg_vars = spec
@@ -910,7 +984,8 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
             if not fires:
                 continue
             for relation, role_arg_names in rule_entry["adds"]:
-                for eids in _expand_list_role_args(role_arg_names, roles):
+                for eids in _expand_list_role_args(
+                        role_arg_names, roles, facts=facts):
                     if any(e is None for e in eids):
                         continue
                     adds.add(
@@ -1139,7 +1214,7 @@ def _apply_delta(facts: frozenset, adds: set, dels: set,
     return frozenset(new_facts)
 
 
-def _build_rule_effects_index(rules) -> dict:
+def _build_rule_effects_index(rules, lex=None) -> dict:
     """Index rules by their trigger verb, collecting AddRelation and
     RemoveRelation effects with role-arg-name mappings. Maps
     verb_lemma → {'adds': [(relation, (role_name, ...))], 'dels':
@@ -1156,12 +1231,20 @@ def _build_rule_effects_index(rules) -> dict:
     the konas+subjekto rule chain; we collapse that chain into a
     direct relation effect so the fact-set search can plan through
     perception preconditions on preni/kapti/veki/etc. without
-    modeling fakto-entity creation."""
+    modeling fakto-entity creation.
+
+    Given-bound vars appearing in AddRelation args become lookup
+    specs `("<lookup>", relation, args_template)`. `args_template`
+    is positional; each entry is either an event-role name or None
+    at the position we extract. The simulator resolves the lookup
+    against the current fact set, mirroring how RemoveRelation
+    wildcards work."""
     from ..dsl.effects import (
         AddRelation, CreateEntity, ForEach, RemoveRelation, TransferN,
     )
     from ..dsl.patterns import (
-        AndPattern, BindPattern, EntityPattern, EventPattern, Var,
+        AndPattern, BindPattern, EntityPattern, EventPattern,
+        RelPattern, Var,
     )
     out: dict = {}
 
@@ -1184,6 +1267,46 @@ def _build_rule_effects_index(rules) -> dict:
             return _bind_var_of(p.left) or _bind_var_of(p.right)
         if isinstance(p, Var):
             return p
+        return None
+
+    def _lookup_for_var(target_var, given_patterns, var_to_role):
+        """Find a RelPattern in `given` that binds `target_var` and
+        return ("<lookup>", relation, args_template). args_template
+        is positional (by lex.relations[rel].arg_names); None marks
+        the position holding target_var, other positions are role
+        names from `var_to_role`. Returns None if not found or any
+        other arg in the lookup relation isn't event-role-bound."""
+        if lex is None:
+            return None
+        for g in given_patterns:
+            if not isinstance(g, RelPattern):
+                continue
+            rel_def = lex.relations.get(g.relation)
+            if rel_def is None:
+                continue
+            extract_idx = None
+            template = []
+            ok = True
+            for i, arg_name in enumerate(rel_def.arg_names):
+                patt = g.arg_patterns.get(arg_name)
+                v = _bind_var_of(patt) if patt is not None else None
+                if isinstance(v, Var) and v is target_var:
+                    if extract_idx is not None:
+                        ok = False
+                        break
+                    extract_idx = i
+                    template.append(None)
+                elif isinstance(v, Var):
+                    role = var_to_role.get(id(v))
+                    if role is None:
+                        ok = False
+                        break
+                    template.append(role)
+                else:
+                    ok = False
+                    break
+            if ok and extract_idx is not None:
+                return ("<lookup>", g.relation, tuple(template))
         return None
 
     for rule in rules:
@@ -1227,16 +1350,25 @@ def _build_rule_effects_index(rules) -> dict:
                     flat_effects.append((inner, inner_var_to_role))
             else:
                 flat_effects.append((eff, var_to_role))
+        given_patterns = rule.given if rule.given else []
         for eff, eff_var_to_role in flat_effects:
             if isinstance(eff, AddRelation):
                 role_args = []
                 ok = True
                 for arg in eff.args:
                     role_name = eff_var_to_role.get(id(arg))
-                    if role_name is None:
-                        ok = False
-                        break
-                    role_args.append(role_name)
+                    if role_name is not None:
+                        role_args.append(role_name)
+                        continue
+                    # Not event-role-bound — try given-clause lookup.
+                    if isinstance(arg, Var):
+                        spec = _lookup_for_var(
+                            arg, given_patterns, eff_var_to_role)
+                        if spec is not None:
+                            role_args.append(spec)
+                            continue
+                    ok = False
+                    break
                 if ok:
                     rule_adds.append((eff.relation, tuple(role_args)))
                     entry["adds"].append(
@@ -1342,17 +1474,25 @@ def _state_facts(trace, derived, lex=None) -> set:
     relaxed graph's layer 0. Symmetric arity-2 relation tuples are
     canonicalized to a single ordering — every emission point uses
     `_canon_rel`, so fact-tuple equality finds matches regardless
-    of the order in which a derivation or pre wrote the relation."""
+    of the order in which a derivation or pre wrote the relation.
+
+    For scalar slots, asserted wins: a derived `physical_has_wetness
+    = seka` default doesn't add a fact when the entity already has
+    an asserted `wetness=malseka`. Otherwise the relaxed graph thinks
+    the goal `wetness=seka` is trivially satisfied and the search
+    short-circuits before any drying action gets tried."""
     facts: set = set()
     sym = _symmetric_relations(lex) if lex is not None else frozenset()
+    asserted_scalar_keys: set = set()
     for eid, ent in trace.entities.items():
         for slot, values in ent.properties.items():
             for v in values:
                 facts.add(("prop", eid, slot, v))
+            if _entity_has_asserted_scalar(ent, slot, lex):
+                asserted_scalar_keys.add((eid, slot))
     for r in trace.relations:
         facts.add(("rel", r.relation,
                    _canon_rel(r.relation, tuple(r.args), sym)))
-    # Derived state — relations + properties.
     if derived is not None:
         for rel_tuple in derived.relations:
             args = tuple(rel_tuple[1])
@@ -1360,6 +1500,8 @@ def _state_facts(trace, derived, lex=None) -> set:
                        _canon_rel(rel_tuple[0], args, sym)))
         for (eid, slot), val in (
                 getattr(derived, "properties", {}) or {}).items():
+            if (eid, slot) in asserted_scalar_keys:
+                continue
             if isinstance(val, list):
                 for v in val:
                     facts.add(("prop", eid, slot, v))
@@ -1376,6 +1518,9 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     behavior of `_applicable_actions`. `rule_effects` is the
     rule-effect index built by `_build_rule_effects_index`."""
     out = []
+    # State facts for lookup resolution in given-bound add args
+    # (fari's en(theme, agent_location)).
+    state_facts = _state_facts(trace, derived, lex)
     for action in lex.actions.values():
         if not action.roles:
             continue
@@ -1406,7 +1551,7 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 continue
             roles = {r.name: e for r, e in zip(action.roles, combo)}
             pres, effs = _ground_action_facts(
-                action, roles, lex, rule_effects)
+                action, roles, lex, rule_effects, facts=state_facts)
             if not effs:
                 continue  # No-effect actions don't add facts.
             effs = _filter_forbidden_effs(effs, trace, lex)
@@ -1417,7 +1562,7 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
 
 
 def _ground_constructable_actions(
-    trace, lex, rule_effects,
+    trace, lex, rule_effects, derived=None,
 ) -> list:
     """Emit grounded fari (and any future construct-style) actions
     by walking the constructable concepts whose recipe components are
@@ -1437,6 +1582,7 @@ def _ground_constructable_actions(
     fari = lex.actions.get("fari")
     if fari is None:
         return []
+    state_facts = _state_facts(trace, derived, lex)
     # Index entities by concept_lemma once for the inner per-part
     # matching loop.
     by_concept: dict[str, list[str]] = {}
@@ -1499,7 +1645,7 @@ def _ground_constructable_actions(
             if instrument_eid is not None:
                 roles["instrument"] = instrument_eid
             pres, effs = _ground_action_facts(
-                fari, roles, lex, rule_effects)
+                fari, roles, lex, rule_effects, facts=state_facts)
             if not effs:
                 continue
             effs = _filter_forbidden_effs(effs, trace, lex)
@@ -1613,7 +1759,7 @@ def _heuristic_and_helpful(
     rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
     if rule_effects is None:
         from ..dsl.rules import DEFAULT_DSL_RULES
-        rule_effects = _build_rule_effects_index(DEFAULT_DSL_RULES)
+        rule_effects = _build_rule_effects_index(DEFAULT_DSL_RULES, lex)
         _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
 
     actions = (grounded_actions if grounded_actions is not None
@@ -2065,7 +2211,7 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
     from ..regression.seeders import _fully_derivable_slots
     rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
     if rule_effects is None:
-        rule_effects = _build_rule_effects_index(rules)
+        rule_effects = _build_rule_effects_index(rules, lex)
         _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
     derivable_slots = _fully_derivable_slots(lex, derivations)
 
@@ -2208,12 +2354,12 @@ def plan_for_goal(
     # valid for the search. Invalidation: not needed for the POC.
     rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
     if rule_effects is None:
-        rule_effects = _build_rule_effects_index(rules)
+        rule_effects = _build_rule_effects_index(rules, lex)
         _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
     grounded = _ground_all_actions(
         initial_trace, lex, initial_derived, rule_effects)
     grounded.extend(_ground_constructable_actions(
-        initial_trace, lex, rule_effects))
+        initial_trace, lex, rule_effects, derived=initial_derived))
     # Restrict derivation var domains to entities that actually
     # participate in some action's pres/effs. This is the cubic
     # samloke-chain bound: a scene with 19 non-inanimate entities
@@ -2329,7 +2475,8 @@ def plan_for_goal(
                         continue
                     roles[r.name] = e
                 pres, effs = _ground_action_facts(
-                    action_obj, roles, lex, rule_effects)
+                    action_obj, roles, lex, rule_effects,
+                    facts=_state_facts(initial_trace, initial_derived, lex))
                 effs = set(effs) | {event_fired_fact}
                 grounded.append((action_obj, roles, pres, effs))
 
@@ -2454,6 +2601,26 @@ def plan_for_goal(
             heapq.heappop(open_list))
         if h_cur >= _HEURISTIC_INF:
             continue
+        # Lazy h: helpful entries are pushed with real h; non-helpful
+        # are pushed with the parent's h as a placeholder. When a
+        # non-helpful entry is popped, recompute h and re-push if it
+        # turned out worse than the placeholder. `helpful` is reused
+        # as the "is this entry fully evaluated" flag: None means
+        # stale, a set means fresh.
+        if helpful is None:
+            real_h, real_helpful = heuristic_and_helpful(facts)
+            if real_h >= _HEURISTIC_INF:
+                continue
+            if real_h > h_cur:
+                # Stale priority was optimistic — re-push with real h
+                # so the heap re-orders this entry against fresher ones.
+                heapq.heappush(open_list, (
+                    g + H_WEIGHT * real_h,
+                    1, tiebreak, g, real_h, plan, facts, real_helpful))
+                tiebreak += 1
+                continue
+            helpful = real_helpful
+            h_cur = real_h
         if goal_fact in facts:
             return plan
         expansions += 1
@@ -2461,7 +2628,10 @@ def plan_for_goal(
             continue
 
         # Iterate grounded actions: pres-check is just subset on
-        # frozenset (O(|pres|), ~5 facts per action).
+        # frozenset (O(|pres|), ~5 facts per action). Helpful actions
+        # get real h computed immediately; non-helpful are pushed with
+        # parent's h as a placeholder (lazy h) and re-evaluated only
+        # when popped — saves ~90% of heuristic calls.
         for action, roles, pres, _effs in grounded:
             if not all(p in facts for p in pres):
                 continue
@@ -2487,16 +2657,28 @@ def plan_for_goal(
             visited[new_facts] = new_g
             if goal_fact in new_facts:
                 return plan + [(action.lemma, roles)]
-            new_h, new_helpful = heuristic_and_helpful(new_facts)
-            if new_h >= _HEURISTIC_INF:
-                continue
-            key = (action.lemma, frozenset(roles.items()))
+            key = (action.lemma, frozenset(
+                (k, tuple(v) if isinstance(v, list) else v)
+                for k, v in roles.items()))
             is_helpful = key in helpful
-            heapq.heappush(open_list, (
-                new_g + H_WEIGHT * new_h,
-                0 if is_helpful else 1, tiebreak,
-                new_g, new_h, plan + [(action.lemma, roles)],
-                new_facts, new_helpful))
+            if is_helpful:
+                new_h, new_helpful = heuristic_and_helpful(new_facts)
+                if new_h >= _HEURISTIC_INF:
+                    continue
+                heapq.heappush(open_list, (
+                    new_g + H_WEIGHT * new_h,
+                    0, tiebreak,
+                    new_g, new_h,
+                    plan + [(action.lemma, roles)],
+                    new_facts, new_helpful))
+            else:
+                # Lazy: use parent's h as the optimistic estimate.
+                heapq.heappush(open_list, (
+                    new_g + H_WEIGHT * h_cur,
+                    1, tiebreak,
+                    new_g, h_cur,
+                    plan + [(action.lemma, roles)],
+                    new_facts, None))
             tiebreak += 1
     return None
 

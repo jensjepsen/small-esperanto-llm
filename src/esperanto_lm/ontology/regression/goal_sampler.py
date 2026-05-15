@@ -293,9 +293,9 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
         # gather-then-construct chains in SFT data than starting with
         # everything already on the agent.
         # Pre-stage the to-be-created theme as a bare entity. The
-        # fari rule transfers havi to the agent and attaches parts;
-        # the entity exists before firing so the planner can reason
-        # about it.
+        # fari rule places it at the agent's location and attaches
+        # parts; the entity exists before firing so the planner can
+        # reason about it (state preconditions on theme.slot).
         stub_eid = f"{theme_concept}_planned"
         if stub_eid not in t.entities:
             try:
@@ -316,6 +316,15 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
             t.relations = [
                 r for r in t.relations
                 if not any(a in stub_parts for a in r.args)]
+            # Mark the stub as planner-only: it has no scene-init
+            # location (we don't know yet where fari will fire); the
+            # realizer's `created_at_event is not None` filter then
+            # skips synthetic-en grounding and quality grounding,
+            # treating fari as the introduction. 0 is a setup-time
+            # sentinel — fari's actual event index is patched in
+            # post-execution by generate_corpus, but the boolean
+            # filter is what the realizer reads.
+            t.entities[stub_eid].created_at_event = 0
         # Pin count=1 on the constructed entity — fari produces ONE
         # whole, not a stack. Without this, the realizer renders
         # "kvin sandviĉoj" because the stub's count rolled to 5 at

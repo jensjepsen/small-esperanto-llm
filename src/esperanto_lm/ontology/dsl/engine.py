@@ -499,11 +499,20 @@ def _run_causal_phase(
             for bindings in [dict(b) for b in binding_iter]:
                 # List-valued bindings (variadic event roles like
                 # fari.parts) are unhashable in the dedup frozenset;
-                # tuple-coerce just for the key. The bindings dict
-                # itself keeps lists so ForEach can mutate-iterate.
+                # tuple-coerce just for the key. EntityInstance values
+                # (compiled enum can resolve to instances when given
+                # clauses are present) are reduced to their .id since
+                # only the identity matters for dedup. The bindings
+                # dict itself keeps the original values so ForEach can
+                # mutate-iterate and effects can read attributes.
+                def _k(v):
+                    if isinstance(v, list):
+                        return tuple(_k(x) for x in v)
+                    if isinstance(v, EntityInstance):
+                        return v.id
+                    return v
                 key = (r.name, ev.id, frozenset(
-                    (k, tuple(v) if isinstance(v, list) else v)
-                    for k, v in bindings.items()))
+                    (k, _k(v)) for k, v in bindings.items()))
                 if key in fired_bindings:
                     continue
                 fired_bindings.add(key)

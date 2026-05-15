@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
-from ..causal import Event, Trace
+from ..causal import EntityInstance, Event, Trace
 from ..loader import Lexicon
 from .patterns import Bindings, Pattern, Var
 
@@ -274,9 +274,14 @@ def _given_chain(
 # --------------------------- resolve ------------------------------
 
 def resolve(value: Any, bindings: Bindings) -> Any:
-    """Resolve a Var against bindings, or pass through a literal."""
+    """Resolve a Var against bindings, or pass through a literal.
+
+    EntityInstance bindings (compiled enum can resolve event roles to
+    entities when a given clause needs cross-arg matching) are reduced
+    to their .id since effects operate on entity ids."""
     if isinstance(value, Var):
         if value not in bindings:
             raise KeyError(f"unbound variable ${value.name} at resolution")
-        return bindings[value]
+        v = bindings[value]
+        return v.id if isinstance(v, EntityInstance) else v
     return value

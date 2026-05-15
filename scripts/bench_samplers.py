@@ -68,10 +68,14 @@ def _plan_summary(plan, t):
                     for x in e]
         return t.entities[e].concept_lemma if e in t.entities else e
     out = []
-    for lemma, roles in plan:
-        out.append({
+    for step in plan:
+        lemma, roles = step[0], step[1]
+        entry = {
             "verb": lemma,
-            "roles": {rn: _render(e) for rn, e in roles.items()}})
+            "roles": {rn: _render(e) for rn, e in roles.items()}}
+        if len(step) > 2:
+            entry["qty"] = step[2]
+        out.append(entry)
     return out
 
 
@@ -124,7 +128,7 @@ def _run_batch(args):
             if use_forward:
                 plan = plan_for_goal(
                     drive, t, _LEX, _RULES, _DERIVATIONS,
-                    max_states=int(os.environ.get("MAX_STATES", "300")),
+                    max_states=int(os.environ.get("MAX_STATES", "1200")),
                     max_plan_length=int(
                         os.environ.get("MAX_PLAN_LENGTH", "16")),
                     entity_resolver=spawner)
