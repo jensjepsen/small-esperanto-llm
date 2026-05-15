@@ -727,6 +727,16 @@ def _render_event(m: EventMessage, ctx: _Ctx) -> Optional[str]:
     return _append_precondition_clause(sentence, m.precondition, ctx)
 
 
+_FAKTO_PROPERTY_KINDS = {
+    # pri_relacio value → entity slot name to read on the subjekto.
+    # Measurement faktos (mezuri-produced) have no objekto; the
+    # predicate is the subjekto's current value for the mapped slot.
+    # E.g. fakto(pri_relacio=temperaturo) on akvo renders as
+    # "ke la akvo estas malvarma" by reading akvo.temperature.
+    "temperaturo": "temperature",
+}
+
+
 def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
                                *, mode: str = "assertion") -> Optional[str]:
     """Unfold a fakto entity into a subordinate clause.
@@ -737,9 +747,12 @@ def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
       en  → "ke X estas en Y"
       sur → "ke X estas sur Y"
       havi → "ke X havas Y" (Y in accusative)
+      temperaturo / other property-kinds → "ke X estas V"
+        (V is the subjekto's current value for the mapped slot)
     `mode="question"` (for demandi):
       en/sur → "kie estas X"
       havi → "kiu havas X"
+      property-kinds → "kia estas X"
     Returns None if any field is missing or the relation isn't one
     we know how to surface yet."""
     def _unwrap_property(slot):
@@ -755,15 +768,34 @@ def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
             subj_id = r.args[1]
         elif r.relation == "objekto":
             obj_id = r.args[1]
-    if rel is None or subj_id is None or obj_id is None:
+    if rel is None or subj_id is None:
         return None
     subj_ent = ctx.trace.entity(subj_id)
-    obj_ent = ctx.trace.entity(obj_id)
-    if subj_ent is None or obj_ent is None:
+    if subj_ent is None:
         return None
     subj_form = ctx.name_for(subj_ent)
-    obj_form = ctx.name_for(obj_ent)
     ctx.note_mention(subj_ent)
+    # Property-kind fakto: subjekto's slot value is the predicate.
+    # Measurement faktos have no objekto, so check this branch before
+    # the en/sur/havi paths that require it.
+    if rel in _FAKTO_PROPERTY_KINDS:
+        slot = _FAKTO_PROPERTY_KINDS[rel]
+        vals = subj_ent.properties.get(slot, [])
+        val = vals[0] if vals else None
+        if val is None:
+            return None
+        if mode == "question":
+            copula = f"est{ctx.tense}"
+            return f"kia {copula} {subj_form}"
+        copula = f"est{ctx.tense}"
+        return f"ke {subj_form} {copula} {val}"
+    # Below paths require an objekto.
+    if obj_id is None:
+        return None
+    obj_ent = ctx.trace.entity(obj_id)
+    if obj_ent is None:
+        return None
+    obj_form = ctx.name_for(obj_ent)
     ctx.note_mention(obj_ent)
     if mode == "question":
         copula = f"est{ctx.tense}"
@@ -827,19 +859,35 @@ def _render_fakto_as_quote_body(fakto_ent, ctx: _Ctx,
             subj_id = r.args[1]
         elif r.relation == "objekto":
             obj_id = r.args[1]
-    if rel is None or subj_id is None or obj_id is None:
+    if rel is None or subj_id is None:
         return None
     subj_ent = ctx.trace.entity(subj_id)
-    obj_ent = ctx.trace.entity(obj_id)
-    if subj_ent is None or obj_ent is None:
+    if subj_ent is None:
         return None
     subj_form = ctx.name_for(subj_ent)
-    obj_form = ctx.name_for(obj_ent)
     ctx.note_mention(subj_ent)
-    ctx.note_mention(obj_ent)
 
     def _cap(s: str) -> str:
         return s[0].upper() + s[1:] if s else s
+
+    # Property-kind: subjekto's slot value is the predicate.
+    if rel in _FAKTO_PROPERTY_KINDS:
+        slot = _FAKTO_PROPERTY_KINDS[rel]
+        vals = subj_ent.properties.get(slot, [])
+        val = vals[0] if vals else None
+        if val is None:
+            return None
+        if mode == "question":
+            return f"Kia estas {subj_form}?"
+        return f"{_cap(subj_form)} estas {val}."
+    # Below paths require an objekto.
+    if obj_id is None:
+        return None
+    obj_ent = ctx.trace.entity(obj_id)
+    if obj_ent is None:
+        return None
+    obj_form = ctx.name_for(obj_ent)
+    ctx.note_mention(obj_ent)
 
     if mode == "question":
         if rel in ("en", "sur"):
