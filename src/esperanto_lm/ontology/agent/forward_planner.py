@@ -1903,20 +1903,27 @@ def _heuristic_and_helpful(
         if f in visited_all:
             continue
         visited_all.add(f)
+        # Take ONE cheapest producer per fact (mirroring the h_FF
+        # block above). For perception of papero, the relaxed graph
+        # might list vidi/flari/montri all at the same cost — adding
+        # every alternative to helpful inflates the search's branching
+        # factor (e.g. 4 parts × 3 perception verbs = 12 redundant
+        # entries) without any new reachable state. Picking one keeps
+        # the helpful set tight; the search can still consider the
+        # alternatives if they become helpful from later states.
         for cid_ in producers_cheapest.get(f, ()):
             if cid_ < 0 or cid_ >= len(cid_to_info):
                 continue
             info = cid_to_info[cid_]
             verb, roles, pres, _effs = info
             if verb is not None:
-                # List-valued role bindings (fari.parts) are unhashable
-                # in the frozenset key; tuple-coerce them.
                 helpful.add((verb, frozenset(
                     (k, tuple(v) if isinstance(v, list) else v)
                     for k, v in roles.items())))
             for p in pres:
                 if p not in visited_all:
                     stack.append(p)
+            break
 
     return h_ff, helpful
 
