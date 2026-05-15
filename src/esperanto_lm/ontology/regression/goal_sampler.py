@@ -192,6 +192,25 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
                  and not getattr(c, "is_category_stub", False)]
     if not locations:
         return None
+    # Pre-filter by the theme's containment rules: fari adds
+    # en(theme, agent_loc), silently swallowed if containment.jsonl
+    # forbids the pair (muro requires interna; plaĝo can't hold it).
+    # Containment defaults to deny — a theme with no en rule at all
+    # can't be placed anywhere via fari, so the whole construct chain
+    # is unsolvable and we bail. Same for a theme whose en rules
+    # admit no location concepts in the scene pool.
+    from ..containment import containers_for, resolve_containment
+    containment_idx = resolve_containment(lex)
+    allowed_containers = {
+        c for c, rel in containers_for(theme_concept, containment_idx, lex)
+        if rel == "en"}
+    if not allowed_containers:
+        _bail(f"construct_no_en_containment:{theme_concept}")
+        return None
+    locations = [l for l in locations if l in allowed_containers]
+    if not locations:
+        _bail(f"construct_no_compatible_scene:{theme_concept}")
+        return None
     goal_index = _cached_goal_index(lex, rules)
     for _ in range(5):
         scene_lemma = rng.choice(locations)

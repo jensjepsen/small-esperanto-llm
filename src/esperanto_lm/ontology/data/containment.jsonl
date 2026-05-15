@@ -284,3 +284,4 @@
 {"container": "ĝardeno", "contained": "ŝovelilo", "relation": "en"}
 {"container": "ĝardeno", "contained": "rastilo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "fajro", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "barilo", "relation": "en"}
