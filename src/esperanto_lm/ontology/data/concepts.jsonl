@@ -502,3 +502,13 @@
 {"lemma": "glaciaĵo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
 {"lemma": "saŭco", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["manĝaĵo"]}
 {"lemma": "konfitaĵo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
+{"lemma": "bandaĝo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"]}}
+{"lemma": "pomado", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
+{"lemma": "pilolo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "count": ["1"]}}
+{"lemma": "termometro", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "readability": ["legebla"]}}
+{"lemma": "oktopodo", "entity_type": "animal", "category": ["fiŝo"]}
+{"lemma": "krabo", "entity_type": "animal", "category": ["fiŝo"]}
+{"lemma": "meduzo", "entity_type": "animal", "category": ["fiŝo"]}
+{"lemma": "omaro", "entity_type": "animal", "category": ["fiŝo"]}
+{"lemma": "bileto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "count": ["1"]}}
+{"lemma": "kartoj", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"]}}
