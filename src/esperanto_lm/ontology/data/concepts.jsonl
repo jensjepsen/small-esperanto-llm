@@ -70,6 +70,7 @@
 {"lemma": "fromaĝo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
 {"lemma": "legomo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "longeco": ["0.08"], "larĝeco": ["0.06"], "alteco": ["0.06"]}, "category": ["manĝaĵo"]}
 {"lemma": "frukto", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "longeco": ["0.07"], "larĝeco": ["0.07"], "alteco": ["0.07"], "denseco": ["0.9"]}, "category": ["manĝaĵo"]}
+{"lemma": "bero", "entity_type": "substance", "properties": {"longeco": ["0.02"], "larĝeco": ["0.02"], "alteco": ["0.02"]}, "is_category_stub": true, "category": ["frukto"]}
 {"lemma": "kuko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "ovo"}, {"concept": "butero"}, {"concept": "lakto"}], "crafted_with": ["forno"]}
 {"lemma": "vino", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"]}, "category": ["trinkaĵo"]}
 {"lemma": "kafo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "constructable": ["yes"]}, "category": ["trinkaĵo"], "parts": [{"concept": "akvo", "requires": {"temperature": ["bolanta"]}}, {"concept": "kafgrajno"}]}
@@ -236,8 +237,8 @@
 {"lemma": "tomato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
 {"lemma": "oranĝo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
 {"lemma": "piro", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
-{"lemma": "ĉerizo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
-{"lemma": "fragoj", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
+{"lemma": "ĉerizo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["bero"]}
+{"lemma": "fragoj", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["bero"]}
 {"lemma": "terpomo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "requires_cooking": ["yes"], "cooking_state": ["kruda"]}, "category": ["legomo"]}
 {"lemma": "kukumo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["legomo"]}
 {"lemma": "salato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "constructable": ["yes"]}, "category": ["legomo"], "parts": [{"concept": "laktuko"}, {"concept": "tomato"}, {"concept": "kukumo"}]}
@@ -281,7 +282,7 @@
 {"lemma": "preĝejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "arbaro", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}, {"concept": "tero"}]}
 {"lemma": "anaso", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
-{"lemma": "vinbero", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
+{"lemma": "vinbero", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["bero"]}
 {"lemma": "melono", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
 {"lemma": "kanuo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "is_vehicle": ["yes"], "terrain": ["water"]}, "category": ["vehiklo"]}
 {"lemma": "ŝuo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "is_clothing": ["yes"]}, "category": ["vestaĵo"]}
@@ -433,8 +434,8 @@
 {"lemma": "magnolio", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
 {"lemma": "bambuo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
 {"lemma": "olivarbo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
-{"lemma": "olivo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
-{"lemma": "daktilo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
+{"lemma": "olivo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["bero"]}
+{"lemma": "daktilo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["bero"]}
 {"lemma": "pentraĵo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["paper"], "posture": ["staranta"]}}
 {"lemma": "skulptaĵo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["stone"], "posture": ["staranta"]}}
 {"lemma": "statuo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["stone"], "posture": ["staranta"]}}
