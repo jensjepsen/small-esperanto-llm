@@ -379,6 +379,19 @@ class Trace:
                     return (f"relation {name!r}: arg {i} ({arg!r} "
                             f"concept {ent.concept_lemma!r}) violates "
                             f"arg pattern")
+        # arg_compare: numeric cross-arg comparisons (e.g. havi's
+        # theme.maso <= owner.lift_capacity carry-capacity gate). Same
+        # vacuous-on-missing-data semantics as the precondition kind.
+        if rel.arg_compare:
+            from .dsl.patterns import numeric_args_compare
+            ent_tuple = tuple(self.entities[a] for a in args)
+            for spec in rel.arg_compare:
+                if not numeric_args_compare(ent_tuple, spec):
+                    return (
+                        f"relation {name!r}: arg_compare failed "
+                        f"({ent_tuple[spec['left_arg']].id}.{spec['left_property']} "
+                        f"{spec['op']} {ent_tuple[spec['right_arg']].id}."
+                        f"{spec['right_property']})")
         # Containment registry: source of truth for what can plausibly
         # be in/on what. Two-tier check (no required violation AND
         # afforded by at least one entry). The set of relations this

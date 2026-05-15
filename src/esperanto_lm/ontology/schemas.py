@@ -218,6 +218,18 @@ class Relation(_Frozen):
     # `introspect.relation_arg_excludes` for grounding-time pruning in
     # the forward planner — one source of truth.
     arg_patterns: tuple = ()
+    # Numeric comparison between two args' property values. List of
+    # dicts: {"left_arg": int, "left_property": str, "op": str,
+    # "right_arg": int, "right_property": str}. Asserted at relation-
+    # assertion time and at planner grounding time. Same vacuous-on-
+    # missing-data semantics as ComparePropertyPrecondition.
+    #
+    # havi uses [{"left_arg": 1, "left_property": "maso", "op": "<=",
+    # "right_arg": 0, "right_property": "lift_capacity"}] — the owned
+    # theme's mass must fit the owner's lift capacity. Catches preni,
+    # kapti, doni, and any future verb that produces havi, in one
+    # place. Mirrors arg_patterns (set-membership) for the numeric case.
+    arg_compare: list[dict] = Field(default_factory=list)
 
     model_config = ConfigDict(frozen=True, extra="forbid",
                               arbitrary_types_allowed=True)

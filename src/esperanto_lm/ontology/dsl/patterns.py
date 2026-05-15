@@ -922,3 +922,35 @@ def compile_arg_pattern(d):
         return OrPattern(compile_arg_pattern(body[0]),
                          compile_arg_pattern(body[1]))
     raise ValueError(f"unknown arg pattern key: {key!r}")
+
+
+def numeric_args_compare(entities, compare_spec: dict) -> bool:
+    """Evaluate a Relation.arg_compare spec against the (entity_a,
+    entity_b, …) tuple at the relation's arg positions. Returns True
+    when the comparison holds OR either property is missing (vacuous).
+
+    spec keys: left_arg, left_property, op, right_arg, right_property.
+    Numeric values parsed via float(); non-numeric strings → vacuous
+    success. Used both by `Trace.validate_relation` and the forward
+    planner's grounding filter — one evaluator, two consumers."""
+    try:
+        left_ent = entities[compare_spec["left_arg"]]
+        right_ent = entities[compare_spec["right_arg"]]
+    except (IndexError, KeyError):
+        return True
+    lvals = left_ent.properties.get(compare_spec["left_property"], [])
+    rvals = right_ent.properties.get(compare_spec["right_property"], [])
+    if not lvals or not rvals:
+        return True
+    try:
+        lhs = float(lvals[0])
+        rhs = float(rvals[0])
+    except (TypeError, ValueError):
+        return True
+    op = compare_spec["op"]
+    if op == "<":  return lhs < rhs
+    if op == "<=": return lhs <= rhs
+    if op == ">":  return lhs > rhs
+    if op == ">=": return lhs >= rhs
+    if op == "==": return lhs == rhs
+    return True

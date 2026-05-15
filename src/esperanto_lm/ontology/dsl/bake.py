@@ -218,6 +218,12 @@ def bake_concept_derivations(
     # Asserted values win (manual maso/volumeno on a concept skips the
     # derivation, same as scalar slot semantics in the earlier passes).
     _bake_numeric_dimensions(work)
+    global _LIFT_CAPACITY_CONCEPTS_VIEW
+    _LIFT_CAPACITY_CONCEPTS_VIEW = concepts
+    try:
+        _bake_lift_capacity(work, lex_types)
+    finally:
+        _LIFT_CAPACITY_CONCEPTS_VIEW = None
 
     out: dict[str, Concept] = {}
     for lemma, c in concepts.items():
@@ -265,6 +271,62 @@ def _bake_numeric_dimensions(
                 continue
             mass_kg = vol * dens * 1000.0
             props["maso"] = [_format_num(mass_kg)]
+
+
+def _bake_lift_capacity(
+    work: dict[str, dict[str, list[str]]],
+    lex_types,
+) -> None:
+    """Derive `lift_capacity` (kg of theme an agent can pick up) as
+    half the agent's own mass — the everyday "can lift half your
+    body weight" heuristic. Applies to animate concepts that have
+    maso but no asserted lift_capacity.
+
+    Animates without maso don't get a lift_capacity (rare in current
+    lexicon — most animates inherit maso from category roots). A
+    concept with explicit maso but no derived lift_capacity falls
+    through cleanly; downstream code that gates on lift_capacity
+    treats absence as 'no carrying'.
+    """
+    # We need the type spine to check entity_type, but `work` only
+    # carries property dicts. The full concepts list is mutated
+    # in-place by the loader after our call — so we can't read
+    # entity_type from work alone. The loader passes lex_types but not
+    # the concept entries; relying on bake's existing context (the
+    # outer `bake_concept_derivations` receives `concepts` as the
+    # first arg), we walk via a side channel: the bake function
+    # stashes a reference accessible via a module-level var.
+    from .. import schemas  # noqa: F401 — keeps the import structure visible
+    concepts_view = _LIFT_CAPACITY_CONCEPTS_VIEW
+    if concepts_view is None:
+        return
+    for lemma, props in work.items():
+        if "lift_capacity" in props:
+            continue
+        if "maso" not in props:
+            continue
+        concept = concepts_view.get(lemma)
+        if concept is None:
+            continue
+        if not lex_types.is_subtype(concept.entity_type, "animate"):
+            continue
+        try:
+            mass_kg = float(props["maso"][0])
+        except (ValueError, IndexError):
+            continue
+        # 1.0x body weight — adults can comfortably lift their own
+        # weight; that's the realistic ceiling for "pick up and
+        # carry" narrative. Smaller agents (bebo, infano) inherit
+        # proportionally lower caps; elefanto-class outliers can be
+        # overridden when the narrative needs them lifting more.
+        cap = mass_kg * 1.0
+        props["lift_capacity"] = [_format_num(cap)]
+
+
+# Side-channel reference set by bake_concept_derivations so the
+# lift_capacity bake can consult entity_type. Cleaner than threading
+# concepts through every helper.
+_LIFT_CAPACITY_CONCEPTS_VIEW: dict | None = None
 
 
 def _format_num(x: float) -> str:

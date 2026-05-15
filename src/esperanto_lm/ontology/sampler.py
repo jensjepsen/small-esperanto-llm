@@ -178,13 +178,13 @@ def _make_seed_specific_verb(verb_lemma: str) -> Callable:
                 r.relation == "havi" and len(r.args) == 2
                 and r.args == (agent, instrument)
                 for r in t.relations):
-            # Skip ownership for nemovebla instruments (forno, fajro):
-            # they're used in place via samloke, not carried. Asserting
-            # havi here would violate `havi.arg_patterns` and the verb's
-            # actual precondition is samloke, not havi.
-            inst_ent = t.entities.get(instrument)
-            if inst_ent is None or "yes" not in inst_ent.properties.get(
-                    "nemovebla", ()):
+            # Skip ownership when havi would be rejected: nemovebla
+            # instruments (forno, fajro — used in place via samloke),
+            # or instruments too heavy for the agent (pesilo for a
+            # bebo). Both checks are also enforced at runtime by
+            # validate_relation; pre-checking here avoids the
+            # ValueError from the legacy seeder path.
+            if t.is_relation_permitted("havi", (agent, instrument), lex):
                 t.assert_relation("havi", (agent, instrument), lex)
         if t.entities[theme].concept_lemma == "pordo":
             t.entities[theme].set_property("lock_state", "malŝlosita")
