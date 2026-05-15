@@ -480,3 +480,13 @@
 {"lemma": "fruktosalato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pomo"}, {"concept": "banano"}, {"concept": "ĉerizo"}]}
 {"lemma": "buterpano", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pano"}, {"concept": "butero"}]}
 {"lemma": "kremkafo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "constructable": ["yes"]}, "category": ["trinkaĵo"], "parts": [{"concept": "kafo"}, {"concept": "kremo"}]}
+{"lemma": "boato", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "is_vehicle": ["yes"], "terrain": ["water"]}, "category": ["vehiklo"]}
+{"lemma": "surfbreto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "is_vehicle": ["yes"], "terrain": ["water"]}, "category": ["vehiklo"]}
+{"lemma": "remilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"]}, "category": ["ilo"]}
+{"lemma": "tendo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "openness": ["malfermita"]}}
+{"lemma": "dorsosako", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "openness": ["fermita"], "made_of": ["fabric"], "integrity": ["tuta"]}, "category": ["ujo"]}
+{"lemma": "fiŝhoko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "hazard": ["akra"]}, "category": ["ilo"]}
+{"lemma": "fiŝvergo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"]}, "parts": [{"concept": "fiŝhoko"}, {"concept": "ŝnuro"}], "category": ["ilo"]}
+{"lemma": "kompaso", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "readability": ["legebla"]}}
+{"lemma": "binoklo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"]}}
+{"lemma": "bastono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"]}}
