@@ -1483,6 +1483,19 @@ denseco_from_meat = derive(
     implies=property(T_dme, "denseco", "1.0"),
     name="denseco_from_meat",
 )
+# Food and drink default to water-equivalent density. Catches concepts
+# whose `category=["manĝaĵo"]` / `["trinkaĵo"]` (set by the -aĵ- affix
+# autoderivation on manĝi/trinki) inherit this default.
+denseco_default_manĝaĵo = derive(
+    when=entity(category="manĝaĵo") & bind(T_dm := var("T")),
+    implies=property(T_dm, "denseco", "1.0"),
+    name="denseco_default_manĝaĵo",
+)
+denseco_default_trinkaĵo = derive(
+    when=entity(category="trinkaĵo") & bind(T_dt := var("T")),
+    implies=property(T_dt, "denseco", "1.0"),
+    name="denseco_default_trinkaĵo",
+)
 
 
 # ---------- derivation: meat is edible ---------------------------------
@@ -2650,6 +2663,8 @@ DEFAULT_DSL_DERIVATIONS = [
     denseco_from_plant,
     denseco_from_wicker,
     denseco_from_meat,
+    denseco_default_manĝaĵo,
+    denseco_default_trinkaĵo,
     meat_is_edible,
     animate_is_solid,
     person_can_swim,
