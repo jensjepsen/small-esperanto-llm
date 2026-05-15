@@ -727,13 +727,54 @@ def _render_event(m: EventMessage, ctx: _Ctx) -> Optional[str]:
     return _append_precondition_clause(sentence, m.precondition, ctx)
 
 
+def _format_maso_adjective(raw: str) -> Optional[str]:
+    """Map a kg numeric (string) to an Esperanto magnitude adjective.
+    Five buckets, log-spaced — coarse enough to feel like natural
+    narrative ("tre malpeza", "mezpeza") and informative enough that
+    libro vs. ŝtono vs. elefanto come out distinct."""
+    try:
+        kg = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if kg < 0.1:
+        return "tre malpeza"
+    if kg < 1:
+        return "malpeza"
+    if kg < 10:
+        return "mezpeza"
+    if kg < 100:
+        return "peza"
+    return "tre peza"
+
+
+def _format_volumeno_adjective(raw: str) -> Optional[str]:
+    """Map an m³ numeric to a size adjective. Reuses grandeco
+    vocabulary the lexicon already has informally."""
+    try:
+        m3 = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if m3 < 0.001:
+        return "tre malgranda"
+    if m3 < 0.1:
+        return "malgranda"
+    if m3 < 1:
+        return "mezgranda"
+    if m3 < 10:
+        return "granda"
+    return "tre granda"
+
+
 _FAKTO_PROPERTY_KINDS = {
-    # pri_relacio value → entity slot name to read on the subjekto.
-    # Measurement faktos (mezuri-produced) have no objekto; the
-    # predicate is the subjekto's current value for the mapped slot.
-    # E.g. fakto(pri_relacio=temperaturo) on akvo renders as
-    # "ke la akvo estas malvarma" by reading akvo.temperature.
-    "temperaturo": "temperature",
+    # pri_relacio value → (entity slot name, formatter | None).
+    # Formatter receives the raw slot value (string) and returns the
+    # rendered predicate; None means render the raw value as-is (so
+    # temperature's malvarma/varma render natively).
+    # Measurement faktos have no objekto; the predicate is derived
+    # from the subjekto's current slot value.
+    "temperaturo": ("temperature", None),
+    "maso":        ("maso", _format_maso_adjective),
+    "grandeco":    ("volumeno", _format_volumeno_adjective),
 }
 
 
@@ -779,16 +820,19 @@ def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
     # Measurement faktos have no objekto, so check this branch before
     # the en/sur/havi paths that require it.
     if rel in _FAKTO_PROPERTY_KINDS:
-        slot = _FAKTO_PROPERTY_KINDS[rel]
+        slot, formatter = _FAKTO_PROPERTY_KINDS[rel]
         vals = subj_ent.properties.get(slot, [])
-        val = vals[0] if vals else None
-        if val is None:
+        raw = vals[0] if vals else None
+        if raw is None:
+            return None
+        rendered = formatter(raw) if formatter is not None else raw
+        if rendered is None:
             return None
         if mode == "question":
             copula = f"est{ctx.tense}"
             return f"kia {copula} {subj_form}"
         copula = f"est{ctx.tense}"
-        return f"ke {subj_form} {copula} {val}"
+        return f"ke {subj_form} {copula} {rendered}"
     # Below paths require an objekto.
     if obj_id is None:
         return None
@@ -872,14 +916,17 @@ def _render_fakto_as_quote_body(fakto_ent, ctx: _Ctx,
 
     # Property-kind: subjekto's slot value is the predicate.
     if rel in _FAKTO_PROPERTY_KINDS:
-        slot = _FAKTO_PROPERTY_KINDS[rel]
+        slot, formatter = _FAKTO_PROPERTY_KINDS[rel]
         vals = subj_ent.properties.get(slot, [])
-        val = vals[0] if vals else None
-        if val is None:
+        raw = vals[0] if vals else None
+        if raw is None:
+            return None
+        rendered = formatter(raw) if formatter is not None else raw
+        if rendered is None:
             return None
         if mode == "question":
             return f"Kia estas {subj_form}?"
-        return f"{_cap(subj_form)} estas {val}."
+        return f"{_cap(subj_form)} estas {rendered}."
     # Below paths require an objekto.
     if obj_id is None:
         return None
