@@ -476,10 +476,110 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
             if non_target:
                 t.entities[stub_eid].set_property(
                     slot, rng.choice(non_target))
+        _ensure_obstacle_tools(t, lex, rng, scene_id)
         drive = ("entity_slot", actor_eid, stub_eid, slot, value)
         return t, scene_id, drive
     _bail(f"construct_loop_exhausted:{theme_concept}")
     return None
+
+
+def _ensure_obstacle_tools(t, lex, rng, scene_id) -> None:
+    """Walk the trace for entities whose current state would fire an
+    if_property gate on some action, requiring a transition that the
+    planner can only achieve via an action with an unavailable
+    instrument. Spawn the missing instrument so the planner can plan
+    the unblock step.
+
+    Derives from action/precondition data, not hardcoded slots:
+      1. For each entity in trace, each scalar slot value.
+      2. Find any action whose if_property gate matches (slot, value).
+      3. Skip if the gate's then-property already holds.
+      4. Find an action whose effect produces (then_property,
+         then_value) and declares an instrument with a
+         functional_signature.
+      5. If no entity in scene matches that signature, spawn one.
+
+    Today this fires for ŝranko/kofro with locked seruros: malfermi's
+    `if lock_capable=yes then lock_state=malŝlosita` gate, satisfied
+    by malŝlosi's `instrument.functional_signature=ŝlosi`, prompts a
+    ŝlosilo spawn. The relaxed-graph prespawn can't reach this chain
+    on its own (samloke→en→eniri→malfermi→if_property→malŝlosi
+    crosses a derivation, two property gates, and an instrument
+    role). Other obstacle patterns light up automatically as the
+    action/gate data evolves."""
+    if not t.entities:
+        return
+    # Index existing tool signatures so we don't double-spawn.
+    present_sigs: set = set()
+    for ent in t.entities.values():
+        for sig in ent.properties.get("functional_signature", ()):
+            present_sigs.add(sig)
+    # Index if_property gates by (if_property, if_value).
+    from ..schemas import IfPropertyPrecondition
+    gates: dict = {}
+    for action in lex.actions.values():
+        for pc in action.preconditions:
+            if not isinstance(pc, IfPropertyPrecondition):
+                continue
+            gates.setdefault(
+                (pc.if_property, pc.if_value), []).append(pc)
+    # Producers of (then_property, then_value).
+    producers: dict = {}
+    for action in lex.actions.values():
+        instr_role = next(
+            (r for r in action.roles if r.name == "instrument"), None)
+        if instr_role is None:
+            continue
+        sigs = tuple(instr_role.properties.get(
+            "functional_signature", ()))
+        if not sigs:
+            continue
+        for eff in action.effects:
+            producers.setdefault(
+                (eff.property, eff.value), []).append((action, sigs))
+    seeders_mod = None
+    for ent in list(t.entities.values()):
+        for slot, values in list(ent.properties.items()):
+            for value in values:
+                for pc in gates.get((slot, value), ()):
+                    # Skip if then-property already holds.
+                    then_have = ent.properties.get(pc.then_property, ())
+                    if pc.then_value in then_have:
+                        continue
+                    # Skip when the gate transitions OUT (we'd need
+                    # to UN-set the then_value, which would loop).
+                    if pc.if_value == pc.then_value:
+                        continue
+                    for prod_action, sigs in producers.get(
+                            (pc.then_property, pc.then_value), ()):
+                        if any(s in present_sigs for s in sigs):
+                            break  # tool already available
+                        # Find a concept matching the signature, spawn.
+                        spawned = False
+                        for c_lemma, c_def in lex.concepts.items():
+                            if getattr(c_def, "is_category_stub", False):
+                                continue
+                            tool_sigs = c_def.properties.get(
+                                "functional_signature", ())
+                            if not any(s in tool_sigs for s in sigs):
+                                continue
+                            if seeders_mod is None:
+                                from . import seeders as seeders_mod  # noqa: F401
+                                from .seeders import (
+                                    _place_respecting_containment as _placer
+                                )
+                            else:
+                                _placer = (
+                                    seeders_mod._place_respecting_containment)
+                            if _placer(
+                                    t, lex, scene_id, c_lemma, rng,
+                                    preferred_id=scene_id,
+                                    existing_eid=None) is not None:
+                                present_sigs.update(tool_sigs)
+                                spawned = True
+                                break
+                        if spawned:
+                            break
 
 
 def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
@@ -691,10 +791,12 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                         f"degenerate_target_drive:"
                         f"{target_ent.concept_lemma}.{eff.property}")
                     continue  # degenerate drive — retry
+            _ensure_obstacle_tools(t, lex, rng, scene_id)
             drive = ("entity_slot", actor_eid, target_eid,
                      slot, target_value)
             return t, scene_id, drive
         else:
+            _ensure_obstacle_tools(t, lex, rng, scene_id)
             # event_fire: only bind the actor here. The planner's
             # _prespawn_for_goal fills the remaining roles via the
             # session spawner (same closure used during search), so
