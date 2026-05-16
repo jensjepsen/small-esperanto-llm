@@ -1095,8 +1095,13 @@ def _derived_strip_set(
     Closure-based: a derivation may produce R1 which feeds another
     derivation producing R2 — both R1 and R2 get stripped when any
     seed of R1 changes."""
+    # Identity-verified cache: see _apply_delta for the rationale.
     key = id(derivation_pseudos)
-    closure = _DERIV_RELDEP_CACHE.get(key)
+    cached = _DERIV_RELDEP_CACHE.get(key)
+    if cached is not None and cached[0] is derivation_pseudos:
+        closure = cached[1]
+    else:
+        closure = None
     if closure is None:
         # rel_to_producers[r] = set of relations the derivation also
         # produces in its effs (so changing r might invalidate them
@@ -1120,7 +1125,7 @@ def _derived_strip_set(
                     closure[r] = new_outs
                     changed = True
         closure = {r: frozenset(outs) for r, outs in closure.items()}
-        _DERIV_RELDEP_CACHE[key] = closure
+        _DERIV_RELDEP_CACHE[key] = (derivation_pseudos, closure)
     changed_rels = {
         f[1] for f in dels if f[0] == "rel"} | {
         f[1] for f in adds if f[0] == "rel"}
@@ -1181,8 +1186,15 @@ def _apply_delta(facts: frozenset, adds: set, dels: set,
     # we let it run per call. Pseudos with empty pres are always-
     # firable; collected separately so the initial pass triggers
     # them once.
-    pres_idx = _DERIV_PRES_IDX_CACHE.get(id(derivation_pseudos))
-    if pres_idx is None:
+    # Identity-verified cache: id() alone is unsafe because Python
+    # reuses ids after GC, and a stale entry's indices may overshoot
+    # a new, shorter list. Storing the list reference forces a
+    # recompute on collision.
+    cache_key = id(derivation_pseudos)
+    cached = _DERIV_PRES_IDX_CACHE.get(cache_key)
+    if cached is not None and cached[0] is derivation_pseudos:
+        pres_idx = cached[1]
+    else:
         fact_to: dict = {}
         no_pres_pseudos: list = []
         for i, (_info, _binding, pres, _effs) in enumerate(
@@ -1193,7 +1205,7 @@ def _apply_delta(facts: frozenset, adds: set, dels: set,
             for p in pres:
                 fact_to.setdefault(p, []).append(i)
         pres_idx = (fact_to, no_pres_pseudos)
-        _DERIV_PRES_IDX_CACHE[id(derivation_pseudos)] = pres_idx
+        _DERIV_PRES_IDX_CACHE[cache_key] = (derivation_pseudos, pres_idx)
     fact_to, no_pres_pseudos = pres_idx
 
     fired: set = set()
