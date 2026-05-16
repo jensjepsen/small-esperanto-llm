@@ -93,7 +93,10 @@ def _run_batch(args):
     entities} dicts (cap at ~3 per batch each for fired/failed)."""
     seed, n, sampler_name, max_depth, capture = args
     import os
-    use_forward = os.environ.get("USE_FORWARD") == "1"
+    # Forward planner (h_FF + EHC/weighted-A*) is the default — strictly
+    # better on yield (96.8% vs ~50%) and latency (~130 ms/scene). Set
+    # USE_BACKWARD=1 to opt back into the legacy backward chainer.
+    use_forward = os.environ.get("USE_BACKWARD") != "1"
     from esperanto_lm.ontology.agent.dispatcher import plan_for_drive
     from esperanto_lm.ontology.agent.planner import get_planner_failure_reason
     from esperanto_lm.ontology.regression import sample_regression_scene

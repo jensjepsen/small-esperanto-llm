@@ -46,6 +46,28 @@ them in via `make_event(..., property_changes=effect_changes(action, roles, lex)
 This keeps event semantics self-contained: an event's `property_changes`
 is the full list of state transitions attributed to it.
 
+## Planner
+
+The **forward planner** in `agent/forward_planner.py` is the preferred
+planner — h_FF-relaxed-graph heuristic with EHC + weighted A*. It's
+the default in `scripts/bench_samplers.py` (96.8% yield, ~130 ms/scene
+on the 500-scene goal_sampler bench). The legacy backward chainer in
+`agent/planner.py` remains for comparison; opt back in with
+`USE_BACKWARD=1`.
+
+Reachability and grounding are shared between planner and sampler via
+`dsl/introspect.concept_models_slot`: a slot is meaningful for a
+concept if it's declared in `concept.properties`, the slot is
+`pervasive`, or a derivation can populate it given the concept's
+parts. The planner uses this to drop nonsense groundings
+(`kuiri(actor, kafo)` — kafo doesn't declare `cooking_state`); the
+sampler uses the same predicate as a cheap pre-filter so it bails
+before the spawn + h_FF cycle.
+
+`plan_for_goal(..., max_states=0)` is the reachability-only mode: do
+the setup + heuristic and return `[]` iff the goal is reachable,
+`None` if not. Used by samplers as a viability gate.
+
 ## What not to do
 
 - Don't mutate `entity.properties` from a rule. The engine relies on
