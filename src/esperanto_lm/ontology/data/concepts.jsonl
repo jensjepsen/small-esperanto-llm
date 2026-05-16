@@ -616,3 +616,18 @@
 {"lemma": "falko", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
 {"lemma": "kondoro", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
 {"lemma": "marmelado", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
+{"lemma": "admiralo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "agronomo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "antropologo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "fonto", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "kanjono", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "duno", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "golfo", "entity_type": "natural_object", "properties": {"state_of_matter": ["likva"]}}
+{"lemma": "antilopo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "vosto"}], "category": ["besto"]}
+{"lemma": "zebro", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "vosto"}], "category": ["besto"]}
+{"lemma": "gepardo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "vosto"}], "category": ["besto"]}
+{"lemma": "pantero", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "vosto"}], "category": ["besto"]}
+{"lemma": "papajo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
+{"lemma": "pizo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["legomo"]}
+{"lemma": "tegmento", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}
+{"lemma": "plafono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}
