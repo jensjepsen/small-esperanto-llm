@@ -558,3 +558,18 @@
 {"lemma": "cigno", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
 {"lemma": "strigo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
 {"lemma": "testudo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}], "category": ["besto"]}
+{"lemma": "klaŭno", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "heroo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["viro"]}
+{"lemma": "heroino", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["virino"]}
+{"lemma": "magiisto", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "flughaveno", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "prizono", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "stadio", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "farmo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "tempesto", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
+{"lemma": "vulkano", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "kamelo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "dorso"}], "category": ["besto"]}
+{"lemma": "ŝarko", "entity_type": "animal", "category": ["fiŝo"]}
+{"lemma": "kameleono", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}], "category": ["besto"]}
+{"lemma": "salo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
+{"lemma": "sukero", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
