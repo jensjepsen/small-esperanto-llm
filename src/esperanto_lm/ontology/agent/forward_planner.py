@@ -2367,6 +2367,18 @@ def plan_for_goal(
         initial_trace, lex, initial_derived, rule_effects)
     grounded.extend(_ground_constructable_actions(
         initial_trace, lex, rule_effects, derived=initial_derived))
+    # Goal-aware action pruning. Walk backward from the goal through
+    # action effects, rule-effects adds, and preconditions to find
+    # the set of verbs that could plausibly contribute to reaching
+    # the goal. Drop the rest from the grounded set so the search
+    # heap doesn't waste slots on actions whose effects can never
+    # land on the goal property (e.g. dormi, ludi, kanti for a
+    # wetness=malseka goal). Saves heap pressure when broad vocab
+    # adds applicable-but-irrelevant successors.
+    relevant_verbs = _goal_reachable_verbs(
+        goal, lex, rule_effects, derivations)
+    if relevant_verbs is not None:
+        grounded = [g for g in grounded if g[0].lemma in relevant_verbs]
     # Restrict derivation var domains to entities that actually
     # participate in some action's pres/effs. This is the cubic
     # samloke-chain bound: a scene with 19 non-inanimate entities
@@ -2753,6 +2765,199 @@ def plan_for_goal(
                     new_facts, None))
             tiebreak += 1
     return None
+
+
+_RELEVANT_VERBS_CACHE: dict = {}
+
+
+def _goal_reachable_verbs(goal, lex, rule_effects, derivations) -> set | None:
+    """Backward-walk from goal facts through action effects, rule-
+    effect adds, action preconditions, AND derivation implications,
+    to find every verb that could plausibly contribute. Returns the
+    closed set, or None for goal shapes we don't analyze.
+
+    Two backward graphs are walked together:
+      - Action graph: an action's effects/role-properties/preconditions
+        determine which goal facts it can produce and which sub-goals
+        it imposes.
+      - Derivation graph: a derivation's `implies` clauses identify
+        which facts it can synthesize; its `when` + `given` patterns
+        identify the input facts it consumes. Walking back through a
+        derivation surfaces verbs that produce the *inputs* — so
+        `samloke` (purely derived) leads to `en`, which leads to
+        iri/veni/eniri/fari (rule_effects producers of en).
+
+    No hardcoded transit list. Movement/perception/state-prep verbs
+    fall out naturally from precondition + derivation chasing on the
+    goal-producing verb's needs.
+
+    Cached per `(id(lex), goal)` since the walk is purely structural."""
+    cache_key = (id(lex), goal)
+    cached = _RELEVANT_VERBS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    from collections import deque
+    from ..dsl.implications import PropertyImplication, RelationImplication
+    from ..dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern, NotPattern, RelPattern, Var,
+    )
+
+    # Index derivations by what they produce, both for relations
+    # (synthesized via RelationImplication) and properties.
+    rel_to_derivs: dict = {}
+    prop_to_derivs: dict = {}
+    for d in derivations:
+        for imp in d.implies:
+            if isinstance(imp, RelationImplication):
+                rel_to_derivs.setdefault(imp.name, []).append(d)
+            elif isinstance(imp, PropertyImplication):
+                prop_to_derivs.setdefault(
+                    (imp.slot, imp.value), []).append(d)
+
+    def _walk_pattern_for_inputs(pattern, rel_inputs, prop_inputs):
+        """Walk a Pattern tree, collecting (relation_name) from
+        RelPatterns and (slot, value) constraints from EntityPatterns
+        into the given output sets. Skips NotPatterns — relaxation
+        drops negation, so the absence of a fact isn't a producer-
+        requirement we need to chase."""
+        if pattern is None:
+            return
+        if isinstance(pattern, NotPattern):
+            return
+        if isinstance(pattern, RelPattern):
+            rel_inputs.add(pattern.relation)
+            for arg in pattern.arg_patterns.values():
+                _walk_pattern_for_inputs(arg, rel_inputs, prop_inputs)
+            return
+        if isinstance(pattern, EntityPattern):
+            for slot, vals in (pattern.constraints or {}).items():
+                # Property constraints with a fixed value are
+                # subgoals; range/list constraints we conservatively
+                # ignore.
+                if isinstance(vals, (str, int, float)):
+                    prop_inputs.add((slot, vals))
+                elif isinstance(vals, (list, tuple)) and len(vals) == 1:
+                    prop_inputs.add((slot, vals[0]))
+            return
+        if isinstance(pattern, AndPattern):
+            _walk_pattern_for_inputs(pattern.left, rel_inputs, prop_inputs)
+            _walk_pattern_for_inputs(pattern.right, rel_inputs, prop_inputs)
+            return
+        if isinstance(pattern, BindPattern):
+            return  # Bind alone has no constraint.
+        # Other patterns (Var, literal) carry no input fact.
+
+    rel_visited: set = set()
+    prop_visited: set = set()
+    relevant: set = set()
+    queue: deque = deque()
+
+    def _add_verb(verb):
+        if verb and verb in lex.actions and verb not in relevant:
+            relevant.add(verb)
+            queue.append(verb)
+
+    def _seed_relation(rel_name):
+        if rel_name in rel_visited:
+            return
+        rel_visited.add(rel_name)
+        # Direct action producers.
+        for v2, entry in rule_effects.items():
+            for rel, _ in entry.get("adds", []):
+                if rel == rel_name:
+                    _add_verb(v2)
+                    break
+        # Derivation producers — walk back to their inputs.
+        for d in rel_to_derivs.get(rel_name, ()):
+            rel_inputs: set = set()
+            prop_inputs: set = set()
+            _walk_pattern_for_inputs(
+                getattr(d, "when", None), rel_inputs, prop_inputs)
+            for g in getattr(d, "given", ()) or ():
+                _walk_pattern_for_inputs(g, rel_inputs, prop_inputs)
+            for r2 in rel_inputs:
+                _seed_relation(r2)
+            for slot2, val2 in prop_inputs:
+                _seed_property(slot2, val2)
+
+    def _seed_property(slot, value):
+        if (slot, value) in prop_visited:
+            return
+        prop_visited.add((slot, value))
+        # Direct action producers.
+        for v2, a2 in lex.actions.items():
+            for eff in a2.effects:
+                if eff.property == slot and eff.value == value:
+                    _add_verb(v2)
+                    break
+        # Derivation producers — walk back.
+        for d in prop_to_derivs.get((slot, value), ()):
+            rel_inputs: set = set()
+            prop_inputs: set = set()
+            _walk_pattern_for_inputs(
+                getattr(d, "when", None), rel_inputs, prop_inputs)
+            for g in getattr(d, "given", ()) or ():
+                _walk_pattern_for_inputs(g, rel_inputs, prop_inputs)
+            for r2 in rel_inputs:
+                _seed_relation(r2)
+            for slot2, val2 in prop_inputs:
+                _seed_property(slot2, val2)
+
+    # Seed from the goal.
+    kind = goal[0]
+    if kind == "property":
+        _, _eid, slot, value = goal
+        _seed_property(slot, value)
+    elif kind == "relation":
+        _, rel_name, _args = goal
+        _seed_relation(rel_name)
+    elif kind == "event_fire":
+        _, verb_lemma, _bindings = goal
+        _add_verb(verb_lemma)
+    else:
+        return None
+
+    # BFS over verbs' preconditions and role requirements.
+    while queue:
+        verb = queue.popleft()
+        action = lex.actions.get(verb)
+        if action is None:
+            continue
+        for role in action.roles:
+            for slot, values in (role.properties or {}).items():
+                if not values:
+                    continue
+                _seed_property(slot, values[0])
+            # Parts-binding roles (fari.parts, kind="list",
+            # from_field="parts") draw their bindings from a
+            # constructable concept's `parts` list, where each part
+            # spec may carry its own `requires` map (akvo's
+            # temperature must be bolanta when it's used as part of
+            # teo/kafo). Treat those requires as implicit role
+            # requirements: each constructable contributes property
+            # subgoals that the planner must satisfy before fari
+            # fires.
+            if (getattr(role, "kind", "single") == "list"
+                    and getattr(role, "from_field", None) == "parts"):
+                for c_def in lex.concepts.values():
+                    if "yes" not in c_def.properties.get(
+                            "constructable", ()):
+                        continue
+                    for part_spec in getattr(c_def, "parts", ()) or ():
+                        for r_slot, r_vals in (
+                                getattr(part_spec, "requires", None)
+                                or {}).items():
+                            if not r_vals:
+                                continue
+                            _seed_property(r_slot, r_vals[0])
+        for pc in action.preconditions:
+            kind2 = getattr(pc, "kind", None)
+            if kind2 == "relation":
+                _seed_relation(pc.rel)
+            elif kind2 == "if_property":
+                _seed_property(pc.then_property, pc.then_value)
+    _RELEVANT_VERBS_CACHE[cache_key] = relevant
+    return relevant
 
 
 def _drive_to_goal(drive, trace, lex):
