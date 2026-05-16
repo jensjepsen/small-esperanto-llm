@@ -292,3 +292,6 @@
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "ŝtono", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "neĝo", "relation": "en"}
 {"container": "figarbo", "contained": "figo", "relation": "sur"}
+{"container": "migdalarbo", "contained": "migdalo", "relation": "sur"}
+{"container": "kaŝtanarbo", "contained": "kaŝtano", "relation": "sur"}
+{"container": "pistakarbo", "contained": "pistako", "relation": "sur"}
