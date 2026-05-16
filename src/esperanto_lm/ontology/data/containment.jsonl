@@ -285,3 +285,9 @@
 {"container": "ĝardeno", "contained": "rastilo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "fajro", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "barilo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "bukedo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "florkrono", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "neĝulo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "sablokastelo", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "ŝtono", "relation": "en"}
+{"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "neĝo", "relation": "en"}

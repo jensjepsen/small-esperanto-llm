@@ -633,8 +633,11 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         # drive on the constructed theme.
         result = _construct_goal_scene(
             lex, rng, rules, theme_concept=chosen_goal[1])
-        if result is None:
-            _bail(f"construct_scene_none:{chosen_goal[1]}")
+        # No outer _bail on failure — the inner _construct_goal_scene
+        # already set a specific reason (construct_no_en_containment,
+        # construct_no_compatible_scene, construct_no_viable_use_drive,
+        # construct_loop_exhausted). Overwriting it with
+        # "construct_scene_none:<theme>" hides the actual cause.
         return result
     verb_lemma = rng.choice(producers)
     action = lex.actions.get(verb_lemma)
