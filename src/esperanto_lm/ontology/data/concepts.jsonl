@@ -573,3 +573,16 @@
 {"lemma": "kameleono", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}], "category": ["besto"]}
 {"lemma": "salo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
 {"lemma": "sukero", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
+{"lemma": "poeto", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "filozofo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "astronaŭto", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "eksterterano", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "haveno", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "korto", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "butiko", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "marĉo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "rinocero", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "dorso"}], "category": ["besto"]}
+{"lemma": "hipopotamo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "dorso"}], "category": ["besto"]}
+{"lemma": "girafo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "dorso"}], "category": ["besto"]}
+{"lemma": "vinagro", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"]}}
+{"lemma": "kakao", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
