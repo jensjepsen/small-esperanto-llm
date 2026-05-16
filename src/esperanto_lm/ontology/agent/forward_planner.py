@@ -588,8 +588,22 @@ def _ground_derivations(
         """Collect NotPattern(EntityPattern(...)) conjuncts that sit
         alongside `bind(target_var)` within the same rel-arg
         conjunction. Lets the samloke chain's `~entity(type="location")`
-        actually narrow the bridge var."""
+        actually narrow the bridge var.
+
+        Only structural fields (type, concept, category, suffix) get
+        collected — those are immutable for the life of an entity, so
+        excluding them at grounding time is sound. Property-based
+        NotPatterns (`~entity(openness="fermita")`) reference mutable
+        slots and applying them at grounding wrongly bakes the
+        INITIAL value into the relaxed graph: a fermita ŝranko then
+        never participates in any samloke-chain pseudo-action, even
+        when the plan eventually fires malfermi on it. The relaxed
+        graph drops negative preconditions per standard relaxation
+        anyway, so over-estimating reachability through mutable
+        NotPatterns is what we want; the actual planner enforces
+        them at action time."""
         from ..dsl.patterns import NotPattern, RelPattern
+        structural_keys = ("type", "concept", "category", "suffix")
         out: list[dict] = []
         for pat in [when] + list(given):
             for rp in _walk_for_rel_patterns(pat):
@@ -602,9 +616,15 @@ def _ground_derivations(
                     if not has_target_bind:
                         continue
                     for c in conjuncts:
-                        if (isinstance(c, NotPattern)
+                        if not (isinstance(c, NotPattern)
                                 and isinstance(c.inner, EntityPattern)):
-                            out.append(dict(c.inner.constraints))
+                            continue
+                        structural_only = {
+                            k: v for k, v in c.inner.constraints.items()
+                            if k in structural_keys
+                        }
+                        if structural_only:
+                            out.append(structural_only)
         return out
 
     def _entity_matches_constraints(ent, constraints, lex) -> bool:
