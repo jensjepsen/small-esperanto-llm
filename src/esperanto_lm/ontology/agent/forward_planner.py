@@ -2353,7 +2353,14 @@ def plan_for_goal(
     `entity_resolver`: optional callable matching the backward
     planner's `_ENTITY_RESOLVER` signature. When provided, pre-spawns
     missing role-fillers for goal-producing actions so the
-    forward search sees the same scene as backward search would."""
+    forward search sees the same scene as backward search would.
+
+    `max_states=0` is the reachability-only mode: do the initial
+    setup (prespawn, ground actions+derivations, compute h on the
+    relaxed graph) and return `[]` iff h is finite (goal reachable),
+    `None` iff h is INF (unreachable). No search runs. Sampler-side
+    callers use this as a viability gate — see the goal_sampler's
+    relation-drive branch."""
     goal = _drive_to_goal(drive, initial_trace, lex)
     if goal is None:
         return None
@@ -2624,6 +2631,10 @@ def plan_for_goal(
     initial_h, initial_helpful = heuristic_and_helpful(initial_facts)
     if initial_h >= _HEURISTIC_INF:
         return None
+    if max_states == 0:
+        # Reachability gate: h is finite, goal is reachable in the
+        # relaxed graph. Caller wants the viability bit, not a plan.
+        return []
 
     import heapq
     from collections import deque

@@ -500,41 +500,25 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
     return None
 
 
-def _actor_target_terrain_compatible(t, actor_eid, target_eid, lex) -> bool:
-    """True if the actor can physically reach the target's location
-    via shared terrain. Walks target's `en` chain up to a location,
-    then intersects actor.terrain with that location.terrain. When
-    either side has no declared terrain, returns True (assume
-    compatible — terrain is opt-in, absence isn't a constraint)."""
-    actor_ent = t.entities.get(actor_eid)
-    if actor_ent is None:
-        return True
-    actor_concept = lex.concepts.get(actor_ent.concept_lemma)
-    actor_terrain = set(actor_ent.properties.get(
-        "terrain",
-        actor_concept.properties.get("terrain", []) if actor_concept else []))
-    if not actor_terrain:
-        return True
-    cur = target_eid
-    for _ in range(5):
-        cur_ent = t.entities.get(cur)
-        if cur_ent is None:
-            return True
-        cur_concept = lex.concepts.get(cur_ent.concept_lemma)
-        if cur_concept is not None and cur_concept.entity_type == "location":
-            loc_terrain = set(cur_ent.properties.get(
-                "terrain", cur_concept.properties.get("terrain", [])))
-            if not loc_terrain:
-                return True
-            return bool(actor_terrain & loc_terrain)
-        host = next(
-            (r.args[1] for r in t.relations
-             if r.relation == "en" and r.args[0] == cur),
-            None)
-        if host is None or host == cur:
-            break
-        cur = host
-    return True
+def _drive_is_h_reachable(t, drive, lex, rules, derivations,
+                            entity_resolver=None) -> bool:
+    """True iff the planner's relaxed-plan heuristic gives a finite
+    h on this drive — i.e., the goal is reachable in the relaxed
+    graph. Uses `plan_for_goal(max_states=0)` so the planner does
+    the standard prespawn + grounding + derivation work and then
+    short-circuits after computing initial h. Replaces per-feature
+    reachability heuristics (terrain compatibility, locomotion
+    overlap, …) with a single ground-truth check: whatever the
+    planner thinks is reachable, the sampler accepts.
+
+    Imports inline to keep the agent package off this module's
+    import path (sampler is loaded eagerly; planner pulls in heavy
+    grounding machinery)."""
+    from ..agent.forward_planner import plan_for_goal
+    result = plan_for_goal(
+        drive, t, lex, rules, derivations,
+        max_states=0, entity_resolver=entity_resolver)
+    return result is not None
 
 
 def _seed_derivation_only_deps(
@@ -980,23 +964,6 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                     f"{target_ent.concept_lemma if target_ent else '?'})"
                     f"@{scene_lemma}")
                 continue
-            # Terrain reachability: the actor must share at least one
-            # terrain with the target's containing location, else
-            # actor can never physically co-locate with target and
-            # any plan needing samloke is unreachable. Schema's
-            # arg_compare/arg_patterns don't model this — they're
-            # per-pair structural checks; locomotion is environmental.
-            # Snake (terrain=land) trying to "own" oktopodido in
-            # rivero (terrain=water) passes every schema check but
-            # can never reach the river.
-            if not _actor_target_terrain_compatible(
-                    t, actor_eid, target_eid, lex):
-                target_ent = t.entities.get(target_eid)
-                last_loop_reason = (
-                    f"terrain_unreachable:{agent_concept}->"
-                    f"{target_ent.concept_lemma if target_ent else '?'}"
-                    f"@{scene_lemma}")
-                continue
             _ensure_obstacle_tools(t, lex, rng, scene_id)
             _seed_derivation_only_deps(
                 t, action,
@@ -1005,6 +972,23 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 rules, _ALL_DERIVATIONS)
             drive_kind = _PLAIN_RELATION_DRIVES[rel_name]
             drive = (drive_kind, actor_eid, target_eid)
+            # Planner h_FF as the single source of truth for
+            # reachability — see `_drive_is_h_reachable`. Replaces
+            # the per-feature terrain/locomotion checks we'd
+            # otherwise accumulate (snake→fish-in-river fails
+            # h_FF naturally because no locomotion verb grounds
+            # for a land-only animal to reach a water body).
+            spawner_for_check = make_spawner(
+                scene_id, lex, rng, budget=6)
+            if not _drive_is_h_reachable(
+                    t, drive, lex, rules, _ALL_DERIVATIONS,
+                    entity_resolver=spawner_for_check):
+                target_ent = t.entities.get(target_eid)
+                last_loop_reason = (
+                    f"h_unreachable:{rel_name}({agent_concept}->"
+                    f"{target_ent.concept_lemma if target_ent else '?'})"
+                    f"@{scene_lemma}")
+                continue
             return t, scene_id, drive
         else:
             _ensure_obstacle_tools(t, lex, rng, scene_id)
