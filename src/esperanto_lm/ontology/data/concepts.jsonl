@@ -586,3 +586,18 @@
 {"lemma": "girafo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "dorso"}], "category": ["besto"]}
 {"lemma": "vinagro", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"]}}
 {"lemma": "kakao", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}}
+{"lemma": "arkitekto", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "sekretario", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "dentisto", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "direktoro", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
+{"lemma": "foiro", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "stacidomo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "tombejo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
+{"lemma": "marbordo", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "aŭroro", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
+{"lemma": "meteoro", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "kanguruo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "vosto"}], "category": ["besto"]}
+{"lemma": "peliko", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
+{"lemma": "vipero", "entity_type": "animal", "properties": {}, "parts": [{"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}], "category": ["besto"]}
+{"lemma": "mustardo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"]}}
+{"lemma": "konjako", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"]}}
