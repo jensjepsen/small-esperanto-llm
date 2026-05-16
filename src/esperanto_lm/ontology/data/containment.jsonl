@@ -291,3 +291,4 @@
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "sablokastelo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "ŝtono", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "neĝo", "relation": "en"}
+{"container": "figarbo", "contained": "figo", "relation": "sur"}
