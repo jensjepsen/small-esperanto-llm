@@ -822,6 +822,22 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         locations = [l for l, c in lex.concepts.items()
                      if lex.types.is_subtype(c.entity_type, "location")
                      and not getattr(c, "is_category_stub", False)]
+        # Filter to locations where placing the actor wouldn't
+        # violate any required containment rule. The big one is the
+        # `slot_overlap: [terrain]` rule: fish (terrain=water) en
+        # vendejo (terrain=indoor/air) fails this. Sampler-time
+        # pre-filter beats the 5-retry-then-give-up loop, which
+        # wastes attempts because most non-matching scenes fail
+        # for the same reason.
+        from ..containment import (
+            required_fact_violations, resolve_containment,
+        )
+        cidx = resolve_containment(lex)
+        locations = [
+            l for l in locations
+            if not required_fact_violations(
+                l, agent_concept, "en", cidx, lex)
+        ]
     if not locations:
         _bail("no_locations")
         return None
