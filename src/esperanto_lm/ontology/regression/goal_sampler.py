@@ -33,6 +33,21 @@ _ALL_DERIVATIONS = list(DEFAULT_DSL_DERIVATIONS) + list(RUNTIME_DERIVATIONS)
 # rule once.
 _GOAL_INDEX_CACHE: dict[int, dict] = {}
 
+
+def _drive_target_unmeaningful(
+    target_concept_lemma: str, slot: str, lex,
+) -> bool:
+    """Cheap pre-filter: True iff writing `slot` on a `target_concept`
+    entity would be narratively empty. Same predicate the planner's
+    grounding enforces via `_action_effects_meaningful`; this is the
+    early-bail mirror so the sampler can skip the spawn + dep-seed
+    + h_FF cycle (~115ms) for cases a microsecond check rules out."""
+    from ..dsl.introspect import concept_models_slot
+    from ..dsl.rules import RUNTIME_DERIVATIONS
+    target_concept = lex.concepts.get(target_concept_lemma)
+    return not concept_models_slot(
+        target_concept, slot, lex, RUNTIME_DERIVATIONS)
+
 # Plain relation goals we promote into drives (besides CREATED-role
 # event_fire). Map relation name → drive kind understood by the
 # planner's `_drive_to_goal`. The actor must be the first arg of
@@ -62,41 +77,6 @@ def _cached_goal_index(lex, rules):
         cached = build_goal_index(lex, rules)
         _GOAL_INDEX_CACHE[key] = cached
     return cached
-
-
-def _drive_is_degenerate(target_concept_lemma: str, slot: str, lex) -> bool:
-    """A drive ("write slot=value on this target") is degenerate when
-    the target's concept doesn't model the slot. Mechanically the
-    verb can still set the property — but "salato attachment=fiksita"
-    or "vortaro presence=manĝita" reads as nonsense in narrative
-    terms; the concept isn't a thing that meaningfully has the slot.
-
-    Three sources of "models the slot":
-      1. baked into `concept.properties` directly;
-      2. `pervasive` slots (hunger, wetness, temperature, cleanliness)
-         apply to anything matching the slot's applies_to;
-      3. some runtime derivation could write the slot on this concept
-         given its parts (lock_state on valizo via seruro, posture on
-         onklo via animate_default_standing). The bake skips varies
-         slots; this check fills the gap.
-
-    Returns True for drives to skip; False for drives to keep."""
-    target_concept = lex.concepts.get(target_concept_lemma)
-    if target_concept is None:
-        return True  # unknown concept — drop
-    slot_def = lex.slots.get(slot)
-    if slot_def is None:
-        return True  # unknown slot — drop
-    if getattr(slot_def, "pervasive", False):
-        return False  # pervasive: applies broadly, keep
-    if slot in target_concept.properties:
-        return False
-    from ..dsl.introspect import slot_reachable_for_concept
-    from ..dsl.rules import RUNTIME_DERIVATIONS
-    if slot_reachable_for_concept(
-            target_concept, slot, lex, RUNTIME_DERIVATIONS):
-        return False
-    return True
 
 
 _AGENT_GATES_CACHE: dict[int, dict[str, list[tuple[str, str]]]] = {}
@@ -396,8 +376,10 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
             _, slot, value = goal_key
             # Skip drives whose effect slot the constructed theme
             # doesn't model — "salato attachment=fiksita" reads as
-            # nonsense.
-            if _drive_is_degenerate(theme_concept, slot, lex):
+            # nonsense. Mirrors the planner's grounding filter so
+            # we bail cheaply here rather than wait for h_FF to
+            # reject post-spawn.
+            if _drive_target_unmeaningful(theme_concept, slot, lex):
                 continue
             for v in producer_verbs:
                 pa = lex.actions.get(v)
@@ -884,16 +866,13 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
 
         if chosen_goal[0] == "property":
             if eff.target_role == actor_role_name:
-                target_eid = actor_eid
-                # Same degenerate-drive check as the target branch
-                # below: skip drives whose effect slot the actor's
-                # concept doesn't model (e.g. kuniklido posture=
-                # staranta where kuniklido never declares posture).
-                if _drive_is_degenerate(
+                if _drive_target_unmeaningful(
                         agent_concept, eff.property, lex):
                     last_loop_reason = (
-                        f"degenerate_actor_drive:{agent_concept}.{eff.property}")
+                        f"degenerate_actor_drive:"
+                        f"{agent_concept}.{eff.property}")
                     continue
+                target_eid = actor_eid
                 slot_def = lex.slots.get(eff.property)
                 if slot_def is not None and slot_def.vocabulary:
                     non_target = [v for v in slot_def.vocabulary
@@ -932,12 +911,13 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                     continue  # try another scene location
                 target_ent = t.entities.get(target_eid)
                 if (target_ent is not None
-                        and _drive_is_degenerate(
-                            target_ent.concept_lemma, eff.property, lex)):
+                        and _drive_target_unmeaningful(
+                            target_ent.concept_lemma,
+                            eff.property, lex)):
                     last_loop_reason = (
                         f"degenerate_target_drive:"
                         f"{target_ent.concept_lemma}.{eff.property}")
-                    continue  # degenerate drive — retry
+                    continue
             _ensure_obstacle_tools(t, lex, rng, scene_id)
             drive = ("entity_slot", actor_eid, target_eid,
                      slot, target_value)

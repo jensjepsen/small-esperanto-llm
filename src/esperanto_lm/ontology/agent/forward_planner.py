@@ -1536,7 +1536,19 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     not checked here (the relaxed graph layer decides applicability).
     Skips bindings where the same entity fills two roles, matches the
     behavior of `_applicable_actions`. `rule_effects` is the
-    rule-effect index built by `_build_rule_effects_index`."""
+    rule-effect index built by `_build_rule_effects_index`.
+
+    Also enforces *effect meaningfulness*: an action whose effect
+    writes slot S on target T is skipped when T's concept doesn't
+    declare S (and S isn't pervasive, and S isn't derivable for T's
+    type). This reads BOTH halves of the schema's intent — Action's
+    role.properties (who can fill the role) AND Concept.properties
+    (which slots are tracked for this concept) — so the planner's
+    reachability matches the data author's narrative intent. Without
+    it, `kuiri(actor, kafo)` would be a valid grounding (kafo is
+    edible substance; passes role.type/properties) even though kafo
+    doesn't declare cooking_state and the data author signals it
+    isn't a tracked dimension for coffee."""
     out = []
     # State facts for lookup resolution in given-bound add args
     # (fari's en(theme, agent_location)).
@@ -1570,6 +1582,10 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
             if len(set(combo)) != len(combo):
                 continue
             roles = {r.name: e for r, e in zip(action.roles, combo)}
+            # Effect-meaningfulness: skip groundings whose effect
+            # targets a concept that doesn't model the effect's slot.
+            if not _action_effects_meaningful(action, roles, trace, lex):
+                continue
             pres, effs = _ground_action_facts(
                 action, roles, lex, rule_effects, facts=state_facts)
             if not effs:
@@ -1579,6 +1595,32 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 continue  # All effects forbidden — no-op grounding.
             out.append((action, roles, pres, effs))
     return out
+
+
+def _action_effects_meaningful(action, roles, trace, lex) -> bool:
+    """True iff every effect's slot is meaningful for its target
+    entity's concept. Delegates to `concept_models_slot` so the
+    planner and the sampler enforce the same predicate. Rejects
+    `kuiri(actor, kafo)` because kafo doesn't declare cooking_state
+    and no derivation produces it for substances — schema's two
+    halves (Action.role.properties for pre-state, Concept.properties
+    for slot relevance) read jointly determine reachability."""
+    if not action.effects:
+        return True
+    from ..dsl.introspect import concept_models_slot
+    from ..dsl.rules import RUNTIME_DERIVATIONS
+    for eff in action.effects:
+        target_eid = roles.get(eff.target_role)
+        if target_eid is None:
+            continue
+        target_ent = trace.entities.get(target_eid)
+        if target_ent is None:
+            continue
+        target_concept = lex.concepts.get(target_ent.concept_lemma)
+        if not concept_models_slot(
+                target_concept, eff.property, lex, RUNTIME_DERIVATIONS):
+            return False
+    return True
 
 
 def _ground_constructable_actions(

@@ -541,6 +541,49 @@ def slot_reachable_for_concept(
     return False
 
 
+def concept_models_slot(
+    concept, slot: str, lex, derivations: list,
+) -> bool:
+    """True iff `slot` is meaningfully tracked for `concept` per the
+    schema. Three sources of meaningfulness:
+
+      1. `concept.properties` declares `slot` directly — the data
+         author has flagged it as relevant (ovo declares
+         cooking_state, so kuiri(ovo) is meaningful).
+      2. The slot is `pervasive` — applies broadly to its
+         `applies_to` types via a default derivation (hunger,
+         wetness, temperature, cleanliness).
+      3. A derivation could populate `slot` on this concept given
+         its parts (lock_state on valizo via seruro; posture on
+         onklo via animate_default_standing). Catches varies slots
+         the bake intentionally skips.
+
+    Returns False when none of these hold — the concept doesn't
+    model the slot, and writing it would be a narratively-empty
+    state change ("salato attachment=fiksita", "vortaro
+    presence=manĝita"). Used by:
+
+      - planner action grounding to skip effects targeting
+        irrelevant concepts (relaxed graph then reports goal as
+        unreachable → h_FF gate catches at sample time);
+      - sampler's cheap pre-filter to bail before the costly
+        spawn + grounding cycle.
+
+    The lex argument is the Lexicon; derivations is the runtime
+    derivation list (RUNTIME_DERIVATIONS) — passed in rather than
+    imported to avoid a circular dependency with dsl/rules.py."""
+    if concept is None:
+        return False
+    slot_def = lex.slots.get(slot)
+    if slot_def is None:
+        return False
+    if slot in concept.properties:
+        return True
+    if getattr(slot_def, "pervasive", False):
+        return True
+    return slot_reachable_for_concept(concept, slot, lex, derivations)
+
+
 def _given_satisfied_by_parts(
     given: list, host_var: Var, concept, lex,
 ) -> bool:
