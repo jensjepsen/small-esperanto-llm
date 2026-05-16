@@ -214,6 +214,13 @@ def _concepts_matching_role(lex, role_spec) -> list[str]:
     for lemma, concept in lex.concepts.items():
         if not lex.types.is_subtype(concept.entity_type, role_spec.type):
             continue
+        # Category stubs (besto, planto, …) are abstract — they
+        # exist for category-derivation purposes only and don't
+        # carry concrete properties like terrain or locomotion. If
+        # picked as an actor, the planner has nothing to work with;
+        # if picked as a theme, the spawner has nothing to place.
+        if getattr(concept, "is_category_stub", False):
+            continue
         ok = True
         for slot, vals in role_spec.properties.items():
             slot_def = lex.slots.get(slot)
