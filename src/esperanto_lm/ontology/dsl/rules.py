@@ -1985,6 +1985,18 @@ floro_emits_smell = derive(
 )
 
 
+# Things made of glass break into vitropecetoj when they break. Lets
+# `broken_fragile_creates_shards` find the shard concept via the
+# bake-materialized `transforms_on_break` rather than per-concept
+# manual tagging. New glass artifacts (lenses, screens, mirrors)
+# only need `made_of=glass`; the shard outcome falls out.
+glass_breaks_to_shards = derive(
+    when=entity(made_of="glass") & bind(T_gb := var("T")),
+    implies=property(T_gb, "transforms_on_break", "vitropecetoj"),
+    name="glass_breaks_to_shards",
+)
+
+
 # Animates emit sound (footsteps, breathing, vocalizations). Lets
 # eared animates learn of someone else's presence via aŭdi.
 animate_emits_sound = derive(
@@ -2689,6 +2701,7 @@ DEFAULT_DSL_DERIVATIONS = [
     has_ear_can_hear,
     edible_emits_smell,
     floro_emits_smell,
+    glass_breaks_to_shards,
     animate_emits_sound,
     vehicle_emits_sound,
     animal_can_bleki,
