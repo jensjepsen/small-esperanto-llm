@@ -631,3 +631,18 @@
 {"lemma": "pizo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["legomo"]}
 {"lemma": "tegmento", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}
 {"lemma": "plafono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}
+{"lemma": "akacio", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
+{"lemma": "baobabo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
+{"lemma": "figarbo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
+{"lemma": "populo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
+{"lemma": "lavendo", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"]}, "category": ["planto", "floro"]}
+{"lemma": "jasmeno", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"]}, "category": ["planto", "floro"]}
+{"lemma": "orkideo", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"]}, "category": ["planto", "floro"]}
+{"lemma": "violo", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"]}, "category": ["planto", "floro"]}
+{"lemma": "papavero", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"]}, "category": ["planto", "floro"]}
+{"lemma": "avokado", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
+{"lemma": "granato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
+{"lemma": "frambo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
+{"lemma": "kokoso", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
+{"lemma": "aspargo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["legomo"]}
+{"lemma": "batato", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["legomo"]}
