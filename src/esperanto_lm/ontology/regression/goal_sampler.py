@@ -495,6 +495,15 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
                     slot, rng.choice(non_target))
         _ensure_obstacle_tools(t, lex, rng, scene_id)
         drive = ("entity_slot", actor_eid, stub_eid, slot, value)
+        from .spawner import make_spawner
+        spawner_for_check = make_spawner(scene_id, lex, rng, budget=6)
+        if not _drive_is_h_reachable(
+                t, drive, lex, rules, _ALL_DERIVATIONS,
+                entity_resolver=spawner_for_check):
+            _bail(
+                f"construct_h_unreachable:{theme_concept}."
+                f"{slot}={value}@{scene_lemma}")
+            continue
         return t, scene_id, drive
     _bail(f"construct_loop_exhausted:{theme_concept}")
     return None
@@ -916,6 +925,17 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             _ensure_obstacle_tools(t, lex, rng, scene_id)
             drive = ("entity_slot", actor_eid, target_eid,
                      slot, target_value)
+            from .spawner import make_spawner
+            spawner_for_check = make_spawner(
+                scene_id, lex, rng, budget=6)
+            if not _drive_is_h_reachable(
+                    t, drive, lex, rules, _ALL_DERIVATIONS,
+                    entity_resolver=spawner_for_check):
+                last_loop_reason = (
+                    f"h_unreachable:entity_slot:"
+                    f"{verb_lemma}({agent_concept}.{slot}={target_value})"
+                    f"@{scene_lemma}")
+                continue
             return t, scene_id, drive
         elif (chosen_goal[0] == "relation"
                 and chosen_goal[1] in _PLAIN_RELATION_DRIVES
@@ -1000,6 +1020,16 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             # for verbs with many roles.
             drive = ("event_fire", actor_eid, verb_lemma,
                      ((actor_role_name, actor_eid),))
+            from .spawner import make_spawner
+            spawner_for_check = make_spawner(
+                scene_id, lex, rng, budget=6)
+            if not _drive_is_h_reachable(
+                    t, drive, lex, rules, _ALL_DERIVATIONS,
+                    entity_resolver=spawner_for_check):
+                last_loop_reason = (
+                    f"h_unreachable:event_fire:"
+                    f"{verb_lemma}({agent_concept})@{scene_lemma}")
+                continue
             return t, scene_id, drive
     _bail(last_loop_reason)
     return None
