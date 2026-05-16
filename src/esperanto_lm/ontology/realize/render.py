@@ -482,10 +482,11 @@ class _Ctx:
     __slots__ = ("trace", "lexicon", "mentioned", "rng", "tense",
                  "scene_location_id", "rendered_event_ids",
                  "last_nonperson", "adjective_history",
-                 "alias_history", "derived", "relevant_slots")
+                 "alias_history", "derived", "setup_derived",
+                 "relevant_slots")
 
     def __init__(self, trace, lexicon, *, scene_location_id, rng, tense,
-                 derived=None):
+                 derived=None, setup_derived=None):
         self.trace = trace
         self.lexicon = lexicon
         self.mentioned: set[str] = set()
@@ -493,6 +494,15 @@ class _Ctx:
         self.tense = tense
         self.scene_location_id = scene_location_id
         self.derived = derived
+        # Derived state computed from the setup snapshot (pre-event
+        # relations). Used to render setup-phase messages with the
+        # posture / category that held BEFORE events fired — without
+        # this, "Najbaro estas en la oficejo" picked up post-event
+        # `posture=naĝanta` from a later eniri(rivero) move and
+        # rendered "Najbaro naĝas en la oficejo". None when the caller
+        # didn't supply setup_relations (static traces); renderers
+        # fall through to `derived` in that case.
+        self.setup_derived = setup_derived
         self.rendered_event_ids: set[str] = set()
         # Tracks the most recently mentioned non-person entity id.
         # Cleared to None whenever a *different* non-person is mentioned,
@@ -662,7 +672,8 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
         # all write to posture via derivations). One uniform path —
         # no per-relation lookup logic, the data layer carries it.
         b_form = ctx.name_for(b)
-        verb_root = _contextual_posture_verb_root(a, ctx)
+        verb_root = _contextual_posture_verb_root(
+            a, ctx, derived=_phase_derived(m, ctx))
         if verb_root is not None:
             flip = ctx.rng.random() < 0.5 if ctx.rng is not None else False
             sent = (f"{a_form} {verb_root}{ctx.tense} sur {b_form}."
@@ -680,7 +691,8 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
         # set posture fire on `sur`/`en` containment, not `apud`, so
         # an animate apud the lake stays at the unmarked posture and
         # we render the bland template. No relation-literal gating here.
-        verb_root = _contextual_posture_verb_root(a, ctx)
+        verb_root = _contextual_posture_verb_root(
+            a, ctx, derived=_phase_derived(m, ctx))
         if verb_root is not None:
             flip = ctx.rng.random() < 0.5 if ctx.rng is not None else False
             sent = (f"{a_form} {verb_root}{ctx.tense} {rel.relation} {b_form}."
@@ -1005,7 +1017,21 @@ _AGENT_STATE_SLOTS_BY_PREFERENCE: tuple[str, ...] = (
 )
 
 
-def _contextual_posture_verb_root(entity, ctx) -> Optional[str]:
+def _phase_derived(msg, ctx):
+    """Pick the DerivedState snapshot matching a message's temporal
+    phase. Setup-phase messages (the scene preamble — relations,
+    qualities, groundings recorded before any event fired) consult
+    `ctx.setup_derived` so derived posture/category reflects the
+    pre-event world. Event-phase messages and the fallback when
+    setup_derived is absent use `ctx.derived` (post-event)."""
+    if getattr(msg, "phase", "event") == "setup" and ctx.setup_derived is not None:
+        return ctx.setup_derived
+    return ctx.derived
+
+
+def _contextual_posture_verb_root(
+    entity, ctx, *, derived=None,
+) -> Optional[str]:
     """Verb root for an entity's most-informative agent-state, picking
     a verb over the bland `estas` template.
 
@@ -1023,16 +1049,23 @@ def _contextual_posture_verb_root(entity, ctx) -> Optional[str]:
          precondition — that default isn't worth rendering as "X
          staras en Y" everywhere.
 
+    `derived`: optional override for which DerivedState snapshot to
+    consult. Setup-phase messages pass `ctx.setup_derived` so
+    derived posture reflects the pre-event scene (naĝanta only if
+    the entity was in a water body at setup, not because a later
+    event moved them there).
+
     Returns the first slot with a non-default value's verb root,
     or None if no slot has informative state. Caller falls back to
     the bland `estas` template."""
+    derived = derived if derived is not None else ctx.derived
     for slot_name in _AGENT_STATE_SLOTS_BY_PREFERENCE:
         intrinsic = entity.properties.get(slot_name, [])
         if intrinsic:
             return _state_verb_root(slot_name, intrinsic[0], ctx.lexicon)
-        if ctx.derived is None:
+        if derived is None:
             continue
-        value = ctx.derived.properties.get((entity.id, slot_name))
+        value = derived.properties.get((entity.id, slot_name))
         if not value:
             continue
         slot = ctx.lexicon.slots.get(slot_name)
@@ -1707,7 +1740,8 @@ def _render_grouped_relation(
         only = ctx.trace.entities.get(m.contained_ids[0])
         if only is not None and ctx.lexicon.types.is_subtype(
                 only.entity_type, "animate"):
-            posture_root = _contextual_posture_verb_root(only, ctx)
+            posture_root = _contextual_posture_verb_root(
+                only, ctx, derived=_phase_derived(m, ctx))
             if posture_root is not None:
                 verb = f"{posture_root}{ctx.tense}"
     return f"{prep} {container_form} {verb} {list_str}."
@@ -1826,12 +1860,13 @@ def render_messages(
     rng: Optional[random.Random] = None,
     tense: Optional[str] = None,
     derived=None,
+    setup_derived=None,
 ) -> str:
     if tense is None:
         tense = _pick_tense(rng)
     ctx = _Ctx(trace, lexicon,
                scene_location_id=scene_location_id, rng=rng, tense=tense,
-               derived=derived)
+               derived=derived, setup_derived=setup_derived)
 
     raw: list[tuple[str, bool]] = []   # (text, has_cause_in_prose)
     # Trace-wide preamble from the `mondo` singleton (currently just

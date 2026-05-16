@@ -74,7 +74,7 @@
 {"container_pattern": {"category": "surfaco"}, "contained": "lampo", "relation": "sur"}
 {"container": "lavejo", "contained": "sapo", "relation": "en"}
 {"container": "lavejo", "contained": "spegulo", "relation": "en"}
-{"container_pattern": {"property": {"terrain": "water"}, "entity_type": "location"}, "contained_pattern": {"property": {"terrain": "water"}}, "relation": "en"}
+{"container_pattern": {"property": {"terrain": "water"}, "entity_type": "location"}, "contained_pattern": {"property": {"terrain": "water"}, "entity_type": "animal"}, "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "ombrelo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained": "mantelo", "relation": "en"}
 {"container": "parko", "contained": "pilko", "relation": "en"}

@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..dsl.effects import AddRelation, Change, CreateEntity
+from ..dsl.effects import AddRelation, Change, CreateEntity, TransferN
 from ..dsl.engine import Rule
 from ..dsl.introspect import _role_vars
 from ..dsl.patterns import EventPattern, Var
@@ -141,6 +141,62 @@ def verb_postconditions(verb_lemma: str, rules: list, lex) -> list[VerbPostcondi
                     target_role=None, slot=None, value=None,
                     relation=eff.relation,
                     role_args=tuple(role_args),
+                ))
+            elif isinstance(eff, TransferN):
+                # transfer_n establishes havi(target, source). Surface
+                # it as a relation postcondition so possession goals
+                # (preni, kapti, ...) flow through the goal index the
+                # same way explicit AddRelation effects do.
+                src, tgt = eff.source, eff.target
+                if not (isinstance(src, Var) and isinstance(tgt, Var)):
+                    continue
+                src_role = var_to_role.get(id(src))
+                tgt_role = var_to_role.get(id(tgt))
+                if src_role is None or tgt_role is None:
+                    continue
+                out.append(VerbPostcondition(
+                    kind="relation", verb_lemma=verb_lemma,
+                    target_role=None, slot=None, value=None,
+                    relation="havi",
+                    role_args=(tgt_role, src_role),
+                ))
+        # Synthesize `scias_lokon` postconditions for the perception
+        # pattern: a rule that creates a `fakto`, asserts
+        # `subjekto(fakto, X)` AND `konas(K, fakto)` derives
+        # `scias_lokon(K, X)` at runtime. Without surfacing this, the
+        # goal index has no producers for scias_lokon, so anything
+        # that backchains through preni's scias_lokon precondition
+        # (the goal_sampler precondition-graph closure) never visits
+        # vidi/aŭdi/flari and the lamp seeding never fires. Mirrors
+        # the planner's runtime synthesis in `_build_rule_effects_index`.
+        fakto_vars: set = set()
+        for eff in effects:
+            if isinstance(eff, CreateEntity) and getattr(eff, "concept", None) == "fakto":
+                av = getattr(eff, "as_var", None)
+                if isinstance(av, Var):
+                    fakto_vars.add(id(av))
+        for fv in fakto_vars:
+            subj_role = None
+            knower_role = None
+            for eff in effects:
+                if not isinstance(eff, AddRelation):
+                    continue
+                if eff.relation == "subjekto" and len(eff.args) == 2:
+                    if (isinstance(eff.args[0], Var)
+                            and id(eff.args[0]) == fv
+                            and isinstance(eff.args[1], Var)):
+                        subj_role = var_to_role.get(id(eff.args[1]))
+                elif eff.relation == "konas" and len(eff.args) == 2:
+                    if (isinstance(eff.args[1], Var)
+                            and id(eff.args[1]) == fv
+                            and isinstance(eff.args[0], Var)):
+                        knower_role = var_to_role.get(id(eff.args[0]))
+            if subj_role and knower_role:
+                out.append(VerbPostcondition(
+                    kind="relation", verb_lemma=verb_lemma,
+                    target_role=None, slot=None, value=None,
+                    relation="scias_lokon",
+                    role_args=(knower_role, subj_role),
                 ))
     # Dedup: multiple rules can contribute the same postcondition for
     # the same verb (vidi has vidi_learns_en, vidi_learns_sur,

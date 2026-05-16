@@ -93,9 +93,30 @@ def realize_trace(
     # produce inconsistent prose depending on caller plumbing.
     from ..dsl import compute_derived_state
     from ..dsl.rules import DEFAULT_DSL_DERIVATIONS, RUNTIME_DERIVATIONS
-    derived = compute_derived_state(
-        trace, list(DEFAULT_DSL_DERIVATIONS) + list(RUNTIME_DERIVATIONS),
-        lexicon)
+    all_derivations = list(DEFAULT_DSL_DERIVATIONS) + list(RUNTIME_DERIVATIONS)
+    derived = compute_derived_state(trace, all_derivations, lexicon)
+    # Setup-time derived state: a clone of the trace with relations
+    # rewound to the pre-event snapshot and events dropped. The
+    # renderer uses this for setup-phase messages so derived
+    # posture/category reflects how the world stood before any
+    # events fired — without it, post-event en(najbaro, rivero)
+    # back-propagated posture=naĝanta into the setup preamble's
+    # en(najbaro, oficejo) line. Only meaningful when the caller
+    # passed setup_relations and events ran; otherwise the two
+    # snapshots are equivalent and we reuse `derived`.
+    setup_derived = derived
+    if setup_relations is not None and trace.events:
+        setup_trace = trace.fork()
+        setup_trace.relations = list(setup_relations)
+        setup_trace.events = []
+        setup_trace._event_ids = set()
+        setup_trace._current_props = {}
+        setup_trace._current_props_version = 0
+        setup_trace._parts_index = {
+            r.args[1] for r in setup_relations
+            if r.relation == "havas_parton" and len(r.args) >= 2}
+        setup_derived = compute_derived_state(
+            setup_trace, all_derivations, lexicon)
     messages = plan_messages(
         trace, lexicon,
         scene_location_id=scene_location_id,
@@ -106,7 +127,7 @@ def realize_trace(
     return render_messages(
         messages, trace, lexicon,
         scene_location_id=scene_location_id, rng=rng, tense=tense,
-        derived=derived)
+        derived=derived, setup_derived=setup_derived)
 
 
 __all__ = [

@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from ..causal import EntityInstance, Trace, effect_changes, make_event
 from ..dsl.effects import AddRelation
+from ..dsl.introspect import _bind_var_in_pattern
 from ..dsl.patterns import EventPattern
 from .scene_builder import SceneBuilder, scene
 
@@ -662,6 +663,7 @@ def _ensure_property_satisfiable(target_eid, slot, value, t, lex, rng,
     property is already satisfied or randomizable to satisfy, skip.
     Otherwise walk derivations producing it; for each, walk `given`
     for required entity bindings and seed missing ones."""
+    from ..sampler import _add_entity_randomized
     if depth > 4:
         return
     key = (target_eid, slot, value)
@@ -686,7 +688,7 @@ def _ensure_property_satisfiable(target_eid, slot, value, t, lex, rng,
     # via that verb at runtime; no seeding needed here (chain
     # ingredients for the producer were already seeded by
     # _seed_chain_dependencies if relevant).
-    if _slot_value_producible(slot, value, lex):
+    if _verbs_producing(lex, slot, value):
         return
 
     # Walk derivations producing (slot, value). For each, examine the
@@ -706,32 +708,103 @@ def _ensure_property_satisfiable(target_eid, slot, value, t, lex, rng,
             # or entity that must exist with certain slot values.
             var_bindings: dict[int, str] = {id(imp.entity): target_eid}
             patterns = list(d.given)
-            # Container-walking case: `rel("en", contained=A, container=L)`
-            # binds L to wherever A is. Use that, then recurse on L's
-            # required slot values from sibling entity patterns.
-            container_var = None
+            # Container-walking: a relation pattern with imp.entity
+            # bound on one side resolves the OTHER side's var to the
+            # entity's current `en` container. Walks `en` (where the
+            # role names are fixed) AND `samloke` (symmetric, used by
+            # derivations like agent_illuminated where a person sur
+            # a sofa en a koridoro is still samloke with koridoro).
+            # We iterate arg_patterns rather than hardcoding role
+            # names — for symmetric relations the bound side can be
+            # either arg, so we look up the matching one by var
+            # identity instead of trying both orderings.
+            # Two distinct uses for the "other side" of a containment
+            # relation pattern keyed off imp.entity:
+            #
+            # 1. CONTAINER binding — when the other var's
+            #    entity_pattern names a location-shaped constraint
+            #    (agent_illuminated: samloke(AIA, AIL) +
+            #    entity(type=location, lit_state=luma) & bind(AIL)),
+            #    the var resolves to target_eid's en host, and we
+            #    recurse on the var's slot constraints there.
+            #
+            # 2. PRODUCER spawning — when the other var's constraints
+            #    DON'T match the en host (location_lit_by_active_lamp:
+            #    samloke(ILL, ILD) + entity(power_state=aktiva,
+            #    lights_when_on=yes) & bind(ILD); a location isn't
+            #    aktiva), the var represents a producer entity to
+            #    spawn en target_eid's en host (or en target_eid
+            #    itself when target is a top-level location).
+            #
+            # Both paths need container_eid = where downstream
+            # entities live. Bound vars get recursed on (case 1);
+            # unbound producer vars get spawned later (case 2).
+            container_eid = next(
+                (r.args[1] for r in t.relations
+                 if r.relation == "en" and r.args[0] == target_eid),
+                None)
+            if container_eid is None:
+                target_ent = t.entities.get(target_eid)
+                if (target_ent is not None
+                        and target_ent.entity_type == "location"):
+                    container_eid = target_eid
             for p in patterns:
                 if not isinstance(p, RelPattern):
                     continue
-                if p.relation != "en":
+                if p.relation not in ("en", "samloke"):
                     continue
-                # `contained` arg = imp.entity ?
-                contained_pat = p.arg_patterns.get("contained")
-                container_pat = p.arg_patterns.get("container")
-                if contained_pat is None or container_pat is None:
+                if container_eid is None:
+                    break
+                arg_vars = {
+                    name: _bind_var_in_pattern(pat)
+                    for name, pat in p.arg_patterns.items()
+                }
+                arg_vars = {n: v for n, v in arg_vars.items()
+                            if v is not None}
+                if len(arg_vars) < 2:
                     continue
-                contained_var = _bind_var_in_pattern(contained_pat)
-                container_var_local = _bind_var_in_pattern(container_pat)
-                if contained_var is None or container_var_local is None:
+                matched_name = next(
+                    (n for n, v in arg_vars.items()
+                     if id(v) == id(imp.entity)), None)
+                if matched_name is None:
                     continue
-                if id(contained_var) != id(imp.entity):
+                other_name, other_var = next(
+                    (kv for kv in arg_vars.items()
+                     if kv[0] != matched_name), (None, None))
+                if other_var is None:
                     continue
-                # Find target_eid's container in trace.
-                for r in t.relations:
-                    if r.relation == "en" and r.args[0] == target_eid:
-                        var_bindings[id(container_var_local)] = r.args[1]
-                        container_var = container_var_local
+                # Bind other_var only when the var's entity_pattern
+                # carries an explicit `type` constraint AND
+                # container_eid's concept satisfies it. The type
+                # constraint is the structural discriminator between
+                # "this var refers to an existing co-located entity"
+                # (agent_illuminated's AIL: type=location, bind to
+                # the en-host) and "this var is a producer to spawn"
+                # (location_lit_by_active_lamp's ILD:
+                # power_state=aktiva, no type — falls through to
+                # spawn). Non-type slot constraints on a bound var
+                # are checked via the downstream recursion, not here,
+                # so that derivable values (lit_state=luma) don't
+                # block binding the location they apply to.
+                cont_ent = t.entities.get(container_eid)
+                cont_concept = (lex.concepts.get(cont_ent.concept_lemma)
+                                if cont_ent is not None else None)
+                if cont_concept is None:
+                    continue
+                type_req = None
+                for q in patterns:
+                    for ep, bv in _walk_entity_patterns_with_binds(q):
+                        if bv is None or id(bv) != id(other_var):
+                            continue
+                        tr = ep.constraints.get("type")
+                        if isinstance(tr, str):
+                            type_req = tr
+                            break
+                    if type_req is not None:
                         break
+                if type_req is not None and lex.types.is_subtype(
+                        cont_concept.entity_type, type_req):
+                    var_bindings[id(other_var)] = container_eid
                 break
             # For every entity-pattern in given that binds a known var
             # AND has slot constraints, recurse to ensure those slots.
@@ -752,20 +825,33 @@ def _ensure_property_satisfiable(target_eid, slot, value, t, lex, rng,
                             seen_keys, depth + 1)
             # If a free var (the entity producer) needs to be
             # introduced: find concepts matching the entity-pattern's
-            # constraints and seed one en the bound location.
-            if container_var is not None:
-                container_eid = var_bindings[id(container_var)]
+            # constraints and seed one en the bound location. Walks
+            # both `en` and `samloke` — the producer is any var that
+            # isn't bound yet and isn't imp.entity itself (the
+            # target). `samloke(target, producer)` is the typical
+            # lamp-spawn shape; `en(producer, target)` covers the
+            # legacy ingredient-spawn case.
+            if container_eid is not None:
                 for p in patterns:
-                    if not isinstance(p, RelPattern) or p.relation != "en":
+                    if not isinstance(p, RelPattern):
                         continue
-                    contained_pat = p.arg_patterns.get("contained")
-                    contained_var = _bind_var_in_pattern(contained_pat) \
-                        if contained_pat is not None else None
+                    if p.relation not in ("en", "samloke"):
+                        continue
+                    arg_vars = {
+                        name: _bind_var_in_pattern(pat)
+                        for name, pat in p.arg_patterns.items()
+                    }
+                    arg_vars = {n: v for n, v in arg_vars.items()
+                                if v is not None}
+                    contained_var = None
+                    for name, v in arg_vars.items():
+                        if id(v) == id(imp.entity):
+                            continue
+                        if id(v) in var_bindings:
+                            continue
+                        contained_var = v
+                        break
                     if contained_var is None:
-                        continue
-                    if id(contained_var) == id(imp.entity):
-                        continue   # original target's en, not a producer
-                    if id(contained_var) in var_bindings:
                         continue
                     # Find this var's entity-pattern constraints in `given`.
                     constraints: dict[str, str] = {}
@@ -804,6 +890,24 @@ def _ensure_property_satisfiable(target_eid, slot, value, t, lex, rng,
                             candidate_concepts.append(lemma)
                     if not candidate_concepts:
                         continue
+                    # If any existing entity already satisfies the
+                    # producer constraints (per concept), skip — one
+                    # producer is enough; the existing entity carries
+                    # whatever varies-slot value the planner can
+                    # subgoal on. Without this, every recursive call
+                    # spawned another lamp/lanterno/kameno even when
+                    # the first one already covered the role.
+                    already_have = False
+                    for existing_eid, existing_ent in t.entities.items():
+                        existing_concept = lex.concepts.get(
+                            existing_ent.concept_lemma)
+                        if existing_concept is None:
+                            continue
+                        if existing_ent.concept_lemma in candidate_concepts:
+                            already_have = True
+                            break
+                    if already_have:
+                        break
                     chosen = rng.choice(candidate_concepts)
                     seed_eid = chosen
                     suffix = 0
@@ -817,6 +921,7 @@ def _ensure_property_satisfiable(target_eid, slot, value, t, lex, rng,
                             "en", (seed_eid, container_eid), lex)
                     except (KeyError, ValueError):
                         continue
+                    break
 
 
 def _walk_entity_patterns_with_binds(pattern):
@@ -1036,6 +1141,23 @@ def _place_respecting_containment(
     for require_location in (True, False):
         for cont_lemma, _afforded_rel in containers_for(
                 concept_lemma, idx, lex):
+            # Self-containment guard: containment.jsonl pattern entries
+            # like "water-terrain location contains water-terrain
+            # things" match rivero on BOTH sides, so `containers_for`
+            # lists rivero among rivero's containers. The Tier-3
+            # recursion would then resolve cont_eid back to the same
+            # entity and assert `en(rivero, rivero)` — a self-loop
+            # that surfaces as "Estas rivero en la rivero".
+            if cont_lemma == concept_lemma:
+                continue
+            # Ancestor-chain guard: containers already in `avoid` are
+            # being placed up the call stack. Picking one as our
+            # container would create a cycle once the outer call
+            # closes its own assert_relation. Tier-0's "already in
+            # trace, return it" fast path would otherwise hand back
+            # the ancestor eid and let the cycle complete.
+            if cont_lemma in avoid:
+                continue
             cont_concept = lex.concepts.get(cont_lemma)
             if cont_concept is None:
                 continue
@@ -1053,8 +1175,16 @@ def _place_respecting_containment(
                     break
             if valid_rel is None:
                 continue
+            # Avoid the eid we're currently placing as a container
+            # candidate for the recursive search — water_body containment
+            # admits rivero-in-lago and lago-in-rivero both ways, so an
+            # unconstrained recursion picks the outer entity as the
+            # inner's container and produces a cycle. Layered on top of
+            # the caller's `avoid`, which carries down the existing
+            # ancestor set.
             cont_eid = _place_respecting_containment(
                 t, lex, scene_id, cont_lemma, rng, preferred_id=scene_id,
+                avoid=(avoid | {eid}),
                 _depth=_depth + 1)
             if cont_eid is None:
                 continue

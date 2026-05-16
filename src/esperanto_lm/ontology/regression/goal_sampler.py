@@ -20,12 +20,29 @@ import random
 from typing import Optional
 
 from ..causal import Trace
+from ..dsl.rules import DEFAULT_DSL_DERIVATIONS, RUNTIME_DERIVATIONS
 from .goals import build_goal_index
+
+# Both bake-time and runtime derivations need to be visible to the
+# bounded precondition-closure: `illuminated` lives in
+# RUNTIME_DERIVATIONS, `lit_state` in DEFAULT_DSL_DERIVATIONS.
+_ALL_DERIVATIONS = list(DEFAULT_DSL_DERIVATIONS) + list(RUNTIME_DERIVATIONS)
 
 
 # Cache the index per lexicon — building it walks every action and
 # rule once.
 _GOAL_INDEX_CACHE: dict[int, dict] = {}
+
+# Plain relation goals we promote into drives (besides CREATED-role
+# event_fire). Map relation name → drive kind understood by the
+# planner's `_drive_to_goal`. The actor must be the first arg of
+# the goal's role_tuple (we only emit drives where the agent is
+# the subject of the relation).
+_PLAIN_RELATION_DRIVES: dict[str, str] = {
+    "havi": "possession",
+    "en": "location",
+    "vestita": "wearing",
+}
 
 # Diagnostic channel: when regress_for_goal returns None, the last
 # return path tags itself here. Bench / debug scripts can read this
@@ -483,6 +500,77 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
     return None
 
 
+def _seed_derivation_only_deps(
+    t, action, role_eids: dict, scene_id: str, lex, rng,
+    rules, derivations, *,
+    seen: set | None = None, depth: int = 0,
+) -> None:
+    """Walk the verb-precondition graph from `action`, seeding only
+    derivation-only role.properties (those no verb's effect writes
+    directly). The planner can subgoal everything else via action
+    subgoaling; seeding it would just bloat the trace without
+    helping the relaxed-plan heuristic.
+
+    Concrete cases this covers:
+      - `vidi.agent.illuminated=yes` — only the `agent_illuminated`
+        derivation produces it; the planner can't subgoal
+        "make agent illuminated" via any action. Without seeding a
+        lamp into the trace, `lit_state` stays malluma and the
+        relaxed graph reports h=INF.
+
+    The seeding itself is delegated to `_seed_role_property_dependencies`,
+    which is already bounded internally to (slot, value) pairs that
+    `_verbs_producing` doesn't cover. We only walk the precondition
+    chain to find which producer verbs to interrogate — surmeti's
+    own role.properties don't include illuminated, but its plan
+    chain reaches vidi via havi → preni → scias_lokon → vidi.
+
+    The transitive walk is the dangerous-feeling part — task #183's
+    initial implementation also called `_seed_role_chain_dependencies`
+    and `_seed_chain_dependencies` per visited verb, which spawned
+    entities the planner could subgoal itself and slowed the bench
+    ~10×. Here we ONLY call the role-property helper, which is a
+    no-op for verbs without derivation-only constraints. seen-set
+    dedups visits; depth cap bounds cycles."""
+    from .seeders import _seed_role_property_dependencies
+    from ..schemas import RelationPrecondition
+    from .goals import CREATED_ROLE
+    if depth > 4:
+        return
+    if seen is None:
+        seen = set()
+    if action.lemma in seen:
+        return
+    seen.add(action.lemma)
+
+    # Seed derivation-only role.properties for THIS verb. The helper
+    # bails internally for (slot, value) pairs already satisfied,
+    # randomizable, or producible by some verb.
+    _seed_role_property_dependencies(
+        t, action, role_eids, lex, rng, derivations)
+
+    # Walk relation-precondition producers to extend the chain.
+    # IfProperty gates aren't followed: `_ensure_obstacle_tools`
+    # handles those, and the planner can subgoal them itself.
+    index = _cached_goal_index(lex, rules)
+    for pc in action.preconditions:
+        if not isinstance(pc, RelationPrecondition):
+            continue
+        for goal_key, producer_lemmas in index.items():
+            if goal_key[0] != "relation" or goal_key[1] != pc.rel:
+                continue
+            if CREATED_ROLE in goal_key[2]:
+                continue
+            for verb_lemma in producer_lemmas:
+                producer = lex.actions.get(verb_lemma)
+                if producer is None:
+                    continue
+                _seed_derivation_only_deps(
+                    t, producer, role_eids, scene_id, lex, rng,
+                    rules, derivations,
+                    seen=seen, depth=depth + 1)
+
+
 def _ensure_obstacle_tools(t, lex, rng, scene_id) -> None:
     """Walk the trace for entities whose current state would fire an
     if_property gate on some action, requiring a transition that the
@@ -588,7 +676,7 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     the planner via the entity_resolver hook — materializes everything
     else with verb-aware setup.
 
-    Two goal kinds:
+    Goal kinds:
       - Property goals: ("property", slot, value). Drive shape is
         `entity_slot`. The verb's effect mutates the target's slot.
       - CREATED-role relation goals: ("relation", rel, role_tuple)
@@ -597,6 +685,12 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         vidi, aŭdi, flari, montri, krii, ludi, …). Drive shape is
         `event_fire`; the planner just has to fire the verb with the
         appropriate role bindings — the rule creates the entity.
+      - Plain relation goals (havi/en/vestita) with agent-as-first-
+        arg: drive shape is `possession`/`location`/`wearing`. The
+        actor is the scene's actor; the target is spawned via the
+        producer verb's second-arg role spec. The planner is free
+        to pick any verb that achieves the relation (not necessarily
+        the one we sampled).
     """
     from ..sampler import _add_entity_randomized, _ensure_world
     from .seeders import _concepts_matching_role
@@ -610,10 +704,14 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         if g[0] == "property":
             all_goals.append((g, verbs))
         elif g[0] == "relation":
-            # Only include relation goals where some role is
-            # `<created>` — those resolve to event_fire drives.
-            _, _rel, role_args = g
+            _, rel_name, role_args = g
             if CREATED_ROLE in role_args:
+                # event_fire drive: rule creates the related entity.
+                all_goals.append((g, verbs))
+            elif (rel_name in _PLAIN_RELATION_DRIVES
+                    and role_args[0] == "agent"):
+                # Plain havi/en/vestita with agent-as-actor →
+                # possession/location/wearing drive.
                 all_goals.append((g, verbs))
         elif g[0] == "construct":
             all_goals.append((g, verbs))
@@ -797,6 +895,62 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             _ensure_obstacle_tools(t, lex, rng, scene_id)
             drive = ("entity_slot", actor_eid, target_eid,
                      slot, target_value)
+            return t, scene_id, drive
+        elif (chosen_goal[0] == "relation"
+                and chosen_goal[1] in _PLAIN_RELATION_DRIVES
+                and CREATED_ROLE not in chosen_goal[2]
+                and chosen_goal[2][0] == "agent"):
+            # possession/location/wearing drive: spawn the second-
+            # arg target via the producer verb's role spec; the
+            # planner is free to pick any verb achieving the
+            # relation (not necessarily the one we sampled).
+            _, rel_name, role_args = chosen_goal
+            target_role_name = role_args[1]
+            target_role_spec = next(
+                (r for r in action.roles
+                 if r.name == target_role_name), None)
+            if target_role_spec is None:
+                _bail(f"missing_target_role:"
+                      f"{verb_lemma}.{target_role_name}")
+                return None  # schema issue, not placement
+            from .spawner import make_spawner
+            setup_spawner = make_spawner(
+                scene_id, lex, rng, budget=1)
+            target_eid = setup_spawner(
+                target_role_spec, t, lex,
+                set(t.entities.keys()),
+                action=action, role_name=target_role_name)
+            if target_eid is None:
+                last_loop_reason = (
+                    f"relation_target_spawn_failed:"
+                    f"{verb_lemma}.{target_role_name}@{scene_lemma}")
+                continue
+            # Schema-level viability: the relation's `arg_excludes`,
+            # `arg_not_part`, `arg_patterns`, and `arg_compare` already
+            # encode what makes a (actor, target) pairing valid — havi
+            # forbids location/person themes, nemovebla themes, and
+            # requires theme.maso ≤ owner.lift_capacity. The role spec
+            # alone (animate, physical) accepts nonsense like
+            # papagido→delfeno because both pass the type filter; the
+            # relation schema is the principled gate. Reject here so
+            # the planner doesn't have to try and fail.
+            if not t.is_relation_permitted(
+                    rel_name, (actor_eid, target_eid), lex):
+                target_ent = t.entities.get(target_eid)
+                last_loop_reason = (
+                    f"relation_not_permitted:{rel_name}("
+                    f"{agent_concept},"
+                    f"{target_ent.concept_lemma if target_ent else '?'})"
+                    f"@{scene_lemma}")
+                continue
+            _ensure_obstacle_tools(t, lex, rng, scene_id)
+            _seed_derivation_only_deps(
+                t, action,
+                {actor_role_name: actor_eid,
+                 target_role_name: target_eid}, scene_id, lex, rng,
+                rules, _ALL_DERIVATIONS)
+            drive_kind = _PLAIN_RELATION_DRIVES[rel_name]
+            drive = (drive_kind, actor_eid, target_eid)
             return t, scene_id, drive
         else:
             _ensure_obstacle_tools(t, lex, rng, scene_id)

@@ -80,14 +80,17 @@ def plan_messages(
         for eid in _synthetic_grounding_targets(
                 trace, scene_location_id, setup_relations):
             if eid in referenced:
-                messages.append(SceneGroundingMessage(entity_id=eid))
+                messages.append(SceneGroundingMessage(
+                    entity_id=eid, phase="setup"))
         for msg in _quality_grounding_messages(
                 trace, lexicon, inlined_entities):
             if getattr(msg, "entity_id", None) in referenced:
+                msg.phase = "setup"
                 messages.append(msg)
         for rel in relations_for_setup:
             if all(arg in referenced for arg in rel.args):
-                messages.append(RelationMessage(relation=rel))
+                messages.append(RelationMessage(
+                    relation=rel, phase="setup"))
         return messages
 
     # Bucket grounding messages by their anchor event index. Entities
@@ -126,14 +129,15 @@ def plan_messages(
         anchor = first_event_idx.get(entity_id, 0)
         pre_event[anchor].append(EntityQualityMessage(
             entity_id=entity_id, slot=slot,
-            quality_lemma=quality_lemma))
+            quality_lemma=quality_lemma, phase="setup"))
 
     for eid in _synthetic_grounding_targets(
             trace, scene_location_id, setup_relations):
         if eid not in referenced:
             continue
         anchor = first_event_idx.get(eid, 0)
-        pre_event[anchor].append(SceneGroundingMessage(entity_id=eid))
+        pre_event[anchor].append(SceneGroundingMessage(
+            entity_id=eid, phase="setup"))
 
     for msg in _quality_grounding_messages(
             trace, lexicon, inlined_entities):
@@ -141,13 +145,15 @@ def plan_messages(
         if eid not in referenced:
             continue
         anchor = first_event_idx.get(eid, 0)
+        msg.phase = "setup"
         pre_event[anchor].append(msg)
 
     for rel in relations_for_setup:
         if not all(arg in referenced for arg in rel.args):
             continue
         anchor = _relation_anchor(rel, first_event_idx, trace)
-        pre_event[anchor].append(RelationMessage(relation=rel))
+        pre_event[anchor].append(RelationMessage(
+            relation=rel, phase="setup"))
 
     messages = []
     for idx, ev in enumerate(trace.events):
@@ -1020,6 +1026,7 @@ def aggregate_relations(messages: list[Message]) -> list[Message]:
                 relation=rel_name,
                 container_id=container_id,
                 contained_ids=contained_ids,
+                phase="setup",
             ))
         else:
             # Singleton: fall back to a regular RelationMessage so
@@ -1032,7 +1039,8 @@ def aggregate_relations(messages: list[Message]) -> list[Message]:
                     else (contained_ids[0], container_id))
             out.append(RelationMessage(
                 relation=RelationAssertion(
-                    relation=rel_name, args=args)))
+                    relation=rel_name, args=args),
+                phase="setup"))
     out.extend(leftover)
     out.extend(rest)
     return out

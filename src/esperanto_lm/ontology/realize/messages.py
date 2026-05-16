@@ -39,8 +39,17 @@ from ..causal import Event, RelationAssertion
 class Message:
     """Base class. `cause_event_id` hooks into connective selection —
     if the preceding rendered sentence's event is a cause, the next
-    sentence gets a `Tial` / `Sekve` / `Pro tio` prefix."""
+    sentence gets a `Tial` / `Sekve` / `Pro tio` prefix.
+
+    `phase` distinguishes setup-preamble messages (describing the
+    scene as it stood before any events fired) from event-flow
+    messages. The renderer consults this when picking derived state:
+    setup messages use `ctx.setup_derived` so posture/category
+    reflects the pre-event world. Default `"event"`; the planner
+    overrides it on every message it puts in the pre-event buckets.
+    """
     cause_event_id: Optional[str] = None
+    phase: str = "event"
 
 
 @dataclass(kw_only=True)
