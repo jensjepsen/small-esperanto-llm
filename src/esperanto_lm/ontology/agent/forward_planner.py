@@ -1514,8 +1514,17 @@ def _canon_rel(rel_name: str, args: tuple, sym: frozenset) -> tuple:
     order). Live engine matches symmetric relations by trying both
     orderings; the forward planner uses fact-tuple equality, so we
     canonicalize once at emission and reuse the canonical form
-    everywhere."""
-    if rel_name in sym and len(args) == 2 and args[0] > args[1]:
+    everywhere.
+
+    Skips canonicalization when an arg is a tuple — list-valued role
+    bindings (fari.parts = (p1,p2,p3)) reach here via the producer-
+    recursion in _infra_prespawn, and `string > tuple` would raise.
+    A tuple-vs-string pair never represents the same symmetric fact
+    under arg-swap, so returning args unchanged is safe."""
+    if (rel_name not in sym or len(args) != 2
+            or isinstance(args[0], tuple) or isinstance(args[1], tuple)):
+        return args
+    if args[0] > args[1]:
         return (args[1], args[0])
     return args
 

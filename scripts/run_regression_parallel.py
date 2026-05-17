@@ -275,12 +275,11 @@ def _worker_task(args):
     import os
     from esperanto_lm.ontology import realize_trace
     from esperanto_lm.ontology.agent.dispatcher import (
-        _drive_summary, plan_for_drive,
+        _drive_summary, execute_drive, plan_for_drive,
     )
     from esperanto_lm.ontology.agent.planner import (
         _step_to_event, get_planner_failure_reason,
     )
-    from esperanto_lm.ontology.agent.forward_planner import plan_for_goal
     from esperanto_lm.ontology.dsl import run_dsl
     from esperanto_lm.ontology.regression import sample_regression_scene
     from esperanto_lm.ontology.regression.goal_sampler import regress_for_goal
@@ -304,18 +303,17 @@ def _worker_task(args):
         setup = t.snapshot_relations()
         plan_exc: Exception | None = None
         try:
-            from esperanto_lm.ontology.regression.spawner import make_spawner
-            spawner = make_spawner(scene_id, _LEX, rng)
             if use_forward:
-                plan = plan_for_goal(
+                plan = execute_drive(
                     drive, t, _LEX, _RULES, _DERIVATIONS,
+                    scene_id=scene_id, rng=rng,
                     max_states=int(os.environ.get("MAX_STATES", "1200")),
                     max_plan_length=int(
-                        os.environ.get("MAX_PLAN_LENGTH", "16")),
-                    entity_resolver=spawner, rng=rng,
-                    exclude_verbs=getattr(
-                        t, "_planner_exclude_verbs", None))
+                        os.environ.get("MAX_PLAN_LENGTH", "16")))
             else:
+                from esperanto_lm.ontology.regression.spawner import (
+                    make_spawner)
+                spawner = make_spawner(scene_id, _LEX, rng)
                 plan = plan_for_drive(
                     drive, t, _LEX, _RULES, _DERIVATIONS, rng=rng,
                     entity_resolver=spawner)
@@ -362,10 +360,14 @@ def _worker_task(args):
             })
             continue
         try:
-            for step in plan:
-                event = _step_to_event(step, _LEX)
-                t.events.append(event)
-                run_dsl(t, _RULES, _DERIVATIONS, _LEX)
+            if not use_forward:
+                # Backward planner doesn't execute; do it here.
+                for step in plan:
+                    event = _step_to_event(step, _LEX)
+                    t.events.append(event)
+                    run_dsl(t, _RULES, _DERIVATIONS, _LEX)
+            # Forward planner: execute_drive already executed (and
+            # may have appended a phase-2 followup plan).
             prose = realize_trace(
                 t, _LEX, setup_relations=setup,
                 scene_location_id=scene_id, rng=rng)

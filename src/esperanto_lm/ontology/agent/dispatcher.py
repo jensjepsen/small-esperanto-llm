@@ -12,6 +12,8 @@ coverage harness for prose listings.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from .planner import (
     _BudgetExceeded, _DERIVED_CACHE, _ENTITY_RESOLVER, _PLANNER_RNG,
     _SIM_BUDGET, _SIM_CACHE, _SimulationBudget,
@@ -150,6 +152,79 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
         if rtoken is not None:
             _ENTITY_RESOLVER.reset(rtoken)
 
+
+
+def execute_drive(
+    drive, t, lex, rules, derivations, *,
+    scene_id, rng,
+    max_states: int = 1200, max_plan_length: int = 16,
+    spawn_budget: int = 6, prefer_scene_p: float = 1.0,
+) -> Optional[list]:
+    """Single runner: plan + execute a drive into `t`, then for
+    construct drives (event_fire on fari) pick a followup goal where
+    the constructed entity plays a role and plan + execute that too.
+    Returns the concatenated plan-step list across all phases, or
+    None if the first phase couldn't be planned.
+
+    Both bench_samplers and run_regression_parallel call this so the
+    two-phase construct → followup logic lives in one place. The
+    forward planner is the planner (this helper only handles the
+    forward path; backward-only callers should keep using
+    `plan_for_drive` for now).
+
+    Late imports keep the agent package from depending on regression
+    at module-load time (cross-package import would otherwise pull
+    seeders + spawner during agent.__init__)."""
+    from .forward_planner import plan_for_goal
+    from .planner import _step_to_event
+    from ..dsl import run_dsl
+    from ..regression.spawner import make_spawner
+    spawner = make_spawner(
+        scene_id, lex, rng,
+        budget=spawn_budget, prefer_scene_p=prefer_scene_p)
+    plan = plan_for_goal(
+        drive, t, lex, rules, derivations,
+        max_states=max_states, max_plan_length=max_plan_length,
+        entity_resolver=spawner, rng=rng,
+        exclude_verbs=getattr(t, "_planner_exclude_verbs", None))
+    if not plan:
+        return None
+    full_plan = list(plan)
+    for step in plan:
+        event = _step_to_event(step, lex)
+        t.events.append(event)
+        run_dsl(t, rules, derivations, lex)
+    # Two-phase: construct drives (event_fire on fari) get a followup
+    # goal where the just-constructed stub plays a role. Failures
+    # silently leave the single-phase trace intact.
+    if drive[0] == "event_fire" and len(drive) >= 3 and drive[2] == "fari":
+        from ..regression.goal_sampler import pick_followup_drive
+        actor_eid = drive[1]
+        bindings = dict(drive[3])
+        focus_eid = bindings.get("theme")
+        if focus_eid is not None:
+            fdrive = pick_followup_drive(
+                t, scene_id, actor_eid, focus_eid, lex, rng, rules)
+            if fdrive is not None:
+                try:
+                    fspawner = make_spawner(
+                        scene_id, lex, rng,
+                        budget=spawn_budget, prefer_scene_p=prefer_scene_p)
+                    fplan = plan_for_goal(
+                        fdrive, t, lex, rules, derivations,
+                        max_states=max_states, max_plan_length=max_plan_length,
+                        entity_resolver=fspawner, rng=rng,
+                        exclude_verbs=getattr(
+                            t, "_planner_exclude_verbs", None))
+                    if fplan:
+                        for step in fplan:
+                            event = _step_to_event(step, lex)
+                            t.events.append(event)
+                            run_dsl(t, rules, derivations, lex)
+                        full_plan.extend(fplan)
+                except Exception:
+                    pass
+    return full_plan
 
 
 def _drive_summary(drive):

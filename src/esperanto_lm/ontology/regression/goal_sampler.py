@@ -349,131 +349,28 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
             if instrument_eid is None:
                 continue  # no tool slot worked
 
-        # Downstream drive: agent USES the constructed thing. Walk
-        # the property-goal index and keep any (slot, value) for
-        # which at least one producer verb's theme role accepts the
-        # constructable concept — that's exactly the same filter
-        # `regress_for_goal` applies, scoped to our chosen theme.
-        # Weight by producer count so common drives surface naturally.
-        # Auto-extends: adding a new verb whose effect produces a
-        # state change on theme.type=physical immediately becomes a
-        # candidate use-verb here.
-        viable_drives: list = []
-        for goal_key, producer_verbs in goal_index.items():
-            if goal_key[0] != "property":
-                continue
-            _, slot, value = goal_key
-            # Skip drives whose effect slot the constructed theme
-            # doesn't model — "salato attachment=fiksita" reads as
-            # nonsense. Mirrors the planner's grounding filter so
-            # we bail cheaply here rather than wait for h_FF to
-            # reject post-spawn.
-            if _drive_target_unmeaningful(theme_concept, slot, lex):
-                continue
-            for v in producer_verbs:
-                pa = lex.actions.get(v)
-                if pa is None:
-                    continue
-                # Find the producer's theme role (the one whose
-                # property the effect writes to). Use any effect role
-                # whose slot/value matches the goal — that's the role
-                # bound to our constructable.
-                target_role = None
-                for eff in pa.effects:
-                    if eff.property == slot and eff.value == value:
-                        target_role = next(
-                            (r for r in pa.roles
-                             if r.name == eff.target_role), None)
-                        if target_role is not None:
-                            break
-                if target_role is None:
-                    continue
-                # Same accept-check the spawner uses: subtype +
-                # role.properties compatibility against the concept.
-                if not lex.types.is_subtype(
-                        theme_def.entity_type, target_role.type):
-                    continue
-                ok = True
-                for s, vals in (target_role.properties or {}).items():
-                    if not vals:
-                        continue
-                    slot_def = lex.slots.get(s)
-                    cvals = theme_def.properties.get(s, [])
-                    if slot_def is None:
-                        continue
-                    if slot_def.varies:
-                        if getattr(slot_def, "pervasive", False):
-                            continue
-                        if not cvals:
-                            ok = False
-                            break
-                        continue
-                    if not (set(vals) & set(cvals)):
-                        ok = False
-                        break
-                if ok:
-                    viable_drives.append(
-                        (slot, value, v, len(producer_verbs)))
-                    break
-        if not viable_drives:
-            _bail(f"construct_no_viable_use_drive:{theme_concept}")
-            return None
-        weights = [w for *_, w in viable_drives]
-        slot, value, use_verb, _w = rng.choices(
-            viable_drives, weights=weights, k=1)[0]
-        # Sampler-side chain: if the picked use-verb has an agent-side
-        # cascade gate (e.g. manĝi when malsata cascades to satiĝi,
-        # trinki when soifa cascades to sensoifiĝi), force the actor
-        # into that gate state so the cascade fires as a follow-up
-        # event. The primary drive is unchanged — the cascade adds
-        # extra events to the trace at engine-run time, chaining the
-        # narrative: "fari teon → trinkis la teon → sensoifiĝis."
-        cascade_gates = _agent_cascade_gates(use_verb, rules)
-        for gate_slot, gate_val in cascade_gates:
-            t.entities[actor_eid].set_property(gate_slot, gate_val)
-        # Force the stub's current value on this slot to be NON-target
-        # so the drive isn't trivially already-satisfied. The stub was
-        # built via _add_entity_randomized which randomizes varies-true
-        # slots, so it may have rolled the target value (e.g.
-        # integrity=tranĉita matches the tranĉi drive). Mirrors the
-        # verb-aware setup the regular spawner applies for effect-target
-        # roles. Also intersect with the use-verb's role.properties on
-        # the slot — varmigi.theme requires temperature=malvarma, so
-        # picking varmega as the non-target leaves varmigi inapplicable
-        # and the planner dead-ends. Same fix as regress_for_goal's
-        # actor-target branch.
-        slot_def = lex.slots.get(slot)
-        if slot_def is not None and slot_def.vocabulary:
-            non_target = [v for v in slot_def.vocabulary if v != value]
-            use_action = lex.actions.get(use_verb)
-            if use_action is not None:
-                use_target_role = next(
-                    (r for r in use_action.roles
-                     for eff in use_action.effects
-                     if eff.target_role == r.name
-                     and eff.property == slot
-                     and eff.value == value), None)
-                if use_target_role is not None:
-                    role_required = (use_target_role.properties
-                                      or {}).get(slot, ())
-                    if role_required:
-                        narrowed = [v for v in non_target
-                                    if v in role_required]
-                        if narrowed:
-                            non_target = narrowed
-            if non_target:
-                t.entities[stub_eid].set_property(
-                    slot, rng.choice(non_target))
+        # Construct-only drive: fire fari with all roles bound. The
+        # bench/runner detects construct drives and follows up with
+        # a separate `pick_followup_drive` plan whose goal involves
+        # the just-constructed stub. Splits the old all-in-one
+        # "build X + use-verb X" bundle into two plans → richer
+        # phase-2 diversity (peti, doni, varmigi, etc. — not just
+        # the canonical state-change use-verb).
         _ensure_obstacle_tools(t, lex, rng, scene_id)
-        drive = ("entity_slot", actor_eid, stub_eid, slot, value)
+        bindings: list = [
+            ("agent", actor_eid),
+            ("theme", stub_eid),
+            ("parts", tuple(part_eids)),
+        ]
+        if instrument_eid is not None:
+            bindings.append(("instrument", instrument_eid))
+        drive = ("event_fire", actor_eid, "fari", tuple(bindings))
         from .spawner import make_spawner
         spawner_for_check = make_spawner(scene_id, lex, rng, budget=6)
         if not _drive_is_h_reachable(
                 t, drive, lex, rules, _ALL_DERIVATIONS,
                 entity_resolver=spawner_for_check):
-            _bail(
-                f"construct_h_unreachable:{theme_concept}."
-                f"{slot}={value}@{scene_lemma}")
+            _bail(f"construct_h_unreachable:{theme_concept}@{scene_lemma}")
             continue
         return t, scene_id, drive
     _bail(f"construct_loop_exhausted:{theme_concept}")
@@ -671,6 +568,169 @@ def _ensure_obstacle_tools(t, lex, rng, scene_id) -> None:
                                 break
                         if spawned:
                             break
+
+
+def pick_followup_drive(
+    t, scene_id: str, actor_eid: str, focus_eid: str,
+    lex, rng: random.Random, rules,
+) -> Optional[tuple]:
+    """Pick a NEW goal for `actor_eid` where `focus_eid` plays a role,
+    spawn whatever extras the chosen drive needs, and return the
+    drive. The caller plans + executes it as a second phase after
+    the construct plan completes. Returns None when no viable
+    followup is found.
+
+    Two drive shapes considered:
+
+      1. entity_slot — same as the legacy bundled construct-use-drive:
+         pick a (slot, value) and a producer verb whose target role
+         accepts focus's concept. Force focus's slot to non-target so
+         the drive isn't trivially satisfied.
+
+      2. altruistic_relation_drive havi(recipient, focus) — spawn a
+         non-actor person as recipient; actor donates the constructed
+         item. Unlocks the narrative shape "Maria built a sandwich,
+         then gave it to Petro." that the bundled drive couldn't.
+
+    Enumerates candidates from both shapes, picks one uniformly, and
+    only falls through to the next if h_reachable rejects it. The
+    actor + focus are already in the trace from the construct phase,
+    so most setups are cheap (no scene-location pick, no part placement).
+    """
+    focus = t.entities.get(focus_eid)
+    if focus is None:
+        return None
+    focus_concept = focus.concept_lemma
+    focus_def = lex.concepts.get(focus_concept)
+    if focus_def is None:
+        return None
+    goal_index = _cached_goal_index(lex, rules)
+    candidates: list = []   # each item: a callable that builds + returns
+                            # a drive, or None on failure.
+
+    # --- Shape 1: entity_slot use-verb on focus ---------------------
+    for goal_key, producer_verbs in goal_index.items():
+        if goal_key[0] != "property":
+            continue
+        _, slot, value = goal_key
+        if _drive_target_unmeaningful(focus_concept, slot, lex):
+            continue
+        for v in producer_verbs:
+            pa = lex.actions.get(v)
+            if pa is None:
+                continue
+            target_role = None
+            for eff in pa.effects:
+                if eff.property == slot and eff.value == value:
+                    target_role = next(
+                        (r for r in pa.roles
+                         if r.name == eff.target_role), None)
+                    if target_role is not None:
+                        break
+            if target_role is None:
+                continue
+            if not lex.types.is_subtype(
+                    focus_def.entity_type, target_role.type):
+                continue
+            ok = True
+            for s, vals in (target_role.properties or {}).items():
+                if not vals:
+                    continue
+                slot_def = lex.slots.get(s)
+                cvals = focus_def.properties.get(s, [])
+                if slot_def is None:
+                    continue
+                if slot_def.varies:
+                    if getattr(slot_def, "pervasive", False):
+                        continue
+                    if not cvals:
+                        ok = False
+                        break
+                    continue
+                if not (set(vals) & set(cvals)):
+                    ok = False
+                    break
+            if ok:
+                candidates.append(("entity_slot", slot, value, v))
+                break  # one producer per goal-key is enough
+
+    # --- Shape 2: altruistic havi(recipient, focus) -----------------
+    # doni is the producer; spawn a non-actor person as recipient.
+    doni = lex.actions.get("doni")
+    if doni is not None:
+        candidates.append(("altruistic_havi",))
+
+    if not candidates:
+        return None
+    rng.shuffle(candidates)
+
+    from .spawner import make_spawner
+    setup_spawner = make_spawner(
+        scene_id, lex, rng, budget=2,
+        actor_eid=actor_eid, inject_owner_p=0.0)
+
+    for cand in candidates:
+        if cand[0] == "entity_slot":
+            _, slot, value, use_verb = cand
+            # Force focus.slot to non-target so the drive isn't already
+            # satisfied. Mirrors the regress_for_goal entity_slot branch.
+            slot_def = lex.slots.get(slot)
+            if slot_def is not None and slot_def.vocabulary:
+                non_target = [v for v in slot_def.vocabulary if v != value]
+                use_action = lex.actions.get(use_verb)
+                if use_action is not None:
+                    use_target_role = next(
+                        (r for r in use_action.roles
+                         for eff in use_action.effects
+                         if eff.target_role == r.name
+                         and eff.property == slot
+                         and eff.value == value), None)
+                    if use_target_role is not None:
+                        req = (use_target_role.properties
+                                or {}).get(slot, ())
+                        if req:
+                            narrowed = [
+                                v for v in non_target if v in req]
+                            if narrowed:
+                                non_target = narrowed
+                if non_target:
+                    t.entities[focus_eid].set_property(
+                        slot, rng.choice(non_target))
+            cascade_gates = _agent_cascade_gates(use_verb, rules)
+            for gate_slot, gate_val in cascade_gates:
+                t.entities[actor_eid].set_property(gate_slot, gate_val)
+            drive = (
+                "entity_slot", actor_eid, focus_eid, slot, value)
+            spawner_for_check = make_spawner(
+                scene_id, lex, rng, budget=6)
+            if _drive_is_h_reachable(
+                    t, drive, lex, rules, _ALL_DERIVATIONS,
+                    entity_resolver=spawner_for_check):
+                return drive
+        elif cand[0] == "altruistic_havi":
+            recipient_role = next(
+                (r for r in doni.roles if r.name == "recipient"), None)
+            if recipient_role is None:
+                continue
+            recipient_eid = setup_spawner(
+                recipient_role, t, lex, set(t.entities.keys()),
+                action=doni, role_name="recipient",
+                inject_owner=False)
+            if recipient_eid is None:
+                continue
+            if not t.is_relation_permitted(
+                    "havi", (recipient_eid, focus_eid), lex):
+                continue
+            drive = (
+                "altruistic_relation_drive", "havi",
+                actor_eid, recipient_eid, focus_eid)
+            spawner_for_check = make_spawner(
+                scene_id, lex, rng, budget=6)
+            if _drive_is_h_reachable(
+                    t, drive, lex, rules, _ALL_DERIVATIONS,
+                    entity_resolver=spawner_for_check):
+                return drive
+    return None
 
 
 def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:

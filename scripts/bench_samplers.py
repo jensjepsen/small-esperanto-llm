@@ -97,12 +97,13 @@ def _run_batch(args):
     # better on yield (96.8% vs ~50%) and latency (~130 ms/scene). Set
     # USE_BACKWARD=1 to opt back into the legacy backward chainer.
     use_forward = os.environ.get("USE_BACKWARD") != "1"
-    from esperanto_lm.ontology.agent.dispatcher import plan_for_drive
+    from esperanto_lm.ontology.agent.dispatcher import (
+        execute_drive, plan_for_drive,
+    )
     from esperanto_lm.ontology.agent.planner import get_planner_failure_reason
     from esperanto_lm.ontology.regression import sample_regression_scene
     from esperanto_lm.ontology.regression.goal_sampler import regress_for_goal
     from esperanto_lm.ontology.regression.spawner import make_spawner
-    from esperanto_lm.ontology.agent.forward_planner import plan_for_goal
 
     import os
     spawn_budget = int(os.environ.get("SPAWN_BUDGET", "6"))
@@ -124,20 +125,25 @@ def _run_batch(args):
             no_sample += 1
             continue
         t, scene_id, drive = sample
-        spawner = make_spawner(
-            scene_id, _LEX, rng, budget=spawn_budget,
-            prefer_scene_p=float(os.environ.get("PREFER_SCENE_P", "1.0")))
         try:
             if use_forward:
-                plan = plan_for_goal(
+                # execute_drive handles the two-phase construct →
+                # followup loop and returns the concat'd plan steps
+                # so chain stats reflect both phases.
+                plan = execute_drive(
                     drive, t, _LEX, _RULES, _DERIVATIONS,
+                    scene_id=scene_id, rng=rng,
                     max_states=int(os.environ.get("MAX_STATES", "1200")),
                     max_plan_length=int(
                         os.environ.get("MAX_PLAN_LENGTH", "16")),
-                    entity_resolver=spawner, rng=rng,
-                    exclude_verbs=getattr(
-                        t, "_planner_exclude_verbs", None))
+                    spawn_budget=spawn_budget,
+                    prefer_scene_p=float(
+                        os.environ.get("PREFER_SCENE_P", "1.0")))
             else:
+                spawner = make_spawner(
+                    scene_id, _LEX, rng, budget=spawn_budget,
+                    prefer_scene_p=float(
+                        os.environ.get("PREFER_SCENE_P", "1.0")))
                 plan = plan_for_drive(
                     drive, t, _LEX, _RULES, _DERIVATIONS, rng=rng,
                     entity_resolver=spawner, max_depth=max_depth,
