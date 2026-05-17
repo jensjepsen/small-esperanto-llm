@@ -442,7 +442,14 @@ def main():
         print(f"  {n:>4}×  {chain}")
 
     if args.out:
-        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        parent = Path(args.out).parent
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except (FileExistsError, OSError):
+            # `parent` may be a (possibly broken) symlink — exist_ok=True
+            # raises FileExistsError on PyPy when the target dir is
+            # absent. Let the open() below surface the real error.
+            pass
         with open(args.out, "w") as f:
             for rec in records:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")

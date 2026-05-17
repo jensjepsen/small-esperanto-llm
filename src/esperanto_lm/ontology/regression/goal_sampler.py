@@ -908,11 +908,14 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 if target_role_spec is None:
                     _bail(f"missing_target_role:{verb_lemma}.{eff.target_role}")
                     return None  # schema issue, not placement
-                # inject_owner=False: the drive's target must be reachable
-                # by the actor — handing it to an NPC up front would force
-                # a peti chain that the planner often can't model
-                # (single-agent planning, no social-handoff verb produced
-                # by a non-actor agent in goal_index).
+                # inject_owner=False: skip NPC injection on the target
+                # spawn. Without this, large-parts concepts like
+                # submarŝipo (whose `_add_entity_randomized` cascades
+                # into a deep parts tree) combine with a freshly-spawned
+                # NPC owner to push scene size past ~150 entities, and
+                # the planner's O(entities^role_count) grounding hangs.
+                # Doni/peti chains still surface via instrument spawns
+                # (extras, which keep the default inject_owner_p=0.30).
                 target_eid = setup_spawner(
                     target_role_spec, t, lex,
                     set(t.entities.keys()),
@@ -968,6 +971,8 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             setup_spawner = make_spawner(
                 scene_id, lex, rng, budget=1,
                 actor_eid=actor_eid, inject_owner_p=0.30)
+            # inject_owner=False: see entity_slot branch above for
+            # the parts-cascade × NPC-spawn entity-blowup hazard.
             target_eid = setup_spawner(
                 target_role_spec, t, lex,
                 set(t.entities.keys()),
@@ -1087,10 +1092,11 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             setup_spawner = make_spawner(
                 scene_id, lex, rng, budget=6,
                 actor_eid=actor_eid, inject_owner_p=0.30)
-            # Recipient: protect from NPC ownership too — the recipient
-            # IS the addressee of the drive, not a candidate for being
-            # owned by some third party (havi(NPC, recipient) is a
-            # schema violation anyway, but explicit is clearer).
+            # inject_owner=False on both: avoid the parts-cascade ×
+            # NPC-spawn entity-blowup hazard (see entity_slot branch
+            # above). Also avoids handing the target to the recipient
+            # at setup time, which would trivially satisfy the drive
+            # (havi(recipient, target) becomes true at t=0 → empty plan).
             recipient_eid = setup_spawner(
                 recipient_role_spec, t, lex,
                 set(t.entities.keys()),
@@ -1101,11 +1107,6 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                     f"altruistic_recipient_spawn_failed:"
                     f"{verb_lemma}@{scene_lemma}")
                 continue
-            # Target: protect from NPC ownership. If an NPC pre-owned
-            # the gift the actor would need to peti first, but the
-            # single-agent planner can't model a non-actor agent doni-ing
-            # back. Plan becomes vidi → preni → doni (3 steps) when
-            # the giver picks the target up first.
             target_eid = setup_spawner(
                 target_role_spec, t, lex,
                 set(t.entities.keys()),
@@ -1190,10 +1191,8 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             setup_spawner = make_spawner(
                 scene_id, lex, rng, budget=6,
                 actor_eid=actor_eid, inject_owner_p=0.30)
-            # Protect the place-drive's obj from NPC ownership — meti
-            # needs the actor to bring the obj to the dest. Dest is
-            # typically a location, where havi-injection is silently
-            # rejected by schema anyway.
+            # inject_owner=False: see entity_slot branch above for
+            # the parts-cascade × NPC-spawn entity-blowup hazard.
             obj_eid = setup_spawner(
                 obj_role_spec, t, lex, set(t.entities.keys()),
                 action=action, role_name=obj_role_name,
