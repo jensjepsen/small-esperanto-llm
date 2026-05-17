@@ -1937,6 +1937,11 @@ floats_when_lighter_than_liquid = derive(
     implies=[
         relation("sur", T_float, L_float),
         not_relation("en", T_float, L_float),
+        # Passive float pose. Listed AFTER the swim derivation in
+        # RUNTIME_DERIVATIONS, so animates already-in-water get
+        # naĝanta (active swim) via first-write-wins on the scalar
+        # posture slot; non-animate floaters land here with flosanta.
+        property(T_float, "posture", "flosanta"),
     ],
     name="floats_when_lighter_than_liquid",
 )
