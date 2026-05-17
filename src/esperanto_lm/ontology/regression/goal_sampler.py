@@ -122,6 +122,125 @@ def _agent_cascade_gates(verb_lemma: str, rules) -> list[tuple[str, str]]:
     return out.get(verb_lemma, [])
 
 
+def _spawn_constructable_setup(
+    t, scene_id: str, theme_concept: str, lex, rng, rules,
+) -> Optional[tuple]:
+    """Place the constructable's parts, instrument, and stub into the
+    trace. Shared between fresh-scene `_construct_goal_scene` and the
+    followup path in `regress_for_goal(existing_trace=…)`.
+
+    Returns `(part_eids, stub_eid, instrument_eid)` on success, where
+    `instrument_eid` may be None if the constructable has no
+    crafted_with. Returns None if any required setup step fails.
+
+    Operations:
+      - Spawn each part concept once via `_place_respecting_containment`
+        (count pinned to 1 so the recipe encodes WHICH ingredients, not
+        how many of each).
+      - For parts with `requires` (e.g. teo's akvo must be bolanta),
+        spawn a tool whose instrument signature produces the required
+        property — keeps the scene plannable for the boil/cook/etc.
+        chain before fari fires.
+      - Pre-stage the stub theme as `{theme_concept}_planned` with
+        `created_at_event=0` so the realizer treats fari as the
+        introduction (not pre-existence). Auto-materialized parts from
+        `_add_entity_randomized` are dropped — the gathered parts
+        attach via the fari rule, not the cascade.
+      - Optional instrument from `crafted_with`."""
+    from ..sampler import _add_entity_randomized
+    from .seeders import _place_respecting_containment
+    theme_def = lex.concepts.get(theme_concept)
+    if theme_def is None or not theme_def.parts:
+        return None
+    part_concepts = [p.concept for p in theme_def.parts]
+    crafted_with = list(theme_def.crafted_with)
+    goal_index = _cached_goal_index(lex, rules)
+    # Parts: one entity per part concept (containment-respecting).
+    part_eids: list = []
+    for pc in part_concepts:
+        placed = _place_respecting_containment(
+            t, lex, scene_id, pc, rng,
+            preferred_id=scene_id, existing_eid=None)
+        if placed is None:
+            return None
+        part_eids.append(placed)
+        t.entities[placed].set_property("count", "1")
+    # Walk part.requires; place an instrument whose signature produces
+    # the required property (e.g. boli for bolanta water).
+    for part_spec in theme_def.parts:
+        for slot, allowed in part_spec.requires.items():
+            for value in allowed:
+                producers = goal_index.get(
+                    ("property", slot, value), ())
+                placed_tool = False
+                for v_lemma in producers:
+                    action = lex.actions.get(v_lemma)
+                    if action is None:
+                        continue
+                    instr_role = next(
+                        (r for r in action.roles
+                         if r.name == "instrument"), None)
+                    if instr_role is None:
+                        continue
+                    sigs = instr_role.properties.get(
+                        "functional_signature", [])
+                    if not sigs:
+                        continue
+                    for tool_lemma, tool_def in lex.concepts.items():
+                        if getattr(tool_def, "is_category_stub", False):
+                            continue
+                        tool_sigs = tool_def.properties.get(
+                            "functional_signature", [])
+                        if not any(s in tool_sigs for s in sigs):
+                            continue
+                        if _place_respecting_containment(
+                                t, lex, scene_id, tool_lemma, rng,
+                                preferred_id=scene_id,
+                                existing_eid=None) is not None:
+                            placed_tool = True
+                            break
+                    if placed_tool:
+                        break
+                if not placed_tool:
+                    return None
+    # Stub: planner-only entity for the to-be-constructed theme.
+    stub_eid = f"{theme_concept}_planned"
+    if stub_eid not in t.entities:
+        try:
+            _add_entity_randomized(
+                t, theme_concept, lex, rng, entity_id=stub_eid)
+        except (KeyError, ValueError):
+            return None
+        # Drop auto-materialized sub-parts from
+        # _add_entity_randomized's parts cascade — fari attaches the
+        # gathered parts, not these.
+        stub_parts = [
+            p_eid for p_eid in list(t.entities.keys())
+            if p_eid.startswith(stub_eid + "_")]
+        for p_eid in stub_parts:
+            del t.entities[p_eid]
+        t.relations = [
+            r for r in t.relations
+            if not any(a in stub_parts for a in r.args)]
+        # Sentinel: realizer treats `created_at_event is not None` as
+        # "appears via an event, not pre-existence."
+        t.entities[stub_eid].created_at_event = 0
+    t.entities[stub_eid].set_property("count", "1")
+    # Optional instrument from crafted_with.
+    instrument_eid = None
+    if crafted_with:
+        for tool_concept in crafted_with:
+            placed = _place_respecting_containment(
+                t, lex, scene_id, tool_concept, rng,
+                preferred_id=scene_id, existing_eid=None)
+            if placed is not None:
+                instrument_eid = placed
+                break
+        if instrument_eid is None:
+            return None
+    return part_eids, stub_eid, instrument_eid
+
+
 def _construct_goal_scene(lex, rng: random.Random, rules,
                           theme_concept: Optional[str] = None,
                           ) -> Optional[tuple]:
@@ -215,139 +334,11 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
             t.assert_relation("en", (actor_eid, scene_id), lex)
         except (KeyError, ValueError):
             continue
-        # Spawn one entity per part concept, owned by the actor (havi).
-        # Each part is placed by _place_respecting_containment to honor
-        # containment rules — fadeno/pasto may need a kitchen, etc.
-        from .seeders import _place_respecting_containment
-        part_eids: list = []
-        ok = True
-        for i, pc in enumerate(part_concepts):
-            part_eid = f"{pc}_part{i}"
-            placed = _place_respecting_containment(
-                t, lex, scene_id, pc, rng,
-                preferred_id=scene_id, existing_eid=None)
-            if placed is None:
-                ok = False
-                break
-            # Rename to deterministic eid? `_place_respecting_containment`
-            # uses concept_lemma as eid by default; if the concept is
-            # already placed it returns that eid, so duplicates collapse.
-            # That's fine — each part_concept appears once per recipe.
-            part_eids.append(placed)
-            # Pin count=1 on each part — _add_entity_randomized rolls
-            # count to anything 1..5, so the recipe might otherwise
-            # contain "three loaves of bread" as a single ingredient.
-            # Recipes today encode WHICH concepts, not how many of each
-            # — a single unit per part is the consistent reading.
-            t.entities[placed].set_property("count", "1")
-        if not ok:
+        setup = _spawn_constructable_setup(
+            t, scene_id, theme_concept, lex, rng, rules)
+        if setup is None:
             continue
-        # When a part has `requires` (e.g. teo's akvo must be bolanta),
-        # the planner must achieve that property via another verb (boli)
-        # before fari fires. Place a tool that supports the producing
-        # verb so the scene is plannable. Walks goal_index → producer
-        # verb → producer's instrument signature → concept matching
-        # that signature. Stays generic: a new (slot, value) requirement
-        # auto-resolves if there's a producer verb in the lexicon.
-        for part_spec in theme_def.parts:
-            for slot, allowed in part_spec.requires.items():
-                if not ok:
-                    break
-                for value in allowed:
-                    producers = goal_index.get(
-                        ("property", slot, value), ())
-                    placed_tool = False
-                    for v_lemma in producers:
-                        action = lex.actions.get(v_lemma)
-                        if action is None:
-                            continue
-                        instr_role = next(
-                            (r for r in action.roles
-                             if r.name == "instrument"), None)
-                        if instr_role is None:
-                            continue
-                        sigs = instr_role.properties.get(
-                            "functional_signature", [])
-                        if not sigs:
-                            continue
-                        for tool_lemma, tool_def in lex.concepts.items():
-                            if getattr(tool_def, "is_category_stub", False):
-                                continue
-                            tool_sigs = tool_def.properties.get(
-                                "functional_signature", [])
-                            if not any(s in tool_sigs for s in sigs):
-                                continue
-                            if _place_respecting_containment(
-                                    t, lex, scene_id, tool_lemma, rng,
-                                    preferred_id=scene_id,
-                                    existing_eid=None) is not None:
-                                placed_tool = True
-                                break
-                        if placed_tool:
-                            break
-                    if not placed_tool:
-                        ok = False
-                        break
-            if not ok:
-                break
-        if not ok:
-            continue
-        # No pre-havi: each ingredient sits in the scene at its
-        # natural-habitat location; the planner finds them and emits
-        # vidi+preni per part before fari fires. This produces richer
-        # gather-then-construct chains in SFT data than starting with
-        # everything already on the agent.
-        # Pre-stage the to-be-created theme as a bare entity. The
-        # fari rule places it at the agent's location and attaches
-        # parts; the entity exists before firing so the planner can
-        # reason about it (state preconditions on theme.slot).
-        stub_eid = f"{theme_concept}_planned"
-        if stub_eid not in t.entities:
-            try:
-                _add_entity_randomized(
-                    t, theme_concept, lex, rng, entity_id=stub_eid)
-            except (KeyError, ValueError):
-                continue
-            # Drop the auto-materialized sub-parts that
-            # _add_entity_randomized created from theme.parts. The fari
-            # rule attaches the standalone gathered parts instead; the
-            # auto-parts are unused noise that bloats the relaxed-graph
-            # grounding (~25× derivation blow-up before this cleanup).
-            stub_parts = [
-                p_eid for p_eid in list(t.entities.keys())
-                if p_eid.startswith(stub_eid + "_")]
-            for p_eid in stub_parts:
-                del t.entities[p_eid]
-            t.relations = [
-                r for r in t.relations
-                if not any(a in stub_parts for a in r.args)]
-            # Mark the stub as planner-only: it has no scene-init
-            # location (we don't know yet where fari will fire); the
-            # realizer's `created_at_event is not None` filter then
-            # skips synthetic-en grounding and quality grounding,
-            # treating fari as the introduction. 0 is a setup-time
-            # sentinel — fari's actual event index is patched in
-            # post-execution by generate_corpus, but the boolean
-            # filter is what the realizer reads.
-            t.entities[stub_eid].created_at_event = 0
-        # Pin count=1 on the constructed entity — fari produces ONE
-        # whole, not a stack. Without this, the realizer renders
-        # "kvin sandviĉoj" because the stub's count rolled to 5 at
-        # _add_entity_randomized time.
-        t.entities[stub_eid].set_property("count", "1")
-        # Optional instrument: pick the first concept from crafted_with
-        # we can place. Skip when crafted_with is empty.
-        instrument_eid = None
-        if crafted_with:
-            for tool_concept in crafted_with:
-                placed = _place_respecting_containment(
-                    t, lex, scene_id, tool_concept, rng,
-                    preferred_id=scene_id, existing_eid=None)
-                if placed is not None:
-                    instrument_eid = placed
-                    break
-            if instrument_eid is None:
-                continue  # no tool slot worked
+        part_eids, stub_eid, instrument_eid = setup
 
         # Construct-only drive: fire fari with all roles bound. The
         # bench/runner detects construct drives and follows up with
@@ -637,10 +628,7 @@ def regress_for_goal(
                 # single source of truth for what's drive-able.
                 all_goals.append((g, verbs))
         elif g[0] == "construct":
-            # Construct builds its own fresh scene — incompatible
-            # with continuing an existing one.
-            if not in_followup:
-                all_goals.append((g, verbs))
+            all_goals.append((g, verbs))
     if not all_goals:
         _bail("no_goals_in_index")
         return None
@@ -652,16 +640,65 @@ def regress_for_goal(
     chosen_goal, producers = rng.choices(
         all_goals, weights=weights, k=1)[0]
     if chosen_goal[0] == "construct":
-        # Dispatch to the construct-scene builder. Goal carries the
-        # theme concept; the builder picks an actor, scene, and use-
-        # drive on the constructed theme.
+        theme_concept = chosen_goal[1]
+        if in_followup:
+            # Reuse existing trace + pick actor from in-scene persons
+            # matching fari's agent role (animate, can_use_tools).
+            fari = lex.actions.get("fari")
+            if fari is None:
+                _bail("construct_followup_no_fari")
+                return None
+            fari_agent = next(
+                (r for r in fari.roles if r.name == "agent"), None)
+            fari_candidates = _concepts_matching_role(lex, fari_agent) \
+                if fari_agent else []
+            fitting = [
+                eid for eid in existing_trace.entities
+                if lex.types.is_subtype(
+                    existing_trace.entities[eid].entity_type, "animate")
+                and existing_trace.entities[eid].concept_lemma in fari_candidates]
+            in_scene = {
+                r.args[0] for r in existing_trace.relations
+                if r.relation == "en" and len(r.args) == 2
+                and r.args[1] == existing_scene_id}
+            fitting = [e for e in fitting if e in in_scene]
+            if not fitting:
+                _bail(f"construct_followup_no_actor:{theme_concept}")
+                return None
+            actor_eid = rng.choice(fitting)
+            setup = _spawn_constructable_setup(
+                existing_trace, existing_scene_id, theme_concept,
+                lex, rng, rules)
+            if setup is None:
+                _bail(
+                    f"construct_followup_setup_failed:{theme_concept}")
+                return None
+            part_eids, stub_eid, instrument_eid = setup
+            _ensure_obstacle_tools(
+                existing_trace, lex, rng, existing_scene_id)
+            bindings: list = [
+                ("agent", actor_eid),
+                ("theme", stub_eid),
+                ("parts", tuple(part_eids)),
+            ]
+            if instrument_eid is not None:
+                bindings.append(("instrument", instrument_eid))
+            drive = ("event_fire", actor_eid, "fari", tuple(bindings))
+            from .spawner import make_spawner
+            spawner_for_check = make_spawner(
+                existing_scene_id, lex, rng, budget=6)
+            if not _drive_is_h_reachable(
+                    existing_trace, drive, lex, rules,
+                    _ALL_DERIVATIONS,
+                    entity_resolver=spawner_for_check):
+                _bail(
+                    f"construct_followup_h_unreachable:"
+                    f"{theme_concept}@{existing_scene_id}")
+                return None
+            return existing_trace, existing_scene_id, drive
+        # Fresh-scene mode (the original path).
         result = _construct_goal_scene(
-            lex, rng, rules, theme_concept=chosen_goal[1])
-        # No outer _bail on failure — the inner _construct_goal_scene
-        # already set a specific reason (construct_no_en_containment,
-        # construct_no_compatible_scene, construct_no_viable_use_drive,
-        # construct_loop_exhausted). Overwriting it with
-        # "construct_scene_none:<theme>" hides the actual cause.
+            lex, rng, rules, theme_concept=theme_concept)
         return result
     verb_lemma = rng.choice(producers)
     action = lex.actions.get(verb_lemma)
