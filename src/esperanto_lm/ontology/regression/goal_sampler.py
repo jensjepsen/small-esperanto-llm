@@ -963,6 +963,54 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                     f"relation_target_spawn_failed:"
                     f"{verb_lemma}.{target_role_name}@{scene_lemma}")
                 continue
+            # Commit to the chosen producer verb by also spawning any
+            # other roles it needs (typically `instrument` for veturi/
+            # rajdi — without this, picking veturi as producer yields a
+            # scene with no vehicle in scope, and the planner has no
+            # choice but to fall through to iri). One source of truth
+            # for "which verb actually performs the action" is the
+            # producer chosen here; the rest of the scene flows from
+            # that commitment.
+            committed_roles = {
+                actor_role_name: actor_eid,
+                target_role_name: target_eid,
+            }
+            extras_ok = True
+            for r in action.roles:
+                if r.name in committed_roles:
+                    continue
+                extra_eid = setup_spawner(
+                    r, t, lex, set(t.entities.keys()),
+                    action=action, role_name=r.name)
+                if extra_eid is None:
+                    last_loop_reason = (
+                        f"relation_extra_role_spawn_failed:"
+                        f"{verb_lemma}.{r.name}@{scene_lemma}")
+                    extras_ok = False
+                    break
+                committed_roles[r.name] = extra_eid
+            if not extras_ok:
+                continue
+            # Pre-assert the chosen producer's relation preconditions
+            # so it can fire in one step — otherwise the planner would
+            # need to plan setup (e.g. eniri → en) before veturi, making
+            # the vehicle path strictly longer than direct iri and never
+            # winning even with rng-noise tie-breaks. Reads precondition
+            # tuples that name (agent_role, other_committed_role) and
+            # asserts the relation in the trace if it's missing.
+            from ..schemas import RelationPrecondition
+            for pc in (action.preconditions or []):
+                if not isinstance(pc, RelationPrecondition): continue
+                if len(pc.roles) != 2: continue
+                if pc.roles[0] not in committed_roles: continue
+                if pc.roles[1] not in committed_roles: continue
+                a_eid = committed_roles[pc.roles[0]]
+                b_eid = committed_roles[pc.roles[1]]
+                if t.is_relation_permitted(pc.rel, (a_eid, b_eid), lex):
+                    try:
+                        t.assert_relation(pc.rel, (a_eid, b_eid), lex)
+                    except (KeyError, ValueError):
+                        pass
             # Schema-level viability: the relation's `arg_excludes`,
             # `arg_not_part`, `arg_patterns`, and `arg_compare` already
             # encode what makes a (actor, target) pairing valid — havi
