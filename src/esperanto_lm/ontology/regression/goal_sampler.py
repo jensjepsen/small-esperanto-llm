@@ -570,170 +570,13 @@ def _ensure_obstacle_tools(t, lex, rng, scene_id) -> None:
                             break
 
 
-def pick_followup_drive(
-    t, scene_id: str, actor_eid: str, focus_eid: str,
+
+def regress_for_goal(
     lex, rng: random.Random, rules,
+    *,
+    existing_trace=None,
+    existing_scene_id: Optional[str] = None,
 ) -> Optional[tuple]:
-    """Pick a NEW goal for `actor_eid` where `focus_eid` plays a role,
-    spawn whatever extras the chosen drive needs, and return the
-    drive. The caller plans + executes it as a second phase after
-    the construct plan completes. Returns None when no viable
-    followup is found.
-
-    Two drive shapes considered:
-
-      1. entity_slot — same as the legacy bundled construct-use-drive:
-         pick a (slot, value) and a producer verb whose target role
-         accepts focus's concept. Force focus's slot to non-target so
-         the drive isn't trivially satisfied.
-
-      2. altruistic_relation_drive havi(recipient, focus) — spawn a
-         non-actor person as recipient; actor donates the constructed
-         item. Unlocks the narrative shape "Maria built a sandwich,
-         then gave it to Petro." that the bundled drive couldn't.
-
-    Enumerates candidates from both shapes, picks one uniformly, and
-    only falls through to the next if h_reachable rejects it. The
-    actor + focus are already in the trace from the construct phase,
-    so most setups are cheap (no scene-location pick, no part placement).
-    """
-    focus = t.entities.get(focus_eid)
-    if focus is None:
-        return None
-    focus_concept = focus.concept_lemma
-    focus_def = lex.concepts.get(focus_concept)
-    if focus_def is None:
-        return None
-    goal_index = _cached_goal_index(lex, rules)
-    candidates: list = []   # each item: a callable that builds + returns
-                            # a drive, or None on failure.
-
-    # --- Shape 1: entity_slot use-verb on focus ---------------------
-    for goal_key, producer_verbs in goal_index.items():
-        if goal_key[0] != "property":
-            continue
-        _, slot, value = goal_key
-        if _drive_target_unmeaningful(focus_concept, slot, lex):
-            continue
-        for v in producer_verbs:
-            pa = lex.actions.get(v)
-            if pa is None:
-                continue
-            target_role = None
-            for eff in pa.effects:
-                if eff.property == slot and eff.value == value:
-                    target_role = next(
-                        (r for r in pa.roles
-                         if r.name == eff.target_role), None)
-                    if target_role is not None:
-                        break
-            if target_role is None:
-                continue
-            if not lex.types.is_subtype(
-                    focus_def.entity_type, target_role.type):
-                continue
-            ok = True
-            for s, vals in (target_role.properties or {}).items():
-                if not vals:
-                    continue
-                slot_def = lex.slots.get(s)
-                cvals = focus_def.properties.get(s, [])
-                if slot_def is None:
-                    continue
-                if slot_def.varies:
-                    if getattr(slot_def, "pervasive", False):
-                        continue
-                    if not cvals:
-                        ok = False
-                        break
-                    continue
-                if not (set(vals) & set(cvals)):
-                    ok = False
-                    break
-            if ok:
-                candidates.append(("entity_slot", slot, value, v))
-                break  # one producer per goal-key is enough
-
-    # --- Shape 2: altruistic havi(recipient, focus) -----------------
-    # doni is the producer; spawn a non-actor person as recipient.
-    doni = lex.actions.get("doni")
-    if doni is not None:
-        candidates.append(("altruistic_havi",))
-
-    if not candidates:
-        return None
-    rng.shuffle(candidates)
-
-    from .spawner import make_spawner
-    setup_spawner = make_spawner(
-        scene_id, lex, rng, budget=2,
-        actor_eid=actor_eid, inject_owner_p=0.0)
-
-    for cand in candidates:
-        if cand[0] == "entity_slot":
-            _, slot, value, use_verb = cand
-            # Force focus.slot to non-target so the drive isn't already
-            # satisfied. Mirrors the regress_for_goal entity_slot branch.
-            slot_def = lex.slots.get(slot)
-            if slot_def is not None and slot_def.vocabulary:
-                non_target = [v for v in slot_def.vocabulary if v != value]
-                use_action = lex.actions.get(use_verb)
-                if use_action is not None:
-                    use_target_role = next(
-                        (r for r in use_action.roles
-                         for eff in use_action.effects
-                         if eff.target_role == r.name
-                         and eff.property == slot
-                         and eff.value == value), None)
-                    if use_target_role is not None:
-                        req = (use_target_role.properties
-                                or {}).get(slot, ())
-                        if req:
-                            narrowed = [
-                                v for v in non_target if v in req]
-                            if narrowed:
-                                non_target = narrowed
-                if non_target:
-                    t.entities[focus_eid].set_property(
-                        slot, rng.choice(non_target))
-            cascade_gates = _agent_cascade_gates(use_verb, rules)
-            for gate_slot, gate_val in cascade_gates:
-                t.entities[actor_eid].set_property(gate_slot, gate_val)
-            drive = (
-                "entity_slot", actor_eid, focus_eid, slot, value)
-            spawner_for_check = make_spawner(
-                scene_id, lex, rng, budget=6)
-            if _drive_is_h_reachable(
-                    t, drive, lex, rules, _ALL_DERIVATIONS,
-                    entity_resolver=spawner_for_check):
-                return drive
-        elif cand[0] == "altruistic_havi":
-            recipient_role = next(
-                (r for r in doni.roles if r.name == "recipient"), None)
-            if recipient_role is None:
-                continue
-            recipient_eid = setup_spawner(
-                recipient_role, t, lex, set(t.entities.keys()),
-                action=doni, role_name="recipient",
-                inject_owner=False)
-            if recipient_eid is None:
-                continue
-            if not t.is_relation_permitted(
-                    "havi", (recipient_eid, focus_eid), lex):
-                continue
-            drive = (
-                "altruistic_relation_drive", "havi",
-                actor_eid, recipient_eid, focus_eid)
-            spawner_for_check = make_spawner(
-                scene_id, lex, rng, budget=6)
-            if _drive_is_h_reachable(
-                    t, drive, lex, rules, _ALL_DERIVATIONS,
-                    entity_resolver=spawner_for_check):
-                return drive
-    return None
-
-
-def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     """Pick a goal, pick a verb from its producers, build a minimal
     trace, return (trace, scene_id, drive). The spawner — invoked by
     the planner via the entity_resolver hook — materializes everything
@@ -754,11 +597,22 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         producer verb's second-arg role spec. The planner is free
         to pick any verb that achieves the relation (not necessarily
         the one we sampled).
+
+    Followup mode: when `existing_trace` and `existing_scene_id` are
+    given, the function reuses that trace instead of building a fresh
+    one. The actor is picked uniformly from in-scene persons whose
+    type/properties satisfy the chosen verb's agent role (falls back
+    to spawning a fresh person if none fits). Role-fillers come
+    through the spawner, which already prefers in-trace entities, so
+    second mentions are naturally re-used. Construct goals are
+    skipped in followup mode — the construct path builds its own
+    fresh scene and can't safely splice onto an existing one.
     """
     from ..sampler import _add_entity_randomized, _ensure_world
     from .seeders import _concepts_matching_role
     from .goals import CREATED_ROLE
 
+    in_followup = existing_trace is not None
     index = _cached_goal_index(lex, rules)
     all_goals = []
     for g, verbs in index.items():
@@ -783,7 +637,10 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 # single source of truth for what's drive-able.
                 all_goals.append((g, verbs))
         elif g[0] == "construct":
-            all_goals.append((g, verbs))
+            # Construct builds its own fresh scene — incompatible
+            # with continuing an existing one.
+            if not in_followup:
+                all_goals.append((g, verbs))
     if not all_goals:
         _bail("no_goals_in_index")
         return None
@@ -857,13 +714,37 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     if not agent_candidates:
         _bail(f"no_agent_candidates:{verb_lemma}")
         return None
+    # Followup-mode actor: pick uniformly from in-scene persons that
+    # satisfy the agent role. If none fit, fall back to spawning a
+    # fresh agent (same as fresh-scene mode). The pre-existing actor
+    # (phase-1 protagonist) gets equal shot — sometimes the same
+    # person continues, sometimes another NPC takes over.
+    existing_actor_eid = None
+    if in_followup and not actor_is_scene:
+        fitting = [
+            eid for eid in existing_trace.entities
+            if lex.types.is_subtype(
+                existing_trace.entities[eid].entity_type,
+                agent_role_spec.type)
+            and existing_trace.entities[eid].concept_lemma in agent_candidates]
+        # Must also be in the scene location.
+        in_scene = {
+            r.args[0] for r in existing_trace.relations
+            if r.relation == "en" and len(r.args) == 2
+            and r.args[1] == existing_scene_id}
+        fitting = [e for e in fitting if e in in_scene]
+        if fitting:
+            existing_actor_eid = rng.choice(fitting)
     agent_concept = (None if actor_is_scene
                      else rng.choice(agent_candidates))
 
     # Scene location. Retry with different locations on placement
     # failure — actor or target may be incompatible with the
     # randomly-picked scene's containment affordances.
-    if actor_is_scene:
+    if in_followup:
+        # One iteration only — the scene is fixed.
+        locations = [existing_scene_id]
+    elif actor_is_scene:
         # Constrain scene pool to concepts that satisfy actor role.
         locations = list(agent_candidates)
     else:
@@ -898,37 +779,65 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
         scene_lemma = rng.choice(remaining)
         tried.add(scene_lemma)
 
-        # Minimal trace: mondo + scene + actor. No theme, no instrument,
-        # no away location — the spawner builds those as the planner
-        # discovers it needs them.
-        t = Trace()
-        _ensure_world(t, lex, rng)
-        try:
-            _add_entity_randomized(t, scene_lemma, lex, rng,
-                                    entity_id=scene_lemma)
-        except (KeyError, ValueError):
-            last_loop_reason = f"scene_add_failed:{scene_lemma}"
-            continue
-        scene_id = scene_lemma
-
-        if actor_is_scene:
-            actor_eid = scene_id
+        if in_followup:
+            t = existing_trace
+            scene_id = existing_scene_id
+            if actor_is_scene:
+                actor_eid = scene_id
+            elif existing_actor_eid is not None:
+                actor_eid = existing_actor_eid
+            else:
+                # No in-scene person fit the agent role — spawn one.
+                actor_eid = agent_concept
+                suffix = 0
+                while actor_eid in t.entities:
+                    suffix += 1
+                    actor_eid = (
+                        f"{agent_concept}_actor"
+                        f"{suffix if suffix > 1 else ''}")
+                try:
+                    _add_entity_randomized(
+                        t, agent_concept, lex, rng,
+                        entity_id=actor_eid)
+                    t.assert_relation("en", (actor_eid, scene_id), lex)
+                except (KeyError, ValueError):
+                    last_loop_reason = (
+                        f"followup_actor_placement_failed:"
+                        f"{agent_concept}@{scene_id}")
+                    continue
         else:
-            actor_eid = agent_concept
-        suffix = 0
-        while not actor_is_scene and actor_eid in t.entities:
-            suffix += 1
-            actor_eid = (
-                f"{agent_concept}_actor{suffix if suffix > 1 else ''}")
-        if not actor_is_scene:
+            # Minimal trace: mondo + scene + actor. No theme, no
+            # instrument, no away location — the spawner builds those
+            # as the planner discovers it needs them.
+            t = Trace()
+            _ensure_world(t, lex, rng)
             try:
-                _add_entity_randomized(t, agent_concept, lex, rng,
-                                        entity_id=actor_eid)
-                t.assert_relation("en", (actor_eid, scene_id), lex)
+                _add_entity_randomized(t, scene_lemma, lex, rng,
+                                        entity_id=scene_lemma)
             except (KeyError, ValueError):
-                last_loop_reason = (
-                    f"actor_placement_failed:{agent_concept}@{scene_lemma}")
+                last_loop_reason = f"scene_add_failed:{scene_lemma}"
                 continue
+            scene_id = scene_lemma
+
+            if actor_is_scene:
+                actor_eid = scene_id
+            else:
+                actor_eid = agent_concept
+            suffix = 0
+            while not actor_is_scene and actor_eid in t.entities:
+                suffix += 1
+                actor_eid = (
+                    f"{agent_concept}_actor{suffix if suffix > 1 else ''}")
+            if not actor_is_scene:
+                try:
+                    _add_entity_randomized(t, agent_concept, lex, rng,
+                                            entity_id=actor_eid)
+                    t.assert_relation("en", (actor_eid, scene_id), lex)
+                except (KeyError, ValueError):
+                    last_loop_reason = (
+                        f"actor_placement_failed:"
+                        f"{agent_concept}@{scene_lemma}")
+                    continue
 
         if chosen_goal[0] == "property":
             if eff.target_role == actor_role_name:

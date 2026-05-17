@@ -154,85 +154,100 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
 
 
 
+FOLLOWUP_P: float = 0.5
+FOLLOWUP_DECAY: float = 0.5
+FOLLOWUP_MAX_PHASES: int = 3
+
+
 def execute_drive(
     drive, t, lex, rules, derivations, *,
     scene_id, rng,
     max_states: int = 1200, max_plan_length: int = 16,
     spawn_budget: int = 6, prefer_scene_p: float = 1.0,
 ) -> Optional[list]:
-    """Single runner: plan + execute a drive into `t`, then for
-    construct drives (event_fire on fari) pick a followup goal where
-    the constructed entity plays a role and plan + execute that too.
+    """Single runner: plan + execute the seeded drive into `t`, then
+    with probability `FOLLOWUP_P` re-enter `regress_for_goal` on the
+    post-plan trace to chain a follow-up drive on top. Loops up to
+    `FOLLOWUP_MAX_PHASES` total, with `FOLLOWUP_DECAY` taper on the
+    per-step probability. Followup mode biases actor + role-fillers
+    toward in-scene entities, so chained drives naturally re-use the
+    just-spawned NPCs / items and sometimes hand the protagonist
+    role to a different person.
+
+    Construct (event_fire on fari) phase-2 plans get fari excluded
+    so they don't re-fire the same build mid-chain.
+
     Returns the concatenated plan-step list across all phases, or
-    None if the first phase couldn't be planned.
-
-    Both bench_samplers and run_regression_parallel call this so the
-    two-phase construct → followup logic lives in one place. The
-    forward planner is the planner (this helper only handles the
-    forward path; backward-only callers should keep using
-    `plan_for_drive` for now).
-
-    Late imports keep the agent package from depending on regression
-    at module-load time (cross-package import would otherwise pull
-    seeders + spawner during agent.__init__)."""
+    None if the seeded drive couldn't be planned. Late imports keep
+    agent.__init__ from pulling regression at module-load time."""
     from .forward_planner import plan_for_goal
     from .planner import _step_to_event
     from ..dsl import run_dsl
     from ..regression.spawner import make_spawner
-    spawner = make_spawner(
-        scene_id, lex, rng,
-        budget=spawn_budget, prefer_scene_p=prefer_scene_p)
-    plan = plan_for_goal(
-        drive, t, lex, rules, derivations,
-        max_states=max_states, max_plan_length=max_plan_length,
-        entity_resolver=spawner, rng=rng,
-        exclude_verbs=getattr(t, "_planner_exclude_verbs", None))
-    if not plan:
+
+    def _run_phase(d, *, extra_exclude=None):
+        """Plan + execute one drive into t. Returns list of plan
+        steps (possibly empty if no plan), or None on planner error."""
+        seeder_exclude = (
+            getattr(t, "_planner_exclude_verbs", None) or set())
+        exclude = set(seeder_exclude)
+        if extra_exclude:
+            exclude |= set(extra_exclude)
+        sp = make_spawner(
+            scene_id, lex, rng,
+            budget=spawn_budget, prefer_scene_p=prefer_scene_p)
+        p = plan_for_goal(
+            d, t, lex, rules, derivations,
+            max_states=max_states, max_plan_length=max_plan_length,
+            entity_resolver=sp, rng=rng,
+            exclude_verbs=exclude or None)
+        if not p:
+            return None
+        for step in p:
+            event = _step_to_event(step, lex)
+            t.events.append(event)
+            run_dsl(t, rules, derivations, lex)
+        return list(p)
+
+    first = _run_phase(drive)
+    if first is None:
         return None
-    full_plan = list(plan)
-    for step in plan:
-        event = _step_to_event(step, lex)
-        t.events.append(event)
-        run_dsl(t, rules, derivations, lex)
-    # Two-phase: construct drives (event_fire on fari) get a followup
-    # goal where the just-constructed stub plays a role. Failures
-    # silently leave the single-phase trace intact.
-    if drive[0] == "event_fire" and len(drive) >= 3 and drive[2] == "fari":
-        from ..regression.goal_sampler import pick_followup_drive
-        actor_eid = drive[1]
-        bindings = dict(drive[3])
-        focus_eid = bindings.get("theme")
-        if focus_eid is not None:
-            fdrive = pick_followup_drive(
-                t, scene_id, actor_eid, focus_eid, lex, rng, rules)
-            if fdrive is not None:
-                try:
-                    fspawner = make_spawner(
-                        scene_id, lex, rng,
-                        budget=spawn_budget, prefer_scene_p=prefer_scene_p)
-                    # Exclude fari from phase 2: the construct phase
-                    # already built focus_eid. The planner sometimes
-                    # re-fires fari mid-followup when the goal involves
-                    # the constructable's state (re-gathers parts,
-                    # re-builds the same stub, then applies the
-                    # state-change verb). Forbidding fari forces it to
-                    # use the existing constructed entity directly.
-                    seeder_exclude = (
-                        getattr(t, "_planner_exclude_verbs", None) or set())
-                    fexclude = set(seeder_exclude) | {"fari"}
-                    fplan = plan_for_goal(
-                        fdrive, t, lex, rules, derivations,
-                        max_states=max_states, max_plan_length=max_plan_length,
-                        entity_resolver=fspawner, rng=rng,
-                        exclude_verbs=fexclude)
-                    if fplan:
-                        for step in fplan:
-                            event = _step_to_event(step, lex)
-                            t.events.append(event)
-                            run_dsl(t, rules, derivations, lex)
-                        full_plan.extend(fplan)
-                except Exception:
-                    pass
+    full_plan = list(first)
+
+    # Construct's phase-2 must exclude fari — see _construct_goal_scene
+    # for the parts-cascade rationale; phase-2 re-firing fari would
+    # rebuild the same stub mid-chain.
+    last_was_construct = (
+        drive[0] == "event_fire" and len(drive) >= 3
+        and drive[2] == "fari")
+
+    # Chain on itself: with probability p (tapered by DECAY per step),
+    # re-sample a goal on the existing trace and run it. Up to
+    # MAX_PHASES total events.
+    from ..regression.goal_sampler import regress_for_goal
+    p_followup = FOLLOWUP_P
+    for _ in range(FOLLOWUP_MAX_PHASES - 1):
+        if rng.random() >= p_followup:
+            break
+        followup_sample = regress_for_goal(
+            lex, rng, rules,
+            existing_trace=t, existing_scene_id=scene_id)
+        if followup_sample is None:
+            break
+        _ft, _fscene, fdrive = followup_sample
+        try:
+            fplan = _run_phase(
+                fdrive,
+                extra_exclude={"fari"} if last_was_construct else None)
+        except Exception:
+            break
+        if not fplan:
+            break
+        full_plan.extend(fplan)
+        last_was_construct = (
+            fdrive[0] == "event_fire" and len(fdrive) >= 3
+            and fdrive[2] == "fari")
+        p_followup *= FOLLOWUP_DECAY
     return full_plan
 
 
