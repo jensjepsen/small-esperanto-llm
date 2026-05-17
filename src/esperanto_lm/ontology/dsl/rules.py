@@ -13,8 +13,8 @@ from .engine import Rule
 from . import (
     add_relation, bind, bind_list, category, caused_by, closure, Compare,
     consume_one, create_entity, derive, destroy_entity, emit, entity, event,
-    for_each, has_concept_field, part, past_event, property, rel, relation,
-    remove_relation, rule, transfer_n, var, var_list, VarProp,
+    for_each, has_concept_field, not_relation, part, past_event, property,
+    rel, relation, remove_relation, rule, transfer_n, var, var_list, VarProp,
 )
 
 
@@ -1910,27 +1910,34 @@ animate_swimming_when_in_water_body = derive(
 
 
 # Floating derivation: an entity en a liquid container whose denseco
-# is strictly less than the liquid's denseco emerges sur the liquid.
-# Schema-derived from the denseco slot — no per-concept tagging needed.
-# Dense things (denseco > liquid) stay en, modeled as "submerged":
-# en a liquid means below or within; sur means on top. The two
-# outcomes are mutually exclusive in narrative terms but the model
-# allows both relations to coexist on the same entity (no remove
-# effect in the DSL yet); for now sur is purely additive.
+# is strictly less than the liquid's denseco emerges sur the liquid
+# and is no longer en it. Schema-derived from the denseco slot — no
+# per-concept tagging needed. Dense things (denseco >= liquid) stay
+# en, modeled as "submerged": en a liquid means below or within; sur
+# means on top.
 #
 # Uses Compare with VarProp to reach across the binding into the
-# container's denseco — the same numeric_args_compare evaluator that
+# container's denseco — same numeric_args_compare evaluator that
 # Relation.arg_compare uses, exposed for derivation pattern matching.
+# The not_relation("en", T, L) implication hides the asserted en in
+# effective state so downstream consumers see the swap cleanly.
 floats_when_lighter_than_liquid = derive(
     when=entity(state_of_matter="likva") & bind(L_float := var("L")),
     given=[
+        # Arg order is significant: the compiler iterates arg_patterns
+        # in declaration order, so container=L_float must come before
+        # contained=... so L_float is bound when the Compare on the
+        # contained side references VarProp(L_float, "denseco").
         rel("en",
+            container=L_float,
             contained=(
                 entity(denseco=Compare("<", VarProp(L_float, "denseco")))
-                & bind(T_float := var("T"))),
-            container=L_float),
+                & bind(T_float := var("T")))),
     ],
-    implies=relation("sur", T_float, L_float),
+    implies=[
+        relation("sur", T_float, L_float),
+        not_relation("en", T_float, L_float),
+    ],
     name="floats_when_lighter_than_liquid",
 )
 

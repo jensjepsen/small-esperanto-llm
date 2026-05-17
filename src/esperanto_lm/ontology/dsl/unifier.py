@@ -55,12 +55,20 @@ class DerivedState:
     relations: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
     _relation_set: set[tuple[str, tuple[str, ...]]] = field(
         default_factory=set)
+    # Hides relations from effective-state lookups. Populated by
+    # RemoveRelationImplication. Asserted relations stay in the trace
+    # untouched; the removal is a derived-layer mask. `relations_of`
+    # in MatchContext filters returned tuples through this set so
+    # both downstream consumers and chained derivations see the
+    # effective state.
+    removals: set[tuple[str, tuple[str, ...]]] = field(default_factory=set)
     categories: dict[str, set[str]] = field(default_factory=dict)
 
     def clear(self) -> None:
         self.properties.clear()
         self.relations.clear()
         self._relation_set.clear()
+        self.removals.clear()
         self.categories.clear()
 
     def get(self, eid: str, slot: str) -> Any:
@@ -108,6 +116,18 @@ class DerivedState:
 
     def has_relation(self, name: str, args: tuple[str, ...]) -> bool:
         return (name, tuple(args)) in self._relation_set
+
+    def add_removal(self, name: str, args: tuple[str, ...]) -> bool:
+        """Mark a relation as hidden in effective state. Returns True
+        if this is a new removal (drives the fixed-point delta loop)."""
+        key = (name, tuple(args))
+        if key in self.removals:
+            return False
+        self.removals.add(key)
+        return True
+
+    def has_removal(self, name: str, args: tuple[str, ...]) -> bool:
+        return (name, tuple(args)) in self.removals
 
     def add_category(self, eid: str, lemma: str) -> bool:
         """Tag entity with a contextual category lemma. Returns True
@@ -238,7 +258,15 @@ class MatchContext:
                 name, args = self.derived.relations[i]
                 buckets.setdefault(name, []).append(args)
             self._relations_cache_version = target_version
-        return self._relations_by_name_cache.get(relation_name, [])
+        raw = self._relations_by_name_cache.get(relation_name, [])
+        # Subtract removals (derived-layer relation masks). Skip the
+        # filter loop in the common case where nothing's been removed,
+        # since the bucket can be large and the removal set is small.
+        removals = self.derived.removals
+        if removals:
+            return [args for args in raw
+                    if (relation_name, args) not in removals]
+        return raw
 
 
 

@@ -37,8 +37,8 @@ from .engine import (
 )
 from .implications import (
     CategoryImplication, Implication, PartImplication, PropertyImplication,
-    RelationImplication,
-    category, part, property, relation,
+    RelationImplication, RemoveRelationImplication,
+    category, not_relation, part, property, relation,
 )
 from .patterns import (
     AndPattern, BindPattern, CausedByPattern, ClosurePattern, Compare,
@@ -65,7 +65,8 @@ __all__ = [
     # implications
     "CategoryImplication", "Implication", "PartImplication",
     "PropertyImplication", "RelationImplication",
-    "category", "part", "property", "relation",
+    "RemoveRelationImplication",
+    "category", "not_relation", "part", "property", "relation",
     # engine
     "Derivation", "Rule", "collect_rules", "compute_derived_state",
     "derive", "rule", "run_dsl",

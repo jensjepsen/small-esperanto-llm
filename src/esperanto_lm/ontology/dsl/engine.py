@@ -34,7 +34,7 @@ from .effects import (
 )
 from .implications import (
     CategoryImplication, Implication, PartImplication, PropertyImplication,
-    RelationImplication,
+    RelationImplication, RemoveRelationImplication,
 )
 from .patterns import (
     EventPattern, Pattern, Var,
@@ -199,6 +199,11 @@ def validate_against_lexicon(
                         raise ValueError(
                             f"derivation {r.name!r}: relation() refers to "
                             f"unknown relation {imp.name!r}.")
+                elif isinstance(imp, RemoveRelationImplication):
+                    if imp.name not in rel_names:
+                        raise ValueError(
+                            f"derivation {r.name!r}: not_relation() refers "
+                            f"to unknown relation {imp.name!r}.")
                 elif isinstance(imp, PartImplication):
                     if imp.part_concept not in concept_names:
                         raise ValueError(
@@ -435,6 +440,24 @@ def _run_derivations_to_fixed_point(
                         if not ok:
                             continue
                         if derived.add_relation(
+                                imp.name, tuple(resolved_args)):
+                            delta_rels.add(imp.name)
+                    elif isinstance(imp, RemoveRelationImplication):
+                        resolved_args = []
+                        ok = True
+                        for arg in imp.args:
+                            v = resolve(arg, bindings)
+                            if v is None:
+                                ok = False
+                                break
+                            resolved_args.append(v)
+                        if not ok:
+                            continue
+                        # A removal can re-enable derivations that
+                        # previously rejected on the (now-hidden) fact.
+                        # Track the relation name as a delta so the
+                        # fixed-point loop re-checks consumers.
+                        if derived.add_removal(
                                 imp.name, tuple(resolved_args)):
                             delta_rels.add(imp.name)
                     elif isinstance(imp, CategoryImplication):

@@ -65,6 +65,24 @@ class RelationImplication(Implication):
 
 
 @dataclass
+class RemoveRelationImplication(Implication):
+    """`not_relation(name, *args)` — derived relation REMOVAL. Hides
+    an asserted or earlier-derived relation from effective-state
+    lookups. The trace's asserted relations are never mutated; the
+    removal is a derived-layer mask, re-computed every fixed point.
+
+    Use case: an entity en a liquid container whose denseco is below
+    the liquid's denseco gets sur(X, liquid) added AND en(X, liquid)
+    removed by the floats_when_lighter derivation — schema-true
+    swap of relations without touching trace state."""
+    name: str
+    args: tuple[Any, ...]
+
+    def reads(self) -> set[Var]:
+        return {a for a in self.args if isinstance(a, Var)}
+
+
+@dataclass
 class CategoryImplication(Implication):
     """`category(entity, lemma)` — derived per-entity category label.
     Surfaces in the renderer's alias chain alongside the concept's
@@ -106,6 +124,15 @@ def relation(name: str, *args: Any) -> RelationImplication:
     """Imply that rel(name, *args) holds in the derived-relation layer.
     Args may be Vars (resolved per binding) or literal entity ids."""
     return RelationImplication(name, tuple(args))
+
+
+def not_relation(name: str, *args: Any) -> RemoveRelationImplication:
+    """Imply that rel(name, *args) is hidden in effective state — used
+    by derivations that supersede an asserted relation (e.g. floats
+    promotes en→sur for low-density entities in liquids). The asserted
+    fact remains in the trace; consumers of effective state see the
+    removal."""
+    return RemoveRelationImplication(name, tuple(args))
 
 
 def category(entity: Var, lemma: str) -> CategoryImplication:
