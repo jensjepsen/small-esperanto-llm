@@ -1773,6 +1773,23 @@ entity_in_water_from_water_body = derive(
 )
 
 
+# A water_body location IS water for floatation purposes: derive the
+# physical properties of water onto it so density-based rules
+# (floats_when_lighter_than_liquid) can compare against a known
+# numeric denseco. Water's denseco is 1.0 g/cm³ (the universal
+# baseline; substances with denseco<1.0 float). The state_of_matter
+# isn't strictly needed for floating but keeps the semantic
+# consistency: a body of water is liquid.
+water_body_has_water_properties = derive(
+    when=entity(water_body="yes") & bind(WBL := var("L")),
+    implies=[
+        property(WBL, "denseco", "1.0"),
+        property(WBL, "state_of_matter", "likva"),
+    ],
+    name="water_body_has_water_properties",
+)
+
+
 # Person concepts inherit canonical human parts. Authored persons
 # (persono, knabo, amiko, ...) declare these directly; this rule
 # materializes them onto AFFIX-DERIVED person concepts (kuiristo,
@@ -2839,6 +2856,7 @@ RUNTIME_DERIVATIONS = [
     animate_lying_when_on_lieable,
     animate_sitting_when_on_sittable,
     animate_swimming_when_in_water_body,
+    water_body_has_water_properties,
     floats_when_lighter_than_liquid,
     container_imposes_penda_on_contents,
     animate_default_standing,
