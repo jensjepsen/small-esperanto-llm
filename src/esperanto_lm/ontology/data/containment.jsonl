@@ -296,3 +296,4 @@
 {"container": "kaŝtanarbo", "contained": "kaŝtano", "relation": "sur"}
 {"container": "pistakarbo", "contained": "pistako", "relation": "sur"}
 {"container_pattern": {"property": {"is_vehicle": "yes"}}, "contained_pattern": {"entity_type": "animate"}, "relation": "en"}
+{"container_pattern": {"property": {"is_vehicle": "yes"}}, "contained_pattern": {"entity_type": "animate"}, "relation": "sur"}

@@ -748,6 +748,24 @@ eniri_enters_location = rule(
 )
 
 
+# Mounting: agent surgrimpas an apud vehicle and ends up sur it.
+# Mirror of eniri's apud→en swap. Used together with rajdi (the
+# sur-companion to veturi for horses, bikes, scooters, rafts).
+surgrimpi_mounts_vehicle = rule(
+    when=event("surgrimpi",
+               agent=bind(SgA := var("A")),
+               theme=bind(SgT := var("T"))),
+    given=[
+        rel("apud", subject=SgA, neighbor=SgT),
+    ],
+    then=[
+        remove_relation("apud", SgA, SgT),
+        add_relation("sur", SgA, SgT),
+    ],
+    name="surgrimpi_mounts_vehicle",
+)
+
+
 flugi_moves_agent = rule(
     when=event("flugi",
                agent=bind(FgA := var("A")),
@@ -2964,6 +2982,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     naĝi_moves_agent,
     flugi_moves_agent,
     eniri_enters_location,
+    surgrimpi_mounts_vehicle,
     sekvi_brings_agent_to_theme,
     voki_summons_theme,
     veturi_moves_agent,
