@@ -1095,6 +1095,15 @@ vidi_learns_en = rule(
         add_relation("subjekto", VEF, VET),
         add_relation("objekto", VEF, VEL),
         add_relation("konas", VEA, VEF),
+        # First-class scias_lokon assertion alongside the konas/
+        # subjekto/objekto fakto chain — saves a derivation hop
+        # (scias_lokon_via_en, dropped) and lets the planner read
+        # the perception's location-knowledge as a direct fact in
+        # trace.relations instead of having to compose derived
+        # state. The fakto-based representation stays for now
+        # (realizer + a few rule sites still read it); next sessions
+        # migrate those consumers and drop fakto creation entirely.
+        add_relation("scias_lokon", VEA, VET),
     ],
     name="vidi_learns_en",
 )
@@ -1116,6 +1125,7 @@ flari_learns_en = rule(
         add_relation("subjekto", FEF, FET),
         add_relation("objekto", FEF, FEL),
         add_relation("konas", FEA, FEF),
+        add_relation("scias_lokon", FEA, FET),
     ],
     name="flari_learns_en",
 )
@@ -1137,6 +1147,7 @@ audi_learns_en = rule(
         add_relation("subjekto", AEF, AET),
         add_relation("objekto", AEF, AEL),
         add_relation("konas", AEA, AEF),
+        add_relation("scias_lokon", AEA, AET),
     ],
     name="audi_learns_en",
 )
@@ -1158,6 +1169,7 @@ vidi_learns_sur = rule(
         add_relation("subjekto", VSF, VST),
         add_relation("objekto", VSF, VSL),
         add_relation("konas", VSA, VSF),
+        add_relation("scias_lokon", VSA, VST),
     ],
     name="vidi_learns_sur",
 )
@@ -1188,6 +1200,7 @@ flari_learns_sur = rule(
         add_relation("subjekto", FSF, FST),
         add_relation("objekto", FSF, FSL),
         add_relation("konas", FSA, FSF),
+        add_relation("scias_lokon", FSA, FST),
     ],
     name="flari_learns_sur",
 )
@@ -1210,6 +1223,7 @@ audi_learns_sur = rule(
         add_relation("subjekto", ASF, AST),
         add_relation("objekto", ASF, ASL),
         add_relation("konas", ASA, ASF),
+        add_relation("scias_lokon", ASA, AST),
     ],
     name="audi_learns_sur",
 )
@@ -2444,29 +2458,13 @@ host_openness_open_from_pordo = derive(
 # one per locative relation. Used as a precondition by verbs that
 # require knowing the target's location (preni, kapti, veki, mortigi).
 
-scias_lokon_via_en = derive(
-    when=rel("konas",
-             knower=bind(SLEK := var("K")),
-             fakto=bind(SLEF := var("F"))),
-    given=[
-        entity(type="abstract", pri_relacio="en") & bind(SLEF),
-        rel("subjekto", fakto=SLEF, entity=bind(SLET := var("T"))),
-    ],
-    implies=relation("scias_lokon", SLEK, SLET),
-    name="scias_lokon_via_en",
-)
-
-scias_lokon_via_sur = derive(
-    when=rel("konas",
-             knower=bind(SLSK := var("K")),
-             fakto=bind(SLSF := var("F"))),
-    given=[
-        entity(type="abstract", pri_relacio="sur") & bind(SLSF),
-        rel("subjekto", fakto=SLSF, entity=bind(SLST := var("T"))),
-    ],
-    implies=relation("scias_lokon", SLSK, SLST),
-    name="scias_lokon_via_sur",
-)
+# scias_lokon is now asserted directly by the perception rules
+# (vidi_learns_en / _sur, flari_learns_en / _sur, audi_learns_en /
+# _sur) — the former derivation chain konas+subjekto+pri_relacio →
+# scias_lokon is redundant. Kept as historical reference for the
+# fakto migration: the fakto reification still produces equivalent
+# knowledge facts, the direct assertion just saves the planner an
+# extra rule firing per perception event.
 
 
 # ---------- derivation: parts inherit samloke from their host ----------
@@ -2902,8 +2900,6 @@ DEFAULT_DSL_DERIVATIONS = [
     host_openness_open_from_pordo,
     animate_knows_self_subject,
     animate_knows_self_object,
-    scias_lokon_via_en,
-    scias_lokon_via_sur,
     # Outdoor light is now conditional on mondo.tempo_de_tago — that's
     # a varies=true slot, so the rule is RUNTIME-only and removed from
     # the bake list. The runtime list below carries it.
@@ -2977,8 +2973,6 @@ RUNTIME_DERIVATIONS = [
     host_openness_open_from_pordo,
     animate_knows_self_subject,
     animate_knows_self_object,
-    scias_lokon_via_en,
-    scias_lokon_via_sur,
     # Lamp-lit fires BEFORE the outdoor day/night rules so an active
     # lamp wins over outdoor_dark_at_night (first-write-wins on the
     # scalar lit_state) — a torch in a park at night lights it.
