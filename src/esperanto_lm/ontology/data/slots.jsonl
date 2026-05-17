@@ -65,3 +65,4 @@
 {"name": "maso", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
 {"name": "lift_capacity", "vocabulary": null, "applies_to": ["animate"], "scalar": true}
 {"name": "support_capacity", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
+{"name": "enterable", "vocabulary": ["yes", "no"], "applies_to": ["physical"], "scalar": true}

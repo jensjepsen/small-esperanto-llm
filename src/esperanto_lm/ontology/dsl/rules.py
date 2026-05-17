@@ -1808,6 +1808,50 @@ water_body_has_water_properties = derive(
 )
 
 
+# Enterability is derived from structural facts, not asserted:
+#  - any location is enterable (open or built — you walk into a
+#    field, a forest, or a room; eniri admits both)
+#  - any concept with a `pordo` part is enterable (rooms, doored
+#    vehicles like aŭto/buso/aviadilo)
+#  - a vehicle WITHOUT a pordo part is non-enterable (biciklo,
+#    ĉevalo, skutilo, rafto): forces use of surgrimpi/rajdi
+#
+# eniri.theme and veturi.instrument require enterable=yes;
+# surgrimpi.theme and rajdi.instrument require enterable=no.
+# Together this picks the right verb pair without per-vehicle
+# tagging: schema reads the answer off `parts` membership.
+location_is_enterable = derive(
+    when=entity(type="location") & bind(LIEL := var("L")),
+    implies=property(LIEL, "enterable", "yes"),
+    name="location_is_enterable",
+)
+
+doored_is_enterable = derive(
+    when=entity(type="physical") & bind(DIEH := var("H")),
+    given=[
+        rel("havas_parton", tuto=DIEH,
+            parto=bind(DIEP := var("P"))),
+        entity(concept="pordo") & bind(DIEP),
+    ],
+    implies=property(DIEH, "enterable", "yes"),
+    name="doored_is_enterable",
+)
+
+# NotPattern over a parameterized rel: matches when there's no
+# havas_parton(V, *) whose parto is a pordo concept. Two-clause
+# composition mirrors doored_is_enterable's positive form so the
+# negation evaluator sees the same structure.
+doorless_vehicle_is_not_enterable = derive(
+    when=entity(is_vehicle="yes") & bind(DVNEV := var("V")),
+    given=[
+        ~(rel("havas_parton", tuto=DVNEV,
+              parto=entity(concept="pordo"))),
+    ],
+    implies=property(DVNEV, "enterable", "no"),
+    name="doorless_vehicle_is_not_enterable",
+)
+
+
 # Person concepts inherit canonical human parts. Authored persons
 # (persono, knabo, amiko, ...) declare these directly; this rule
 # materializes them onto AFFIX-DERIVED person concepts (kuiristo,
@@ -2769,6 +2813,9 @@ DEFAULT_DSL_DERIVATIONS = [
     person_can_swim,
     has_paws_can_walk,
     has_wings_can_fly,
+    location_is_enterable,
+    doored_is_enterable,
+    doorless_vehicle_is_not_enterable,
     has_fins_can_swim,
     has_nose_can_smell,
     has_ear_can_hear,
