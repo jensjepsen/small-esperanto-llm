@@ -132,41 +132,60 @@ def _preconditions_hold(action, roles, trace, derived, lex) -> bool:
     aŭdi/flari/montri) via `_build_rule_effects_index`, so the
     fact-set search can plan through preni/kapti/veki's perception
     preconditions without modeling fakto-entity creation."""
-    from ..schemas import (
-        IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
-    )
     for pc in action.preconditions:
-        if isinstance(pc, RelationPrecondition):
-            eids = tuple(roles.get(r) for r in pc.roles)
-            if any(e is None for e in eids):
-                return False
-            if not _has_relation(pc.rel, eids, trace, derived, lex):
-                return False
-        elif isinstance(pc, IfPropertyPrecondition):
-            eid = roles.get(pc.role)
-            if eid is None:
-                continue
-            ent = trace.entities.get(eid)
-            if ent is None:
-                return False
-            gate = _entity_property_values(
-                ent, pc.if_property, trace, derived)
-            if pc.if_value not in gate:
-                continue  # Gate not active — pc vacuously holds.
-            then_vals = _entity_property_values(
-                ent, pc.then_property, trace, derived)
-            if pc.then_value not in then_vals:
-                return False
-        elif isinstance(pc, MatchPrecondition):
-            ea = trace.entities.get(roles.get(pc.role_a))
-            eb = trace.entities.get(roles.get(pc.role_b))
-            if ea is None or eb is None:
-                return False
-            va = set(ea.properties.get(pc.slot_a, []))
-            vb = set(eb.properties.get(pc.slot_b, []))
-            if not (va & vb):
-                return False
+        if not _pc_holds(pc, roles, trace, derived, lex):
+            return False
     return True
+
+
+def _pc_holds(pc, roles, trace, derived, lex) -> bool:
+    """Evaluate a single precondition. Recursive over OrPrecondition.
+    Returns True iff the precondition is satisfied for the given role
+    bindings."""
+    from ..schemas import (
+        HasPropertyPrecondition, IfPropertyPrecondition, MatchPrecondition,
+        OrPrecondition, RelationPrecondition,
+    )
+    if isinstance(pc, RelationPrecondition):
+        eids = tuple(roles.get(r) for r in pc.roles)
+        if any(e is None for e in eids):
+            return False
+        return _has_relation(pc.rel, eids, trace, derived, lex)
+    if isinstance(pc, IfPropertyPrecondition):
+        eid = roles.get(pc.role)
+        if eid is None:
+            return True  # missing role — pc vacuously holds
+        ent = trace.entities.get(eid)
+        if ent is None:
+            return False
+        gate = _entity_property_values(
+            ent, pc.if_property, trace, derived)
+        if pc.if_value not in gate:
+            return True  # Gate not active — pc vacuously holds.
+        then_vals = _entity_property_values(
+            ent, pc.then_property, trace, derived)
+        return pc.then_value in then_vals
+    if isinstance(pc, MatchPrecondition):
+        ea = trace.entities.get(roles.get(pc.role_a))
+        eb = trace.entities.get(roles.get(pc.role_b))
+        if ea is None or eb is None:
+            return False
+        va = set(ea.properties.get(pc.slot_a, []))
+        vb = set(eb.properties.get(pc.slot_b, []))
+        return bool(va & vb)
+    if isinstance(pc, HasPropertyPrecondition):
+        eid = roles.get(pc.role)
+        if eid is None:
+            return False
+        ent = trace.entities.get(eid)
+        if ent is None:
+            return False
+        return pc.value in _entity_property_values(
+            ent, pc.property, trace, derived)
+    if isinstance(pc, OrPrecondition):
+        return any(_pc_holds(alt, roles, trace, derived, lex)
+                   for alt in pc.alternatives)
+    return True  # unknown kind — vacuous (forward-compat)
 
 
 # ---------- goal test ----------

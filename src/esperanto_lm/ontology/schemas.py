@@ -321,11 +321,40 @@ class MatchPrecondition(_Frozen):
     slot_b: str
 
 
+class HasPropertyPrecondition(_Frozen):
+    """Hard requirement that a role's slot contains a specific value.
+    Distinct from IfPropertyPrecondition (vacuous on missing slot) —
+    here the absence of the value FAILS the gate. Used as an
+    alternative inside OrPrecondition for disjunctive role-level
+    checks (e.g. agent has locomotion=fly OR uses a flying vehicle)."""
+    kind: Literal["has_property"] = "has_property"
+    role: str
+    property: str
+    value: str
+
+
+class OrPrecondition(_Frozen):
+    """Disjunction of preconditions: the action is plannable when ANY
+    alternative is satisfied. Lifts the AND-only ceiling of the
+    top-level preconditions list and role.properties.
+
+    Use case: flugi can be 'agent has its own flight' OR 'agent uses
+    a flying instrument'. A schema-true alternative to two separate
+    verb entries (flugi/flug_per). Nested ORs aren't expressly
+    forbidden but expected use is one-level alternation."""
+    kind: Literal["or"] = "or"
+    alternatives: list[
+        "RelationPrecondition | IfPropertyPrecondition | "
+        "MatchPrecondition | HasPropertyPrecondition | OrPrecondition"
+    ]
+
+
 # Discriminated union point — when more precondition kinds appear
 # (e.g. quantitative comparisons, negation), add them here. The kind
 # field is the tag the planner dispatches on.
 Precondition = (
     RelationPrecondition | IfPropertyPrecondition | MatchPrecondition
+    | HasPropertyPrecondition | OrPrecondition
 )
 
 
@@ -369,19 +398,34 @@ class Action(_Frozen):
     def _check_precondition_roles(self):
         role_names = {r.name for r in self.roles}
         for pc in self.preconditions:
-            if isinstance(pc, RelationPrecondition):
-                referenced = pc.roles
-            elif isinstance(pc, MatchPrecondition):
-                referenced = [pc.role_a, pc.role_b]
-            else:
-                referenced = [pc.role]
-            for rn in referenced:
-                if rn not in role_names:
-                    raise ValueError(
-                        f"action {self.lemma!r}: precondition references "
-                        f"role {rn!r} not present in roles "
-                        f"{sorted(role_names)}")
+            _check_pc_roles(pc, self.lemma, role_names)
         return self
+
+
+def _check_pc_roles(pc, lemma: str, role_names: set) -> None:
+    """Recursive role-name validator for preconditions. Each precondition
+    kind names the roles it references; OrPrecondition recurses into
+    its alternatives."""
+    if isinstance(pc, RelationPrecondition):
+        referenced = pc.roles
+    elif isinstance(pc, MatchPrecondition):
+        referenced = [pc.role_a, pc.role_b]
+    elif isinstance(pc, HasPropertyPrecondition):
+        referenced = [pc.role]
+    elif isinstance(pc, IfPropertyPrecondition):
+        referenced = [pc.role]
+    elif isinstance(pc, OrPrecondition):
+        for alt in pc.alternatives:
+            _check_pc_roles(alt, lemma, role_names)
+        return
+    else:
+        referenced = [pc.role]
+    for rn in referenced:
+        if rn not in role_names:
+            raise ValueError(
+                f"action {lemma!r}: precondition references "
+                f"role {rn!r} not present in roles "
+                f"{sorted(role_names)}")
 
 
 class ContainmentPattern(_Frozen):
