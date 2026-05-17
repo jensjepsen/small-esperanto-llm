@@ -230,6 +230,19 @@ class Relation(_Frozen):
     # kapti, doni, and any future verb that produces havi, in one
     # place. Mirrors arg_patterns (set-membership) for the numeric case.
     arg_compare: list[dict] = Field(default_factory=list)
+    # Per-arg-position kind: what the arg refers to.
+    #   "entity" (default) — eid in trace.entities; validated as such
+    #                        and subject to arg_types / arg_excludes /
+    #                        arg_not_part / arg_patterns / arg_compare.
+    #   "slot"             — name of a slot in lex.slots; lets relations
+    #                        like scias_valoron carry "which slot the
+    #                        knower knows about" without reifying it as
+    #                        an entity. Validated against lex.slots.
+    #   "literal"          — opaque string (often a slot value). Skipped
+    #                        by entity-validation; downstream code is
+    #                        responsible for any semantic check.
+    # Empty/omitted = all entity. Length, when given, must equal arity.
+    arg_kinds: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(frozen=True, extra="forbid",
                               arbitrary_types_allowed=True)

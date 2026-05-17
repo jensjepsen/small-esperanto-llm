@@ -331,7 +331,21 @@ class Trace:
         if len(args) != rel.arity:
             return (f"relation {name!r}: expected {rel.arity} args, "
                     f"got {len(args)}")
-        for arg, expected_type in zip(args, rel.arg_types):
+        # arg_kinds: per-position "what does this arg refer to?". Empty
+        # = all entity (legacy default). See schemas.Relation.arg_kinds.
+        kinds = (list(rel.arg_kinds) if rel.arg_kinds
+                 else ["entity"] * rel.arity)
+        for i, (arg, expected_type, kind) in enumerate(
+                zip(args, rel.arg_types, kinds)):
+            if kind == "literal":
+                # Opaque string; no validation.
+                continue
+            if kind == "slot":
+                if arg not in lexicon.slots:
+                    return (f"relation {name!r}: arg {i} ({arg!r}) "
+                            f"declared kind=slot but not in lexicon.slots")
+                continue
+            # kind == "entity" (default)
             ent = self.entities.get(arg)
             if ent is None:
                 raise KeyError(f"unknown entity {arg!r}")
@@ -341,6 +355,8 @@ class Trace:
         if rel.arg_excludes:
             for i, arg in enumerate(args):
                 if i >= len(rel.arg_excludes):
+                    continue
+                if kinds[i] != "entity":
                     continue
                 forbidden_list = rel.arg_excludes[i]
                 if not forbidden_list:
@@ -355,6 +371,8 @@ class Trace:
         if rel.arg_not_part:
             for i, arg in enumerate(args):
                 if i >= len(rel.arg_not_part) or not rel.arg_not_part[i]:
+                    continue
+                if kinds[i] != "entity":
                     continue
                 if arg in self._parts_index:
                     return (f"relation {name!r}: arg {i} ({arg!r}) is a "
@@ -371,6 +389,8 @@ class Trace:
             for i, arg in enumerate(args):
                 if i >= len(rel.arg_patterns):
                     continue
+                if kinds[i] != "entity":
+                    continue
                 pat = rel.arg_patterns[i]
                 if pat is None:
                     continue
@@ -382,10 +402,17 @@ class Trace:
         # arg_compare: numeric cross-arg comparisons (e.g. havi's
         # theme.maso <= owner.lift_capacity carry-capacity gate). Same
         # vacuous-on-missing-data semantics as the precondition kind.
+        # Skip when any compared arg is non-entity — slot/literal kinds
+        # have no entity to read properties from.
         if rel.arg_compare:
             from .dsl.patterns import numeric_args_compare
-            ent_tuple = tuple(self.entities[a] for a in args)
             for spec in rel.arg_compare:
+                if (kinds[spec["left_arg"]] != "entity"
+                        or kinds[spec["right_arg"]] != "entity"):
+                    continue
+                ent_tuple = tuple(
+                    self.entities[a] if kinds[idx] == "entity" else None
+                    for idx, a in enumerate(args))
                 if not numeric_args_compare(ent_tuple, spec):
                     return (
                         f"relation {name!r}: arg_compare failed "
