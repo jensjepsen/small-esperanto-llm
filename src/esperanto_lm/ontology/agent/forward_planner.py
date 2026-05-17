@@ -3092,6 +3092,21 @@ def _drive_to_goal(drive, trace, lex):
     if kind == "wearing":
         _, actor, garment = drive
         return ("relation", "vestita", (actor, garment))
+    if kind.startswith("altruistic_"):
+        # Altruistic drives: (kind, actor, beneficiary, target).
+        # Goal targets the beneficiary, not the actor — the actor
+        # is who performs the giving/showing/teaching, the
+        # beneficiary is who ends up in the relation.
+        _, _actor, beneficiary, target = drive
+        rel = {
+            "altruistic_possession": "havi",
+            "altruistic_location":   "en",
+            "altruistic_wearing":    "vestita",
+            "altruistic_proximity":  "apud",
+        }.get(kind)
+        if rel is None:
+            return None
+        return ("relation", rel, (beneficiary, target))
     if kind == "event_fire":
         _, _actor, verb_lemma, role_bindings = drive
         return ("event_fire", verb_lemma, frozenset(role_bindings))

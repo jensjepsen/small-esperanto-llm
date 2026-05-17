@@ -726,6 +726,14 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 # Plain havi/en/vestita with agent-as-actor →
                 # possession/location/wearing drive.
                 all_goals.append((g, verbs))
+            elif (rel_name in _PLAIN_RELATION_DRIVES
+                    and role_args[0] == "recipient"):
+                # Altruistic: producer's recipient ends up with the
+                # relation (doni → havi(recipient, theme), montri →
+                # konas(recipient, fakto)). Actor (the giver) is the
+                # producer's agent role — a distinct entity from the
+                # beneficiary.
+                all_goals.append((g, verbs))
         elif g[0] == "construct":
             all_goals.append((g, verbs))
     if not all_goals:
@@ -1053,6 +1061,89 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                     f"h_unreachable:{rel_name}({agent_concept}->"
                     f"{target_ent.concept_lemma if target_ent else '?'})"
                     f"@{scene_lemma}")
+                continue
+            return t, scene_id, drive
+        elif (chosen_goal[0] == "relation"
+                and chosen_goal[1] in _PLAIN_RELATION_DRIVES
+                and CREATED_ROLE not in chosen_goal[2]
+                and chosen_goal[2][0] == "recipient"):
+            # Altruistic relation drive: the producer's recipient ends
+            # up with the relation, not the agent. Actor (agent of
+            # producer; e.g. the giver in doni) is a distinct entity
+            # from beneficiary (recipient). Mirror of the standard
+            # relation branch but with beneficiary also spawned.
+            _, rel_name, role_args = chosen_goal
+            recipient_role_name = role_args[0]   # "recipient"
+            target_role_name = role_args[1]      # e.g. "theme"
+            recipient_role_spec = next(
+                (r for r in action.roles
+                 if r.name == recipient_role_name), None)
+            target_role_spec = next(
+                (r for r in action.roles
+                 if r.name == target_role_name), None)
+            if recipient_role_spec is None or target_role_spec is None:
+                _bail(f"altruistic_missing_role:{verb_lemma}")
+                return None
+            from .spawner import make_spawner
+            # Higher budget: altruistic seeding has to land both
+            # recipient AND theme; budget=1 leads to spurious
+            # failures when the first random pick doesn't satisfy
+            # containment in this particular scene.
+            setup_spawner = make_spawner(scene_id, lex, rng, budget=6)
+            recipient_eid = setup_spawner(
+                recipient_role_spec, t, lex,
+                set(t.entities.keys()),
+                action=action, role_name=recipient_role_name)
+            if recipient_eid is None:
+                last_loop_reason = (
+                    f"altruistic_recipient_spawn_failed:"
+                    f"{verb_lemma}@{scene_lemma}")
+                continue
+            target_eid = setup_spawner(
+                target_role_spec, t, lex,
+                set(t.entities.keys()),
+                action=action, role_name=target_role_name)
+            if target_eid is None:
+                last_loop_reason = (
+                    f"altruistic_target_spawn_failed:"
+                    f"{verb_lemma}.{target_role_name}@{scene_lemma}")
+                continue
+            if not t.is_relation_permitted(
+                    rel_name, (recipient_eid, target_eid), lex):
+                last_loop_reason = (
+                    f"altruistic_relation_not_permitted:{rel_name}")
+                continue
+            # Pre-assert agent-side preconditions (e.g. havi(agent,
+            # theme) for doni — the giver must hold the gift).
+            from ..schemas import RelationPrecondition
+            committed_roles = {
+                actor_role_name: actor_eid,
+                recipient_role_name: recipient_eid,
+                target_role_name: target_eid,
+            }
+            for pc in (action.preconditions or []):
+                if not isinstance(pc, RelationPrecondition): continue
+                if len(pc.roles) != 2: continue
+                if pc.roles[0] not in committed_roles: continue
+                if pc.roles[1] not in committed_roles: continue
+                a_eid = committed_roles[pc.roles[0]]
+                b_eid = committed_roles[pc.roles[1]]
+                if t.is_relation_permitted(pc.rel, (a_eid, b_eid), lex):
+                    try:
+                        t.assert_relation(pc.rel, (a_eid, b_eid), lex)
+                    except (KeyError, ValueError):
+                        pass
+            _ensure_obstacle_tools(t, lex, rng, scene_id)
+            drive_kind = "altruistic_" + _PLAIN_RELATION_DRIVES[rel_name]
+            drive = (drive_kind, actor_eid, recipient_eid, target_eid)
+            spawner_for_check = make_spawner(
+                scene_id, lex, rng, budget=6)
+            if not _drive_is_h_reachable(
+                    t, drive, lex, rules, _ALL_DERIVATIONS,
+                    entity_resolver=spawner_for_check):
+                last_loop_reason = (
+                    f"h_unreachable:{drive_kind}:"
+                    f"{verb_lemma}@{scene_lemma}")
                 continue
             return t, scene_id, drive
         else:
