@@ -222,6 +222,7 @@ def bake_concept_derivations(
     _LIFT_CAPACITY_CONCEPTS_VIEW = concepts
     try:
         _bake_lift_capacity(work, lex_types)
+        _bake_support_capacity(work)
     finally:
         _LIFT_CAPACITY_CONCEPTS_VIEW = None
 
@@ -321,6 +322,34 @@ def _bake_lift_capacity(
         # overridden when the narrative needs them lifting more.
         cap = mass_kg * 1.0
         props["lift_capacity"] = [_format_num(cap)]
+
+
+def _bake_support_capacity(
+    work: dict[str, dict[str, list[str]]],
+) -> None:
+    """Derive `support_capacity` (kg a surface can hold on top) as
+    the concept's own maso — exact mirror of lift_capacity's 1×own
+    rule, applied to all physicals rather than only animates.
+
+    Schema-true: load-bearing is read from the only structural fact
+    the lexicon encodes per-concept, the mass. No per-marker
+    constants, no affordance-keyed multipliers. Concepts whose maso
+    derives from bbox×denseco get a support_capacity automatically;
+    those without maso get nothing (gate then vacuous on sur).
+
+    Data authors can still assert support_capacity directly when the
+    1× rule is wrong for a specific concept (e.g. a load-rated beam
+    holds far more than its own weight). Asserted values win."""
+    for lemma, props in work.items():
+        if "support_capacity" in props:
+            continue
+        if "maso" not in props:
+            continue
+        try:
+            mass_kg = float(props["maso"][0])
+        except (ValueError, IndexError):
+            continue
+        props["support_capacity"] = [_format_num(mass_kg)]
 
 
 # Side-channel reference set by bake_concept_derivations so the
