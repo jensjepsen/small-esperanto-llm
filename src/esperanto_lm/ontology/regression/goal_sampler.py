@@ -1113,14 +1113,34 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 last_loop_reason = (
                     f"altruistic_relation_not_permitted:{rel_name}")
                 continue
-            # Pre-assert agent-side preconditions (e.g. havi(agent,
-            # theme) for doni — the giver must hold the gift).
-            from ..schemas import RelationPrecondition
+            # Commit to producer by spawning any remaining roles —
+            # same pattern as the standard relation-drive branch. For
+            # vendi/aĉeti this lands a currency `instrument` (monero)
+            # in scope so the planner can fire them.
             committed_roles = {
                 actor_role_name: actor_eid,
                 recipient_role_name: recipient_eid,
                 target_role_name: target_eid,
             }
+            alt_extras_ok = True
+            for r in action.roles:
+                if r.name in committed_roles:
+                    continue
+                extra_eid = setup_spawner(
+                    r, t, lex, set(t.entities.keys()),
+                    action=action, role_name=r.name)
+                if extra_eid is None:
+                    last_loop_reason = (
+                        f"altruistic_extra_role_spawn_failed:"
+                        f"{verb_lemma}.{r.name}@{scene_lemma}")
+                    alt_extras_ok = False
+                    break
+                committed_roles[r.name] = extra_eid
+            if not alt_extras_ok:
+                continue
+            # Pre-assert agent-side preconditions (e.g. havi(agent,
+            # theme) for doni — the giver must hold the gift).
+            from ..schemas import RelationPrecondition
             for pc in (action.preconditions or []):
                 if not isinstance(pc, RelationPrecondition): continue
                 if len(pc.roles) != 2: continue
