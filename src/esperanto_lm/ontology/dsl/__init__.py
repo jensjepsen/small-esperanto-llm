@@ -41,9 +41,9 @@ from .implications import (
     category, part, property, relation,
 )
 from .patterns import (
-    AndPattern, BindPattern, CausedByPattern, ClosurePattern, EntityPattern,
-    EventPattern, HasConceptFieldPattern, NotPattern, OrPattern,
-    PastEventPattern, Pattern, RelPattern, Var, VarList,
+    AndPattern, BindPattern, CausedByPattern, ClosurePattern, Compare,
+    EntityPattern, EventPattern, HasConceptFieldPattern, NotPattern, OrPattern,
+    PastEventPattern, Pattern, RelPattern, Var, VarList, VarProp,
     bind, bind_list, caused_by, closure, entity, event, has_concept_field,
     past_event, rel, var, var_list,
 )
@@ -52,8 +52,9 @@ from .unifier import DerivedState, MatchContext, enumerate_bindings, resolve
 __all__ = [
     # patterns + constructors
     "AndPattern", "BindPattern", "CausedByPattern", "ClosurePattern",
-    "EntityPattern", "EventPattern", "HasConceptFieldPattern", "NotPattern",
-    "OrPattern", "PastEventPattern", "Pattern", "RelPattern", "Var", "VarList",
+    "Compare", "EntityPattern", "EventPattern", "HasConceptFieldPattern",
+    "NotPattern", "OrPattern", "PastEventPattern", "Pattern", "RelPattern",
+    "Var", "VarList", "VarProp",
     "bind", "bind_list", "caused_by", "closure", "entity", "event",
     "has_concept_field", "past_event", "rel", "var", "var_list",
     # effects

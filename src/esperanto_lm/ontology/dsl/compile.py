@@ -32,8 +32,8 @@ from typing import Callable, Iterator, Optional
 
 from .effects import Effect
 from .patterns import (
-    AndPattern, BindPattern, EntityPattern, EventPattern, NotPattern,
-    OrPattern, Pattern, RelPattern, Var, _iter_entity_candidates,
+    AndPattern, BindPattern, Compare, EntityPattern, EventPattern, NotPattern,
+    OrPattern, Pattern, RelPattern, Var, VarProp, _iter_entity_candidates,
 )
 
 
@@ -529,6 +529,9 @@ class _Compiler:
     ) -> None:
         """Emit lines that `return` if the entity fails this constraint.
         Mirrors `_entity_matches` from patterns.py."""
+        if isinstance(expected, Compare):
+            self._emit_compare_constraint(eid_local, key, expected)
+            return
         if isinstance(expected, Var):
             # Var-valued constraint resolves from current bindings.
             if expected not in self.var_to_local:
@@ -541,6 +544,99 @@ class _Compiler:
             return
         self._emit_value_constraint(
             ent_local, eid_local, key, repr(expected), is_local=False)
+
+    def _emit_compare_constraint(
+        self, eid_local: str, slot: str, cmp: Compare,
+    ) -> None:
+        """Emit code for an EntityPattern Compare constraint:
+        `entity(slot=Compare(op, rhs))`. RHS may be a literal number
+        or `VarProp(var, prop)` resolved from current bindings.
+        Mirrors `_compare_entity_slot` from patterns.py — strict
+        (fail on missing/non-numeric on either side)."""
+        lhs = self.fresh("lhs")
+        self.emit(f"{lhs} = ctx.effective_property({eid_local}, {slot!r})")
+        self.emit(f"if {lhs} is None or {lhs} == [] or {lhs} == '':")
+        self._push(); self.emit("return"); self._pop()
+        self.emit(f"if isinstance({lhs}, list):")
+        self._push(); self.emit(f"{lhs} = {lhs}[0]"); self._pop()
+        self.emit("try:")
+        self._push(); self.emit(f"{lhs} = float({lhs})"); self._pop()
+        self.emit("except (TypeError, ValueError):")
+        self._push(); self.emit("return"); self._pop()
+
+        rhs = self.fresh("rhs")
+        rhs_spec = cmp.rhs
+        if isinstance(rhs_spec, VarProp):
+            if rhs_spec.var_ not in self.var_to_local:
+                self.emit(f"return  # unbound var in Compare RHS")
+                return
+            rhs_eid_local = self.var_to_local[rhs_spec.var_]
+            self.emit(f"{rhs} = ctx.effective_property("
+                      f"{rhs_eid_local}, {rhs_spec.prop!r})")
+            self.emit(f"if {rhs} is None or {rhs} == [] or {rhs} == '':")
+            self._push(); self.emit("return"); self._pop()
+            self.emit(f"if isinstance({rhs}, list):")
+            self._push(); self.emit(f"{rhs} = {rhs}[0]"); self._pop()
+            self.emit("try:")
+            self._push(); self.emit(f"{rhs} = float({rhs})"); self._pop()
+            self.emit("except (TypeError, ValueError):")
+            self._push(); self.emit("return"); self._pop()
+        else:
+            # Literal number/string-numeric — coerce at compile time
+            # so an obviously bad spec fails loudly at module load.
+            try:
+                lit = float(rhs_spec)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Compare RHS must be VarProp or numeric; got "
+                    f"{rhs_spec!r}") from exc
+            self.emit(f"{rhs} = {lit}")
+        self.emit(f"if not ({lhs} {cmp.op} {rhs}):")
+        self._push(); self.emit("return"); self._pop()
+
+    def _emit_compare_constraint_inloop(
+        self, eid_local: str, slot: str, cmp: Compare,
+    ) -> None:
+        """In-loop variant of _emit_compare_constraint — uses `continue`
+        instead of `return` on each failure path."""
+        lhs = self.fresh("lhs")
+        self.emit(f"{lhs} = ctx.effective_property({eid_local}, {slot!r})")
+        self.emit(f"if {lhs} is None or {lhs} == [] or {lhs} == '':")
+        self._push(); self.emit("continue"); self._pop()
+        self.emit(f"if isinstance({lhs}, list):")
+        self._push(); self.emit(f"{lhs} = {lhs}[0]"); self._pop()
+        self.emit("try:")
+        self._push(); self.emit(f"{lhs} = float({lhs})"); self._pop()
+        self.emit("except (TypeError, ValueError):")
+        self._push(); self.emit("continue"); self._pop()
+
+        rhs = self.fresh("rhs")
+        rhs_spec = cmp.rhs
+        if isinstance(rhs_spec, VarProp):
+            if rhs_spec.var_ not in self.var_to_local:
+                self.emit("continue  # unbound var in Compare RHS")
+                return
+            rhs_eid_local = self.var_to_local[rhs_spec.var_]
+            self.emit(f"{rhs} = ctx.effective_property("
+                      f"{rhs_eid_local}, {rhs_spec.prop!r})")
+            self.emit(f"if {rhs} is None or {rhs} == [] or {rhs} == '':")
+            self._push(); self.emit("continue"); self._pop()
+            self.emit(f"if isinstance({rhs}, list):")
+            self._push(); self.emit(f"{rhs} = {rhs}[0]"); self._pop()
+            self.emit("try:")
+            self._push(); self.emit(f"{rhs} = float({rhs})"); self._pop()
+            self.emit("except (TypeError, ValueError):")
+            self._push(); self.emit("continue"); self._pop()
+        else:
+            try:
+                lit = float(rhs_spec)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Compare RHS must be VarProp or numeric; got "
+                    f"{rhs_spec!r}") from exc
+            self.emit(f"{rhs} = {lit}")
+        self.emit(f"if not ({lhs} {cmp.op} {rhs}):")
+        self._push(); self.emit("continue"); self._pop()
 
     def _emit_value_constraint(
         self, ent_local: str, eid_local: str, key: str,
@@ -822,6 +918,9 @@ class _Compiler:
         self, ent_local: str, eid_local: str, key: str, expected,
     ) -> None:
         """In-loop variant: `continue` instead of `return` on failure."""
+        if isinstance(expected, Compare):
+            self._emit_compare_constraint_inloop(eid_local, key, expected)
+            return
         is_local = False
         if isinstance(expected, Var):
             if expected not in self.var_to_local:

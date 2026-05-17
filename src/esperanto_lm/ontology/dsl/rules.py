@@ -11,10 +11,10 @@ from __future__ import annotations
 from ..loader import Lexicon
 from .engine import Rule
 from . import (
-    add_relation, bind, bind_list, category, caused_by, closure, consume_one,
-    create_entity, derive, destroy_entity, emit, entity, event, for_each,
-    has_concept_field, part, past_event, property, rel, relation,
-    remove_relation, rule, transfer_n, var, var_list,
+    add_relation, bind, bind_list, category, caused_by, closure, Compare,
+    consume_one, create_entity, derive, destroy_entity, emit, entity, event,
+    for_each, has_concept_field, part, past_event, property, rel, relation,
+    remove_relation, rule, transfer_n, var, var_list, VarProp,
 )
 
 
@@ -1909,6 +1909,32 @@ animate_swimming_when_in_water_body = derive(
 )
 
 
+# Floating derivation: an entity en a liquid container whose denseco
+# is strictly less than the liquid's denseco emerges sur the liquid.
+# Schema-derived from the denseco slot — no per-concept tagging needed.
+# Dense things (denseco > liquid) stay en, modeled as "submerged":
+# en a liquid means below or within; sur means on top. The two
+# outcomes are mutually exclusive in narrative terms but the model
+# allows both relations to coexist on the same entity (no remove
+# effect in the DSL yet); for now sur is purely additive.
+#
+# Uses Compare with VarProp to reach across the binding into the
+# container's denseco — the same numeric_args_compare evaluator that
+# Relation.arg_compare uses, exposed for derivation pattern matching.
+floats_when_lighter_than_liquid = derive(
+    when=entity(state_of_matter="likva") & bind(L_float := var("L")),
+    given=[
+        rel("en",
+            contained=(
+                entity(denseco=Compare("<", VarProp(L_float, "denseco")))
+                & bind(T_float := var("T"))),
+            container=L_float),
+    ],
+    implies=relation("sur", T_float, L_float),
+    name="floats_when_lighter_than_liquid",
+)
+
+
 # Containers can impose a posture on their contents — the
 # `imposes_pose` slot. This derivation propagates that for `penda`,
 # the only currently-used value not already covered by the
@@ -2801,6 +2827,7 @@ RUNTIME_DERIVATIONS = [
     animate_lying_when_on_lieable,
     animate_sitting_when_on_sittable,
     animate_swimming_when_in_water_body,
+    floats_when_lighter_than_liquid,
     container_imposes_penda_on_contents,
     animate_default_standing,
     animate_default_awake,

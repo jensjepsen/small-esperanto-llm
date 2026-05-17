@@ -60,6 +60,52 @@ def var(name: str = "_anon") -> Var:
     return Var(name)
 
 
+class VarProp:
+    """Reference to a bound entity's property value, for use inside a
+    `Compare` constraint. Resolved at match time by looking up
+    `bindings[var]` to get the entity id, then reading that entity's
+    `prop` from the trace via the matcher's context.
+
+    Example: `Compare("<", VarProp(WATER, "denseco"))` reads as
+    "less than the denseco of the entity currently bound to WATER".
+    """
+    __slots__ = ("var_", "prop")
+
+    def __init__(self, var_: Var, prop: str):
+        self.var_ = var_
+        self.prop = prop
+
+    def __repr__(self) -> str:
+        return f"${self.var_.name}.{self.prop}"
+
+
+class Compare:
+    """Numeric comparison constraint on a slot value inside an
+    `EntityPattern`. The constraint key names the slot on the matching
+    entity (LHS); `rhs` is a literal number, numeric string, or
+    `VarProp` resolved from current bindings.
+
+    Operators: '<', '<=', '>', '>=', '=='.
+
+    Vacuous-on-missing-data: if either side has no numeric value,
+    the comparison FAILS the match (strict). This is the opposite of
+    Relation.arg_compare's vacuous-pass semantics — derivation
+    pattern matching is selective by design (we want the rule to
+    fire only when the comparison is meaningfully true), while
+    relation gates default open so existing scenes aren't broken.
+    """
+    __slots__ = ("op", "rhs")
+
+    def __init__(self, op: str, rhs):
+        if op not in {"<", "<=", ">", ">=", "=="}:
+            raise ValueError(f"Compare op {op!r} not in <, <=, >, >=, ==")
+        self.op = op
+        self.rhs = rhs
+
+    def __repr__(self) -> str:
+        return f"Compare({self.op!r}, {self.rhs!r})"
+
+
 class VarList(Var):
     """A match variable whose binding is a list of entities, not a single
     one. Used for variadic event roles like `fari.parts` where the
@@ -243,6 +289,12 @@ class EntityPattern(Pattern):
 
 def _entity_matches(ent, constraints: dict[str, Any], ctx, bindings) -> bool:
     for key, expected in constraints.items():
+        # Compare-valued constraints resolve numerically against this
+        # entity's slot (LHS) and a literal or VarProp (RHS).
+        if isinstance(expected, Compare):
+            if not _compare_entity_slot(ent, key, expected, ctx, bindings):
+                return False
+            continue
         # Var-valued constraints resolve from current bindings — lets
         # patterns like `entity(pri_subjekto=SKA)` test "this fakto's
         # pri_subjekto equals the entity bound to SKA". An unbound Var
@@ -298,6 +350,45 @@ def _value_matches(actual, expected) -> bool:
     if isinstance(actual, list):
         return expected in actual
     return actual == expected
+
+
+def _to_float(v):
+    """Coerce a slot value (list or scalar) to a single float.
+    Returns None when missing or non-numeric."""
+    if v is None or v == [] or v == "":
+        return None
+    if isinstance(v, list):
+        v = v[0]
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _compare_entity_slot(ent, slot: str, cmp: "Compare", ctx, bindings) -> bool:
+    """Evaluate a Compare constraint: this entity's `slot` (LHS) op
+    `cmp.rhs` (literal or VarProp). Both sides must resolve to floats
+    or the match fails (strict — see Compare docstring for why)."""
+    lhs = _to_float(ctx.effective_property(ent.id, slot))
+    if lhs is None:
+        return False
+    rhs_spec = cmp.rhs
+    if isinstance(rhs_spec, VarProp):
+        rhs_eid = bindings.get(rhs_spec.var_)
+        if rhs_eid is None:
+            return False
+        rhs = _to_float(ctx.effective_property(rhs_eid, rhs_spec.prop))
+    else:
+        rhs = _to_float(rhs_spec)
+    if rhs is None:
+        return False
+    op = cmp.op
+    if op == "<":  return lhs < rhs
+    if op == "<=": return lhs <= rhs
+    if op == ">":  return lhs > rhs
+    if op == ">=": return lhs >= rhs
+    if op == "==": return lhs == rhs
+    return False
 
 
 def entity(**constraints) -> EntityPattern:
