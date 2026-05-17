@@ -3083,6 +3083,9 @@ def _drive_to_goal(drive, trace, lex):
     if kind == "location":
         _, actor, loc = drive
         return ("relation", "en", (actor, loc))
+    if kind == "proximity":
+        _, actor, loc = drive
+        return ("relation", "apud", (actor, loc))
     if kind == "possession":
         _, actor, item = drive
         return ("relation", "havi", (actor, item))

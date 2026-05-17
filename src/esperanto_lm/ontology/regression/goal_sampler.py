@@ -57,6 +57,7 @@ _PLAIN_RELATION_DRIVES: dict[str, str] = {
     "havi": "possession",
     "en": "location",
     "vestita": "wearing",
+    "apud": "proximity",
 }
 
 # Diagnostic channel: when regress_for_goal returns None, the last

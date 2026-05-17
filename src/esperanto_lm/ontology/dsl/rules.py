@@ -855,6 +855,27 @@ veturi_moves_agent = rule(
 )
 
 
+# rajdi's relation transfer — same shape as veturi_moves_agent but
+# fired on rajdi events, gated on the rider being en their current
+# location (so the move is from origin → apud destination). Without
+# this, rajdi was a no-op state-wise and so was absent from the
+# goal_index's producer set for apud(agent, destination).
+rajdi_moves_agent = rule(
+    when=event("rajdi",
+               agent=bind(RJA := var("A")),
+               destination=bind(RJD := var("D"))),
+    given=[
+        rel("en", contained=RJA, container=bind(RJO := var("O"))),
+        ~rel("en", contained=RJA, container=RJD),
+    ],
+    then=[
+        remove_relation("en", RJA, RJO),
+        add_relation("apud", RJA, RJD),
+    ],
+    name="rajdi_moves_agent",
+)
+
+
 # ---------- causal: fire_spreads_to_adjacent_flammables (Phase 3) -------
 #
 # Closure with max_steps=1 yields immediate neighbors only — the
@@ -3030,6 +3051,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     flugi_moves_agent,
     eniri_enters_location,
     surgrimpi_mounts_vehicle,
+    rajdi_moves_agent,
     sekvi_brings_agent_to_theme,
     voki_summons_theme,
     veturi_moves_agent,
