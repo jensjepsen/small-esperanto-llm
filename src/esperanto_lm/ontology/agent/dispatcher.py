@@ -210,12 +210,21 @@ def execute_drive(
                     fspawner = make_spawner(
                         scene_id, lex, rng,
                         budget=spawn_budget, prefer_scene_p=prefer_scene_p)
+                    # Exclude fari from phase 2: the construct phase
+                    # already built focus_eid. The planner sometimes
+                    # re-fires fari mid-followup when the goal involves
+                    # the constructable's state (re-gathers parts,
+                    # re-builds the same stub, then applies the
+                    # state-change verb). Forbidding fari forces it to
+                    # use the existing constructed entity directly.
+                    seeder_exclude = (
+                        getattr(t, "_planner_exclude_verbs", None) or set())
+                    fexclude = set(seeder_exclude) | {"fari"}
                     fplan = plan_for_goal(
                         fdrive, t, lex, rules, derivations,
                         max_states=max_states, max_plan_length=max_plan_length,
                         entity_resolver=fspawner, rng=rng,
-                        exclude_verbs=getattr(
-                            t, "_planner_exclude_verbs", None))
+                        exclude_verbs=fexclude)
                     if fplan:
                         for step in fplan:
                             event = _step_to_event(step, lex)
