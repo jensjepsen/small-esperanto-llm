@@ -252,7 +252,7 @@
 {"lemma": "koridoro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "balkono", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
 {"lemma": "etaĝo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "dentobroso", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["plastic"], "longeco": ["0.18"], "larĝeco": ["0.02"], "alteco": ["0.02"], "maso": ["0.02"]}}
+{"lemma": "dentobroso", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["plastic"], "longeco": ["0.18"], "larĝeco": ["0.02"], "alteco": ["0.02"], "maso": ["0.02"]}, "category": ["ilo"]}
 {"lemma": "tuko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["fabric"], "functional_signature": ["sekigi"], "integrity": ["tuta"], "longeco": ["0.5"], "larĝeco": ["0.5"], "alteco": ["0.005"], "maso": ["0.2"]}}
 {"lemma": "kombo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["plastic"], "longeco": ["0.15"], "larĝeco": ["0.04"], "alteco": ["0.005"], "maso": ["0.03"]}}
 {"lemma": "genuo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
@@ -277,7 +277,6 @@
 {"lemma": "ŝinko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
 {"lemma": "limonado", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "constructable": ["yes"]}, "category": ["trinkaĵo"], "parts": [{"concept": "akvo"}, {"concept": "citrono"}]}
 {"lemma": "mento", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"]}, "category": ["planto"]}
-{"lemma": "bazilo", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"]}, "category": ["planto"]}
 {"lemma": "kafejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "bakejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "preĝejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
@@ -330,7 +329,6 @@
 {"lemma": "duŝo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "nemovebla": ["yes"], "longeco": ["0.9"], "larĝeco": ["0.9"], "alteco": ["2.0"], "maso": ["50"]}, "category": ["meblo"]}
 {"lemma": "lavabo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "longeco": ["0.6"], "larĝeco": ["0.5"], "alteco": ["0.3"], "maso": ["15"]}, "category": ["meblo"]}
 {"lemma": "klozeto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "longeco": ["0.7"], "larĝeco": ["0.5"], "alteco": ["0.8"], "maso": ["30"]}, "category": ["meblo"]}
-{"lemma": "dentobrosilo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"]}, "category": ["ilo"]}
 {"lemma": "dentopasto", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["likva"], "denseco": ["1.3"]}}
 {"lemma": "ŝampuo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["likva"], "denseco": ["1.0"]}}
 {"lemma": "kajero", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["paper"], "readability": ["legebla"], "posture": ["kuŝanta"], "longeco": ["0.21"], "larĝeco": ["0.15"], "alteco": ["0.01"]}}
@@ -498,8 +496,6 @@
 {"lemma": "akordeono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
 {"lemma": "klarneto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
 {"lemma": "ksilofono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
-{"lemma": "dentbroso", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"]}, "category": ["ilo"]}
-{"lemma": "dentpasto", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "denseco": ["1.3"]}}
 {"lemma": "tualeto", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "nemovebla": ["yes"], "longeco": ["0.7"], "larĝeco": ["0.5"], "alteco": ["0.8"], "maso": ["30"]}, "category": ["meblo"]}
 {"lemma": "lavbovlo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "integrity": ["tuta"], "state_of_matter": ["solida"], "transforms_on_break": ["vitropecetoj"], "liquid_holder": ["yes"], "nemovebla": ["yes"], "longeco": ["0.5"], "larĝeco": ["0.5"], "alteco": ["0.2"], "maso": ["10"]}, "category": ["meblo"]}
 {"lemma": "ĉokolado", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
