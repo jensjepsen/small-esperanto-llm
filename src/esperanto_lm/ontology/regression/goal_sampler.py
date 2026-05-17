@@ -900,17 +900,24 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             else:
                 from .spawner import make_spawner
                 setup_spawner = make_spawner(
-                    scene_id, lex, rng, budget=1)
+                    scene_id, lex, rng, budget=1,
+                    actor_eid=actor_eid, inject_owner_p=0.30)
                 target_role_spec = next(
                     (r for r in action.roles
                      if r.name == eff.target_role), None)
                 if target_role_spec is None:
                     _bail(f"missing_target_role:{verb_lemma}.{eff.target_role}")
                     return None  # schema issue, not placement
+                # inject_owner=False: the drive's target must be reachable
+                # by the actor — handing it to an NPC up front would force
+                # a peti chain that the planner often can't model
+                # (single-agent planning, no social-handoff verb produced
+                # by a non-actor agent in goal_index).
                 target_eid = setup_spawner(
                     target_role_spec, t, lex,
                     set(t.entities.keys()),
-                    action=action, role_name=eff.target_role)
+                    action=action, role_name=eff.target_role,
+                    inject_owner=False)
                 if target_eid is None:
                     last_loop_reason = (
                         f"target_spawn_failed:{verb_lemma}.{eff.target_role}@{scene_lemma}")
@@ -959,11 +966,13 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 return None  # schema issue, not placement
             from .spawner import make_spawner
             setup_spawner = make_spawner(
-                scene_id, lex, rng, budget=1)
+                scene_id, lex, rng, budget=1,
+                actor_eid=actor_eid, inject_owner_p=0.30)
             target_eid = setup_spawner(
                 target_role_spec, t, lex,
                 set(t.entities.keys()),
-                action=action, role_name=target_role_name)
+                action=action, role_name=target_role_name,
+                inject_owner=False)
             if target_eid is None:
                 last_loop_reason = (
                     f"relation_target_spawn_failed:"
@@ -1075,20 +1084,33 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             # recipient AND theme; budget=1 leads to spurious
             # failures when the first random pick doesn't satisfy
             # containment in this particular scene.
-            setup_spawner = make_spawner(scene_id, lex, rng, budget=6)
+            setup_spawner = make_spawner(
+                scene_id, lex, rng, budget=6,
+                actor_eid=actor_eid, inject_owner_p=0.30)
+            # Recipient: protect from NPC ownership too — the recipient
+            # IS the addressee of the drive, not a candidate for being
+            # owned by some third party (havi(NPC, recipient) is a
+            # schema violation anyway, but explicit is clearer).
             recipient_eid = setup_spawner(
                 recipient_role_spec, t, lex,
                 set(t.entities.keys()),
-                action=action, role_name=recipient_role_name)
+                action=action, role_name=recipient_role_name,
+                inject_owner=False)
             if recipient_eid is None:
                 last_loop_reason = (
                     f"altruistic_recipient_spawn_failed:"
                     f"{verb_lemma}@{scene_lemma}")
                 continue
+            # Target: protect from NPC ownership. If an NPC pre-owned
+            # the gift the actor would need to peti first, but the
+            # single-agent planner can't model a non-actor agent doni-ing
+            # back. Plan becomes vidi → preni → doni (3 steps) when
+            # the giver picks the target up first.
             target_eid = setup_spawner(
                 target_role_spec, t, lex,
                 set(t.entities.keys()),
-                action=action, role_name=target_role_name)
+                action=action, role_name=target_role_name,
+                inject_owner=False)
             if target_eid is None:
                 last_loop_reason = (
                     f"altruistic_target_spawn_failed:"
@@ -1165,10 +1187,17 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 _bail(f"place_missing_role:{verb_lemma}")
                 return None
             from .spawner import make_spawner
-            setup_spawner = make_spawner(scene_id, lex, rng, budget=6)
+            setup_spawner = make_spawner(
+                scene_id, lex, rng, budget=6,
+                actor_eid=actor_eid, inject_owner_p=0.30)
+            # Protect the place-drive's obj from NPC ownership — meti
+            # needs the actor to bring the obj to the dest. Dest is
+            # typically a location, where havi-injection is silently
+            # rejected by schema anyway.
             obj_eid = setup_spawner(
                 obj_role_spec, t, lex, set(t.entities.keys()),
-                action=action, role_name=obj_role_name)
+                action=action, role_name=obj_role_name,
+                inject_owner=False)
             if obj_eid is None:
                 last_loop_reason = (
                     f"place_obj_spawn_failed:{verb_lemma}.{obj_role_name}")

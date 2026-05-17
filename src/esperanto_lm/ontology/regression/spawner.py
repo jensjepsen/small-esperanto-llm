@@ -22,6 +22,26 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+# `_inject_co_located_owner` builds a list of "spawnable person concepts"
+# every call: filters lex.concepts (~few hundred) through `is_subtype`,
+# itself a recursive walk. With NPC injection firing on ~60% of setup
+# spawns × ~3 spawns/scene × 500 scenes the per-call cost dominated the
+# parallel regression run (155ms/scene up from 89ms before injection).
+# Cache keyed by id(lex) — lexicons are immutable in our worker model.
+_PERSON_CONCEPTS_CACHE: dict[int, list[str]] = {}
+
+
+def _cached_person_concepts(lex) -> list[str]:
+    key = id(lex)
+    cached = _PERSON_CONCEPTS_CACHE.get(key)
+    if cached is None:
+        cached = [
+            c for c, cdef in lex.concepts.items()
+            if lex.types.is_subtype(cdef.entity_type, "person")
+            and not getattr(cdef, "is_category_stub", False)]
+        _PERSON_CONCEPTS_CACHE[key] = cached
+    return cached
+
 
 def make_spawner(
     scene_id: str,
@@ -30,6 +50,8 @@ def make_spawner(
     *,
     budget: int = 6,
     prefer_scene_p: float = 1.0,
+    actor_eid: Optional[str] = None,
+    inject_owner_p: float = 0.0,
 ) -> Callable:
     """Return a resolver closure for the planner's _ENTITY_RESOLVER.
 
@@ -52,12 +74,23 @@ def make_spawner(
     Placement: `_place_respecting_containment` walks the containment
     graph recursively (fruit → tree → outdoor, food → kitchen, etc.),
     materializing intermediate containers as needed.
+
+    `inject_owner_p > 0` makes the spawner occasionally bring along
+    an NPC who *holds* the placed item: pick a person concept, place
+    them in the same container, assert havi(person, item). Populates
+    scenes with owned items, unlocking peti / doni / aĉeti chains.
+    Per-call override via the resolver's `inject_owner` kwarg (None
+    falls back to inject_owner_p; True/False is hard).
+
+    `actor_eid` — the seeder's chosen actor. Excluded from the NPC
+    owner pool so we never reassign the actor's role.
     """
     state = {"spawned": 0}
 
     def resolver(role_spec, trace, lex_arg, exclude,
                  action=None, role_name=None, *,
-                 prefer_scene: bool | None = None):
+                 prefer_scene: bool | None = None,
+                 inject_owner: bool | None = None):
         # `prefer_scene` resolution:
         #   - explicit True/False from caller: honored
         #   - None (default): coin flip against `prefer_scene_p` —
@@ -194,6 +227,103 @@ def make_spawner(
                             pc.then_property, rng.choice(other))
 
         state["spawned"] += 1
+        # Fast-path when injection is fully disabled. The bench's
+        # planner-side spawner uses default `inject_owner_p=0.0` and
+        # never passes `inject_owner=True`, so this short-circuit
+        # skips the per-call `is_subtype` lookup that profiled at
+        # ~55ms/scene parallel overhead from the planner's pre-spawn
+        # + mid-search resolver loop. Seeder spawners (which set
+        # `inject_owner_p=0.30`) still pay the check, but they're
+        # called only a handful of times per scene.
+        if inject_owner_p > 0.0 or inject_owner is True:
+            # Skip for persons — we don't assign one person to "own"
+            # another. `inject_owner=False` (hard skip) is set by the
+            # seeder on the drive's target/recipient so the goal isn't
+            # pre-satisfied or made unsolvable.
+            if ent is not None and not lex_arg.types.is_subtype(
+                    ent.entity_type, "person"):
+                do_inject = (
+                    inject_owner if inject_owner is not None
+                    else rng.random() < inject_owner_p)
+                if do_inject:
+                    _inject_co_located_owner(
+                        trace, lex_arg, rng, scene_id,
+                        item_eid=eid, actor_eid=actor_eid)
         return eid
 
     return resolver
+
+
+def _inject_co_located_owner(
+    trace, lex, rng, scene_id, *, item_eid: str, actor_eid: Optional[str],
+) -> None:
+    """Bring an NPC owner alongside `item_eid`. First try existing
+    co-located non-actor persons; if none qualify, spawn a fresh
+    person into the item's container. On success, assert
+    havi(person, item) and drop the item's en/sur (havi means
+    in-hand, so leaving stale physical placement would contradict
+    the carrying interpretation — same as scene_builder's
+    distribution flow).
+
+    Schema legality is enforced by `assert_relation`: havi's
+    arg_excludes / arg_not_part / arg_compare reject locations,
+    body parts, nemovebla themes, and items heavier than the
+    candidate owner's lift_capacity. Illegal pairs silently no-op.
+    """
+    container = next(
+        (r.args[1] for r in trace.relations
+         if r.relation in ("en", "sur") and len(r.args) == 2
+         and r.args[0] == item_eid),
+        None)
+    if container is None:
+        return
+    # Index entities-by-location once: the candidate scan and the
+    # per-spawn co-location check both want O(1) lookup of "who's in
+    # this container?". Without this, the candidate filter is O(E·R)
+    # (entities × relations) on every injection call.
+    in_container: set = {
+        r.args[0] for r in trace.relations
+        if r.relation == "en" and len(r.args) == 2
+        and r.args[1] == container}
+    # First pass: an existing person co-located in the same container.
+    candidates = [
+        eid for eid in in_container
+        if eid != actor_eid and eid != item_eid
+        and lex.types.is_subtype(
+            trace.entities[eid].entity_type, "person")]
+    if candidates:
+        person_eid = rng.choice(candidates)
+        _try_assign_havi(trace, lex, person_eid, item_eid)
+        return
+    # Second pass: spawn a fresh person into the container. Cached
+    # concept list — see _cached_person_concepts above for why.
+    person_concepts = _cached_person_concepts(lex)
+    if not person_concepts:
+        return
+    from .seeders import _place_respecting_containment
+    # Bounded random pick: rng.sample over a list copy is cheaper
+    # than rng.shuffle when we only inspect the first 8.
+    pool = [c for c in person_concepts if c not in trace.entities]
+    if not pool:
+        return
+    tries = rng.sample(pool, min(8, len(pool)))
+    for concept in tries:
+        person_eid = _place_respecting_containment(
+            trace, lex, scene_id, concept, rng,
+            preferred_id=container)
+        if person_eid is None:
+            continue
+        if _try_assign_havi(trace, lex, person_eid, item_eid):
+            return
+
+
+def _try_assign_havi(trace, lex, person_eid: str, item_eid: str) -> bool:
+    try:
+        trace.assert_relation("havi", (person_eid, item_eid), lex)
+        trace.relations = [
+            r for r in trace.relations
+            if not (r.relation in ("en", "sur")
+                    and len(r.args) == 2 and r.args[0] == item_eid)]
+        return True
+    except (KeyError, ValueError):
+        return False
