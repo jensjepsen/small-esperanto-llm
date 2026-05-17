@@ -1603,6 +1603,16 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
         # graph for valid recipes.
         if any(getattr(r, "kind", "single") == "list" for r in action.roles):
             continue
+        # from_precondition roles: enumerate via matching trace
+        # relations instead of cartesian-product over entities. Saves
+        # the planner from `R × E^N` blowup on speech-act verbs whose
+        # roles (rel_type, objekto) come from a scias precondition.
+        fp_roles = [r for r in action.roles
+                    if getattr(r, "kind", "single") == "from_precondition"]
+        if fp_roles:
+            out.extend(_ground_action_from_precondition(
+                action, fp_roles, trace, lex, rule_effects, state_facts))
+            continue
         per_role: list[list[str]] = []
         ok = True
         for role_spec in action.roles:
@@ -1648,6 +1658,108 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
             if not effs:
                 continue  # All effects forbidden — no-op grounding.
             out.append((action, roles, pres, effs))
+    return out
+
+
+def _ground_action_from_precondition(
+    action, fp_roles, trace, lex, rule_effects, state_facts,
+):
+    """Ground an action whose roles include kind="from_precondition".
+    Iterates over `trace.relations` matching the source precondition;
+    binds from_precondition roles from the relation's args; enumerates
+    remaining (entity) roles normally; yields one (action, roles,
+    pres, effs) per matching tuple.
+
+    Avoids the `R × E^N` enumeration that a cartesian-product would
+    produce for rakonti-style verbs. The cost is `|matching-relations|
+    × E^remaining-roles` — for rakonti with ~5 scias tuples per scene
+    and 2 remaining roles (agent, recipient) on ~15 entities, that's
+    ~1000 groundings vs ~1M for the cartesian path."""
+    # Group fp_roles by source precondition relation name.
+    from ..schemas import RelationPrecondition
+    fp_by_rel: dict = {}
+    for r in fp_roles:
+        rel = getattr(r, "from_precondition", None)
+        if rel is None:
+            continue
+        fp_by_rel.setdefault(rel, []).append(r)
+    # For each source relation, find the matching precondition and
+    # iterate trace facts. Multiple-source actions iterate the
+    # cross-product (rare; lasts case handles it).
+    out = []
+    for rel_name, roles_using in fp_by_rel.items():
+        matching_pre = None
+        for pc in action.preconditions:
+            if (isinstance(pc, RelationPrecondition)
+                    and pc.rel == rel_name):
+                matching_pre = pc
+                break
+        if matching_pre is None:
+            continue  # schema invalid; can't enumerate
+        # All roles named in the precondition are pre-bound from each
+        # matching relation tuple. fp_roles are explicitly so; entity
+        # roles named in the pre are co-bound (their values must agree
+        # with the relation's args at the corresponding positions).
+        for rel_assertion in trace.relations:
+            if rel_assertion.relation != rel_name:
+                continue
+            if len(rel_assertion.args) != len(matching_pre.roles):
+                continue
+            pre_bindings: dict = {}
+            for i, role_name in enumerate(matching_pre.roles):
+                pre_bindings[role_name] = rel_assertion.args[i]
+            # Validate entity-typed pre_bindings against role.type.
+            valid = True
+            for r in action.roles:
+                if r.name not in pre_bindings:
+                    continue
+                if getattr(r, "kind", "single") in (
+                        "from_precondition", "relation"):
+                    continue
+                eid = pre_bindings[r.name]
+                ent = trace.entities.get(eid)
+                if ent is None or not lex.types.is_subtype(
+                        ent.entity_type, r.type):
+                    valid = False
+                    break
+            if not valid:
+                continue
+            # Enumerate remaining (non-pre-bound) roles via entities.
+            other_roles = [r for r in action.roles
+                           if r.name not in pre_bindings]
+            per_role = []
+            ok = True
+            for r in other_roles:
+                cand = []
+                for eid, ent in trace.entities.items():
+                    if eid in pre_bindings.values():
+                        continue
+                    if not lex.types.is_subtype(ent.entity_type, r.type):
+                        continue
+                    cand.append(eid)
+                if not cand:
+                    ok = False
+                    break
+                per_role.append(cand)
+            if not ok:
+                continue
+            for combo in itertools.product(*per_role):
+                if len(set(combo)) != len(combo):
+                    continue
+                roles = dict(pre_bindings)
+                for r, e in zip(other_roles, combo):
+                    roles[r.name] = e
+                if not _action_effects_meaningful(
+                        action, roles, trace, lex):
+                    continue
+                pres, effs = _ground_action_facts(
+                    action, roles, lex, rule_effects, facts=state_facts)
+                if not effs:
+                    continue
+                effs = _filter_forbidden_effs(effs, trace, lex)
+                if not effs:
+                    continue
+                out.append((action, roles, pres, effs))
     return out
 
 
