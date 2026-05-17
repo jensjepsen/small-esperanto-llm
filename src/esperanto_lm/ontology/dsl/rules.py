@@ -802,6 +802,14 @@ sekvi_brings_agent_to_theme = rule(
     then=[
         remove_relation("en", SqA, SqO),
         add_relation("apud", SqA, SqL),
+        # Same fact in role-bound form so verb_postconditions can
+        # surface sekvi as a producer of apud(agent, theme) in the
+        # goal_index. Without this, SqL — bound from the given
+        # `en(theme, *)` clause — has no action-role mapping and
+        # the postcondition is silently dropped from the index.
+        # Runtime semantics unchanged: samloke chains already make
+        # SqA samloke SqT via the SqA-apud-SqL fact above.
+        add_relation("apud", SqA, SqT),
     ],
     name="sekvi_brings_agent_to_theme",
 )
@@ -826,6 +834,11 @@ voki_summons_theme = rule(
     then=[
         remove_relation("en", VkT, VkO),
         add_relation("apud", VkT, VkL),
+        # Role-bound twin so the goal_index picks up voki as a
+        # producer of apud(theme, agent). Same rationale as sekvi's
+        # parallel add — VkL (agent's container, from given) has no
+        # action-role mapping; this version uses only role vars.
+        add_relation("apud", VkT, VkA),
     ],
     name="voki_summons_theme",
 )
