@@ -2415,7 +2415,7 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
 def plan_for_goal(
     drive, initial_trace: Trace, lex, rules, derivations,
     *, max_states: int = 200, max_plan_length: int = 12,
-    entity_resolver=None, rng=None,
+    entity_resolver=None, rng=None, exclude_verbs=None,
 ) -> Optional[list]:
     """Greedy best-first forward search. Returns a plan (list of
     (verb, roles) steps) or None.
@@ -2434,6 +2434,16 @@ def plan_for_goal(
     runs with rng get narrative diversity across seeds (a bicycle vs.
     a walk for the same destination, etc.) without breaking weighted
     A*'s correctness — only optimality.
+
+    `exclude_verbs`: optional set of action lemmas to filter out of
+    grounding. Used by the seeder to force a specific producer for
+    the goal-fact: when the seeder commits to `veturi` for a
+    same-place drive, it passes the alternative producers (`iri`,
+    `kuri`, `rajdi`, `flugi`, `veni`) here so the planner has to
+    construct the eniri→veturi chain instead of substituting a
+    cheaper direct action. Support verbs (preni, eniri, etc.) for
+    preconditions remain available — only same-goal alternatives
+    get filtered.
 
     `max_states=0` is the reachability-only mode: do the initial
     setup (prespawn, ground actions+derivations, compute h on the
@@ -2474,6 +2484,8 @@ def plan_for_goal(
         initial_trace, lex, initial_derived, rule_effects)
     grounded.extend(_ground_constructable_actions(
         initial_trace, lex, rule_effects, derived=initial_derived))
+    if exclude_verbs:
+        grounded = [g for g in grounded if g[0].lemma not in exclude_verbs]
     # Goal-aware action pruning. Walk backward from the goal through
     # action effects, rule-effects adds, and preconditions to find
     # the set of verbs that could plausibly contribute to reaching

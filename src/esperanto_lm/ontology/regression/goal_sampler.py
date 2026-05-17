@@ -481,7 +481,8 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
 
 
 def _drive_is_h_reachable(t, drive, lex, rules, derivations,
-                            entity_resolver=None) -> bool:
+                            entity_resolver=None,
+                            exclude_verbs=None) -> bool:
     """True iff the planner's relaxed-plan heuristic gives a finite
     h on this drive — i.e., the goal is reachable in the relaxed
     graph. Uses `plan_for_goal(max_states=0)` so the planner does
@@ -497,7 +498,8 @@ def _drive_is_h_reachable(t, drive, lex, rules, derivations,
     from ..agent.forward_planner import plan_for_goal
     result = plan_for_goal(
         drive, t, lex, rules, derivations,
-        max_states=0, entity_resolver=entity_resolver)
+        max_states=0, entity_resolver=entity_resolver,
+        exclude_verbs=exclude_verbs)
     return result is not None
 
 
@@ -749,6 +751,15 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
     if action is None:
         _bail(f"unknown_action:{verb_lemma}")
         return None
+    # Force the planner to use the verb we picked. Alternative
+    # producers of the same goal-fact get filtered from grounding,
+    # so the chosen verb has to be used (and its preconditions get
+    # organically planned via support verbs). Without this the
+    # planner substitutes the cheapest producer regardless of what
+    # the seeder set up — collapsing veturi→eniri+veturi into iri,
+    # rajdi→surgrimpi+rajdi into iri, etc. Support verbs aren't
+    # touched (preni, eniri, iri remain available as setup).
+    exclude_verbs_for_drive = (set(producers) - {verb_lemma}) or None
 
     if chosen_goal[0] == "property":
         _, slot, target_value = chosen_goal
@@ -921,12 +932,14 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 scene_id, lex, rng, budget=6)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
-                    entity_resolver=spawner_for_check):
+                    entity_resolver=spawner_for_check,
+                    exclude_verbs=exclude_verbs_for_drive):
                 last_loop_reason = (
                     f"h_unreachable:entity_slot:"
                     f"{verb_lemma}({agent_concept}.{slot}={target_value})"
                     f"@{scene_lemma}")
                 continue
+            t._planner_exclude_verbs = exclude_verbs_for_drive
             return t, scene_id, drive
         elif (chosen_goal[0] == "relation"
                 and CREATED_ROLE not in chosen_goal[2]
@@ -985,25 +998,13 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             if not extras_ok:
                 continue
             # Pre-assert the chosen producer's relation preconditions
-            # so it can fire in one step — otherwise the planner would
-            # need to plan setup (e.g. eniri → en) before veturi, making
-            # the vehicle path strictly longer than direct iri and never
-            # winning even with rng-noise tie-breaks. Reads precondition
-            # tuples that name (agent_role, other_committed_role) and
-            # asserts the relation in the trace if it's missing.
-            from ..schemas import RelationPrecondition
-            for pc in (action.preconditions or []):
-                if not isinstance(pc, RelationPrecondition): continue
-                if len(pc.roles) != 2: continue
-                if pc.roles[0] not in committed_roles: continue
-                if pc.roles[1] not in committed_roles: continue
-                a_eid = committed_roles[pc.roles[0]]
-                b_eid = committed_roles[pc.roles[1]]
-                if t.is_relation_permitted(pc.rel, (a_eid, b_eid), lex):
-                    try:
-                        t.assert_relation(pc.rel, (a_eid, b_eid), lex)
-                    except (KeyError, ValueError):
-                        pass
+            # NOTE: pre-asserting the producer's preconditions was
+            # tried earlier as a workaround to make the chosen verb
+            # win over cheaper alternatives — but it collapsed plans
+            # to one step. Reverted in favor of `exclude_verbs` passed
+            # to the planner: alternative producers of the goal-fact
+            # are filtered out of grounding, so the chosen verb has to
+            # be used (and its preconditions get organically planned).
             # Schema-level viability: the relation's `arg_excludes`,
             # `arg_not_part`, `arg_patterns`, and `arg_compare` already
             # encode what makes a (actor, target) pairing valid — havi
@@ -1039,13 +1040,15 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 scene_id, lex, rng, budget=6)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
-                    entity_resolver=spawner_for_check):
+                    entity_resolver=spawner_for_check,
+                    exclude_verbs=exclude_verbs_for_drive):
                 target_ent = t.entities.get(target_eid)
                 last_loop_reason = (
                     f"h_unreachable:{rel_name}({agent_concept}->"
                     f"{target_ent.concept_lemma if target_ent else '?'})"
                     f"@{scene_lemma}")
                 continue
+            t._planner_exclude_verbs = exclude_verbs_for_drive
             return t, scene_id, drive
         elif (chosen_goal[0] == "relation"
                 and CREATED_ROLE not in chosen_goal[2]
@@ -1121,21 +1124,9 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 committed_roles[r.name] = extra_eid
             if not alt_extras_ok:
                 continue
-            # Pre-assert agent-side preconditions (e.g. havi(agent,
-            # theme) for doni — the giver must hold the gift).
-            from ..schemas import RelationPrecondition
-            for pc in (action.preconditions or []):
-                if not isinstance(pc, RelationPrecondition): continue
-                if len(pc.roles) != 2: continue
-                if pc.roles[0] not in committed_roles: continue
-                if pc.roles[1] not in committed_roles: continue
-                a_eid = committed_roles[pc.roles[0]]
-                b_eid = committed_roles[pc.roles[1]]
-                if t.is_relation_permitted(pc.rel, (a_eid, b_eid), lex):
-                    try:
-                        t.assert_relation(pc.rel, (a_eid, b_eid), lex)
-                    except (KeyError, ValueError):
-                        pass
+            # No pre-assert: planner organically plans the agent-side
+            # preconditions (havi(agent, theme), samloke(agent, ...))
+            # via preni / iri etc. Diversity comes from richer chains.
             _ensure_obstacle_tools(t, lex, rng, scene_id)
             drive = ("altruistic_relation_drive", rel_name,
                      actor_eid, recipient_eid, target_eid)
@@ -1143,11 +1134,13 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 scene_id, lex, rng, budget=6)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
-                    entity_resolver=spawner_for_check):
+                    entity_resolver=spawner_for_check,
+                    exclude_verbs=exclude_verbs_for_drive):
                 last_loop_reason = (
                     f"h_unreachable:altruistic_{rel_name}:"
                     f"{verb_lemma}@{scene_lemma}")
                 continue
+            t._planner_exclude_verbs = exclude_verbs_for_drive
             return t, scene_id, drive
         elif (chosen_goal[0] == "relation"
                 and CREATED_ROLE not in chosen_goal[2]
@@ -1213,19 +1206,8 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 committed_roles[r.name] = extra_eid
             if not place_extras_ok:
                 continue
-            from ..schemas import RelationPrecondition
-            for pc in (action.preconditions or []):
-                if not isinstance(pc, RelationPrecondition): continue
-                if len(pc.roles) != 2: continue
-                if pc.roles[0] not in committed_roles: continue
-                if pc.roles[1] not in committed_roles: continue
-                a_eid = committed_roles[pc.roles[0]]
-                b_eid = committed_roles[pc.roles[1]]
-                if t.is_relation_permitted(pc.rel, (a_eid, b_eid), lex):
-                    try:
-                        t.assert_relation(pc.rel, (a_eid, b_eid), lex)
-                    except (KeyError, ValueError):
-                        pass
+            # No pre-assert: let the planner organically discover the
+            # setup chain (preni → iri → meti, etc.).
             _ensure_obstacle_tools(t, lex, rng, scene_id)
             drive = ("place_drive", rel_name,
                      actor_eid, obj_eid, dest_eid)
@@ -1233,11 +1215,13 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 scene_id, lex, rng, budget=6)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
-                    entity_resolver=spawner_for_check):
+                    entity_resolver=spawner_for_check,
+                    exclude_verbs=exclude_verbs_for_drive):
                 last_loop_reason = (
                     f"h_unreachable:place_{rel_name}:"
                     f"{verb_lemma}@{scene_lemma}")
                 continue
+            t._planner_exclude_verbs = exclude_verbs_for_drive
             return t, scene_id, drive
         else:
             _ensure_obstacle_tools(t, lex, rng, scene_id)
@@ -1254,11 +1238,13 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 scene_id, lex, rng, budget=6)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
-                    entity_resolver=spawner_for_check):
+                    entity_resolver=spawner_for_check,
+                    exclude_verbs=exclude_verbs_for_drive):
                 last_loop_reason = (
                     f"h_unreachable:event_fire:"
                     f"{verb_lemma}({agent_concept})@{scene_lemma}")
                 continue
+            t._planner_exclude_verbs = exclude_verbs_for_drive
             return t, scene_id, drive
     _bail(last_loop_reason)
     return None
