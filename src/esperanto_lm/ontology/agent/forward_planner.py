@@ -3092,11 +3092,37 @@ def _drive_to_goal(drive, trace, lex):
     if kind == "wearing":
         _, actor, garment = drive
         return ("relation", "vestita", (actor, garment))
+    # Generic relation-drive shapes: the seeder carries the
+    # relation name in the drive itself instead of going through
+    # a per-relation kind label. Three forms, one per role-position
+    # the seeder dispatches on. Replaces the "possession"/"location"/
+    # "wearing"/"proximity" + altruistic-* fixed labels — the schema's
+    # relations.jsonl is now the single source of truth for what's
+    # drive-able, with no per-relation code paths. Checked BEFORE the
+    # legacy `altruistic_*` prefix match so the new
+    # `altruistic_relation_drive` shape (5-tuple) doesn't fall into
+    # the 4-tuple unpack.
+    if kind == "relation_drive":
+        # ("relation_drive", rel_name, actor, target) — actor IS the
+        # beneficiary (role_args[0]=="agent"), so goal targets actor.
+        _, rel, actor, target = drive
+        return ("relation", rel, (actor, target))
+    if kind == "altruistic_relation_drive":
+        # (kind, rel_name, actor, beneficiary, target) — actor performs
+        # the producer verb, beneficiary ends up in the relation.
+        _, rel, _actor, beneficiary, target = drive
+        return ("relation", rel, (beneficiary, target))
+    if kind == "place_drive":
+        # (kind, rel_name, actor, obj, location) — actor manipulates
+        # obj to be related to location (meti/verŝi/planti style).
+        # Neither actor nor a beneficiary appears in the goal — obj
+        # and location do.
+        _, rel, _actor, obj, location = drive
+        return ("relation", rel, (obj, location))
     if kind.startswith("altruistic_"):
-        # Altruistic drives: (kind, actor, beneficiary, target).
-        # Goal targets the beneficiary, not the actor — the actor
-        # is who performs the giving/showing/teaching, the
-        # beneficiary is who ends up in the relation.
+        # Legacy altruistic_* labels (altruistic_possession etc.) from
+        # the pre-generic-shape era. Kept for backward compat with any
+        # remaining caller that uses them.
         _, _actor, beneficiary, target = drive
         rel = {
             "altruistic_possession": "havi",

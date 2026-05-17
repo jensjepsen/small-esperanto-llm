@@ -48,18 +48,6 @@ def _drive_target_unmeaningful(
     return not concept_models_slot(
         target_concept, slot, lex, RUNTIME_DERIVATIONS)
 
-# Plain relation goals we promote into drives (besides CREATED-role
-# event_fire). Map relation name → drive kind understood by the
-# planner's `_drive_to_goal`. The actor must be the first arg of
-# the goal's role_tuple (we only emit drives where the agent is
-# the subject of the relation).
-_PLAIN_RELATION_DRIVES: dict[str, str] = {
-    "havi": "possession",
-    "en": "location",
-    "vestita": "wearing",
-    "apud": "proximity",
-}
-
 # Diagnostic channel: when regress_for_goal returns None, the last
 # return path tags itself here. Bench / debug scripts can read this
 # after each call to classify no_sample causes.
@@ -721,18 +709,16 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
             if CREATED_ROLE in role_args:
                 # event_fire drive: rule creates the related entity.
                 all_goals.append((g, verbs))
-            elif (rel_name in _PLAIN_RELATION_DRIVES
-                    and role_args[0] == "agent"):
-                # Plain havi/en/vestita with agent-as-actor →
-                # possession/location/wearing drive.
-                all_goals.append((g, verbs))
-            elif (rel_name in _PLAIN_RELATION_DRIVES
-                    and role_args[0] == "recipient"):
-                # Altruistic: producer's recipient ends up with the
-                # relation (doni → havi(recipient, theme), montri →
-                # konas(recipient, fakto)). Actor (the giver) is the
-                # producer's agent role — a distinct entity from the
-                # beneficiary.
+            elif role_args[0] in ("agent", "recipient",
+                                  "theme", "instrument"):
+                # Role-position dispatch — no per-relation whitelist.
+                # The seeder branches on role_args[0]:
+                #   agent:      actor is the beneficiary (self drive)
+                #   recipient:  altruistic — actor benefits another
+                #   theme/instrument: object-relocation — actor moves
+                #                     a patient object into a location
+                # The schema's goal_index (rules-derived) is the
+                # single source of truth for what's drive-able.
                 all_goals.append((g, verbs))
         elif g[0] == "construct":
             all_goals.append((g, verbs))
@@ -943,7 +929,6 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 continue
             return t, scene_id, drive
         elif (chosen_goal[0] == "relation"
-                and chosen_goal[1] in _PLAIN_RELATION_DRIVES
                 and CREATED_ROLE not in chosen_goal[2]
                 and chosen_goal[2][0] == "agent"):
             # possession/location/wearing drive: spawn the second-
@@ -1043,8 +1028,7 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 {actor_role_name: actor_eid,
                  target_role_name: target_eid}, scene_id, lex, rng,
                 rules, _ALL_DERIVATIONS)
-            drive_kind = _PLAIN_RELATION_DRIVES[rel_name]
-            drive = (drive_kind, actor_eid, target_eid)
+            drive = ("relation_drive", rel_name, actor_eid, target_eid)
             # Planner h_FF as the single source of truth for
             # reachability — see `_drive_is_h_reachable`. Replaces
             # the per-feature terrain/locomotion checks we'd
@@ -1064,7 +1048,6 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                 continue
             return t, scene_id, drive
         elif (chosen_goal[0] == "relation"
-                and chosen_goal[1] in _PLAIN_RELATION_DRIVES
                 and CREATED_ROLE not in chosen_goal[2]
                 and chosen_goal[2][0] == "recipient"):
             # Altruistic relation drive: the producer's recipient ends
@@ -1154,15 +1137,105 @@ def regress_for_goal(lex, rng: random.Random, rules) -> Optional[tuple]:
                     except (KeyError, ValueError):
                         pass
             _ensure_obstacle_tools(t, lex, rng, scene_id)
-            drive_kind = "altruistic_" + _PLAIN_RELATION_DRIVES[rel_name]
-            drive = (drive_kind, actor_eid, recipient_eid, target_eid)
+            drive = ("altruistic_relation_drive", rel_name,
+                     actor_eid, recipient_eid, target_eid)
             spawner_for_check = make_spawner(
                 scene_id, lex, rng, budget=6)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
                     entity_resolver=spawner_for_check):
                 last_loop_reason = (
-                    f"h_unreachable:{drive_kind}:"
+                    f"h_unreachable:altruistic_{rel_name}:"
+                    f"{verb_lemma}@{scene_lemma}")
+                continue
+            return t, scene_id, drive
+        elif (chosen_goal[0] == "relation"
+                and CREATED_ROLE not in chosen_goal[2]
+                and chosen_goal[2][0] in ("theme", "instrument")):
+            # Object-relocation: actor manipulates a patient object
+            # into a relation with a location. Producer pattern is
+            # meti(agent, theme, location), verŝi(agent, theme,
+            # destination), planti(agent, theme, location), etc.
+            # Spawn the object (position 0) AND the dest (position 1),
+            # commit to producer for any other roles, pre-assert the
+            # producer's agent-side relation preconditions.
+            _, rel_name, role_args = chosen_goal
+            obj_role_name = role_args[0]   # theme or instrument
+            dest_role_name = role_args[1]  # location/destination
+            obj_role_spec = next(
+                (r for r in action.roles
+                 if r.name == obj_role_name), None)
+            dest_role_spec = next(
+                (r for r in action.roles
+                 if r.name == dest_role_name), None)
+            if obj_role_spec is None or dest_role_spec is None:
+                _bail(f"place_missing_role:{verb_lemma}")
+                return None
+            from .spawner import make_spawner
+            setup_spawner = make_spawner(scene_id, lex, rng, budget=6)
+            obj_eid = setup_spawner(
+                obj_role_spec, t, lex, set(t.entities.keys()),
+                action=action, role_name=obj_role_name)
+            if obj_eid is None:
+                last_loop_reason = (
+                    f"place_obj_spawn_failed:{verb_lemma}.{obj_role_name}")
+                continue
+            dest_eid = setup_spawner(
+                dest_role_spec, t, lex, set(t.entities.keys()),
+                action=action, role_name=dest_role_name)
+            if dest_eid is None:
+                last_loop_reason = (
+                    f"place_dest_spawn_failed:{verb_lemma}.{dest_role_name}")
+                continue
+            if not t.is_relation_permitted(
+                    rel_name, (obj_eid, dest_eid), lex):
+                last_loop_reason = (
+                    f"place_relation_not_permitted:{rel_name}")
+                continue
+            committed_roles = {
+                actor_role_name: actor_eid,
+                obj_role_name: obj_eid,
+                dest_role_name: dest_eid,
+            }
+            place_extras_ok = True
+            for r in action.roles:
+                if r.name in committed_roles:
+                    continue
+                extra_eid = setup_spawner(
+                    r, t, lex, set(t.entities.keys()),
+                    action=action, role_name=r.name)
+                if extra_eid is None:
+                    last_loop_reason = (
+                        f"place_extra_role_spawn_failed:"
+                        f"{verb_lemma}.{r.name}")
+                    place_extras_ok = False
+                    break
+                committed_roles[r.name] = extra_eid
+            if not place_extras_ok:
+                continue
+            from ..schemas import RelationPrecondition
+            for pc in (action.preconditions or []):
+                if not isinstance(pc, RelationPrecondition): continue
+                if len(pc.roles) != 2: continue
+                if pc.roles[0] not in committed_roles: continue
+                if pc.roles[1] not in committed_roles: continue
+                a_eid = committed_roles[pc.roles[0]]
+                b_eid = committed_roles[pc.roles[1]]
+                if t.is_relation_permitted(pc.rel, (a_eid, b_eid), lex):
+                    try:
+                        t.assert_relation(pc.rel, (a_eid, b_eid), lex)
+                    except (KeyError, ValueError):
+                        pass
+            _ensure_obstacle_tools(t, lex, rng, scene_id)
+            drive = ("place_drive", rel_name,
+                     actor_eid, obj_eid, dest_eid)
+            spawner_for_check = make_spawner(
+                scene_id, lex, rng, budget=6)
+            if not _drive_is_h_reachable(
+                    t, drive, lex, rules, _ALL_DERIVATIONS,
+                    entity_resolver=spawner_for_check):
+                last_loop_reason = (
+                    f"h_unreachable:place_{rel_name}:"
                     f"{verb_lemma}@{scene_lemma}")
                 continue
             return t, scene_id, drive
