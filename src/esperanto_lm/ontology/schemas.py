@@ -259,7 +259,7 @@ class RoleSpec(_Frozen):
     #               the entity at event-firing time
     #   "list"    — N entities, one per concept named in the theme
     #               concept's `from_field`. Binds to a list var.
-    kind: Literal["single", "created", "list"] = "single"
+    kind: Literal["single", "created", "list", "relation"] = "single"
     # Which field of the *theme* concept (or another previously-bound
     # role) the grounder reads to populate this role. For kind="list"
     # this is the parts-list field (e.g. "parts"); for an instrument
@@ -269,6 +269,17 @@ class RoleSpec(_Frozen):
     # Soft role: planner allows leaving it unbound. Used for the
     # instrument role when a recipe has no crafted_with.
     optional: bool = False
+    # kind="relation": value is a relation name (string) from
+    # lex.relations.keys(). Used by speech-act verbs (rakonti, demandi,
+    # respondi, instrui) to designate which relation is being
+    # communicated about — `rakonti(agent, recipient, rel_type="en",
+    # theme=pomo)` says "tell where the apple is." The planner
+    # enumerates from the actor's existing scias-relation kinds
+    # (only rels they already know about are plannable); the spawner
+    # picks any name from lex.relations.keys() as a fallback. Empty
+    # `allowed_values` means "any" — restrict here to a subset when
+    # the verb only handles certain relation shapes.
+    allowed_values: list[str] = Field(default_factory=list)
 
 
 class Effect(_Frozen):
