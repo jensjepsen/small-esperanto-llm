@@ -259,7 +259,9 @@ class RoleSpec(_Frozen):
     #               the entity at event-firing time
     #   "list"    — N entities, one per concept named in the theme
     #               concept's `from_field`. Binds to a list var.
-    kind: Literal["single", "created", "list", "relation"] = "single"
+    kind: Literal[
+        "single", "created", "list", "relation", "from_precondition",
+    ] = "single"
     # Which field of the *theme* concept (or another previously-bound
     # role) the grounder reads to populate this role. For kind="list"
     # this is the parts-list field (e.g. "parts"); for an instrument
@@ -280,6 +282,21 @@ class RoleSpec(_Frozen):
     # `allowed_values` means "any" — restrict here to a subset when
     # the verb only handles certain relation shapes.
     allowed_values: list[str] = Field(default_factory=list)
+    # kind="from_precondition": the role's binding is enumerated from
+    # `trace.relations` matching a named precondition, not from
+    # `trace.entities`. Used by speech-act verbs to bind rel_type +
+    # objekto from existing `scias(agent, rel_type, theme, objekto)`
+    # facts. Without this, the planner would enumerate every
+    # (rel_type, objekto) combination — `R × E` per scene — and rely
+    # on precondition-check pruning post-enumeration.
+    #
+    # `from_precondition` names the relation of the source pre (e.g.
+    # "scias"); the action.preconditions list must contain at least
+    # one RelationPrecondition with rel=that name. `position` is the
+    # 0-based arg index in that precondition (e.g. position=1 for
+    # rel_type, position=3 for objekto in scias).
+    from_precondition: Optional[str] = None
+    from_precondition_position: Optional[int] = None
 
 
 class Effect(_Frozen):
