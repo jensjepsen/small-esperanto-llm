@@ -1104,6 +1104,12 @@ vidi_learns_en = rule(
         # (realizer + a few rule sites still read it); next sessions
         # migrate those consumers and drop fakto creation entirely.
         add_relation("scias_lokon", VEA, VET),
+        # 4-arity scias: (knower, rel_type, subjekto, objekto). rel_type
+        # is a literal-kind arg (the relation name). Carries enough
+        # info for rakonti/demandi to designate "which proposition"
+        # without the fakto reification. Both representations coexist
+        # during the migration.
+        add_relation("scias", VEA, "en", VET, VEL),
     ],
     name="vidi_learns_en",
 )
@@ -1126,6 +1132,7 @@ flari_learns_en = rule(
         add_relation("objekto", FEF, FEL),
         add_relation("konas", FEA, FEF),
         add_relation("scias_lokon", FEA, FET),
+        add_relation("scias", FEA, "en", FET, FEL),
     ],
     name="flari_learns_en",
 )
@@ -1148,6 +1155,7 @@ audi_learns_en = rule(
         add_relation("objekto", AEF, AEL),
         add_relation("konas", AEA, AEF),
         add_relation("scias_lokon", AEA, AET),
+        add_relation("scias", AEA, "en", AET, AEL),
     ],
     name="audi_learns_en",
 )
@@ -1170,6 +1178,7 @@ vidi_learns_sur = rule(
         add_relation("objekto", VSF, VSL),
         add_relation("konas", VSA, VSF),
         add_relation("scias_lokon", VSA, VST),
+        add_relation("scias", VSA, "sur", VST, VSL),
     ],
     name="vidi_learns_sur",
 )
@@ -1201,6 +1210,7 @@ flari_learns_sur = rule(
         add_relation("objekto", FSF, FSL),
         add_relation("konas", FSA, FSF),
         add_relation("scias_lokon", FSA, FST),
+        add_relation("scias", FSA, "sur", FST, FSL),
     ],
     name="flari_learns_sur",
 )
@@ -1224,6 +1234,7 @@ audi_learns_sur = rule(
         add_relation("objekto", ASF, ASL),
         add_relation("konas", ASA, ASF),
         add_relation("scias_lokon", ASA, AST),
+        add_relation("scias", ASA, "sur", AST, ASL),
     ],
     name="audi_learns_sur",
 )
@@ -1245,6 +1256,7 @@ vidi_learns_havi_owner = rule(
         add_relation("subjekto", VHF, VHO),
         add_relation("objekto", VHF, VHT),
         add_relation("konas", VHA, VHF),
+        add_relation("scias", VHA, "havi", VHO, VHT),
     ],
     name="vidi_learns_havi_owner",
 )
