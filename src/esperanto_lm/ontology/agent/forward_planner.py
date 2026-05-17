@@ -343,7 +343,7 @@ def _ground_action_facts(action, roles, lex, rule_effects, facts=None):
     # apply to each list element, which the spawner enforces at scene
     # time (each ingredient already matches its role.properties).
     for role_spec in action.roles:
-        if getattr(role_spec, "kind", "single") == "list":
+        if getattr(role_spec, "kind", "single") in ("list", "relation"):
             continue
         eid = roles.get(role_spec.name)
         if eid is None:
@@ -1606,6 +1606,20 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
         per_role: list[list[str]] = []
         ok = True
         for role_spec in action.roles:
+            # kind="relation": value is a relation name (string), not
+            # an entity. Enumerate from allowed_values or all
+            # registered relations. The rule's `given` clauses filter
+            # to plannable ones (e.g. rakonti's given checks
+            # scias(agent, rel_type, ...) — only known rel_types fire).
+            if getattr(role_spec, "kind", "single") == "relation":
+                pool = (list(role_spec.allowed_values)
+                        if getattr(role_spec, "allowed_values", None)
+                        else list(lex.relations.keys()))
+                if not pool:
+                    ok = False
+                    break
+                per_role.append(pool)
+                continue
             cand = []
             for eid, ent in trace.entities.items():
                 if not lex.types.is_subtype(

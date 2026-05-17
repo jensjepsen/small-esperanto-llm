@@ -106,6 +106,19 @@ def make_spawner(
         # just to return None at the end.
         if state["spawned"] >= budget:
             return None
+        # kind="relation": value is a relation name. Pick from the
+        # role's allowed_values if set, else from all of
+        # lex.relations.keys(). The chosen string flows through the
+        # planner's role-binding machinery the same way an eid does;
+        # downstream rule patterns can match it as a literal Var.
+        if getattr(role_spec, "kind", "single") == "relation":
+            pool = (list(role_spec.allowed_values)
+                    if getattr(role_spec, "allowed_values", None)
+                    else list(lex_arg.relations.keys()))
+            if not pool:
+                return None
+            state["spawned"] += 1
+            return rng.choice(pool)
         from .seeders import (
             _candidate_weights, _concepts_matching_role,
             _place_respecting_containment,
