@@ -214,13 +214,6 @@ def execute_drive(
         return None
     full_plan = list(first)
 
-    # Construct's phase-2 must exclude fari — see _construct_goal_scene
-    # for the parts-cascade rationale; phase-2 re-firing fari would
-    # rebuild the same stub mid-chain.
-    last_was_construct = (
-        drive[0] == "event_fire" and len(drive) >= 3
-        and drive[2] == "fari")
-
     # Chain on itself: with probability p (tapered by DECAY per step),
     # re-sample a goal on the existing trace and run it. Up to
     # MAX_PHASES total events.
@@ -236,17 +229,12 @@ def execute_drive(
             break
         _ft, _fscene, fdrive = followup_sample
         try:
-            fplan = _run_phase(
-                fdrive,
-                extra_exclude={"fari"} if last_was_construct else None)
+            fplan = _run_phase(fdrive)
         except Exception:
             break
         if not fplan:
             break
         full_plan.extend(fplan)
-        last_was_construct = (
-            fdrive[0] == "event_fire" and len(fdrive) >= 3
-            and fdrive[2] == "fari")
         p_followup *= FOLLOWUP_DECAY
     return full_plan
 
