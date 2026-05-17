@@ -2396,7 +2396,7 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
 def plan_for_goal(
     drive, initial_trace: Trace, lex, rules, derivations,
     *, max_states: int = 200, max_plan_length: int = 12,
-    entity_resolver=None,
+    entity_resolver=None, rng=None,
 ) -> Optional[list]:
     """Greedy best-first forward search. Returns a plan (list of
     (verb, roles) steps) or None.
@@ -2408,6 +2408,13 @@ def plan_for_goal(
     planner's `_ENTITY_RESOLVER` signature. When provided, pre-spawns
     missing role-fillers for goal-producing actions so the
     forward search sees the same scene as backward search would.
+    `rng`: optional `random.Random`. When supplied, each transition's
+    cost gets a small uniform[0, 0.5] perturbation so equal-and
+    near-equal-length plans are shuffled in the open list. Identical
+    runs without rng remain deterministic and pick the shortest plan;
+    runs with rng get narrative diversity across seeds (a bicycle vs.
+    a walk for the same destination, etc.) without breaking weighted
+    A*'s correctness — only optimality.
 
     `max_states=0` is the reachability-only mode: do the initial
     setup (prespawn, ground actions+derivations, compute h on the
@@ -2830,12 +2837,20 @@ def plan_for_goal(
                 (k, tuple(v) if isinstance(v, list) else v)
                 for k, v in roles.items()))
             is_helpful = key in helpful
+            # Diversity noise: small uniform perturbation on the open-list
+            # priority shuffles equal-and-near-equal paths so different
+            # rng seeds explore different sub-optimal plans (e.g. bike vs.
+            # walk for the same en-goal). new_g stays integer for visited
+            # bookkeeping so depth comparisons remain stable; only the
+            # heap ordering sees the noise. Without rng, exact original
+            # behavior.
+            noise = (rng.random() * 0.5 if rng is not None else 0.0)
             if is_helpful:
                 new_h, new_helpful = heuristic_and_helpful(new_facts)
                 if new_h >= _HEURISTIC_INF:
                     continue
                 heapq.heappush(open_list, (
-                    new_g + H_WEIGHT * new_h,
+                    new_g + H_WEIGHT * new_h + noise,
                     0, tiebreak,
                     new_g, new_h,
                     plan + [(action.lemma, roles)],
@@ -2843,7 +2858,7 @@ def plan_for_goal(
             else:
                 # Lazy: use parent's h as the optimistic estimate.
                 heapq.heappush(open_list, (
-                    new_g + H_WEIGHT * h_cur,
+                    new_g + H_WEIGHT * h_cur + noise,
                     1, tiebreak,
                     new_g, h_cur,
                     plan + [(action.lemma, roles)],

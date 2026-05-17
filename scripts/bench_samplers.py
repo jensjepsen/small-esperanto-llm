@@ -134,7 +134,7 @@ def _run_batch(args):
                     max_states=int(os.environ.get("MAX_STATES", "1200")),
                     max_plan_length=int(
                         os.environ.get("MAX_PLAN_LENGTH", "16")),
-                    entity_resolver=spawner)
+                    entity_resolver=spawner, rng=rng)
             else:
                 plan = plan_for_drive(
                     drive, t, _LEX, _RULES, _DERIVATIONS, rng=rng,
