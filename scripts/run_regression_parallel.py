@@ -272,6 +272,7 @@ def _worker_task(args):
     seed, n_scenes = args
 
     # Defer imports until the worker is initialized.
+    import os
     from esperanto_lm.ontology import realize_trace
     from esperanto_lm.ontology.agent.dispatcher import (
         _drive_summary, plan_for_drive,
@@ -279,14 +280,23 @@ def _worker_task(args):
     from esperanto_lm.ontology.agent.planner import (
         _step_to_event, get_planner_failure_reason,
     )
+    from esperanto_lm.ontology.agent.forward_planner import plan_for_goal
     from esperanto_lm.ontology.dsl import run_dsl
     from esperanto_lm.ontology.regression import sample_regression_scene
+    from esperanto_lm.ontology.regression.goal_sampler import regress_for_goal
 
+    # Forward planner + goal sampler are the default — same path as
+    # bench_samplers.py. Set USE_BACKWARD=1 to opt back into the
+    # legacy verb-sampler + backward chainer.
+    use_forward = os.environ.get("USE_BACKWARD") != "1"
     rng = random.Random(seed)
     out = []
 
     for _ in range(n_scenes):
-        sample = sample_regression_scene(_LEX, rng, rules=_RULES)
+        if use_forward:
+            sample = regress_for_goal(_LEX, rng, _RULES)
+        else:
+            sample = sample_regression_scene(_LEX, rng, rules=_RULES)
         if sample is None:
             continue
         t, scene_id, drive = sample
@@ -296,9 +306,19 @@ def _worker_task(args):
         try:
             from esperanto_lm.ontology.regression.spawner import make_spawner
             spawner = make_spawner(scene_id, _LEX, rng)
-            plan = plan_for_drive(
-                drive, t, _LEX, _RULES, _DERIVATIONS, rng=rng,
-                entity_resolver=spawner)
+            if use_forward:
+                plan = plan_for_goal(
+                    drive, t, _LEX, _RULES, _DERIVATIONS,
+                    max_states=int(os.environ.get("MAX_STATES", "1200")),
+                    max_plan_length=int(
+                        os.environ.get("MAX_PLAN_LENGTH", "16")),
+                    entity_resolver=spawner, rng=rng,
+                    exclude_verbs=getattr(
+                        t, "_planner_exclude_verbs", None))
+            else:
+                plan = plan_for_drive(
+                    drive, t, _LEX, _RULES, _DERIVATIONS, rng=rng,
+                    entity_resolver=spawner)
         except Exception as e:
             plan = None
             plan_exc = e
