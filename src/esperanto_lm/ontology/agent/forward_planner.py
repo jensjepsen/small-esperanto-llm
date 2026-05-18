@@ -2997,6 +2997,17 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
             else:
                 exclude.add(v)
         role_map = dict(gv_bindings)
+        # Concept-constraints from rule given clauses (e.g. mezuri's
+        # theme must model the slot named by instrument's mezuras).
+        # The constraint is symmetric: when filling the entity_role,
+        # filter candidates that model source.concept.field's value;
+        # when filling the source_role, filter candidates whose
+        # `field` value is a slot entity.concept models. We can
+        # apply the filter only when the PEER role is already bound.
+        constraints = (rule_effects.get(gv_verb, {})
+                       .get("concept_constraints", ()))
+        from ..dsl.introspect import concept_models_slot
+        from ..dsl.rules import runtime_derivations_for
         for role_spec in action.roles:
             if role_spec.name in gv_bindings:
                 continue
@@ -3009,6 +3020,57 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
             # the planner doesn't synthesize variadic lists.
             if getattr(role_spec, "kind", "single") == "list":
                 continue
+            # Build per-role concept_filter from any constraint whose
+            # peer role is already bound. Filter chain (multiple
+            # constraints on same role): candidate must satisfy ALL.
+            current = role_spec.name
+            filter_clauses: list = []
+            for entity_role, source_role, field_name in constraints:
+                if current == entity_role and source_role in role_map:
+                    src_ent = trace.entities.get(role_map[source_role])
+                    if src_ent is None:
+                        continue
+                    src_concept = lex.concepts.get(src_ent.concept_lemma)
+                    if src_concept is None:
+                        continue
+                    vals = src_concept.properties.get(field_name)
+                    if not vals:
+                        continue
+                    slot_name = vals[0]
+                    filter_clauses.append(
+                        ("entity_must_model", slot_name))
+                elif current == source_role and entity_role in role_map:
+                    ent = trace.entities.get(role_map[entity_role])
+                    if ent is None:
+                        continue
+                    tgt_concept = lex.concepts.get(ent.concept_lemma)
+                    if tgt_concept is None:
+                        continue
+                    filter_clauses.append(
+                        ("source_field_modeled_by_entity",
+                         field_name, tgt_concept))
+            concept_filter = None
+            if filter_clauses:
+                derivs = runtime_derivations_for(lex)
+                def _filter(c, _cl=filter_clauses, _ds=derivs):
+                    c_def = lex.concepts.get(c)
+                    if c_def is None:
+                        return False
+                    for clause in _cl:
+                        if clause[0] == "entity_must_model":
+                            if not concept_models_slot(
+                                    c_def, clause[1], lex, _ds):
+                                return False
+                        else:
+                            _, field_name, ent_concept = clause
+                            vals = c_def.properties.get(field_name)
+                            if not vals:
+                                return False
+                            if not concept_models_slot(
+                                    ent_concept, vals[0], lex, _ds):
+                                return False
+                    return True
+                concept_filter = _filter
             filler = _find_role_filler(
                 role_spec, trace, lex, derived=derived_now,
                 exclude=exclude, action=action,
@@ -3016,7 +3078,8 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
             if filler is None:
                 filler = resolver(role_spec, trace, lex, exclude,
                                   action=action,
-                                  role_name=role_spec.name)
+                                  role_name=role_spec.name,
+                                  concept_filter=concept_filter)
             if filler is not None:
                 role_map[role_spec.name] = filler
                 exclude.add(filler)
