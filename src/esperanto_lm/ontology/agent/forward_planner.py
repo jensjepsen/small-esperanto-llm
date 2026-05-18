@@ -1844,7 +1844,21 @@ def _state_facts(trace, derived, lex=None) -> set:
     = seka` default doesn't add a fact when the entity already has
     an asserted `wetness=malseka`. Otherwise the relaxed graph thinks
     the goal `wetness=seka` is trivially satisfied and the search
-    short-circuits before any drying action gets tried."""
+    short-circuits before any drying action gets tried.
+
+    Cached on (len(trace.entities), len(trace.relations),
+    len(trace.events), id(derived)). The trace is append-only for
+    entities/relations and entity.properties is immutable after
+    creation (CLAUDE.md), so these counts uniquely identify the
+    fact set under the given derived view. `_heuristic_and_helpful`
+    calls _state_facts per h_FF expansion (~thousands per plan),
+    each with identical inputs — the rebuild was 230µs and dominated
+    the planner profile."""
+    cache = getattr(trace, "_fwd_state_facts_cache", None)
+    key = (len(trace.entities), len(trace.relations),
+           len(trace.events), id(derived))
+    if cache is not None and cache[0] == key:
+        return cache[1]
     facts: set = set()
     sym = _symmetric_relations(lex) if lex is not None else frozenset()
     asserted_scalar_keys: set = set()
@@ -1871,6 +1885,10 @@ def _state_facts(trace, derived, lex=None) -> set:
                     facts.add(("prop", eid, slot, v))
             else:
                 facts.add(("prop", eid, slot, val))
+    try:
+        object.__setattr__(trace, "_fwd_state_facts_cache", (key, facts))
+    except Exception:
+        pass
     return facts
 
 
