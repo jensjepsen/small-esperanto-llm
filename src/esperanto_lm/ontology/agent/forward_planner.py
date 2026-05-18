@@ -1586,6 +1586,113 @@ def _state_facts(trace, derived, lex=None) -> set:
     return facts
 
 
+def _fp_tuple_pool(source_rel: str, trace, lex, rule_effects) -> list:
+    """Enumerate (positional-args-tuple) for `source_rel` from:
+      (a) real instances in `trace.relations` matching the name
+      (b) hypothetical instances producible by rule_effects against
+          the current trace facts — for each rule that adds
+          source_rel, resolve its <literal>/role-name/<lookup>
+          arg-template against in-trace en/havi/sur tuples and the
+          verb's role-type space.
+
+    Used by _ground_all_actions for kind="from_precondition" roles:
+    instead of `R × E^N` cartesian over literal pool × entities,
+    enumerate from `O(|en| + |sur| + |havi| + |source_rel|)`
+    tuples grounded in actual scene state — typically ~5-20 per
+    scene vs ~10k+ cartesian.
+
+    Returns deduplicated list of tuples; each tuple has arity
+    equal to source_rel.arity, args in positional order."""
+    out: set = set()
+    # (a) Real instances.
+    for r in trace.relations:
+        if r.relation == source_rel and len(r.args) == lex.relations[
+                source_rel].arity:
+            out.add(tuple(r.args))
+    # (b) Hypothetical from producers.
+    src_rel = lex.relations.get(source_rel)
+    arity = src_rel.arity if src_rel else None
+    if arity is None:
+        return list(out)
+    # Index trace.relations by name for <lookup> resolution.
+    by_rel: dict = {}
+    for r in trace.relations:
+        by_rel.setdefault(r.relation, []).append(tuple(r.args))
+    for verb, entry in rule_effects.items():
+        action_obj = lex.actions.get(verb)
+        if action_obj is None:
+            continue
+        # Per-verb-role enumeration: pre-bind role names to candidate
+        # entities by type. Used to fill role-name positions in the
+        # add template.
+        role_pools: dict = {}
+        for rs in action_obj.roles:
+            rk = getattr(rs, "kind", "single")
+            if rk in ("list", "relation", "from_precondition"):
+                continue
+            cands = [eid for eid, ent in trace.entities.items()
+                     if lex.types.is_subtype(ent.entity_type, rs.type)]
+            role_pools[rs.name] = cands
+        for relation, role_args in entry.get("adds", []):
+            if relation != source_rel or len(role_args) != arity:
+                continue
+            # Resolve each positional arg into a candidate list.
+            per_pos: list = []
+            ok = True
+            for arg in role_args:
+                if isinstance(arg, tuple) and arg:
+                    kind = arg[0]
+                    if kind == "<literal>":
+                        per_pos.append([arg[1]])
+                        continue
+                    if kind == "<lookup>":
+                        # arg = ("<lookup>", relation, args_template).
+                        # Walk by_rel for matches; extract the
+                        # unbound (None) position.
+                        lookup_rel = arg[1]
+                        tmpl = arg[2]
+                        extract_idx = None
+                        for i, t in enumerate(tmpl):
+                            if t is None:
+                                extract_idx = i
+                                break
+                        if extract_idx is None:
+                            ok = False
+                            break
+                        vals = []
+                        for fact_args in by_rel.get(lookup_rel, ()):
+                            if len(fact_args) != len(tmpl):
+                                continue
+                            # Other-position templates that name a
+                            # role must match against role_pools when
+                            # we later pick a verb-role binding;
+                            # accept any value for now and re-check
+                            # via cross-product below.
+                            vals.append(fact_args[extract_idx])
+                        if not vals:
+                            ok = False
+                            break
+                        per_pos.append(vals)
+                        continue
+                    if kind == "<list>":
+                        # List role from verb event — skip
+                        ok = False
+                        break
+                    ok = False
+                    break
+                # Plain role-name positional arg.
+                cands = role_pools.get(arg)
+                if not cands:
+                    ok = False
+                    break
+                per_pos.append(cands)
+            if not ok:
+                continue
+            for combo in itertools.product(*per_pos):
+                out.add(tuple(combo))
+    return list(out)
+
+
 def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     """All (action, roles, pres, effs) for actions whose roles can
     be bound to current entities. Pure enumeration — preconditions
@@ -1619,14 +1726,46 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
         # graph for valid recipes.
         if any(getattr(r, "kind", "single") == "list" for r in action.roles):
             continue
-        per_role: list[list[str]] = []
+        # Group from_precondition roles by source relation; each group
+        # enumerates from a shared pool of tuples (real scias from
+        # trace + hypothetical producible by rule_effects), so the
+        # group's role values are coupled at the same tuple's
+        # positions rather than independent cartesian.
+        fp_groups: dict = {}
+        for r in action.roles:
+            if getattr(r, "kind", "single") == "from_precondition":
+                src = getattr(r, "from_precondition", None)
+                if src:
+                    fp_groups.setdefault(src, []).append(r)
+        fp_pools: dict = {}
+        for src in fp_groups:
+            fp_pools[src] = _fp_tuple_pool(src, trace, lex, rule_effects)
+        per_role: list = []
+        # role_origin[i]: ("role", role_spec) or ("fp", src, [(role, pos), ...])
+        role_origin: list = []
         ok = True
+        seen_fp: set = set()
         for role_spec in action.roles:
+            if getattr(role_spec, "kind", "single") == "from_precondition":
+                src = getattr(role_spec, "from_precondition", None)
+                if src in seen_fp:
+                    continue  # group handled below
+                seen_fp.add(src)
+                tuples = fp_pools.get(src, [])
+                if not tuples:
+                    ok = False
+                    break
+                per_role.append(tuples)
+                role_origin.append(
+                    ("fp", src,
+                     [(r.name,
+                       getattr(r, "from_precondition_position", None))
+                      for r in fp_groups[src]]))
+                continue
             # kind="relation": value is a relation name (string), not
             # an entity. Enumerate from allowed_values or all
             # registered relations. The rule's `given` clauses filter
-            # to plannable ones (e.g. rakonti's given checks
-            # scias(agent, rel_type, ...) — only known rel_types fire).
+            # to plannable ones.
             if getattr(role_spec, "kind", "single") == "relation":
                 pool = (list(role_spec.allowed_values)
                         if getattr(role_spec, "allowed_values", None)
@@ -1635,45 +1774,8 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                     ok = False
                     break
                 per_role.append(pool)
+                role_origin.append(("role", role_spec))
                 continue
-            # kind="from_precondition": role binds to a position in a
-            # named precondition. Planner-side this resolves to either
-            # a literal value pool (when source pos is literal/slot
-            # arg_kind) or an entity enumeration (when source pos is
-            # entity arg_kind). The role's `kind="from_precondition"`
-            # field is primarily seeder/realizer metadata that says
-            # "this role and theme/agent are co-bound from a single
-            # precondition match"; the planner enumerates here without
-            # enforcing co-binding, and the relaxed graph (h_FF)
-            # decides which combinations are reachable through
-            # perception backchaining.
-            if getattr(role_spec, "kind", "single") == "from_precondition":
-                src_rel_name = getattr(
-                    role_spec, "from_precondition", None)
-                pos = getattr(
-                    role_spec, "from_precondition_position", None)
-                src_rel = lex.relations.get(src_rel_name) \
-                    if src_rel_name else None
-                src_kind = "entity"
-                if src_rel is not None and pos is not None:
-                    kinds = (list(src_rel.arg_kinds)
-                             if src_rel.arg_kinds
-                             else ["entity"] * src_rel.arity)
-                    if 0 <= pos < len(kinds):
-                        src_kind = kinds[pos]
-                if src_kind in ("literal", "slot"):
-                    pool = (list(role_spec.allowed_values)
-                            if getattr(
-                                role_spec, "allowed_values", None)
-                            else list(lex.relations.keys())
-                            if src_kind == "literal"
-                            else list(lex.slots.keys()))
-                    if not pool:
-                        ok = False
-                        break
-                    per_role.append(pool)
-                    continue
-                # entity source: fall through to entity enumeration
             cand = []
             for eid, ent in trace.entities.items():
                 if not lex.types.is_subtype(
@@ -1684,12 +1786,28 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 ok = False
                 break
             per_role.append(cand)
+            role_origin.append(("role", role_spec))
         if not ok:
             continue
         for combo in itertools.product(*per_role):
-            if len(set(combo)) != len(combo):
+            # Unpack: regular role slots take their value; fp slots
+            # carry a tuple to be exploded across multiple role names.
+            roles = {}
+            scalar_seen = []
+            for item, origin in zip(combo, role_origin):
+                if origin[0] == "role":
+                    roles[origin[1].name] = item
+                    scalar_seen.append(item)
+                else:  # fp group
+                    _, _src, role_pos_list = origin
+                    for role_name, pos in role_pos_list:
+                        if pos is None or pos >= len(item):
+                            roles[role_name] = None
+                        else:
+                            roles[role_name] = item[pos]
+                            scalar_seen.append(item[pos])
+            if len(set(scalar_seen)) != len(scalar_seen):
                 continue
-            roles = {r.name: e for r, e in zip(action.roles, combo)}
             # Effect-meaningfulness: skip groundings whose effect
             # targets a concept that doesn't model the effect's slot.
             if not _action_effects_meaningful(action, roles, trace, lex):
