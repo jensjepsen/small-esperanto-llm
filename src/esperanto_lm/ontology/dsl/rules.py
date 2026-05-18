@@ -1349,9 +1349,16 @@ forgesi_removes_konas = rule(
 rakonti_transfers_fakto = rule(
     when=event("rakonti",
                agent=bind(RKA := var("A")),
+               recipient=bind(RKR := var("R")),
+               rel_type=bind(RKRT := var("RT")),
                theme=bind(RKT := var("T")),
-               recipient=bind(RKR := var("R"))),
-    then=add_relation("konas", RKR, RKT),
+               objekto=bind(RKO := var("O"))),
+    # Transfer the specific scias(agent, rel_type, theme, objekto)
+    # asserted by perception (and pre-grounded by
+    # _ground_action_from_precondition) over to the recipient. fakto
+    # reification is no longer touched here; the realizer reads
+    # scias on the recipient post-event for the ke-clause prose.
+    then=add_relation("scias", RKR, RKRT, RKT, RKO),
     name="rakonti_transfers_fakto",
 )
 
