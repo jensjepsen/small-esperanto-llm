@@ -959,6 +959,7 @@ def regress_for_goal(
             return t, scene_id, drive
         elif (chosen_goal[0] == "relation"
                 and CREATED_ROLE not in chosen_goal[2]
+                and len(chosen_goal[2]) == 2
                 and chosen_goal[2][0] == "agent"):
             # possession/location/wearing drive: spawn the second-
             # arg target via the producer verb's role spec; the
@@ -1072,6 +1073,7 @@ def regress_for_goal(
             return t, scene_id, drive
         elif (chosen_goal[0] == "relation"
                 and CREATED_ROLE not in chosen_goal[2]
+                and len(chosen_goal[2]) == 2
                 and chosen_goal[2][0] == "recipient"):
             # Altruistic relation drive: the producer's recipient ends
             # up with the relation, not the agent. Actor (agent of
@@ -1173,6 +1175,7 @@ def regress_for_goal(
             return t, scene_id, drive
         elif (chosen_goal[0] == "relation"
                 and CREATED_ROLE not in chosen_goal[2]
+                and len(chosen_goal[2]) == 2
                 and chosen_goal[2][0] in ("theme", "instrument")):
             # Object-relocation: actor manipulates a patient object
             # into a relation with a location. Producer pattern is
