@@ -1367,9 +1367,14 @@ def _render_event_phrase(
 
     # Roles with a `preposition` schema hint render as
     # `<prep> <entity_form>` (no accusative). instrument with "per"
-    # for tools; passage with "tra" for eniri's pordo; extensible to
-    # any verb/role where the schema declares a preposition. We walk
-    # the action's role list so we hit them in declared order.
+    # for tools; passage with "tra" for eniri's pordo; recipient/
+    # destination with "al" for transfer + movement verbs; extensible
+    # to any verb/role where the schema declares a preposition. We
+    # walk the action's role list so we hit them in declared order.
+    # `prep_handled_roles` tracks which roles were emitted here so
+    # the legacy hardcoded recipient/destination blocks below can
+    # skip them.
+    prep_handled_roles: set[str] = set()
     action_spec = ctx.lexicon.actions.get(ev.action)
     if action_spec is not None:
         for role_spec in action_spec.roles:
@@ -1381,6 +1386,16 @@ def _render_event_phrase(
                 continue
             ent = ctx.trace.entity(eid)
             if ent is None:
+                continue
+            # aĉeti special: when the recipient IS the prior owner
+            # narrated via "de SOURCE" earlier, suppress the "al
+            # SOURCE" emission to avoid duplicating the referent
+            # ("aĉetis du pomojn de Petro" not "...de Petro al Petro").
+            # Mirrors the suppression the legacy hardcoded block had.
+            if (role_spec.name == "recipient"
+                    and source_entity_id is not None
+                    and eid == source_entity_id):
+                prep_handled_roles.add(role_spec.name)
                 continue
             # instrument special: when the verb's rule transfers the
             # instrument as one of the moved stacks (aĉeti's coins go
@@ -1397,6 +1412,7 @@ def _render_event_phrase(
             parts.append(
                 f"{prep} {ctx.name_for(ent, count_override=count_override)}")
             ctx.note_mention(ent)
+            prep_handled_roles.add(role_spec.name)
 
     # `fari.parts` (kind="list") renders as "el X, Y kaj Z" — the
     # source materials the constructed entity is made from. Only fari
@@ -1420,7 +1436,8 @@ def _render_event_phrase(
                     f" kaj {rendered_parts[-1]}")
             parts.append(f"el {joined}")
 
-    if ev.roles.get("recipient") and not recipient_handled:
+    if (ev.roles.get("recipient") and not recipient_handled
+            and "recipient" not in prep_handled_roles):
         recip_id = ev.roles["recipient"]
         # When the recipient IS the prior owner narrated via
         # source_entity_id ("de Petro" already on the event), suppress
@@ -1428,6 +1445,11 @@ def _render_event_phrase(
         # This is what makes aĉeti read as "aĉetis du pomojn de Petro"
         # without trailing "al Petro" — recipient and source coincide
         # for acquisition verbs whose theme came from the recipient.
+        # Verbs whose recipient declares `preposition: "al"` reach
+        # this branch only when neither the speech-act nor peti
+        # handlers fired AND the schema-driven block ALSO skipped
+        # (e.g. aĉeti's source-suppression). Same suppression logic
+        # applies here as a fallback.
         if recip_id != source_entity_id:
             recip = ctx.trace.entity(recip_id)
             if recip is not None:
@@ -1454,7 +1476,8 @@ def _render_event_phrase(
             parts.append(f"{prep} {ctx.name_for(loc)}")
             ctx.note_mention(loc)
 
-    if ev.roles.get("destination"):
+    if (ev.roles.get("destination")
+            and "destination" not in prep_handled_roles):
         dest = ctx.trace.entity(ev.roles["destination"])
         if dest is not None:
             parts.append(f"al {ctx.name_for(dest)}")
