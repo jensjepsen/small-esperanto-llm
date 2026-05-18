@@ -1070,6 +1070,91 @@ def _render_learned_scias(ev, ctx) -> Optional[str]:
     return f"kaj eksci{ctx.tense} {ke_clause}"
 
 
+_SCIAS_PROPON_VERBS_CACHE: dict = {}
+
+
+def _scias_propon_verbs(lexicon) -> set:
+    """Verbs whose DSL rules emit `add_relation("scias_propon", ...)`.
+    Cached per-lex. Used to gate the measurement tail so unrelated
+    events (eniri, vidi, ...) don't render the tail just because
+    scias_propon was added later in the same chain."""
+    key = id(lexicon)
+    cached = _SCIAS_PROPON_VERBS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from ..dsl.effects import AddRelation
+    from ..dsl.patterns import EventPattern
+    from ..dsl.rules import DEFAULT_DSL_RULES
+    out: set = set()
+    for rule in DEFAULT_DSL_RULES:
+        when = getattr(rule, "when", None)
+        if not isinstance(when, EventPattern):
+            continue
+        effects = rule.then if isinstance(rule.then, (list, tuple)) else [rule.then]
+        for eff in effects:
+            if isinstance(eff, AddRelation) and eff.relation == "scias_propon":
+                out.add(when.action)
+                break
+    _SCIAS_PROPON_VERBS_CACHE[key] = out
+    return out
+
+
+def _render_measurement_tail(ev, ctx) -> Optional[str]:
+    """If the event added a `scias_propon(agent, theme, slot)` fact,
+    render `kaj eksciis ke <theme> estas <value>` as a tail clause —
+    surfacing WHAT was learned, not just that the verb fired.
+
+    Gated on `ev.action` being in the set of verbs whose rules emit
+    scias_propon (currently mezuri). Without the gate, ANY event
+    matching (agent, theme) in a scias_propon fact would render
+    the tail, e.g. eniri(agent, salono) followed by mezuri picking
+    up the salono.temperature → eniri would also get the tail.
+
+    Renders the theme's current value at the slot, in adjectival
+    form when the slot is flagged `adjectival` (temperature →
+    varma/malvarma/varmega/bolanta). Skips non-adjectival slots
+    (numeric maso/volumeno) until the realizer grows a qualitative
+    bucketing for them."""
+    if ev.action not in _scias_propon_verbs(ctx.lexicon):
+        return None
+    agent_id = ev.roles.get("agent")
+    theme_id = ev.roles.get("theme")
+    if agent_id is None or theme_id is None:
+        return None
+    # Find the scias_propon emitted for this (agent, theme) pair.
+    slot_name = None
+    for r in ctx.trace.relations:
+        if (r.relation == "scias_propon" and len(r.args) == 3
+                and r.args[0] == agent_id and r.args[1] == theme_id):
+            slot_name = r.args[2]
+            break
+    if slot_name is None:
+        return None
+    slot_def = ctx.lexicon.slots.get(slot_name)
+    if slot_def is None or not getattr(slot_def, "adjectival", False):
+        return None
+    theme_ent = ctx.trace.entity(theme_id)
+    if theme_ent is None:
+        return None
+    # Asserted-wins on scalar: try entity.properties first, fall back
+    # to derived state.
+    value = None
+    vals = theme_ent.properties.get(slot_name)
+    if vals:
+        value = vals[0] if isinstance(vals, list) else vals
+    if value is None and ctx.derived is not None:
+        v = ctx.derived.get(theme_id, slot_name)
+        if isinstance(v, list):
+            value = v[0] if v else None
+        else:
+            value = v
+    if value is None:
+        return None
+    theme_form = ctx.name_for(theme_ent)
+    copula = f"est{ctx.tense}"
+    return f"kaj eksci{ctx.tense} ke {theme_form} {copula} {value}"
+
+
 def _render_event_phrase(
     ev: Event, ctx: _Ctx, *, drop_subject: bool,
     drop_theme: bool = False,
@@ -1369,6 +1454,14 @@ def _render_event_phrase(
     learned = _render_learned_scias(ev, ctx)
     if learned is not None:
         parts.append(learned)
+
+    # `mezuri` and other scias_propon-emitting verbs: surface the
+    # property knowledge as "kaj eksciis ke X estas <value>". Reads
+    # the scias_propon(agent, theme, slot) fact in the trace and the
+    # theme's current value at slot.
+    measured = _render_measurement_tail(ev, ctx)
+    if measured is not None:
+        parts.append(measured)
 
     # Strip trailing period for coordination (caller adds one).
     sent = " ".join(parts)
