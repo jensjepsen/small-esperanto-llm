@@ -978,23 +978,27 @@ skribi_creates_text = rule(
 )
 
 
-# When the writer already konas a fakto, the produced skribaĵo
-# carries that fakto via `priskribas` — text records what the
-# author knows. Downstream `legi_extracts_fakto` then propagates the
-# fakto to readers. Split from skribi_creates_text so the base case
-# (writing produces a blank text) still fires when the agent has
-# nothing to record.
+# When the writer knows a scias-tuple, the produced skribaĵo records
+# its content via 4-arity `priskribas(text, rel_type, subjekto,
+# objekto)` — text inherits the same propositional shape that
+# scias/rakonti/etc. use. Downstream `legi_extracts_fakto` reads the
+# tuple back out and adds it to the reader's scias. Split from
+# skribi_creates_text so the base case (writing produces a blank
+# text) still fires when the agent has no known scias.
 skribi_records_fakto = rule(
     when=event("skribi",
                agent=bind(SrA := var("A")),
                theme=bind(SrT := var("T"))),
     given=[
-        rel("konas", knower=SrA, fakto=bind(SrF := var("F"))),
+        rel("scias", knower=SrA,
+            rel_type=bind(SrRT := var("RT")),
+            subjekto=bind(SrSj := var("Sj")),
+            objekto=bind(SrO := var("O"))),
     ],
     then=[
         create_entity(concept="skribaĵo",
                       as_var=(SrS := var("S")), from_=SrT),
-        add_relation("priskribas", SrS, SrF),
+        add_relation("priskribas", SrS, SrRT, SrSj, SrO),
     ],
     name="skribi_records_fakto",
 )
@@ -1242,19 +1246,12 @@ def _ludi_announce_rule():
 ludi_announces_player = _ludi_announce_rule()
 
 
-# Forgetting is the inverse of perception/transfer: removes a konas
-# relation. Has no automatic trigger — the planner would need a
-# negative-knowledge drive ("X wants to NOT know Y") to invoke it,
-# which we don't currently model. Included so the verb is
-# available for ambient simulation and as scaffolding for future
-# memory-management drives.
-forgesi_removes_konas = rule(
-    when=event("forgesi",
-               agent=bind(FRA := var("A")),
-               theme=bind(FRT := var("T"))),
-    then=remove_relation("konas", FRA, FRT),
-    name="forgesi_removes_konas",
-)
+# forgesi: no automatic trigger and no rule consequences right now —
+# we removed the konas-removal effect alongside the fakto migration,
+# and the scias-removal equivalent would need a negative-knowledge
+# drive ("X wants to NOT know Y about Z") which we don't model.
+# Action def kept (so the lemma stays usable for ambient simulation
+# and future memory-management drives) but the DSL rule is gone.
 
 
 rakonti_transfers_fakto = rule(
@@ -1346,33 +1343,34 @@ instrui_transfers_fakto = rule(
 )
 
 
-# `legi` (read) extracts a fakto from a text. Asynchronous knowledge
-# transfer: where rakonti requires the source to be physically
-# present, legi only needs the reader to be samloke with the text.
-# The text-to-fakto link comes from `priskribas(text, fakto)`, set
-# either at scene init (regression seed) or by skribi_creates_text
-# when the writer konas a fakto they wanted to record.
+# `legi` (read) extracts a scias-tuple from a text. Asynchronous
+# knowledge transfer: where rakonti requires the source to be
+# physically present, legi only needs the reader to be samloke with
+# the text. The text-to-content link comes from 4-arity
+# `priskribas(text, rel_type, subjekto, objekto)`, set either at
+# scene init (regression seed) or by skribi_records_fakto when the
+# writer's scias gets captured into the text.
 legi_extracts_fakto = rule(
     when=event("legi",
                agent=bind(LeA := var("A")),
                theme=bind(LeT := var("T"))),
     given=[
-        rel("priskribas", text=LeT, fakto=bind(LeF := var("F"))),
+        rel("priskribas", text=LeT,
+            rel_type=bind(LeRT := var("RT")),
+            subjekto=bind(LeSj := var("Sj")),
+            objekto=bind(LeO := var("O"))),
     ],
-    then=add_relation("konas", LeA, LeF),
+    then=add_relation("scias", LeA, LeRT, LeSj, LeO),
     name="legi_extracts_fakto",
 )
 
 
-# `mezuri` (measure) extracts a fakto about a theme's size. Same
-# shape as vidi/legi — perception verb that creates a fakto and
-# konas-links the agent to it. Doesn't bind subjekto's location
-# (a measuring tape tells you size, not location), so no objekto
-# relation; pri_relacio="grandeco" distinguishes the fakto kind.
-# The forward planner's synthesized scias_lokon-from-perception
-# pass picks this up via the create-fakto + subjekto + konas
-# pattern, so mezuri counts as a perception event that also lets
-# downstream verbs (preni/etc) see the theme.
+# `mezuri` (measure) is a perception event for dimension/temperature.
+# The fakto-creation effect is gone (no consumer reads dimension-kind
+# scias-tuples yet, and the agent already learns the theme's location
+# via the planner's prerequisite samloke). Kept as a no-op rule
+# placeholder; reintroduce a scias_propon emission here when we
+# model property-knowledge transfer (mezuri → rakonti la temperaturon).
 mezuri_learns_dimension = rule(
     when=event("mezuri",
                agent=bind(MEA := var("A")),
@@ -1381,16 +1379,7 @@ mezuri_learns_dimension = rule(
     given=[
         has_concept_field(MEI, "mezuras", MES := var("S")),
     ],
-    then=[
-        create_entity(
-            concept="fakto",
-            as_var=(MEF := var("F")),
-            id_parts=("mezuri", MET),
-            initial_properties={"pri_relacio": MES},
-        ),
-        add_relation("subjekto", MEF, MET),
-        add_relation("konas", MEA, MEF),
-    ],
+    then=[],
     name="mezuri_learns_dimension",
 )
 
@@ -2141,40 +2130,6 @@ vehicle_emits_sound = derive(
 )
 
 
-# ---------- derivation: animates know facts about themselves -----------
-#
-# Lidia inherently knows that Lidia is in la maro — she IS Lidia, and
-# she's the subject of that fact. Without these derivations the
-# planner happily samples drives like "Sara wants Lidia to know that
-# Lidia is in la maro" and dispatches a `vidi → rakonti` chain to
-# tell Lidia what she already knows. Two derivations: one for facts
-# where the animate is the pri_subjekto (containment, ownership), one
-# for where they're pri_objekto (havi-from-the-thing's-perspective —
-# rare for animals, but cheap to derive symmetrically).
-
-animate_knows_self_subject = derive(
-    when=entity(type="animate") & bind(SKSA := var("A")),
-    given=[
-        rel("subjekto",
-            fakto=bind(SKSF := var("F")),
-            entity=SKSA),
-    ],
-    implies=relation("konas", SKSA, SKSF),
-    name="animate_knows_self_subject",
-)
-
-animate_knows_self_object = derive(
-    when=entity(type="animate") & bind(SKOA := var("A")),
-    given=[
-        rel("objekto",
-            fakto=bind(SKOF := var("F")),
-            entity=SKOA),
-    ],
-    implies=relation("konas", SKOA, SKOF),
-    name="animate_knows_self_object",
-)
-
-
 # ---------- derivations: lighting (lamps, indoor vs outdoor) -----------
 #
 # Outdoor locations are luma by default; indoor locations need an
@@ -2827,8 +2782,6 @@ DEFAULT_DSL_DERIVATIONS = [
     host_lock_capable_from_seruro,
     host_openness_closed_from_pordo,
     host_openness_open_from_pordo,
-    animate_knows_self_subject,
-    animate_knows_self_object,
     # Outdoor light is now conditional on mondo.tempo_de_tago — that's
     # a varies=true slot, so the rule is RUNTIME-only and removed from
     # the bake list. The runtime list below carries it.
@@ -2900,8 +2853,6 @@ RUNTIME_DERIVATIONS = [
     host_lock_state_unlocked_from_seruro,
     host_openness_closed_from_pordo,
     host_openness_open_from_pordo,
-    animate_knows_self_subject,
-    animate_knows_self_object,
     # Lamp-lit fires BEFORE the outdoor day/night rules so an active
     # lamp wins over outdoor_dark_at_night (first-write-wins on the
     # scalar lit_state) — a torch in a park at night lights it.
@@ -2944,7 +2895,6 @@ DEFAULT_DSL_RULES: list[Rule] = [
     bleki_announces_speaker,
     boji_announces_speaker,
     miaui_announces_speaker,
-    forgesi_removes_konas,
     vidi_learns_sur,
     flari_learns_sur,
     audi_learns_sur,

@@ -10,7 +10,7 @@
 {"name": "scias_lokon", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["knower", "located"], "inverse": null, "symmetric": false}
 {"name": "scias", "arity": 4, "arg_types": ["animate", "abstract", "physical", "physical"], "arg_names": ["knower", "rel_type", "subjekto", "objekto"], "arg_kinds": ["entity", "literal", "entity", "entity"], "inverse": null, "symmetric": false}
 {"name": "havas_parton", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["tuto", "parto"], "inverse": null, "symmetric": false}
-{"name": "priskribas", "arity": 2, "arg_types": ["physical", "abstract"], "arg_names": ["text", "fakto"], "inverse": null, "symmetric": false}
+{"name": "priskribas", "arity": 4, "arg_types": ["physical", "abstract", "physical", "physical"], "arg_names": ["text", "rel_type", "subjekto", "objekto"], "arg_kinds": ["entity", "literal", "entity", "entity"], "inverse": null, "symmetric": false}
 {"name": "vestita", "arity": 2, "arg_types": ["animate", "artifact"], "arg_names": ["wearer", "garment"], "inverse": null, "symmetric": false}
 {"name": "amas", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["lover", "beloved"], "inverse": null, "symmetric": false}
 {"name": "timas", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["fearer", "feared"], "inverse": null, "symmetric": false}

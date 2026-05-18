@@ -1248,31 +1248,30 @@ def _extract_var(pattern):
 
 
 def _render_learned_fakto(ev, ctx) -> Optional[str]:
-    """If the event's theme is a text linked via priskribas to a fakto,
-    render `kaj eksciis ke <fakto>` as a tail clause. The reader sees
+    """If the event's theme is a text linked via 4-arity
+    `priskribas(text, rel_type, subjekto, objekto)`, render
+    `kaj eksciis ke <scias-tuple>` as a tail clause. The reader sees
     what information was extracted from reading. Verb-agnostic: any
-    event whose theme is a priskribas-source qualifies, but in practice
-    fires for legi (the only knowledge-extraction-from-text verb).
+    event whose theme is a priskribas-source qualifies, but in
+    practice fires for legi (the only knowledge-extraction-from-text
+    verb).
 
-    No-op when:
-      - The theme isn't in the trace, or has no priskribas link.
-      - The agent already konas the fakto pre-event (no new learning
-        to narrate)."""
+    No-op when the theme isn't in the trace or has no priskribas
+    link."""
     theme_id = ev.roles.get("theme")
     agent_id = ev.roles.get("agent")
     if theme_id is None or agent_id is None:
         return None
-    fakto_id = None
+    pris = None
     for r in ctx.trace.relations:
         if r.relation == "priskribas" and r.args[0] == theme_id:
-            fakto_id = r.args[1]
+            pris = r.args
             break
-    if fakto_id is None:
+    if pris is None or len(pris) != 4:
         return None
-    fakto = ctx.trace.entities.get(fakto_id)
-    if fakto is None:
-        return None
-    ke_clause = _render_fakto_as_ke_clause(fakto, ctx, mode="assertion")
+    _, rel_type_val, subj_id, obj_id = pris
+    ke_clause = _render_scias_tuple_as_ke_clause(
+        rel_type_val, subj_id, obj_id, ctx, mode="assertion")
     if ke_clause is None:
         return None
     return f"kaj eksci{ctx.tense} {ke_clause}"
