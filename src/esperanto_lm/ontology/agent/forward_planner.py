@@ -321,6 +321,171 @@ def _filter_forbidden_effs(effs, trace, lex):
 _DERIV_PRES_IDX_CACHE: dict = {}
 
 
+def _compile_action_template(action, rule_effects, sym, forbid_rels=None):
+    """Decompose `action`'s structural pres/effs once so the per-combo
+    `_ground_action_facts` call avoids isinstance dispatch on every
+    invocation. Returns a `_CompiledAction` carrying:
+      * `prop_pres` — list of (role_name, slot, value0) for the first
+        property in each role.properties entry (matches the legacy
+        `vals[0]` behavior).
+      * `rel_pres_simple` — list of (rel, role_names_tuple): pres-rels
+        whose roles all bind to scalar entities.
+      * `rel_pres_list` — list of (rel, roles_tuple, list_role_index):
+        pres-rels with one role bound to a list (fari.parts).
+      * `eff_props` — list of (target_role, property, value).
+      * `rule_adds_simple` — list of (relation, role_arg_names_tuple)
+        for rule-effect adds with NO markers; the per-combo path can
+        substitute directly without calling `_expand_list_role_args`.
+      * `rule_adds_marker` — list of (relation, role_arg_names) for
+        adds that contain `<list>`, `<lookup>`, or `<literal>` markers
+        and must go through `_expand_list_role_args`.
+      * `sym` — symmetric-relation frozenset, passed through so the
+        per-combo path doesn't redo the lookup."""
+    from ..schemas import (
+        IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
+    )
+    prop_pres: list = []
+    rel_pres_simple: list = []
+    rel_pres_list: list = []
+    for role_spec in action.roles:
+        rk = getattr(role_spec, "kind", "single")
+        if rk in ("list", "relation"):
+            continue
+        if role_spec.properties:
+            for slot, vals in role_spec.properties.items():
+                if vals:
+                    prop_pres.append((role_spec.name, slot, vals[0]))
+    list_role_names: set = {
+        r.name for r in action.roles
+        if getattr(r, "kind", "single") == "list"}
+    for pc in action.preconditions:
+        if isinstance(pc, RelationPrecondition):
+            pc_roles = tuple(pc.roles)
+            # Find list-role position (at most one per pc).
+            list_pos = None
+            for i, rn in enumerate(pc_roles):
+                if rn in list_role_names:
+                    list_pos = i
+                    break
+            if list_pos is not None:
+                rel_pres_list.append((pc.rel, pc_roles, list_pos))
+            else:
+                rel_pres_simple.append((pc.rel, pc_roles))
+        # IfPropertyPrecondition / MatchPrecondition skipped in relaxed encoding.
+    eff_props: list = [
+        (eff.target_role, eff.property, eff.value)
+        for eff in action.effects]
+    rule_adds_simple: list = []
+    rule_adds_marker: list = []
+    entry = rule_effects.get(action.lemma)
+    if entry is not None:
+        for relation, role_arg_names in entry["adds"]:
+            has_markers = any(isinstance(a, tuple) for a in role_arg_names)
+            if has_markers:
+                rule_adds_marker.append((relation, role_arg_names))
+            else:
+                rule_adds_simple.append((relation, tuple(role_arg_names)))
+    # Forbid-skip flag: if none of the rule-add relations can ever
+    # appear in `excludes`/`arg_compare`, the per-combo
+    # `_filter_forbidden_effs` call is pure overhead and can be
+    # bypassed. (Schema-level eff_props produce only "prop" facts,
+    # which the filter passes through unchanged.)
+    skip_filter = True
+    if forbid_rels:
+        for relation, _ in rule_adds_simple:
+            if relation in forbid_rels:
+                skip_filter = False
+                break
+        if skip_filter:
+            for relation, _ in rule_adds_marker:
+                if relation in forbid_rels:
+                    skip_filter = False
+                    break
+    return _CompiledAction(
+        prop_pres=prop_pres,
+        rel_pres_simple=rel_pres_simple,
+        rel_pres_list=rel_pres_list,
+        eff_props=eff_props,
+        rule_adds_simple=rule_adds_simple,
+        rule_adds_marker=rule_adds_marker,
+        sym=sym,
+        skip_filter=skip_filter,
+    )
+
+
+class _CompiledAction:
+    """Slotted holder for `_compile_action_template`'s output. Pure
+    data, no methods — the substitution loop lives in the fast
+    `_ground_facts_from_template` helper."""
+    __slots__ = (
+        "prop_pres", "rel_pres_simple", "rel_pres_list",
+        "eff_props", "rule_adds_simple", "rule_adds_marker", "sym",
+        "skip_filter")
+
+    def __init__(self, prop_pres, rel_pres_simple, rel_pres_list,
+                 eff_props, rule_adds_simple, rule_adds_marker, sym,
+                 skip_filter=False):
+        self.prop_pres = prop_pres
+        self.rel_pres_simple = rel_pres_simple
+        self.rel_pres_list = rel_pres_list
+        self.eff_props = eff_props
+        self.rule_adds_simple = rule_adds_simple
+        self.rule_adds_marker = rule_adds_marker
+        self.sym = sym
+        self.skip_filter = skip_filter
+
+
+def _ground_facts_from_template(tmpl, roles, facts):
+    """Per-combo fast path: apply `_CompiledAction`'s prebaked
+    pres/effs templates against `roles`. Avoids isinstance dispatch
+    on action.preconditions / action.effects / role.properties — those
+    were classified once at template-compile time."""
+    pres: set = set()
+    effs: set = set()
+    sym = tmpl.sym
+    roles_get = roles.get
+    # Role property pres.
+    for role_name, slot, value in tmpl.prop_pres:
+        eid = roles_get(role_name)
+        if eid is not None:
+            pres.add(("prop", eid, slot, value))
+    # Simple rel pres (no list-role expansion).
+    for rel, pc_roles in tmpl.rel_pres_simple:
+        eids = tuple(roles_get(r) for r in pc_roles)
+        if not any(e is None for e in eids):
+            pres.add(("rel", rel, _canon_rel(rel, eids, sym)))
+    # List-role rel pres (fari.parts).
+    for rel, pc_roles, list_pos in tmpl.rel_pres_list:
+        lrole = pc_roles[list_pos]
+        lv = roles_get(lrole)
+        if not isinstance(lv, (list, tuple)):
+            continue
+        for item in lv:
+            eids = tuple(
+                item if i == list_pos else roles_get(r)
+                for i, r in enumerate(pc_roles))
+            if not any(e is None for e in eids):
+                pres.add(("rel", rel, _canon_rel(rel, eids, sym)))
+    # Schema-level effects.
+    for target_role, prop, value in tmpl.eff_props:
+        eid = roles_get(target_role)
+        if eid is not None:
+            effs.add(("prop", eid, prop, value))
+    # Rule-add effects: simple (no markers) → direct substitution.
+    for relation, role_arg_names in tmpl.rule_adds_simple:
+        eids = tuple(roles_get(r) for r in role_arg_names)
+        if not any(e is None for e in eids):
+            effs.add(("rel", relation, _canon_rel(relation, eids, sym)))
+    # Rule-add effects: marker-bearing → use full expander.
+    for relation, role_arg_names in tmpl.rule_adds_marker:
+        for eids in _expand_list_role_args(
+                role_arg_names, roles, facts=facts):
+            if not any(e is None for e in eids):
+                effs.add(
+                    ("rel", relation, _canon_rel(relation, eids, sym)))
+    return pres, effs
+
+
 def _ground_action_facts(action, roles, lex, rule_effects, facts=None):
     """Return (precondition_facts, effect_facts) for a grounded
     action — both as sets of fact tuples. `rule_effects` is the
@@ -1693,6 +1858,45 @@ def _fp_tuple_pool(source_rel: str, trace, lex, rule_effects) -> list:
     return list(out)
 
 
+def _build_effect_meaningfulness_cache(lex) -> dict:
+    """Per (action.lemma -> property -> set[concept_lemma]) cache of
+    which target-concepts make each effect meaningful.
+
+    Hoists `concept_models_slot` (action × slot × concept) out of the
+    grounding hot loop: the answer is invariant per scene, so we
+    compute once per lex and stash on the lex object. Combo loop then
+    becomes an O(1) `concept_lemma in valid_set` check.
+
+    Cache structure: `{action.lemma: {effect.property: frozenset[
+    concept_lemma_that_models_slot]}}`. Missing action key = no
+    effects to check (returns empty cache_entry and gates out)."""
+    cached = getattr(lex, "_fwd_planner_effect_meaningful", None)
+    if cached is not None:
+        return cached
+    from ..dsl.introspect import concept_models_slot
+    from ..dsl.rules import RUNTIME_DERIVATIONS
+    derivs = list(RUNTIME_DERIVATIONS)
+    out: dict = {}
+    for action in lex.actions.values():
+        if not action.effects:
+            continue
+        per_slot: dict = {}
+        for eff in action.effects:
+            if eff.property in per_slot:
+                continue
+            valid_concepts: set = set()
+            for lemma, concept in lex.concepts.items():
+                if concept_models_slot(concept, eff.property, lex, derivs):
+                    valid_concepts.add(lemma)
+            per_slot[eff.property] = frozenset(valid_concepts)
+        out[action.lemma] = per_slot
+    try:
+        object.__setattr__(lex, "_fwd_planner_effect_meaningful", out)
+    except Exception:
+        pass
+    return out
+
+
 def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     """All (action, roles, pres, effs) for actions whose roles can
     be bound to current entities. Pure enumeration — preconditions
@@ -1716,6 +1920,46 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     # State facts for lookup resolution in given-bound add args
     # (fari's en(theme, agent_location)).
     state_facts = _state_facts(trace, derived, lex)
+    # Hoist per-type entity pools: one is_subtype scan per distinct
+    # role.type rather than one per (action, role).
+    type_pool: dict = {}
+    def cands_for_type(type_name):
+        pool = type_pool.get(type_name)
+        if pool is None:
+            pool = [eid for eid, ent in trace.entities.items()
+                    if lex.types.is_subtype(ent.entity_type, type_name)]
+            type_pool[type_name] = pool
+        return pool
+    # Effect-meaningfulness lookup: per (action.lemma, target_role)
+    # we cache the set of concept lemmas whose effects are meaningful.
+    # _meaningful_concepts is built lazily; combo just does a set check.
+    meaningful_cache = _build_effect_meaningfulness_cache(lex)
+    # Per-action precondition/effect templates, compiled once per lex.
+    sym = _symmetric_relations(lex)
+    tmpl_cache = getattr(lex, "_fwd_planner_action_tmpls", None)
+    if tmpl_cache is None or tmpl_cache.get("_rule_effects_id") != id(rule_effects):
+        # Collect the set of relations that COULD be forbidden by
+        # arg_patterns excludes or arg_compare. Templates whose
+        # rule_adds touch none of these can skip _filter_forbidden_effs.
+        excludes = _REL_ARG_EXCLUDES_CACHE.get(id(lex))
+        if excludes is None:
+            from ..dsl.introspect import relation_arg_excludes
+            excludes = relation_arg_excludes(lex)
+            _REL_ARG_EXCLUDES_CACHE[id(lex)] = excludes
+        forbid_rels: set = set()
+        for (rname, _i) in (excludes or {}):
+            forbid_rels.add(rname)
+        for rname, rel_def in lex.relations.items():
+            if getattr(rel_def, "arg_compare", None):
+                forbid_rels.add(rname)
+        tmpl_cache = {"_rule_effects_id": id(rule_effects)}
+        for a in lex.actions.values():
+            tmpl_cache[a.lemma] = _compile_action_template(
+                a, rule_effects, sym, forbid_rels=forbid_rels)
+        try:
+            object.__setattr__(lex, "_fwd_planner_action_tmpls", tmpl_cache)
+        except Exception:
+            pass
     for action in lex.actions.values():
         if not action.roles:
             continue
@@ -1776,12 +2020,7 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 per_role.append(pool)
                 role_origin.append(("role", role_spec))
                 continue
-            cand = []
-            for eid, ent in trace.entities.items():
-                if not lex.types.is_subtype(
-                        ent.entity_type, role_spec.type):
-                    continue
-                cand.append(eid)
+            cand = cands_for_type(role_spec.type)
             if not cand:
                 ok = False
                 break
@@ -1789,6 +2028,19 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
             role_origin.append(("role", role_spec))
         if not ok:
             continue
+        # Build per-effect target-role concept-validity sets once per
+        # action — combo loop does O(1) lookup rather than dispatching
+        # to concept_models_slot per combo.
+        eff_target_roles: list = []
+        eff_target_valid: list = []
+        if action.effects:
+            cache_entry = meaningful_cache.get(action.lemma)
+            if cache_entry:
+                for eff in action.effects:
+                    valid = cache_entry.get(eff.property)
+                    if valid is not None:
+                        eff_target_roles.append(eff.target_role)
+                        eff_target_valid.append(valid)
         for combo in itertools.product(*per_role):
             # Unpack: regular role slots take their value; fp slots
             # carry a tuple to be exploded across multiple role names.
@@ -1808,17 +2060,38 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                             scalar_seen.append(item[pos])
             if len(set(scalar_seen)) != len(scalar_seen):
                 continue
-            # Effect-meaningfulness: skip groundings whose effect
-            # targets a concept that doesn't model the effect's slot.
-            if not _action_effects_meaningful(action, roles, trace, lex):
+            # Effect-meaningfulness via precomputed per-concept set.
+            skip = False
+            for tr, valid in zip(eff_target_roles, eff_target_valid):
+                target_eid = roles.get(tr)
+                if target_eid is None:
+                    continue
+                ent = trace.entities.get(target_eid)
+                if ent is None:
+                    continue
+                if ent.concept_lemma not in valid:
+                    skip = True
+                    break
+            if skip:
                 continue
-            pres, effs = _ground_action_facts(
-                action, roles, lex, rule_effects, facts=state_facts)
-            if not effs:
-                continue  # No-effect actions don't add facts.
-            effs = _filter_forbidden_effs(effs, trace, lex)
-            if not effs:
-                continue  # All effects forbidden — no-op grounding.
+            tmpl = tmpl_cache.get(action.lemma)
+            if tmpl is not None:
+                pres, effs = _ground_facts_from_template(
+                    tmpl, roles, state_facts)
+                if not effs:
+                    continue  # No-effect actions don't add facts.
+                if not tmpl.skip_filter:
+                    effs = _filter_forbidden_effs(effs, trace, lex)
+                    if not effs:
+                        continue  # All effects forbidden — no-op grounding.
+            else:
+                pres, effs = _ground_action_facts(
+                    action, roles, lex, rule_effects, facts=state_facts)
+                if not effs:
+                    continue
+                effs = _filter_forbidden_effs(effs, trace, lex)
+                if not effs:
+                    continue
             out.append((action, roles, pres, effs))
     return out
 
