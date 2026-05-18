@@ -3274,18 +3274,21 @@ def plan_for_goal(
             pass
     if exclude_verbs:
         grounded = [g for g in grounded if g[0].lemma not in exclude_verbs]
-    # Goal-aware action pruning. Walk backward from the goal through
-    # action effects, rule-effects adds, and preconditions to find
-    # the set of verbs that could plausibly contribute to reaching
-    # the goal. Drop the rest from the grounded set so the search
-    # heap doesn't waste slots on actions whose effects can never
-    # land on the goal property (e.g. dormi, ludi, kanti for a
-    # wetness=malseka goal). Saves heap pressure when broad vocab
-    # adds applicable-but-irrelevant successors.
-    relevant_verbs = _goal_reachable_verbs(
+    # Goal-aware action + derivation pruning. Walk backward from the
+    # goal through action effects, rule-effects adds, preconditions,
+    # AND derivation implications to find the verbs + derivations
+    # that could plausibly contribute. Drop the rest from grounding
+    # so the search heap doesn't waste slots on actions whose
+    # effects can never land on the goal property, and the relaxed
+    # graph doesn't ground derivations that produce facts no goal-
+    # relevant action consumes.
+    _walk_result = _goal_reachable_walk(
         goal, lex, rule_effects, derivations)
-    if relevant_verbs is not None:
+    if _walk_result is not None:
+        relevant_verbs, relevant_derivs = _walk_result
         grounded = [g for g in grounded if g[0].lemma in relevant_verbs]
+    else:
+        relevant_derivs = None
     # Restrict derivation var domains to entities that actually
     # participate in some action's pres/effs. This is the cubic
     # samloke-chain bound: a scene with 19 non-inanimate entities
@@ -3342,6 +3345,15 @@ def plan_for_goal(
     heuristic_derivations = [
         d for d in derivations
         if getattr(d, "name", None) not in _SKIP_IN_HEURISTIC]
+    # Goal-aware derivation pruning: keep only derivations whose
+    # `implies` produces a fact reachable backward from the goal.
+    # Derivations outside this set fire freely but their outputs are
+    # consumed by nothing on the goal's chain, so they cannot lower
+    # the relaxed plan's cost. Skip the filter when the walk
+    # declined to analyze the goal shape.
+    if relevant_derivs is not None:
+        heuristic_derivations = [
+            d for d in heuristic_derivations if d.name in relevant_derivs]
     grounded_derivs = _ground_derivations(
         heuristic_derivations, initial_trace, lex,
         relevant_entities=relevant_entities)
@@ -3743,10 +3755,23 @@ _RELEVANT_VERBS_CACHE: dict = {}
 
 
 def _goal_reachable_verbs(goal, lex, rule_effects, derivations) -> set | None:
+    """Thin wrapper around `_goal_reachable_walk` that returns just
+    the verb set — kept for callers that don't need the derivation
+    set."""
+    result = _goal_reachable_walk(goal, lex, rule_effects, derivations)
+    if result is None:
+        return None
+    verbs, _ = result
+    return verbs
+
+
+def _goal_reachable_walk(
+    goal, lex, rule_effects, derivations,
+) -> tuple[set, set] | None:
     """Backward-walk from goal facts through action effects, rule-
     effect adds, action preconditions, AND derivation implications,
-    to find every verb that could plausibly contribute. Returns the
-    closed set, or None for goal shapes we don't analyze.
+    returning `(relevant_verbs, relevant_derivation_names)` — or
+    None for goal shapes we don't analyze.
 
     Two backward graphs are walked together:
       - Action graph: an action's effects/role-properties/preconditions
@@ -3761,9 +3786,12 @@ def _goal_reachable_verbs(goal, lex, rule_effects, derivations) -> set | None:
 
     No hardcoded transit list. Movement/perception/state-prep verbs
     fall out naturally from precondition + derivation chasing on the
-    goal-producing verb's needs.
+    goal-producing verb's needs. The derivation set is sound for
+    h_FF pruning: a derivation outside it produces facts no goal-
+    relevant action consumes (directly or via chained derivations),
+    so it cannot lower the relaxed plan's cost to the goal.
 
-    Cached per `(id(lex), goal)` since the walk is purely structural."""
+    Cached per `(id(lex), goal)`."""
     cache_key = (id(lex), goal)
     cached = _RELEVANT_VERBS_CACHE.get(cache_key)
     if cached is not None:
@@ -3822,6 +3850,7 @@ def _goal_reachable_verbs(goal, lex, rule_effects, derivations) -> set | None:
     rel_visited: set = set()
     prop_visited: set = set()
     relevant: set = set()
+    relevant_derivs: set = set()
     queue: deque = deque()
 
     def _add_verb(verb):
@@ -3841,6 +3870,7 @@ def _goal_reachable_verbs(goal, lex, rule_effects, derivations) -> set | None:
                     break
         # Derivation producers — walk back to their inputs.
         for d in rel_to_derivs.get(rel_name, ()):
+            relevant_derivs.add(d.name)
             rel_inputs: set = set()
             prop_inputs: set = set()
             _walk_pattern_for_inputs(
@@ -3864,6 +3894,7 @@ def _goal_reachable_verbs(goal, lex, rule_effects, derivations) -> set | None:
                     break
         # Derivation producers — walk back.
         for d in prop_to_derivs.get((slot, value), ()):
+            relevant_derivs.add(d.name)
             rel_inputs: set = set()
             prop_inputs: set = set()
             _walk_pattern_for_inputs(
@@ -3928,8 +3959,9 @@ def _goal_reachable_verbs(goal, lex, rule_effects, derivations) -> set | None:
                 _seed_relation(pc.rel)
             elif kind2 == "if_property":
                 _seed_property(pc.then_property, pc.then_value)
-    _RELEVANT_VERBS_CACHE[cache_key] = relevant
-    return relevant
+    result = (relevant, relevant_derivs)
+    _RELEVANT_VERBS_CACHE[cache_key] = result
+    return result
 
 
 def _drive_to_goal(drive, trace, lex):
