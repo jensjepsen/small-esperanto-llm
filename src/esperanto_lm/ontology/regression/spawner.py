@@ -172,6 +172,27 @@ def make_spawner(
         candidates = _concepts_matching_role(lex_arg, role_spec)
         if not candidates:
             return None
+        # Narrow to concepts that model the effect's slot when the
+        # caller picked this role because the verb writes to it.
+        # Otherwise the spawner cheerfully picks a cepo for glui.theme
+        # and the downstream `_drive_target_unmeaningful` check rejects
+        # the whole loop iteration — wasted spawn + dep-seed + h_FF
+        # cycle. concept_models_slot includes part-derivation lifts
+        # (pordo's lock_state from seruro), so the filter doesn't
+        # exclude hosts whose state slot lands via a derivation.
+        if eff is not None:
+            from ..dsl.introspect import concept_models_slot
+            from ..dsl.rules import runtime_derivations_for
+            derivs = runtime_derivations_for(lex_arg)
+            modeled = [c for c in candidates
+                       if concept_models_slot(
+                           lex_arg.concepts[c], eff.property,
+                           lex_arg, derivs)]
+            if modeled:
+                candidates = modeled
+            # else: keep the broad pool — degenerate goals shouldn't
+            # crash the spawner, they should fail downstream and the
+            # sampler loop retries.
         weights = None
         if action is not None and role_name is not None:
             weights = _candidate_weights(
