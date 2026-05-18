@@ -1092,7 +1092,6 @@ vidi_learns_en = rule(
         rel("en", contained=VET, container=bind(VEL := var("L"))),
     ],
     then=[
-        add_relation("scias_lokon", VEA, VET),
         add_relation("scias", VEA, "en", VET, VEL),
     ],
     name="vidi_learns_en",
@@ -1106,7 +1105,6 @@ flari_learns_en = rule(
         rel("en", contained=FET, container=bind(FEL := var("L"))),
     ],
     then=[
-        add_relation("scias_lokon", FEA, FET),
         add_relation("scias", FEA, "en", FET, FEL),
     ],
     name="flari_learns_en",
@@ -1120,7 +1118,6 @@ audi_learns_en = rule(
         rel("en", contained=AET, container=bind(AEL := var("L"))),
     ],
     then=[
-        add_relation("scias_lokon", AEA, AET),
         add_relation("scias", AEA, "en", AET, AEL),
     ],
     name="audi_learns_en",
@@ -1134,7 +1131,6 @@ vidi_learns_sur = rule(
         rel("sur", contained=VST, container=bind(VSL := var("L"))),
     ],
     then=[
-        add_relation("scias_lokon", VSA, VST),
         add_relation("scias", VSA, "sur", VST, VSL),
     ],
     name="vidi_learns_sur",
@@ -1156,7 +1152,6 @@ flari_learns_sur = rule(
         rel("sur", contained=FST, container=bind(FSL := var("L"))),
     ],
     then=[
-        add_relation("scias_lokon", FSA, FST),
         add_relation("scias", FSA, "sur", FST, FSL),
     ],
     name="flari_learns_sur",
@@ -1171,7 +1166,6 @@ audi_learns_sur = rule(
         rel("sur", contained=AST, container=bind(ASL := var("L"))),
     ],
     then=[
-        add_relation("scias_lokon", ASA, AST),
         add_relation("scias", ASA, "sur", AST, ASL),
     ],
     name="audi_learns_sur",
@@ -1207,7 +1201,6 @@ def _vocal_announce_rule(verb_name):
             rel("samloke", a=A, b=H),
         ],
         then=[
-            add_relation("scias_lokon", H, A),
             add_relation("scias", H, "en", A, L),
         ],
         name=f"{verb_name}_announces_speaker",
@@ -1239,7 +1232,6 @@ def _ludi_announce_rule():
             rel("samloke", a=A, b=H),
         ],
         then=[
-            add_relation("scias_lokon", H, A),
             add_relation("scias", H, "en", A, L),
         ],
         name="ludi_announces_player",
@@ -1320,7 +1312,6 @@ montri_shows_location = rule(
         rel("en", contained=MNT, container=bind(MNL := var("L"))),
     ],
     then=[
-        add_relation("scias_lokon", MNR, MNT),
         add_relation("scias", MNR, "en", MNT, MNL),
     ],
     name="montri_shows_location",
@@ -2336,10 +2327,57 @@ host_openness_open_from_pordo = derive(
 )
 
 
-# scias_lokon is asserted directly by the perception rules
-# (vidi_learns_en / _sur, flari_learns_en / _sur, audi_learns_en /
-# _sur). Used as a precondition by verbs that require knowing the
-# target's location (preni, kapti, veki, mortigi).
+# scias_lokon(K, X) is derived from scias(K, RT, X, _) whenever RT is
+# a *locative* relation — one whose two args name a "contained"
+# thing and its "container". en/sur match; havi, apud, samloke don't
+# (havi is ownership, apud is adjacency, samloke is co-location). The
+# set of locative rels is read from the lex at derivation-build time
+# so adding e.g. `super` later auto-extends scias_lokon coverage
+# without touching this file. One derivation per locative rel because
+# the relaxed-graph planner indexes by distinct rule-effects entries
+# and the forward planner's literal-pattern grounding doesn't handle
+# OR across rel_type values.
+
+
+def _is_locative_relation(rel_def) -> bool:
+    """Schema-derived locative check: arity-2 relation whose arg_names
+    are the canonical container shape. The schema author signals
+    "this places its first arg" by using those names."""
+    return (rel_def.arity == 2
+            and tuple(rel_def.arg_names) == ("contained", "container"))
+
+
+def make_scias_lokon_derivations(lex) -> list:
+    """Build one DSL derivation per locative relation in `lex`. Used
+    by callers that pass the runtime derivation list to the engine or
+    planner — they prepend / extend with these so scias_lokon is
+    derivable for every locative rel_type the lex declares."""
+    out: list = []
+    for rname, rel_def in lex.relations.items():
+        if not _is_locative_relation(rel_def):
+            continue
+        # Distinct Var instances per derivation so engine bindings
+        # don't cross-pollute when both derivations match.
+        K = var(f"_SLK_{rname}")
+        X = var(f"_SLX_{rname}")
+        L = var(f"_SLL_{rname}")
+        out.append(derive(
+            when=rel("scias",
+                     knower=bind(K),
+                     rel_type=rname,
+                     subjekto=bind(X),
+                     objekto=bind(L)),
+            implies=relation("scias_lokon", K, X),
+            name=f"scias_lokon_via_scias_{rname}",
+        ))
+    return out
+
+
+def runtime_derivations_for(lex) -> list:
+    """RUNTIME_DERIVATIONS + lex-dependent dynamically-generated
+    derivations (currently: scias_lokon per locative rel). Single
+    helper so callers don't separately remember to add them."""
+    return list(RUNTIME_DERIVATIONS) + make_scias_lokon_derivations(lex)
 
 
 # ---------- derivation: parts inherit samloke from their host ----------
@@ -2794,6 +2832,10 @@ DEFAULT_DSL_DERIVATIONS = [
     amiko_implies_amikino,
     najbaro_implies_najbaro,
     najbaro_implies_najbarino,
+    # scias_lokon-derivations are NOT listed here: they're built per-
+    # locative-rel at engine-call time via `runtime_derivations_for`,
+    # since the set of locative rels lives in the lex (not in this
+    # module). Bake skips them anyway — scias is dynamic state.
 ]
 
 
@@ -2867,6 +2909,8 @@ RUNTIME_DERIVATIONS = [
     amiko_implies_amikino,
     najbaro_implies_najbaro,
     najbaro_implies_najbarino,
+    # scias_lokon-derivations live in `runtime_derivations_for(lex)`,
+    # not here — see the comment in DEFAULT_DSL_DERIVATIONS.
 ]
 
 

@@ -1615,6 +1615,49 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
         if rule_adds or rule_dels:
             entry["rules"].append(
                 {"adds": rule_adds, "dels": rule_dels})
+    # Synthesize scias_lokon(K, X) for any rule that adds
+    # scias(K, RT, X, L) when RT is a *locative* relation. "Locative"
+    # is derived from the schema: a relation whose arg_names match
+    # the container shape ("contained", "container") — i.e. arg 0 is
+    # the thing being located and arg 1 is its place. en/sur match;
+    # havi (owner/theme), apud (subject/neighbor), samloke (a/b) don't.
+    # The engine has DSL derivations (scias_lokon_via_scias_*)
+    # producing scias_lokon at trace time, but the relaxed-graph
+    # heuristic indexes adds per-verb; without this synthesis the
+    # planner sees scias additions but no path to scias_lokon, so
+    # preni/kapti/veki/mortigi preconditions never resolve.
+    locative_rels: set = set()
+    for rname, rel_def in lex.relations.items():
+        if (rel_def.arity == 2
+                and tuple(rel_def.arg_names) == ("contained", "container")):
+            locative_rels.add(rname)
+    for verb_lemma, entry in out.items():
+        synth_adds: list = []
+        seen: set = set()
+        for relation, role_args in entry["adds"]:
+            if relation != "scias" or len(role_args) != 4:
+                continue
+            rt = role_args[1]
+            if not (isinstance(rt, tuple) and len(rt) == 2
+                    and rt[0] == "<literal>"
+                    and rt[1] in locative_rels):
+                continue
+            k_role = role_args[0]
+            x_role = role_args[2]
+            key = (k_role, x_role)
+            if key in seen:
+                continue
+            seen.add(key)
+            synth_adds.append(("scias_lokon", (k_role, x_role)))
+        if synth_adds:
+            entry["adds"].extend(synth_adds)
+            # Mirror inside a rule entry so the per-rule
+            # _action_delta loop emits scias_lokon when the action
+            # fires for real. Without this, the fact-set simulator
+            # drops scias_lokon and downstream preni preconditions
+            # stop matching mid-search.
+            entry["rules"].append(
+                {"adds": list(synth_adds), "dels": []})
     return out
 
 
@@ -1819,8 +1862,8 @@ def _build_effect_meaningfulness_cache(lex) -> dict:
     if cached is not None:
         return cached
     from ..dsl.introspect import concept_models_slot
-    from ..dsl.rules import RUNTIME_DERIVATIONS
-    derivs = list(RUNTIME_DERIVATIONS)
+    from ..dsl.rules import runtime_derivations_for
+    derivs = runtime_derivations_for(lex)
     out: dict = {}
     for action in lex.actions.values():
         if not action.effects:
@@ -2090,7 +2133,8 @@ def _action_effects_meaningful(action, roles, trace, lex) -> bool:
     if not action.effects:
         return True
     from ..dsl.introspect import concept_models_slot
-    from ..dsl.rules import RUNTIME_DERIVATIONS
+    from ..dsl.rules import runtime_derivations_for
+    derivs = runtime_derivations_for(lex)
     for eff in action.effects:
         target_eid = roles.get(eff.target_role)
         if target_eid is None:
@@ -2100,7 +2144,7 @@ def _action_effects_meaningful(action, roles, trace, lex) -> bool:
             continue
         target_concept = lex.concepts.get(target_ent.concept_lemma)
         if not concept_models_slot(
-                target_concept, eff.property, lex, RUNTIME_DERIVATIONS):
+                target_concept, eff.property, lex, derivs):
             return False
     return True
 
@@ -2311,9 +2355,9 @@ def _heuristic_and_helpful(
     if grounded_derivations is not None:
         derivation_pseudos = grounded_derivations
     else:
-        from ..dsl.rules import RUNTIME_DERIVATIONS
+        from ..dsl.rules import runtime_derivations_for
         derivation_pseudos = _ground_derivations(
-            RUNTIME_DERIVATIONS, trace, lex)
+            runtime_derivations_for(lex), trace, lex)
     if consumer_index is None:
         fact_to, all_consumers, cid_to_info, pres_len = (
             _build_consumer_index(actions, derivation_pseudos))
@@ -2906,6 +2950,20 @@ def plan_for_goal(
     if goal is None:
         return None
 
+    # Augment the passed derivations with lex-derived dynamic ones
+    # (scias_lokon-per-locative-rel). Callers don't carry the lex
+    # at module-load time, so they pass the static base list; the
+    # planner extends it here. Idempotent — skip names already
+    # present so a caller that already includes them isn't doubled.
+    from ..dsl.rules import make_scias_lokon_derivations
+    _extra_derivs = make_scias_lokon_derivations(lex)
+    if _extra_derivs:
+        _existing_names = {getattr(d, "name", None) for d in derivations}
+        _new = [d for d in _extra_derivs
+                if getattr(d, "name", None) not in _existing_names]
+        if _new:
+            derivations = list(derivations) + _new
+
     initial_derived = _cached_compute_derived_state(
         initial_trace, derivations, lex)
     if _goal_satisfied(goal, initial_trace, initial_derived, lex):
@@ -3007,6 +3065,19 @@ def plan_for_goal(
         # _ground_derivations that drops object×object×object combos
         # (~6× fewer bindings per chain), making them cheap enough.
         "samloke_propagates_through_artifact_parts",
+    }
+    # scias_lokon derivations (one per locative rel, built dynamically
+    # by `runtime_derivations_for`) use a LiteralValuePattern on
+    # rel_type that _ground_derivations doesn't grok (it expects
+    # Var-bound args). The relaxed-graph instead picks up scias_lokon
+    # via the synthesis branch at the tail of
+    # `_build_rule_effects_index`, so no heuristic grounding needed
+    # here. Engine still derives scias_lokon at trace time from these.
+    _SKIP_IN_HEURISTIC = _SKIP_IN_HEURISTIC | {
+        f"scias_lokon_via_scias_{r}"
+        for r, rel_def in lex.relations.items()
+        if rel_def.arity == 2
+        and tuple(rel_def.arg_names) == ("contained", "container")
     }
     heuristic_derivations = [
         d for d in derivations

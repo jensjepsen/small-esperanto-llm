@@ -166,12 +166,38 @@ class Pattern:
 
 
 def _coerce(x: "Pattern | Var") -> Pattern:
-    """Auto-wrap a bare Var as a BindPattern so `T & entity(...)` works."""
+    """Auto-wrap a bare Var as a BindPattern so `T & entity(...)` works.
+    Scalar literals (str/int/float/bool) coerce to LiteralValuePattern
+    so callers can write `rel("scias", rel_type="en", ...)` to
+    pin a positional arg to an exact value (used by the scias_lokon
+    derivations to filter on rel_type without needing OR over
+    multiple bound vars)."""
     if isinstance(x, Pattern):
         return x
     if isinstance(x, Var):
         return BindPattern(x)
+    if isinstance(x, (str, int, float, bool)):
+        return LiteralValuePattern(x)
     raise TypeError(f"expected Pattern or Var, got {type(x).__name__}: {x!r}")
+
+
+@dataclass(eq=False)
+class LiteralValuePattern(Pattern):
+    """Matches iff the value-under-test equals `value`. Used as a
+    rel-arg constraint, e.g. `rel("scias", rel_type="en", ...)`
+    pins the rel_type position to literal "en"."""
+    value: Any
+
+    def variables(self) -> set[Var]:
+        return set()
+
+    def apply_to_value(self, value, ctx, bindings):
+        if value == self.value:
+            yield bindings
+
+    def search(self, ctx, bindings):
+        return
+        yield  # pragma: no cover - generator marker
 
 
 # ---------------------------- bind --------------------------------
@@ -481,8 +507,12 @@ class RelPattern(Pattern):
 
 def _bound_var_value(pattern, bindings):
     """If `pattern` is a BindPattern (or And-wrapping one) whose Var
-    is already in `bindings`, return the bound value. Otherwise None
-    — caller treats as "no constraint to check"."""
+    is already in `bindings`, return the bound value. LiteralValue
+    patterns return their literal directly so the rel-search loop
+    pre-filters candidates instead of iterating the full relation
+    index. Otherwise None — caller treats as "no constraint to check"."""
+    if isinstance(pattern, LiteralValuePattern):
+        return pattern.value
     if isinstance(pattern, BindPattern):
         if pattern.target in bindings:
             return bindings[pattern.target]
