@@ -119,6 +119,34 @@ def make_spawner(
                 return None
             state["spawned"] += 1
             return rng.choice(pool)
+        # kind="from_precondition": look up the source relation's
+        # arg_kind at the named position. Literal/slot → pick from
+        # value pool. Entity → fall through to normal spawn path.
+        if getattr(role_spec, "kind", "single") == "from_precondition":
+            src_rel_name = getattr(
+                role_spec, "from_precondition", None)
+            pos = getattr(
+                role_spec, "from_precondition_position", None)
+            src_rel = lex_arg.relations.get(src_rel_name) \
+                if src_rel_name else None
+            src_kind = "entity"
+            if src_rel is not None and pos is not None:
+                kinds = (list(src_rel.arg_kinds) if src_rel.arg_kinds
+                         else ["entity"] * src_rel.arity)
+                if 0 <= pos < len(kinds):
+                    src_kind = kinds[pos]
+            if src_kind in ("literal", "slot"):
+                pool = (list(role_spec.allowed_values)
+                        if getattr(
+                            role_spec, "allowed_values", None)
+                        else list(lex_arg.relations.keys())
+                        if src_kind == "literal"
+                        else list(lex_arg.slots.keys()))
+                if not pool:
+                    return None
+                state["spawned"] += 1
+                return rng.choice(pool)
+            # entity source: fall through to normal entity spawn below
         from .seeders import (
             _candidate_weights, _concepts_matching_role,
             _place_respecting_containment,

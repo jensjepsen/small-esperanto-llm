@@ -468,6 +468,13 @@ def _expand_list_role_args(role_arg_names, roles, facts=None):
                 per_pos[i] = list(vals)
                 is_lookup[i] = True
                 continue
+            if kind == "<literal>":
+                # Literal-string arg from a rule's AddRelation (e.g.
+                # the "en"/"sur"/"havi" rel_type in scias). No
+                # substitution needed — the value is the marker's
+                # payload itself.
+                per_pos[i] = [arg[1]]
+                continue
         per_pos[i] = [roles.get(arg)]
     list_len = max(
         (len(per_pos[i]) for i in range(n) if is_list[i]),
@@ -1410,6 +1417,15 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
                     role_name = eff_var_to_role.get(id(arg))
                     if role_name is not None:
                         role_args.append(role_name)
+                        continue
+                    # Literal string arg (e.g. scias's rel_type
+                    # "en"/"sur"/"havi" in
+                    # add_relation("scias", agent, "en", theme, loc)).
+                    # Tag positionally with the literal value so the
+                    # grounder substitutes it verbatim instead of
+                    # treating the position as a role binding.
+                    if isinstance(arg, str):
+                        role_args.append(("<literal>", arg))
                         continue
                     # Not event-role-bound — try given-clause lookup.
                     if isinstance(arg, Var):
@@ -2650,6 +2666,46 @@ def plan_for_goal(
                 # role absent from the binding dict.
                 per_role.append([None])
                 continue
+            # kind="relation" / "from_precondition": pull values from
+            # a string pool, same dispatch as _ground_all_actions.
+            kind = getattr(role_spec, "kind", "single")
+            if kind == "relation":
+                pool = (list(role_spec.allowed_values)
+                        if getattr(
+                            role_spec, "allowed_values", None)
+                        else list(lex.relations.keys()))
+                if not pool:
+                    ok = False
+                    break
+                per_role.append(pool)
+                continue
+            if kind == "from_precondition":
+                src_rel_name = getattr(
+                    role_spec, "from_precondition", None)
+                pos = getattr(
+                    role_spec, "from_precondition_position", None)
+                src_rel = lex.relations.get(src_rel_name) \
+                    if src_rel_name else None
+                src_kind = "entity"
+                if src_rel is not None and pos is not None:
+                    kinds = (list(src_rel.arg_kinds)
+                             if src_rel.arg_kinds
+                             else ["entity"] * src_rel.arity)
+                    if 0 <= pos < len(kinds):
+                        src_kind = kinds[pos]
+                if src_kind in ("literal", "slot"):
+                    pool = (list(role_spec.allowed_values)
+                            if getattr(
+                                role_spec, "allowed_values", None)
+                            else list(lex.relations.keys())
+                            if src_kind == "literal"
+                            else list(lex.slots.keys()))
+                    if not pool:
+                        ok = False
+                        break
+                    per_role.append(pool)
+                    continue
+                # entity source: fall through to entity enumeration
             cand = []
             for eid, ent in initial_trace.entities.items():
                 if not lex.types.is_subtype(
