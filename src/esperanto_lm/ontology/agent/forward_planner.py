@@ -2075,6 +2075,11 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     # we cache the set of concept lemmas whose effects are meaningful.
     # _meaningful_concepts is built lazily; combo just does a set check.
     meaningful_cache = _build_effect_meaningfulness_cache(lex)
+    # Hoist concept_models_slot deps out of the combo loop — same lex,
+    # same derivations across every combo.
+    from ..dsl.introspect import concept_models_slot
+    from ..dsl.rules import runtime_derivations_for
+    _runtime_derivs = runtime_derivations_for(lex)
     # Per-action precondition/effect templates, compiled once per lex.
     sym = _symmetric_relations(lex)
     tmpl_cache = getattr(lex, "_fwd_planner_action_tmpls", None)
@@ -2283,11 +2288,9 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                     if tgt_concept is None:
                         constr_skip = True
                         break
-                    from ..dsl.introspect import concept_models_slot
-                    from ..dsl.rules import runtime_derivations_for
                     if not concept_models_slot(
                             tgt_concept, slot_name, lex,
-                            runtime_derivations_for(lex)):
+                            _runtime_derivs):
                         constr_skip = True
                         break
                 if constr_skip:
@@ -2750,7 +2753,7 @@ def _infra_prespawn(action, role_map, trace, lex, derivations, resolver,
     from ..schemas import RelationPrecondition
     from ..dsl.implications import PropertyImplication
     derived = _cached_compute_derived_state(trace, derivations, lex)
-    facts = set(_state_facts(trace, derived, lex))
+    facts = _state_facts(trace, derived, lex)
 
     # (a) Role.property requirements: derivable + not already true.
     for role_spec in action.roles:
@@ -2970,7 +2973,7 @@ def _ensure_prop_reachable(eid, slot, value, trace, lex, derivations,
         return
     from ..dsl.implications import PropertyImplication
     derived = _cached_compute_derived_state(trace, derivations, lex)
-    if ("prop", eid, slot, value) in set(_state_facts(trace, derived, lex)):
+    if ("prop", eid, slot, value) in _state_facts(trace, derived, lex):
         return
     for d in derivations:
         if not any(isinstance(imp, PropertyImplication)
@@ -2982,7 +2985,7 @@ def _ensure_prop_reachable(eid, slot, value, trace, lex, derivations,
             rule_effects, derivable_slots, depth)
         # Re-check; stop once the property becomes reachable.
         derived = _cached_compute_derived_state(trace, derivations, lex)
-        if ("prop", eid, slot, value) in set(_state_facts(trace, derived, lex)):
+        if ("prop", eid, slot, value) in _state_facts(trace, derived, lex):
             return
 
 

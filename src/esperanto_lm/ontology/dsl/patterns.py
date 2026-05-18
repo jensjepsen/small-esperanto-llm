@@ -722,16 +722,25 @@ class ClosurePattern(Pattern):
         visited = {start}
         frontier = [start]
         step = 0
+        # Pre-fetch the relation buckets once per top-level call:
+        # ClosurePattern walks every node × every relation tuple, and
+        # the unifier's `relations_of` is already cached per-trace —
+        # one lookup beats one-scan-per-node.
+        rel_buckets = [
+            (rname, ctx.relations_of(rname))
+            for rname in self.relations
+        ]
         while frontier and (self.max_steps is None or step < self.max_steps):
             next_frontier: list[str] = []
             for node in frontier:
-                for r in ctx.trace.relations:
-                    if r.relation not in self.relations or len(r.args) != 2:
-                        continue
-                    if r.args[0] == node and r.args[1] not in visited:
-                        next_frontier.append(r.args[1])
-                    elif r.args[1] == node and r.args[0] not in visited:
-                        next_frontier.append(r.args[0])
+                for _rname, tuples in rel_buckets:
+                    for args in tuples:
+                        if len(args) != 2:
+                            continue
+                        if args[0] == node and args[1] not in visited:
+                            next_frontier.append(args[1])
+                        elif args[1] == node and args[0] not in visited:
+                            next_frontier.append(args[0])
             for nb in next_frontier:
                 visited.add(nb)
             for nb in next_frontier:
