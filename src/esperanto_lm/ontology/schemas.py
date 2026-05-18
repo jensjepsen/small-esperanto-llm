@@ -297,6 +297,12 @@ class RoleSpec(_Frozen):
     # rel_type, position=3 for objekto in scias).
     from_precondition: Optional[str] = None
     from_precondition_position: Optional[int] = None
+    # Realizer hint: when set, the role's filler is rendered with this
+    # Esperanto preposition (no accusative). Examples:
+    #   instrument with preposition="per" → "per la forko"
+    #   passage with preposition="tra" → "tra la pordo"
+    # Default None: render as the verb's accusative complement.
+    preposition: Optional[str] = None
 
 
 class Effect(_Frozen):

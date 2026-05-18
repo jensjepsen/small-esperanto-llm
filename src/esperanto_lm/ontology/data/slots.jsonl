@@ -22,6 +22,7 @@
 {"name": "readability", "vocabulary": ["legebla"], "applies_to": ["physical"], "scalar": true}
 {"name": "locomotion", "vocabulary": ["walk", "fly", "swim", "slither"], "applies_to": ["animate"], "scalar": false}
 {"name": "is_vehicle", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "is_passage", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
 {"name": "can_use_tools", "vocabulary": ["yes"], "applies_to": ["animate"], "scalar": true}
 {"name": "lock_capable", "vocabulary": ["yes"], "applies_to": ["artifact"], "scalar": true}
 {"name": "posture", "vocabulary": ["staranta", "sidanta", "kuŝanta", "naĝanta", "flosanta", "penda"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "unmarked": "staranta"}

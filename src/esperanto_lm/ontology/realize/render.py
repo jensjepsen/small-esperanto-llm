@@ -1365,23 +1365,38 @@ def _render_event_phrase(
                         ctx.note_mention(source_ent)
                         ctx.mark_nonperson_mention(source_ent)
 
-    if ev.roles.get("instrument"):
-        instr = ctx.trace.entity(ev.roles["instrument"])
-        if instr is not None:
-            # When the verb's rule transfers the instrument as one of
-            # the moved stacks (aĉeti's coins go to the seller, vendi's
-            # come from the buyer), match the instrument's count to
-            # ev.quantity so "per tri moneroj" mirrors "tri pomojn".
-            _ev_qty = getattr(ev, "quantity", 1)
-            _verb_meta = _verb_metadata()
-            instr_count = (
-                _ev_qty
+    # Roles with a `preposition` schema hint render as
+    # `<prep> <entity_form>` (no accusative). instrument with "per"
+    # for tools; passage with "tra" for eniri's pordo; extensible to
+    # any verb/role where the schema declares a preposition. We walk
+    # the action's role list so we hit them in declared order.
+    action_spec = ctx.lexicon.actions.get(ev.action)
+    if action_spec is not None:
+        for role_spec in action_spec.roles:
+            prep = getattr(role_spec, "preposition", None)
+            if not prep:
+                continue
+            eid = ev.roles.get(role_spec.name)
+            if not eid:
+                continue
+            ent = ctx.trace.entity(eid)
+            if ent is None:
+                continue
+            # instrument special: when the verb's rule transfers the
+            # instrument as one of the moved stacks (aĉeti's coins go
+            # to the seller, vendi's come from the buyer), match the
+            # instrument's count to ev.quantity so "per tri moneroj"
+            # mirrors "tri pomojn".
+            count_override = None
+            if role_spec.name == "instrument":
+                _ev_qty = getattr(ev, "quantity", 1)
+                _verb_meta = _verb_metadata()
                 if (ev.action in _verb_meta["instrument_quantified"]
-                    and _ev_qty > 1)
-                else None)
+                        and _ev_qty > 1):
+                    count_override = _ev_qty
             parts.append(
-                f"per {ctx.name_for(instr, count_override=instr_count)}")
-            ctx.note_mention(instr)
+                f"{prep} {ctx.name_for(ent, count_override=count_override)}")
+            ctx.note_mention(ent)
 
     # `fari.parts` (kind="list") renders as "el X, Y kaj Z" — the
     # source materials the constructed entity is made from. Only fari
