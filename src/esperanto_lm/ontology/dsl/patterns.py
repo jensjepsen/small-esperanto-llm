@@ -810,6 +810,56 @@ def has_concept_field(
     return HasConceptFieldPattern(entity_var, field_name, bind_target)
 
 
+@dataclass(eq=False)
+class ConceptModelsSlotPattern(Pattern):
+    """Matches iff `entity_var`'s concept models the slot whose name
+    is bound to `slot_var`. "Models" includes declared properties,
+    pervasive slots, AND derivation-lifted slots — same predicate the
+    planner's _action_effects_meaningful enforces. Used by mezuri's
+    rule to require the theme to model whatever slot the instrument
+    measures (termometro→temperature, pesilo→maso, ...) without
+    hardcoding a per-tool whitelist."""
+    entity_var: Var
+    slot_var: Var
+
+    def variables(self) -> set[Var]:
+        return {self.entity_var, self.slot_var}
+
+    def search(self, ctx, bindings):
+        eid = bindings.get(self.entity_var)
+        slot = bindings.get(self.slot_var)
+        if eid is None or slot is None:
+            return
+        ent = ctx.trace.entities.get(eid)
+        if ent is None:
+            return
+        concept = ctx.lexicon.concepts.get(ent.concept_lemma)
+        if concept is None:
+            return
+        # Lazy import — patterns is a low-level module and importing
+        # introspect/rules at module load would risk cycles.
+        from .introspect import concept_models_slot
+        from .rules import RUNTIME_DERIVATIONS
+        if concept_models_slot(
+                concept, slot, ctx.lexicon, RUNTIME_DERIVATIONS):
+            yield bindings
+
+
+def concept_models_slot_check(
+    entity_var: Var, slot_var: Var,
+) -> ConceptModelsSlotPattern:
+    """Given-clause check: `entity_var`'s concept must model the slot
+    named by the binding of `slot_var`. Both vars must be bound by
+    earlier `when`/`given` clauses."""
+    if not isinstance(entity_var, Var):
+        raise TypeError(
+            "concept_models_slot_check: entity_var must be a Var")
+    if not isinstance(slot_var, Var):
+        raise TypeError(
+            "concept_models_slot_check: slot_var must be a Var")
+    return ConceptModelsSlotPattern(entity_var, slot_var)
+
+
 # ---------------------------- logic -------------------------------
 
 @dataclass(eq=False)

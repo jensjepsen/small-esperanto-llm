@@ -42,9 +42,11 @@ from .implications import (
 )
 from .patterns import (
     AndPattern, BindPattern, CausedByPattern, ClosurePattern, Compare,
-    EntityPattern, EventPattern, HasConceptFieldPattern, NotPattern, OrPattern,
+    ConceptModelsSlotPattern, EntityPattern, EventPattern,
+    HasConceptFieldPattern, NotPattern, OrPattern,
     PastEventPattern, Pattern, RelPattern, Var, VarList, VarProp,
-    bind, bind_list, caused_by, closure, entity, event, has_concept_field,
+    bind, bind_list, caused_by, closure, concept_models_slot_check,
+    entity, event, has_concept_field,
     past_event, rel, var, var_list,
 )
 from .unifier import DerivedState, MatchContext, enumerate_bindings, resolve
@@ -52,10 +54,11 @@ from .unifier import DerivedState, MatchContext, enumerate_bindings, resolve
 __all__ = [
     # patterns + constructors
     "AndPattern", "BindPattern", "CausedByPattern", "ClosurePattern",
-    "Compare", "EntityPattern", "EventPattern", "HasConceptFieldPattern",
-    "NotPattern", "OrPattern", "PastEventPattern", "Pattern", "RelPattern",
-    "Var", "VarList", "VarProp",
-    "bind", "bind_list", "caused_by", "closure", "entity", "event",
+    "Compare", "ConceptModelsSlotPattern", "EntityPattern", "EventPattern",
+    "HasConceptFieldPattern", "NotPattern", "OrPattern",
+    "PastEventPattern", "Pattern", "RelPattern", "Var", "VarList", "VarProp",
+    "bind", "bind_list", "caused_by", "closure",
+    "concept_models_slot_check", "entity", "event",
     "has_concept_field", "past_event", "rel", "var", "var_list",
     # effects
     "AddRelation", "Change", "ConsumeOne", "CreateEntity", "DestroyEntity",

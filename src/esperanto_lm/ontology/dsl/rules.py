@@ -13,7 +13,8 @@ from .engine import Rule
 from . import (
     add_relation, bind, bind_list, category, caused_by, closure, Compare,
     consume_one, create_entity, derive, destroy_entity, emit, entity, event,
-    for_each, has_concept_field, not_relation, part, past_event, property,
+    concept_models_slot_check, for_each, has_concept_field, not_relation,
+    part, past_event, property,
     rel, relation, remove_relation, rule, transfer_n, var, var_list, VarProp,
 )
 
@@ -1370,7 +1371,13 @@ mezuri_learns_dimension = rule(
                theme=bind(MET := var("T")),
                instrument=bind(MEI := var("I"))),
     given=[
+        # Instrument tells us WHICH slot is measured (termometro→
+        # temperature, pesilo→maso, …). Theme must model that slot,
+        # otherwise the measurement is vacuous (no value to learn).
+        # concept_models_slot_check covers declared props + pervasive
+        # + derivation-lifted, same predicate the planner enforces.
         has_concept_field(MEI, "mezuras", MES := var("S")),
+        concept_models_slot_check(MET, MES),
     ],
     then=add_relation("scias_propon", MEA, MET, MES),
     name="mezuri_learns_dimension",

@@ -399,6 +399,8 @@ def _compile_action_template(action, rule_effects, sym, forbid_rels=None):
                 if relation in forbid_rels:
                     skip_filter = False
                     break
+    entry = rule_effects.get(action.lemma) or {}
+    concept_constraints = tuple(entry.get("concept_constraints", ()))
     return _CompiledAction(
         prop_pres=prop_pres,
         rel_pres_simple=rel_pres_simple,
@@ -408,6 +410,7 @@ def _compile_action_template(action, rule_effects, sym, forbid_rels=None):
         rule_adds_marker=rule_adds_marker,
         sym=sym,
         skip_filter=skip_filter,
+        concept_constraints=concept_constraints,
     )
 
 
@@ -418,11 +421,11 @@ class _CompiledAction:
     __slots__ = (
         "prop_pres", "rel_pres_simple", "rel_pres_list",
         "eff_props", "rule_adds_simple", "rule_adds_marker", "sym",
-        "skip_filter")
+        "skip_filter", "concept_constraints")
 
     def __init__(self, prop_pres, rel_pres_simple, rel_pres_list,
                  eff_props, rule_adds_simple, rule_adds_marker, sym,
-                 skip_filter=False):
+                 skip_filter=False, concept_constraints=()):
         self.prop_pres = prop_pres
         self.rel_pres_simple = rel_pres_simple
         self.rel_pres_list = rel_pres_list
@@ -431,6 +434,12 @@ class _CompiledAction:
         self.rule_adds_marker = rule_adds_marker
         self.sym = sym
         self.skip_filter = skip_filter
+        # List of (entity_role, source_role, field_name) tuples lifted
+        # from rule given clauses: per-combo, entity's concept must
+        # model the slot named by source.concept.properties[field][0].
+        # Empty for actions whose rules don't use the
+        # has_concept_field + concept_models_slot_check pattern.
+        self.concept_constraints = concept_constraints
 
 
 def _ground_facts_from_template(tmpl, roles, facts):
@@ -1532,6 +1541,42 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
                 return ("<lookup>", g.relation, tuple(template))
         return None
 
+    from ..dsl.patterns import (
+        ConceptModelsSlotPattern, HasConceptFieldPattern,
+    )
+
+    def _extract_concept_constraints(rule, var_to_role):
+        """Walk given clauses for `concept_models_slot_check(entity,
+        slot)` whose `slot` is bound by an earlier
+        `has_concept_field(source, field, slot)`. Each pair becomes a
+        per-combo grounding constraint: at firing time, entity's
+        concept must model whatever slot source's concept declares at
+        `field`. Returns list of (entity_role, source_role, field_name)
+        triples. Generic — fires for any rule using these patterns,
+        no hardcoded verb names."""
+        if not rule.given:
+            return []
+        # slot_var_id → (source_role, field_name)
+        slot_origin: dict = {}
+        for g in rule.given:
+            if not isinstance(g, HasConceptFieldPattern):
+                continue
+            source_role = var_to_role.get(id(g.entity_var))
+            if source_role is None:
+                continue
+            slot_origin[id(g.bind_target)] = (source_role, g.field_name)
+        out: list = []
+        for g in rule.given:
+            if not isinstance(g, ConceptModelsSlotPattern):
+                continue
+            entity_role = var_to_role.get(id(g.entity_var))
+            origin = slot_origin.get(id(g.slot_var))
+            if entity_role is None or origin is None:
+                continue
+            source_role, field_name = origin
+            out.append((entity_role, source_role, field_name))
+        return out
+
     for rule in rules:
         ep = _find_event_pattern(rule.when)
         if ep is None:
@@ -1542,6 +1587,14 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
             v = _bind_var_of(role_pat)
             if isinstance(v, Var):
                 var_to_role[id(v)] = role_name
+        # Collect concept-models-slot constraints from this rule's
+        # given clauses (compositional with has_concept_field).
+        constraints = _extract_concept_constraints(rule, var_to_role)
+        if constraints:
+            entry_for_constraints = out.setdefault(
+                verb, {"adds": [], "dels": [], "rules": []})
+            entry_for_constraints.setdefault(
+                "concept_constraints", []).extend(constraints)
         # Walk rule.then for AddRelation / RemoveRelation / TransferN.
         effects = (rule.then if isinstance(rule.then, (list, tuple))
                    else [rule.then])
@@ -2177,6 +2230,45 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
             if skip:
                 continue
             tmpl = tmpl_cache.get(action.lemma)
+            # Concept-constraints from rule given clauses: per
+            # (entity_role, source_role, field_name), check that
+            # entity's concept models source's concept_field value
+            # as a slot. Mirrors mezuri's rule guard at planning time
+            # so the planner doesn't waste effort on combinations
+            # whose rule body would no-op.
+            if tmpl is not None and tmpl.concept_constraints:
+                constr_skip = False
+                for entity_role, source_role, field_name \
+                        in tmpl.concept_constraints:
+                    source_eid = roles.get(source_role)
+                    entity_eid = roles.get(entity_role)
+                    if source_eid is None or entity_eid is None:
+                        continue
+                    src_ent = trace.entities.get(source_eid)
+                    tgt_ent = trace.entities.get(entity_eid)
+                    if src_ent is None or tgt_ent is None:
+                        continue
+                    src_concept = lex.concepts.get(src_ent.concept_lemma)
+                    if src_concept is None:
+                        continue
+                    vals = src_concept.properties.get(field_name)
+                    if not vals:
+                        constr_skip = True
+                        break
+                    slot_name = vals[0]
+                    tgt_concept = lex.concepts.get(tgt_ent.concept_lemma)
+                    if tgt_concept is None:
+                        constr_skip = True
+                        break
+                    from ..dsl.introspect import concept_models_slot
+                    from ..dsl.rules import runtime_derivations_for
+                    if not concept_models_slot(
+                            tgt_concept, slot_name, lex,
+                            runtime_derivations_for(lex)):
+                        constr_skip = True
+                        break
+                if constr_skip:
+                    continue
             if tmpl is not None:
                 pres, effs = _ground_facts_from_template(
                     tmpl, roles, state_facts)
