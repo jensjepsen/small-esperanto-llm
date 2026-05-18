@@ -912,6 +912,7 @@ def _ground_derivations(
                 rel_def = lex.relations.get(rp.relation)
                 if rel_def is None:
                     continue
+                from ..dsl.patterns import LiteralValuePattern
                 arg_vids: list = []
                 ok = True
                 for arg_name in rel_def.arg_names:
@@ -919,6 +920,14 @@ def _ground_derivations(
                     if arg_pat is None:
                         ok = False
                         break
+                    # Literal-value constraint (e.g.
+                    # rel("scias", rel_type="en", ...)) — encode as
+                    # ("<lit>", value) so the pres-construction loop
+                    # substitutes the literal directly without trying
+                    # to look it up as an entity binding.
+                    if isinstance(arg_pat, LiteralValuePattern):
+                        arg_vids.append(("<lit>", arg_pat.value))
+                        continue
                     tgt = _bind_target_var(arg_pat)
                     if tgt is not None:
                         arg_vids.append(id(tgt))
@@ -1036,12 +1045,16 @@ def _ground_derivations(
                     continue
 
             # pres: each rel pattern grounded with binding, plus
-            # property constraints on each Var.
+            # property constraints on each Var. Literal arg positions
+            # (encoded as ("<lit>", value)) bypass the binding lookup.
             pres: set = set()
             ok = True
             for rp, arg_vids in zip(rel_patterns, rel_arg_vids):
                 args = []
                 for av in arg_vids:
+                    if isinstance(av, tuple) and av and av[0] == "<lit>":
+                        args.append(av[1])
+                        continue
                     eid = binding.get(av)
                     if eid is None:
                         ok = False
@@ -1615,50 +1628,114 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
         if rule_adds or rule_dels:
             entry["rules"].append(
                 {"adds": rule_adds, "dels": rule_dels})
-    # Synthesize scias_lokon(K, X) for any rule that adds
-    # scias(K, RT, X, L) when RT is a *locative* relation. "Locative"
-    # is derived from the schema: a relation whose arg_names match
-    # the container shape ("contained", "container") — i.e. arg 0 is
-    # the thing being located and arg 1 is its place. en/sur match;
-    # havi (owner/theme), apud (subject/neighbor), samloke (a/b) don't.
-    # The engine has DSL derivations (scias_lokon_via_scias_*)
-    # producing scias_lokon at trace time, but the relaxed-graph
-    # heuristic indexes adds per-verb; without this synthesis the
-    # planner sees scias additions but no path to scias_lokon, so
-    # preni/kapti/veki/mortigi preconditions never resolve.
-    locative_rels: set = set()
-    for rname, rel_def in lex.relations.items():
-        if (rel_def.arity == 2
-                and tuple(rel_def.arg_names) == ("contained", "container")):
-            locative_rels.add(rname)
-    for verb_lemma, entry in out.items():
-        synth_adds: list = []
-        seen: set = set()
-        for relation, role_args in entry["adds"]:
-            if relation != "scias" or len(role_args) != 4:
-                continue
-            rt = role_args[1]
-            if not (isinstance(rt, tuple) and len(rt) == 2
-                    and rt[0] == "<literal>"
-                    and rt[1] in locative_rels):
-                continue
-            k_role = role_args[0]
-            x_role = role_args[2]
-            key = (k_role, x_role)
-            if key in seen:
-                continue
-            seen.add(key)
-            synth_adds.append(("scias_lokon", (k_role, x_role)))
-        if synth_adds:
-            entry["adds"].extend(synth_adds)
-            # Mirror inside a rule entry so the per-rule
-            # _action_delta loop emits scias_lokon when the action
-            # fires for real. Without this, the fact-set simulator
-            # drops scias_lokon and downstream preni preconditions
-            # stop matching mid-search.
-            entry["rules"].append(
-                {"adds": list(synth_adds), "dels": []})
+    _synthesize_implications_from_derivations(out, lex)
     return out
+
+
+def _synthesize_implications_from_derivations(rule_effects: dict, lex) -> dict:
+    """For each DSL derivation of the form
+        derive(when=rel(R_in, arg_a=Var, arg_b=literal, arg_c=Var, arg_d=Var),
+               implies=relation(R_out, *some_subset_of_args))
+    propagate the implication into per-verb rule_effects: any rule that
+    adds R_in(...) with the same literal at arg_b synthesizes R_out(...)
+    at the same arg positions used by the implies side.
+
+    Why this is needed even though the engine already runs the
+    derivation at trace time: the planner's relaxed graph grounds
+    derivation pseudo-actions over concrete (K, X, L) entity tuples
+    drawn from `relevant_entities`. The 'L' position above is
+    existential in the derivation (its value is irrelevant to the
+    implication), but the grounder must bind it to a concrete entity
+    that's in the relevant set — and the actual scias L (the
+    container) often isn't. The synthesis bypasses that by attaching
+    the implication directly to the producing rule's effects, which
+    the per-rule simulator emits unconditionally on firing.
+
+    Source of truth: the derivations list. Adding another
+    locative-style derivation auto-extends the synthesis."""
+    from ..dsl.patterns import LiteralValuePattern, BindPattern, RelPattern, Var
+    from ..dsl.engine import RelationImplication
+    from ..dsl.rules import runtime_derivations_for
+    for d in runtime_derivations_for(lex):
+        when = d.when
+        if not isinstance(when, RelPattern):
+            continue
+        rel_in = when.relation
+        rel_def = lex.relations.get(rel_in)
+        if rel_def is None:
+            continue
+        # Map arg_name → BindPattern target Var (for entity args) or
+        # LiteralValuePattern (for literal-constrained positions).
+        arg_kinds: list = []
+        var_to_arg_idx: dict = {}
+        for i, arg_name in enumerate(rel_def.arg_names):
+            ap = when.arg_patterns.get(arg_name)
+            if isinstance(ap, LiteralValuePattern):
+                arg_kinds.append(("lit", ap.value))
+            elif isinstance(ap, BindPattern):
+                arg_kinds.append(("var", ap.target))
+                var_to_arg_idx[id(ap.target)] = i
+            elif isinstance(ap, Var):
+                arg_kinds.append(("var", ap))
+                var_to_arg_idx[id(ap)] = i
+            else:
+                arg_kinds = []
+                break
+        if not arg_kinds:
+            continue
+        # Need at least one literal-constrained position — without it
+        # the derivation already grounds fine via the relaxed path.
+        if not any(k == "lit" for k, _ in arg_kinds):
+            continue
+        for imp in d.implies:
+            if not isinstance(imp, RelationImplication):
+                continue
+            rel_out = imp.name
+            # Each implies arg must be a Var bound by `when` — map it
+            # back to its position in rel_in.
+            imp_positions: list = []
+            ok = True
+            for a in imp.args:
+                idx = var_to_arg_idx.get(id(a))
+                if idx is None:
+                    ok = False
+                    break
+                imp_positions.append(idx)
+            if not ok:
+                continue
+            # Walk rule_effects entries: any rule adding rel_in with
+            # the same literal at the literal positions yields a
+            # synthesized rel_out add at imp_positions.
+            for verb_lemma, entry in rule_effects.items():
+                synth_adds: list = []
+                seen: set = set()
+                for relation, role_args in entry["adds"]:
+                    if relation != rel_in:
+                        continue
+                    if len(role_args) != len(arg_kinds):
+                        continue
+                    # Literal positions must match.
+                    if not all(
+                            (isinstance(role_args[i], tuple)
+                             and len(role_args[i]) == 2
+                             and role_args[i][0] == "<literal>"
+                             and role_args[i][1] == val)
+                            for i, (k, val) in enumerate(arg_kinds)
+                            if k == "lit"):
+                        continue
+                    new_args = tuple(role_args[i] for i in imp_positions)
+                    key = (rel_out, new_args)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    synth_adds.append((rel_out, new_args))
+                if synth_adds:
+                    entry["adds"].extend(synth_adds)
+                    # Mirror inside a rule entry so the per-rule
+                    # _action_delta loop emits the synth on fire too.
+                    entry["rules"].append(
+                        {"adds": list(synth_adds), "dels": []})
+    return rule_effects
 
 
 def _symmetric_relations(lex) -> frozenset:
@@ -3066,19 +3143,21 @@ def plan_for_goal(
         # (~6× fewer bindings per chain), making them cheap enough.
         "samloke_propagates_through_artifact_parts",
     }
-    # scias_lokon derivations (one per locative rel, built dynamically
-    # by `runtime_derivations_for`) use a LiteralValuePattern on
-    # rel_type that _ground_derivations doesn't grok (it expects
-    # Var-bound args). The relaxed-graph instead picks up scias_lokon
-    # via the synthesis branch at the tail of
-    # `_build_rule_effects_index`, so no heuristic grounding needed
-    # here. Engine still derives scias_lokon at trace time from these.
-    _SKIP_IN_HEURISTIC = _SKIP_IN_HEURISTIC | {
-        f"scias_lokon_via_scias_{r}"
-        for r, rel_def in lex.relations.items()
-        if rel_def.arity == 2
-        and tuple(rel_def.arg_names) == ("contained", "container")
-    }
+    # Derivations whose `when` is a literal-constrained relation
+    # pattern (currently: scias_lokon-via-scias-<locative>) are
+    # covered by `_synthesize_implications_from_derivations` in
+    # `_build_rule_effects_index`. Grounding them here too would
+    # waste cycles AND miss combinations where the existential arg
+    # (the locative-container) isn't in `relevant_entities`. Auto-
+    # skip them by detecting the literal-constrained shape, so adding
+    # a new derivation of this shape is automatically handled.
+    from ..dsl.patterns import LiteralValuePattern, RelPattern
+    for d in derivations:
+        when = getattr(d, "when", None)
+        if isinstance(when, RelPattern) and any(
+                isinstance(ap, LiteralValuePattern)
+                for ap in when.arg_patterns.values()):
+            _SKIP_IN_HEURISTIC = _SKIP_IN_HEURISTIC | {d.name}
     heuristic_derivations = [
         d for d in derivations
         if getattr(d, "name", None) not in _SKIP_IN_HEURISTIC]
