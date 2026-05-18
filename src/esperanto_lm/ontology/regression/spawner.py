@@ -90,8 +90,7 @@ def make_spawner(
     def resolver(role_spec, trace, lex_arg, exclude,
                  action=None, role_name=None, *,
                  prefer_scene: bool | None = None,
-                 inject_owner: bool | None = None,
-                 concept_filter=None):
+                 inject_owner: bool | None = None):
         # `prefer_scene` resolution:
         #   - explicit True/False from caller: honored
         #   - None (default): coin flip against `prefer_scene_p` —
@@ -173,15 +172,6 @@ def make_spawner(
         candidates = _concepts_matching_role(lex_arg, role_spec)
         if not candidates:
             return None
-        # Caller-supplied predicate (e.g. "this dest must be a
-        # permitted en-container for that obj"). Narrow before the
-        # weight pass so the filter applies uniformly. Empty after
-        # filter: fall back so spawner still produces something
-        # (downstream will bail / retry, but not crash here).
-        if concept_filter is not None:
-            filtered = [c for c in candidates if concept_filter(c)]
-            if filtered:
-                candidates = filtered
         # Narrow to concepts that model the effect's slot when the
         # caller picked this role because the verb writes to it.
         # Otherwise the spawner cheerfully picks a cepo for glui.theme

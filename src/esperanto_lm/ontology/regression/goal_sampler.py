@@ -59,40 +59,6 @@ def _bail(reason: str) -> None:
     LAST_NO_SAMPLE_REASON = reason
 
 
-# Per-lex memo: (obj_concept, dest_concept, rel) → bool. The
-# containment predicate is invariant per lex (concepts + rules
-# don't change between scenes), so caching across all sampler
-# invocations is safe. Keyed by id(lex) so re-loaded lexicons
-# don't collide.
-_PERMIT_CACHE: dict = {}
-
-
-def _containment_pair_permit_cache(lex) -> dict:
-    cache = _PERMIT_CACHE.get(id(lex))
-    if cache is None:
-        cache = {}
-        _PERMIT_CACHE[id(lex)] = cache
-    return cache
-
-
-def _compute_pair_permits(obj_concept, dest_concept, rel, lex) -> bool:
-    """True iff `obj_concept` can be `rel`-placed in `dest_concept`
-    per the schema's containment rules. Mirrors the two-tier check
-    `validate_relation` runs post-spawn: no required-fact violation
-    AND the pair is in the allowed-relation set."""
-    from ..containment import (
-        containment_relations_for, required_fact_violations,
-        resolve_containment,
-    )
-    cidx = resolve_containment(lex)
-    if required_fact_violations(
-            dest_concept, obj_concept, rel, cidx, lex):
-        return False
-    allowed = containment_relations_for(
-        dest_concept, obj_concept, cidx, lex)
-    return rel in allowed
-
-
 def _cached_goal_index(lex, rules):
     key = id(lex)
     cached = _GOAL_INDEX_CACHE.get(key)
@@ -1244,36 +1210,9 @@ def regress_for_goal(
                 last_loop_reason = (
                     f"place_obj_spawn_failed:{verb_lemma}.{obj_role_name}")
                 continue
-            # Narrow dest-concept candidates to those the schema
-            # permits as `rel_name` containers for obj's concept. Two
-            # checks — both mirror what `validate_relation` runs
-            # post-spawn (causal.py:439-453) — hoisted to concept-pick
-            # time so we don't burn the spawn + dep-seed cycle on a
-            # doomed pair:
-            #   1. No required-fact violation (containment.jsonl
-            #      required=True entries with slot_overlap or
-            #      pattern constraints).
-            #   2. The (dest, obj) pair is in the allowed-relation set
-            #      from containment.jsonl — non-empty containment
-            #      rules act as an allow-list, so "bretaro sur viro"
-            #      fails not because anything is required-violated but
-            #      because nothing in the registry permits it.
-            obj_concept = t.entities[obj_eid].concept_lemma
-            _permit_cache = _containment_pair_permit_cache(lex)
-            def _dest_permits_obj(dest_concept,
-                                  _ob=obj_concept, _r=rel_name,
-                                  _c=_permit_cache):
-                key = (_ob, dest_concept, _r)
-                v = _c.get(key)
-                if v is None:
-                    v = _compute_pair_permits(
-                        _ob, dest_concept, _r, lex)
-                    _c[key] = v
-                return v
             dest_eid = setup_spawner(
                 dest_role_spec, t, lex, set(t.entities.keys()),
-                action=action, role_name=dest_role_name,
-                concept_filter=_dest_permits_obj)
+                action=action, role_name=dest_role_name)
             if dest_eid is None:
                 last_loop_reason = (
                     f"place_dest_spawn_failed:{verb_lemma}.{dest_role_name}")
