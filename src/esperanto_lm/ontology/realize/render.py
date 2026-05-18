@@ -964,6 +964,89 @@ def _render_fakto_as_quote_body(fakto_ent, ctx: _Ctx,
     return None
 
 
+def _render_scias_tuple_as_ke_clause(
+        rel_type, subj_id, obj_id, ctx: _Ctx, *, mode: str = "assertion",
+) -> Optional[str]:
+    """Unfold a scias-tuple (rel_type, subj, obj) directly into the
+    subordinate clause that follows a speech-act verb.
+
+    Mirrors `_render_fakto_as_ke_clause` but reads its inputs from
+    scias roles on the event rather than from a reified fakto entity.
+    This is the post-fakto-migration path — verbs like rakonti now
+    carry their rel_type/theme/objekto directly via the
+    from_precondition role mechanism, so no entity unfolding is
+    needed. Property-kind faktos (temperaturo/maso/grandeco) don't
+    travel through scias today, so they're handled only by the
+    legacy fakto path until producers migrate."""
+    if rel_type is None or subj_id is None:
+        return None
+    subj_ent = ctx.trace.entity(subj_id)
+    if subj_ent is None:
+        return None
+    subj_form = ctx.name_for(subj_ent)
+    ctx.note_mention(subj_ent)
+    if obj_id is None:
+        return None
+    obj_ent = ctx.trace.entity(obj_id)
+    if obj_ent is None:
+        return None
+    obj_form = ctx.name_for(obj_ent)
+    ctx.note_mention(obj_ent)
+    if mode == "question":
+        copula = f"est{ctx.tense}"
+        if rel_type in ("en", "sur"):
+            return f"kie {copula} {subj_form}"
+        if rel_type == "havi":
+            verb = "havis" if ctx.tense == "is" else "havas"
+            return f"kiu {verb} {to_accusative(subj_form)}"
+        return None
+    if rel_type == "en":
+        copula = f"est{ctx.tense}"
+        return f"ke {subj_form} {copula} en {obj_form}"
+    if rel_type == "sur":
+        copula = f"est{ctx.tense}"
+        return f"ke {subj_form} {copula} sur {obj_form}"
+    if rel_type == "havi":
+        verb = "havis" if ctx.tense == "is" else "havas"
+        return f"ke {subj_form} {verb} {to_accusative(obj_form)}"
+    return None
+
+
+def _render_scias_tuple_as_quote_body(
+        rel_type, subj_id, obj_id, ctx: _Ctx, *, mode: str = "assertion",
+) -> Optional[str]:
+    """Direct-quote form of a scias-tuple — same content as the
+    ke-clause version, but capitalized, terminal-punctuated, and
+    in present tense (speakers report in-the-moment)."""
+    if rel_type is None or subj_id is None or obj_id is None:
+        return None
+    subj_ent = ctx.trace.entity(subj_id)
+    obj_ent = ctx.trace.entity(obj_id)
+    if subj_ent is None or obj_ent is None:
+        return None
+    subj_form = ctx.name_for(subj_ent)
+    obj_form = ctx.name_for(obj_ent)
+    ctx.note_mention(subj_ent)
+    ctx.note_mention(obj_ent)
+
+    def _cap(s: str) -> str:
+        return s[0].upper() + s[1:] if s else s
+
+    if mode == "question":
+        if rel_type in ("en", "sur"):
+            return f"Kie estas {subj_form}?"
+        if rel_type == "havi":
+            return f"Kiu havas {to_accusative(subj_form)}?"
+        return None
+    if rel_type == "en":
+        return f"{_cap(subj_form)} estas en {obj_form}."
+    if rel_type == "sur":
+        return f"{_cap(subj_form)} estas sur {obj_form}."
+    if rel_type == "havi":
+        return f"{_cap(subj_form)} havas {to_accusative(obj_form)}."
+    return None
+
+
 def _render_peti_request_body(theme_ent, ctx: _Ctx) -> Optional[str]:
     """Standalone imperative request for `peti`. Returns "Donu al mi
     la libron." (give-me + accusative theme). Tense is invariant —
@@ -1332,24 +1415,38 @@ def _render_event_phrase(
                     ctx.note_mention(theme)
                     theme = None
         if theme is not None:
-            # Abstract themes (faktos) with a recipient unfold as a
-            # `al RECIP ke ...` clause: "rakontis al Petro ke la
-            # libro estas en la breto" instead of the literal "la
-            # fakton" accusative. The fakto's pri_* properties give
-            # us the underlying relation.
+            # Speech-act verbs with a recipient unfold the propositional
+            # content as a `al RECIP ke ...` clause: "rakontis al Petro
+            # ke la libro estas en la breto" instead of the literal "la
+            # libron" accusative. Two paths feed this:
+            #   (a) Migrated verbs (rakonti) carry scias-shape roles
+            #       (rel_type, theme, objekto) on the event directly —
+            #       render straight from those, no entity unfolding.
+            #   (b) Legacy verbs (demandi/respondi/instrui/...) still
+            #       use an abstract fakto entity as theme and we read
+            #       its pri_relacio + subjekto/objekto relations.
             ke = None
             quote_phrase = None
-            if (theme.entity_type == "abstract"
-                    and ev.roles.get("recipient")):
-                # demandi (ask) renders the fakto as a question
-                # (kie/kiu) rather than an assertion (ke ...).
-                mode = "question" if ev.action == "demandi" else "assertion"
-                # Per-event coin flip: with `_DIRECT_QUOTE_PROB`,
-                # render as direct quote ("Maria diris al Petro:
-                # 'La libro estas en la breto.'") instead of the
-                # default ke-clause indirect form. Surface form
-                # picked uniformly from `_QUOTE_STYLES` so traces
-                # mix all three Esperanto dialog conventions.
+            recipient_id = ev.roles.get("recipient")
+            rel_type_val = ev.roles.get("rel_type")
+            objekto_id = ev.roles.get("objekto")
+            mode = "question" if ev.action == "demandi" else "assertion"
+            if (recipient_id is not None and rel_type_val is not None
+                    and objekto_id is not None):
+                # Path (a): scias-shape event roles.
+                if (ctx.rng is not None
+                        and ctx.rng.random() < _DIRECT_QUOTE_PROB):
+                    body = _render_scias_tuple_as_quote_body(
+                        rel_type_val, theme.id, objekto_id, ctx, mode=mode)
+                    if body is not None:
+                        style = ctx.rng.choice(_QUOTE_STYLES)
+                        quote_phrase = _wrap_direct_quote(body, style)
+                if quote_phrase is None:
+                    ke = _render_scias_tuple_as_ke_clause(
+                        rel_type_val, theme.id, objekto_id, ctx, mode=mode)
+            elif (theme.entity_type == "abstract"
+                    and recipient_id is not None):
+                # Path (b): legacy fakto-entity theme.
                 if (ctx.rng is not None
                         and ctx.rng.random() < _DIRECT_QUOTE_PROB):
                     body = _render_fakto_as_quote_body(
