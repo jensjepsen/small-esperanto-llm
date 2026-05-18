@@ -1086,29 +1086,7 @@ vidi_learns_en = rule(
         rel("en", contained=VET, container=bind(VEL := var("L"))),
     ],
     then=[
-        create_entity(
-            concept="fakto",
-            as_var=(VEF := var("F")),
-            id_parts=("en", VET, VEL),
-            initial_properties={"pri_relacio": "en"},
-        ),
-        add_relation("subjekto", VEF, VET),
-        add_relation("objekto", VEF, VEL),
-        add_relation("konas", VEA, VEF),
-        # First-class scias_lokon assertion alongside the konas/
-        # subjekto/objekto fakto chain — saves a derivation hop
-        # (scias_lokon_via_en, dropped) and lets the planner read
-        # the perception's location-knowledge as a direct fact in
-        # trace.relations instead of having to compose derived
-        # state. The fakto-based representation stays for now
-        # (realizer + a few rule sites still read it); next sessions
-        # migrate those consumers and drop fakto creation entirely.
         add_relation("scias_lokon", VEA, VET),
-        # 4-arity scias: (knower, rel_type, subjekto, objekto). rel_type
-        # is a literal-kind arg (the relation name). Carries enough
-        # info for rakonti/demandi to designate "which proposition"
-        # without the fakto reification. Both representations coexist
-        # during the migration.
         add_relation("scias", VEA, "en", VET, VEL),
     ],
     name="vidi_learns_en",
@@ -1122,15 +1100,6 @@ flari_learns_en = rule(
         rel("en", contained=FET, container=bind(FEL := var("L"))),
     ],
     then=[
-        create_entity(
-            concept="fakto",
-            as_var=(FEF := var("F")),
-            id_parts=("en", FET, FEL),
-            initial_properties={"pri_relacio": "en"},
-        ),
-        add_relation("subjekto", FEF, FET),
-        add_relation("objekto", FEF, FEL),
-        add_relation("konas", FEA, FEF),
         add_relation("scias_lokon", FEA, FET),
         add_relation("scias", FEA, "en", FET, FEL),
     ],
@@ -1145,15 +1114,6 @@ audi_learns_en = rule(
         rel("en", contained=AET, container=bind(AEL := var("L"))),
     ],
     then=[
-        create_entity(
-            concept="fakto",
-            as_var=(AEF := var("F")),
-            id_parts=("en", AET, AEL),
-            initial_properties={"pri_relacio": "en"},
-        ),
-        add_relation("subjekto", AEF, AET),
-        add_relation("objekto", AEF, AEL),
-        add_relation("konas", AEA, AEF),
         add_relation("scias_lokon", AEA, AET),
         add_relation("scias", AEA, "en", AET, AEL),
     ],
@@ -1168,15 +1128,6 @@ vidi_learns_sur = rule(
         rel("sur", contained=VST, container=bind(VSL := var("L"))),
     ],
     then=[
-        create_entity(
-            concept="fakto",
-            as_var=(VSF := var("F")),
-            id_parts=("sur", VST, VSL),
-            initial_properties={"pri_relacio": "sur"},
-        ),
-        add_relation("subjekto", VSF, VST),
-        add_relation("objekto", VSF, VSL),
-        add_relation("konas", VSA, VSF),
         add_relation("scias_lokon", VSA, VST),
         add_relation("scias", VSA, "sur", VST, VSL),
     ],
@@ -1185,13 +1136,12 @@ vidi_learns_sur = rule(
 
 
 # Smell and sound also locate `sur`-placed targets. Mirrors
-# `vidi_learns_sur` so the planner can establish konas/scias_lokon
-# for a target placed `sur` something without depending on
-# illumination — vidi requires the agent be illuminated, which
-# fails in indoor scenes without an active lamp. flari/audi only
-# need samloke + the perceptual capacity (smell/hearing). Without
-# these, an actor in a dark indoor room can never plan preni for
-# a snack on a table.
+# `vidi_learns_sur` so the planner can establish scias_lokon for
+# a target placed `sur` something without depending on illumination
+# — vidi requires the agent be illuminated, which fails in indoor
+# scenes without an active lamp. flari/audi only need samloke +
+# the perceptual capacity (smell/hearing). Without these, an actor
+# in a dark indoor room can never plan preni for a snack on a table.
 flari_learns_sur = rule(
     when=event("flari",
                agent=bind(FSA := var("A")),
@@ -1200,15 +1150,6 @@ flari_learns_sur = rule(
         rel("sur", contained=FST, container=bind(FSL := var("L"))),
     ],
     then=[
-        create_entity(
-            concept="fakto",
-            as_var=(FSF := var("F")),
-            id_parts=("sur", FST, FSL),
-            initial_properties={"pri_relacio": "sur"},
-        ),
-        add_relation("subjekto", FSF, FST),
-        add_relation("objekto", FSF, FSL),
-        add_relation("konas", FSA, FSF),
         add_relation("scias_lokon", FSA, FST),
         add_relation("scias", FSA, "sur", FST, FSL),
     ],
@@ -1224,15 +1165,6 @@ audi_learns_sur = rule(
         rel("sur", contained=AST, container=bind(ASL := var("L"))),
     ],
     then=[
-        create_entity(
-            concept="fakto",
-            as_var=(ASF := var("F")),
-            id_parts=("sur", AST, ASL),
-            initial_properties={"pri_relacio": "sur"},
-        ),
-        add_relation("subjekto", ASF, AST),
-        add_relation("objekto", ASF, ASL),
-        add_relation("konas", ASA, ASF),
         add_relation("scias_lokon", ASA, AST),
         add_relation("scias", ASA, "sur", AST, ASL),
     ],
@@ -1247,15 +1179,6 @@ vidi_learns_havi_owner = rule(
         rel("havi", owner=bind(VHO := var("O")), theme=VHT),
     ],
     then=[
-        create_entity(
-            concept="fakto",
-            as_var=(VHF := var("F")),
-            id_parts=("havi", VHO, VHT),
-            initial_properties={"pri_relacio": "havi"},
-        ),
-        add_relation("subjekto", VHF, VHO),
-        add_relation("objekto", VHF, VHT),
-        add_relation("konas", VHA, VHF),
         add_relation("scias", VHA, "havi", VHO, VHT),
     ],
     name="vidi_learns_havi_owner",
