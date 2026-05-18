@@ -200,8 +200,10 @@ def main():
     p.add_argument("--batch", type=int, default=50)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--sampler", choices=("verb", "goal", "both"),
-                   default="both",
-                   help="Which sampler(s) to bench")
+                   default="goal",
+                   help="Which sampler(s) to bench. Defaults to goal "
+                        "(the production path); verb is the legacy "
+                        "backward-chainer kept for comparison.")
     p.add_argument("--max-depth", type=int, default=8,
                    help="Planner DFS depth budget")
     p.add_argument("--samples-out", type=str,
