@@ -1193,7 +1193,6 @@ def _vocal_announce_rule(verb_name):
     A = var(f"VC_{verb_name}_A")
     L = var(f"VC_{verb_name}_L")
     H = var(f"VC_{verb_name}_H")
-    F = var(f"VC_{verb_name}_F")
     return rule(
         when=event(verb_name, agent=bind(A)),
         given=[
@@ -1202,13 +1201,8 @@ def _vocal_announce_rule(verb_name):
             rel("samloke", a=A, b=H),
         ],
         then=[
-            create_entity(
-                concept="fakto", as_var=F,
-                id_parts=("en", A, L),
-                initial_properties={"pri_relacio": "en"}),
-            add_relation("subjekto", F, A),
-            add_relation("objekto", F, L),
-            add_relation("konas", H, F),
+            add_relation("scias_lokon", H, A),
+            add_relation("scias", H, "en", A, L),
         ],
         name=f"{verb_name}_announces_speaker",
     )
@@ -1231,7 +1225,6 @@ def _ludi_announce_rule():
     T = var("LU_T")
     L = var("LU_L")
     H = var("LU_H")
-    F = var("LU_F")
     return rule(
         when=event("ludi", agent=bind(A), theme=bind(T)),
         given=[
@@ -1240,13 +1233,8 @@ def _ludi_announce_rule():
             rel("samloke", a=A, b=H),
         ],
         then=[
-            create_entity(
-                concept="fakto", as_var=F,
-                id_parts=("en", A, L),
-                initial_properties={"pri_relacio": "en"}),
-            add_relation("subjekto", F, A),
-            add_relation("objekto", F, L),
-            add_relation("konas", H, F),
+            add_relation("scias_lokon", H, A),
+            add_relation("scias", H, "en", A, L),
         ],
         name="ludi_announces_player",
     )
@@ -1287,40 +1275,44 @@ rakonti_transfers_fakto = rule(
 
 
 # `demandi` is rakonti's inverse: the asker (agent) acquires the
-# fakto from someone who already knows it (recipient). Modeled as
-# atomic Q&A — firing demandi adds konas(agent, fakto), no separate
+# scias-tuple from someone who already knows it (recipient). Modeled
+# as atomic Q&A — firing demandi adds scias(agent, ...), no separate
 # "recipient replies" event needed for the planner's purposes.
 demandi_extracts_fakto = rule(
     when=event("demandi",
                agent=bind(DEA := var("A")),
+               recipient=bind(DER := var("R")),
+               rel_type=bind(DERT := var("RT")),
                theme=bind(DET := var("T")),
-               recipient=bind(DER := var("R"))),
-    then=add_relation("konas", DEA, DET),
+               objekto=bind(DEO := var("O"))),
+    then=add_relation("scias", DEA, DERT, DET, DEO),
     name="demandi_extracts_fakto",
 )
 
 
-# `respondi` mirrors rakonti structurally — agent transfers a fakto
-# to recipient. The conversational distinction (reply vs initiating
-# tell) doesn't change the semantics for the engine; it gives the
-# realizer a verb to pick when continuing a Q&A turn.
+# `respondi` mirrors rakonti structurally — agent transfers a
+# scias-tuple to recipient. The conversational distinction (reply
+# vs initiating tell) doesn't change the semantics for the engine;
+# it gives the realizer a verb to pick when continuing a Q&A turn.
 respondi_transfers_fakto = rule(
     when=event("respondi",
                agent=bind(RPA := var("A")),
+               recipient=bind(RPR := var("R")),
+               rel_type=bind(RPRT := var("RT")),
                theme=bind(RPT := var("T")),
-               recipient=bind(RPR := var("R"))),
-    then=add_relation("konas", RPR, RPT),
+               objekto=bind(RPO := var("O"))),
+    then=add_relation("scias", RPR, RPRT, RPT, RPO),
     name="respondi_transfers_fakto",
 )
 
 
 # `montri` (show) is vidi-flavored from the recipient's side: the
 # agent — already samloke with both theme and recipient — surfaces
-# the theme's location as a fakto and the recipient learns it. Same
-# create_entity shape as vidi_learns_en, but konas goes to the
-# recipient role instead of the agent. Lets "show, don't tell"
-# transfer knowledge of physical things without requiring the agent
-# to first konas any fakto.
+# the theme's location and the recipient learns it. Same shape as
+# vidi_learns_en, but scias_lokon/scias go to the recipient role
+# instead of the agent. Lets "show, don't tell" transfer knowledge
+# of physical things without requiring the agent to first know
+# anything specific.
 montri_shows_location = rule(
     when=event("montri",
                agent=bind(MNA := var("A")),
@@ -1330,31 +1322,26 @@ montri_shows_location = rule(
         rel("en", contained=MNT, container=bind(MNL := var("L"))),
     ],
     then=[
-        create_entity(
-            concept="fakto",
-            as_var=(MNF := var("F")),
-            id_parts=("en", MNT, MNL),
-            initial_properties={"pri_relacio": "en"},
-        ),
-        add_relation("subjekto", MNF, MNT),
-        add_relation("objekto", MNF, MNL),
-        add_relation("konas", MNR, MNF),
+        add_relation("scias_lokon", MNR, MNT),
+        add_relation("scias", MNR, "en", MNT, MNL),
     ],
     name="montri_shows_location",
 )
 
 
 # `instrui` (teach) is rakonti's pedagogical sibling — same shape
-# (agent transfers a fakto they konas to a recipient) and same
+# (agent transfers a scias-tuple they know to a recipient) and same
 # semantics. Distinct lemma gives the realizer a verb choice for
 # instructional contexts (instructor → student) vs narrative ones
 # (storyteller → listener); the engine treats them identically.
 instrui_transfers_fakto = rule(
     when=event("instrui",
                agent=bind(ITA := var("A")),
+               recipient=bind(ITR := var("R")),
+               rel_type=bind(ITRT := var("RT")),
                theme=bind(ITT := var("T")),
-               recipient=bind(ITR := var("R"))),
-    then=add_relation("konas", ITR, ITT),
+               objekto=bind(ITO := var("O"))),
+    then=add_relation("scias", ITR, ITRT, ITT, ITO),
     name="instrui_transfers_fakto",
 )
 
