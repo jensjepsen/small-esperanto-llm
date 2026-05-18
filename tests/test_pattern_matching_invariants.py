@@ -35,7 +35,6 @@ def derivations(lex):
 
 def _make_trace(lex, entities: list[tuple[str, str]],
                 en_relations: list[tuple[str, str]] = (),
-                konas: list[tuple[str, str]] = (),
                 havas_parton: list[tuple[str, str]] = ()) -> Trace:
     """Build a trace with the given (concept, entity_id) entities and
     `en` relations. Entities take their initial properties from the
@@ -49,8 +48,6 @@ def _make_trace(lex, entities: list[tuple[str, str]],
             properties={k: list(v) for k, v in c.properties.items()})
     for a, b in en_relations:
         t.assert_relation("en", (a, b), lex)
-    for a, b in konas:
-        t.assert_relation("konas", (a, b), lex)
     for a, b in havas_parton:
         t.assert_relation("havas_parton", (a, b), lex)
     return t
@@ -324,42 +321,6 @@ def test_samloke_from_shared_en(lex, derivations):
     d = compute_derived_state(t, derivations, lex)
     assert d.has_relation("samloke", ("Mikael", "pordo"))
     assert d.has_relation("samloke", ("pordo", "Mikael"))
-
-
-def test_scias_lokon_via_konas_en(lex, derivations):
-    """konas a (en) fakto → scias_lokon derives on the fakto's subjekto."""
-    t = _make_trace(lex,
-        entities=[("kuirejo", "kuirejo"),
-                  ("persono", "Mikael"),
-                  ("ŝlosilo", "ŝlosilo")])
-    fakto = lex.concepts["fakto"]
-    fid = "fakto_from_en_ŝlosilo_kuirejo"
-    t.entities[fid] = EntityInstance(
-        id=fid, concept_lemma="fakto",
-        entity_type=fakto.entity_type,
-        properties={"pri_relacio": ["en"]})
-    t.assert_relation("subjekto", (fid, "ŝlosilo"), lex)
-    t.assert_relation("objekto", (fid, "kuirejo"), lex)
-    t.assert_relation("konas", ("Mikael", fid), lex)
-    d = compute_derived_state(t, derivations, lex)
-    assert d.has_relation("scias_lokon", ("Mikael", "ŝlosilo"))
-
-
-def test_animate_knows_self_subject(lex, derivations):
-    """An animate is the subjekto of some fakto → konas it (self-knowledge)."""
-    t = _make_trace(lex,
-        entities=[("kuirejo", "kuirejo"),
-                  ("persono", "Mikael")])
-    fakto = lex.concepts["fakto"]
-    fid = "fakto_from_en_Mikael_kuirejo"
-    t.entities[fid] = EntityInstance(
-        id=fid, concept_lemma="fakto",
-        entity_type=fakto.entity_type,
-        properties={"pri_relacio": ["en"]})
-    t.assert_relation("subjekto", (fid, "Mikael"), lex)
-    t.assert_relation("objekto", (fid, "kuirejo"), lex)
-    d = compute_derived_state(t, derivations, lex)
-    assert d.has_relation("konas", ("Mikael", fid))
 
 
 def test_baked_facts_present(lex):

@@ -82,8 +82,8 @@ class CreateEntity(Effect):
     id_from: Optional[Var] = None
     # Composite-id form: id = "{concept}_from_{p1}_{p2}_...". Each part
     # is a Var (resolved per binding) or a literal string. Use when a
-    # single from_ value isn't unique enough — fakto entities encoding
-    # (relation, subject, object) need all three to dedupe correctly.
+    # single from_ value isn't unique enough — e.g. entities derived from
+    # a (relation, subject, object) triple need all three to dedupe.
     id_parts: Optional[tuple[Any, ...]] = None
     # Per-instance properties applied at creation time (in addition to
     # whatever the concept itself authors). Values can be Vars

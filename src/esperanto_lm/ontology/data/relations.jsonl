@@ -4,9 +4,6 @@
 {"name": "apud", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["subject", "neighbor"], "inverse": null, "symmetric": true}
 {"name": "portas", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["carrier", "theme"], "inverse": null, "symmetric": false}
 {"name": "samloke", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
-{"name": "konas", "arity": 2, "arg_types": ["animate", "abstract"], "arg_names": ["knower", "fakto"], "inverse": null, "symmetric": false}
-{"name": "subjekto", "arity": 2, "arg_types": ["abstract", "physical"], "arg_names": ["fakto", "entity"], "inverse": null, "symmetric": false}
-{"name": "objekto", "arity": 2, "arg_types": ["abstract", "physical"], "arg_names": ["fakto", "entity"], "inverse": null, "symmetric": false}
 {"name": "scias_lokon", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["knower", "located"], "inverse": null, "symmetric": false}
 {"name": "scias", "arity": 4, "arg_types": ["animate", "abstract", "physical", "physical"], "arg_names": ["knower", "rel_type", "subjekto", "objekto"], "arg_kinds": ["entity", "literal", "entity", "entity"], "inverse": null, "symmetric": false}
 {"name": "havas_parton", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["tuto", "parto"], "inverse": null, "symmetric": false}

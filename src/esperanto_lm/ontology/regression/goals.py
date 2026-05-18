@@ -9,16 +9,16 @@ For each verb, postconditions come from two sources:
   2. DSL `Rule.then` clauses where `rule.when` is an `EventPattern`
      matching this verb. Rule-mediated `Change` and `AddRelation`
      effects also count — that's how effect-less verbs like vidi
-     (which `vidi_learns_en` mutates konas/scias_lokon) and iri
-     (which an en-changing rule mutates the agent's location)
-     enter the index.
+     (which `vidi_learns_en` adds scias_lokon/scias on the agent)
+     and iri (which an en-changing rule mutates the agent's
+     location) enter the index.
 
 The goal-first regression sampler picks a goal weighted by chain-
 richness of its producers, then chooses a verb to drive toward
 it, then constructs the supporting scene. This subsumes the verb-
 pool walk used by `regress_for_verb` (effect-bearing) plus the
-dedicated `regress_for_movement` / `regress_for_knowledge_verb`
-seeders (effect-less), unifying them under one goal-driven flow.
+dedicated `regress_for_movement` seeder, unifying them under one
+goal-driven flow.
 """
 from __future__ import annotations
 
@@ -33,10 +33,9 @@ from ..dsl.patterns import EventPattern, Var
 
 # Sentinel role name used in `role_args` when a relation argument is
 # bound to an entity the rule itself creates (via CreateEntity in the
-# same `then`). The vidi/flari/audi pattern: rule creates a fakto and
-# asserts konas(agent, fakto) — the fakto isn't a role binding but a
-# freshly-spawned entity. Drives targeting this goal mean "agent ends
-# up in <relation> with something the verb creates."
+# same `then`) — e.g. rain_creates_puddle adding en(puddle, location).
+# Drives targeting this goal mean "agent ends up in <relation> with
+# something the verb creates."
 CREATED_ROLE = "<created>"
 
 
@@ -160,47 +159,9 @@ def verb_postconditions(verb_lemma: str, rules: list, lex) -> list[VerbPostcondi
                     relation="havi",
                     role_args=(tgt_role, src_role),
                 ))
-        # Synthesize `scias_lokon` postconditions for the perception
-        # pattern: a rule that creates a `fakto`, asserts
-        # `subjekto(fakto, X)` AND `konas(K, fakto)` derives
-        # `scias_lokon(K, X)` at runtime. Without surfacing this, the
-        # goal index has no producers for scias_lokon, so anything
-        # that backchains through preni's scias_lokon precondition
-        # (the goal_sampler precondition-graph closure) never visits
-        # vidi/aŭdi/flari and the lamp seeding never fires. Mirrors
-        # the planner's runtime synthesis in `_build_rule_effects_index`.
-        fakto_vars: set = set()
-        for eff in effects:
-            if isinstance(eff, CreateEntity) and getattr(eff, "concept", None) == "fakto":
-                av = getattr(eff, "as_var", None)
-                if isinstance(av, Var):
-                    fakto_vars.add(id(av))
-        for fv in fakto_vars:
-            subj_role = None
-            knower_role = None
-            for eff in effects:
-                if not isinstance(eff, AddRelation):
-                    continue
-                if eff.relation == "subjekto" and len(eff.args) == 2:
-                    if (isinstance(eff.args[0], Var)
-                            and id(eff.args[0]) == fv
-                            and isinstance(eff.args[1], Var)):
-                        subj_role = var_to_role.get(id(eff.args[1]))
-                elif eff.relation == "konas" and len(eff.args) == 2:
-                    if (isinstance(eff.args[1], Var)
-                            and id(eff.args[1]) == fv
-                            and isinstance(eff.args[0], Var)):
-                        knower_role = var_to_role.get(id(eff.args[0]))
-            if subj_role and knower_role:
-                out.append(VerbPostcondition(
-                    kind="relation", verb_lemma=verb_lemma,
-                    target_role=None, slot=None, value=None,
-                    relation="scias_lokon",
-                    role_args=(knower_role, subj_role),
-                ))
     # Dedup: multiple rules can contribute the same postcondition for
     # the same verb (vidi has vidi_learns_en, vidi_learns_sur,
-    # vidi_learns_havi_owner — all asserting konas(agent, <created>)).
+    # vidi_learns_havi_owner — all emit scias_lokon and scias).
     # Preserve insertion order for stable downstream weighting.
     seen: set = set()
     deduped: list[VerbPostcondition] = []

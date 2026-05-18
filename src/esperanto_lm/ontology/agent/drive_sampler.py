@@ -27,7 +27,6 @@ import random  # noqa: F401  (referenced by docstring examples; kept for clarity
 
 from ..causal import Trace
 from ..containment import reachable_from, resolve_containment
-from ..dsl import compute_derived_state
 from ..dsl.effects import AddRelation, Change, Emit, TransferN
 from ..dsl.implications import PropertyImplication, RelationImplication
 from ..dsl.patterns import Var
@@ -144,23 +143,6 @@ def sample_scene(lex, rng, *, max_objects=4):
                             and len(r.args) == 2
                             and r.args[0] == eid)
                 ]
-
-    # 5b. Materialize fakto entities for the scene's `en`/`sur`/`havi`
-    # relations. The vidi cascade rules also create these on demand
-    # (with the same id shape, so engine dedup works), but pre-creating
-    # them at scene setup gives the drive sampler a concrete pool of
-    # facts to target — "X wants Y to know that Z is in W" requires
-    # the fakto entity to exist when the drive is sampled.
-    for r in list(t.relations):
-        if r.relation in ("en", "sur", "havi") and len(r.args) == 2:
-            a, b = r.args
-            fakto_id = f"fakto_from_{r.relation}_{a}_{b}"
-            if fakto_id in t.entities:
-                continue
-            t.add_entity("fakto", lex, entity_id=fakto_id)
-            t.entities[fakto_id].set_property("pri_relacio", r.relation)
-            t.assert_relation("subjekto", (fakto_id, a), lex)
-            t.assert_relation("objekto", (fakto_id, b), lex)
 
     # 6. NOW add 0-2 OTHER locations as movement destinations. Adding
     # these AFTER object placement is intentional — `_ensure_placed`
@@ -426,13 +408,6 @@ def sample_drive(t, lex, rng, *, derivations=None, rules=None,
     if not animates:
         return None
 
-    # Derived state surfaces auto-konas-of-self facts (the
-    # animate_knows_self_subject/object derivations) so the
-    # knowledge-drive filter doesn't sample drives like "Lidia wants
-    # to know that Lidia is somewhere".
-    derived = (compute_derived_state(t, derivations, lex)
-               if derivations else None)
-
     # Writability filters — built once at coverage-run init, passed in.
     # Without them ~60% of random drives sample goals no verb/rule/
     # derivation can produce, and the planner just returns None.
@@ -445,7 +420,7 @@ def sample_drive(t, lex, rng, *, derivations=None, rules=None,
 
     candidates: dict[str, list] = {
         "self_slot": [], "entity_slot": [],
-        "location": [], "possession": [], "knowledge": [],
+        "location": [], "possession": [],
     }
 
     # self_slot + entity_slot: actor wants some entity to have a slot
@@ -526,26 +501,6 @@ def sample_drive(t, lex, rng, *, derivations=None, rules=None,
             if _has_relation("havi", (actor, item), t):
                 continue
             candidates["possession"].append(("possession", actor, item))
-
-    # knowledge: drive is (actor, knower, fakto_id) — actor wants
-    # knower to konas this specific fact. Faktos are pre-created in
-    # scene setup for every en/sur/havi relation, so the drive pool
-    # includes facts like "the libro is on the breto" or "Pavel has
-    # the umbrella". When actor==knower, self-knowledge (vidi). When
-    # actor!=knower and actor already knows the fact, rakonti is the
-    # natural plan. When actor doesn't know either, the planner
-    # recurses (actor learns first, then teaches).
-    faktos = [
-        eid for eid, e in t.entities.items() if e.concept_lemma == "fakto"
-    ]
-    for actor in animates:
-        for knower in animates:
-            for fakto_id in faktos:
-                if _has_relation("konas", (knower, fakto_id), t,
-                                 derived=derived, lex=lex):
-                    continue
-                candidates["knowledge"].append(
-                    ("knowledge", actor, knower, fakto_id))
 
     nonempty = [k for k, v in candidates.items() if v]
     if not nonempty:

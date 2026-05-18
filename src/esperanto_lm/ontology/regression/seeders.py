@@ -16,29 +16,8 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from ..causal import EntityInstance, Trace, effect_changes, make_event
-from ..dsl.effects import AddRelation
 from ..dsl.introspect import _bind_var_in_pattern
-from ..dsl.patterns import EventPattern
 from .scene_builder import SceneBuilder, scene
-
-
-def _verbs_adding_konas(rules) -> set[str]:
-    """Verb lemmas whose causal rules add a konas relation. Used by
-    the regression sampler to surface knowledge-transfer chains
-    (rakonti, vidi). The check looks at the rule's then-effects rather
-    than action.effects (which is per-verb-schema property changes)
-    because konas additions live in the rule layer, not the schema."""
-    out: set[str] = set()
-    for rule in rules:
-        if not isinstance(rule.when, EventPattern):
-            continue
-        rule_effects = (rule.then if isinstance(rule.then, (list, tuple))
-                         else [rule.then])
-        for eff in rule_effects:
-            if isinstance(eff, AddRelation) and eff.relation == "konas":
-                out.add(rule.when.action)
-                break
-    return out
 
 
 def _regression_verb_pool(lex) -> list[str]:
@@ -392,119 +371,6 @@ def _candidate_weights(
     return [boost if c in gate_able else 1.0 for c in candidates]
 
 
-def _seed_priskribas_about_theme(t, theme_eid, lex, rng) -> None:
-    """Place a readable text in some trace location with priskribas →
-    a fakto about the theme's `en` location. The planner can then
-    route scias_lokon(actor, theme) through legi(text) when direct
-    vidi isn't viable (theme in another room, scene unilluminated).
-
-    Design:
-      - Reuses an existing fakto entity for (theme, theme_loc, en) if
-        one is already present (e.g. seeded by another helper);
-        creates a fresh one otherwise. The pri_relacio/subjekto/objekto
-        shape mirrors `vidi_learns_en` so `scias_lokon_via_en` derives
-        correctly.
-      - Picks a readable concept by walking the lexicon for
-        readability=legebla — auto-includes any future readable
-        without per-concept logic here.
-      - Picks a random in-trace location for the text. Could be the
-        agent's room, the theme's room, or an unrelated sibling —
-        the planner figures out the locomotion. Variety in placement
-        produces multi-hop chains naturally.
-
-    No-op if the theme isn't `en` something or no readables exist."""
-    from ..causal import EntityInstance
-    from ..sampler import _add_entity_randomized
-    if theme_eid not in t.entities:
-        return
-    theme_loc = None
-    for r in t.relations:
-        if r.relation == "en" and r.args[0] == theme_eid:
-            theme_loc = r.args[1]
-            break
-    if theme_loc is None:
-        return
-    fakto_concept = lex.concepts.get("fakto")
-    if fakto_concept is None:
-        return
-    fakto_id = f"fakto_from_en_{theme_eid}_{theme_loc}"
-    if fakto_id not in t.entities:
-        t.entities[fakto_id] = EntityInstance(
-            id=fakto_id, concept_lemma="fakto",
-            entity_type=fakto_concept.entity_type,
-            properties={"pri_relacio": ["en"]},
-        )
-        try:
-            t.assert_relation("subjekto", (fakto_id, theme_eid), lex)
-            t.assert_relation("objekto", (fakto_id, theme_loc), lex)
-        except (KeyError, ValueError):
-            return
-    readables = [c.lemma for c in lex.concepts.values()
-                 if "legebla" in c.properties.get("readability", [])]
-    if not readables:
-        return
-    text_lemma = rng.choice(readables)
-    locations = [eid for eid, e in t.entities.items()
-                 if lex.types.is_subtype(e.entity_type, "location")]
-    if not locations:
-        return
-    text_loc_eid = rng.choice(locations)
-    text_id = text_lemma
-    sfx = 0
-    while text_id in t.entities:
-        sfx += 1
-        text_id = f"{text_lemma}_priskribas{sfx if sfx > 1 else ''}"
-    try:
-        _add_entity_randomized(t, text_lemma, lex, rng, entity_id=text_id)
-    except (KeyError, ValueError):
-        return
-    # Strict placement via containment.jsonl. Readables (libro, letero)
-    # need indoor hosts; outdoor pick falls back through the placer.
-    placed = _place_respecting_containment(
-        t, lex, text_loc_eid, text_lemma, rng,
-        preferred_id=text_loc_eid, existing_eid=text_id)
-    if placed is None:
-        t.entities.pop(text_id, None)
-        return
-    try:
-        t.assert_relation("priskribas", (text_id, fakto_id), lex)
-    except (KeyError, ValueError):
-        return
-
-
-def _seed_agent_knowledge(t, agent_eid, lex) -> None:
-    """For each `en` placement currently in the trace, create a fakto
-    entity (mirroring vidi_learns_en) and assert konas(agent, fakto).
-    Lets the planner skip the vidi → konas → scias_lokon subgoal chain
-    that's needed for preni — the regression sampler models agents as
-    knowing the scene's layout, not as discovering it.
-
-    No-op when agent_eid is None or not in the trace."""
-    from ..causal import EntityInstance
-    if agent_eid is None or agent_eid not in t.entities:
-        return
-    en_pairs = [(r.args[0], r.args[1]) for r in t.relations
-                if r.relation == "en"]
-    fakto_concept = lex.concepts.get("fakto")
-    if fakto_concept is None:
-        return
-    for subj, loc in en_pairs:
-        fid = f"fakto_from_en_{subj}_{loc}"
-        if fid in t.entities:
-            continue
-        t.entities[fid] = EntityInstance(
-            id=fid, concept_lemma="fakto",
-            entity_type=fakto_concept.entity_type,
-            properties={"pri_relacio": ["en"]},
-        )
-        try:
-            t.assert_relation("subjekto", (fid, subj), lex)
-            t.assert_relation("objekto", (fid, loc), lex)
-            t.assert_relation("konas", (agent_eid, fid), lex)
-        except (KeyError, ValueError):
-            continue
-
-
 def _force_conditional_gates(t, action, role_eids: dict, lex, rng) -> None:
     """For each IfPropertyPrecondition on the target verb, force the
     gate to fire by setting the role's if_property=if_value AND set
@@ -575,13 +441,13 @@ def _verbs_producing(lex, slot: str, value: str) -> list:
 def _action_might_need_light(action) -> bool:
     """True if this action's preconditions could backchain through
     vidi — meaning the planner might subgoal `illuminated=yes` on the
-    agent. havi/scias_lokon/konas preconditions all chain to vidi
+    agent. havi/scias_lokon preconditions all chain to vidi
     eventually. Used to gate lamp-seeding so chains that never
     involve vidi don't get a useless lampo cluttering scene-setup."""
     from ..schemas import RelationPrecondition
     for pc in action.preconditions:
         if isinstance(pc, RelationPrecondition):
-            if pc.rel in ("havi", "scias_lokon", "konas"):
+            if pc.rel in ("havi", "scias_lokon"):
                 return True
     return False
 
@@ -1376,16 +1242,10 @@ def sample_regression_scene(lex, rng, *, rules=None):
     regress a scene for it. Retries up to a few times if a verb's
     regression fails; returns None if every attempt fails.
 
-    Two pools are interleaved: (a) property-effect verbs from
-    `_regression_verb_pool` (handled by `regress_for_verb`) and
-    (b) verbs whose causal rules add the `konas` relation (handled
-    by `regress_for_knowledge_verb`). Knowledge-transfer chains
-    naturally surface from (b) — e.g. picking rakonti exercises the
-    `vidi → rakonti` chain when no agent yet knows the fakto."""
-    prop_pool = _regression_verb_pool(lex)
-    konas_pool = (sorted(_verbs_adding_konas(rules) & set(lex.actions))
-                   if rules else [])
-    pool = prop_pool + konas_pool
+    Verbs come from `_regression_verb_pool` (any action whose first
+    effect writes a `varies=True` slot) and are dispatched via
+    `regress_for_verb`."""
+    pool = _regression_verb_pool(lex)
     if not pool:
         return None
     for _ in range(8):
@@ -1455,91 +1315,16 @@ def sample_regression_scene(lex, rng, *, rules=None):
         # of bare single-event ones.
         weights = [_verb_chain_weight(lex.actions[v]) for v in pool]
         verb = rng.choices(pool, weights=weights, k=1)[0]
-        if verb in konas_pool:
-            result = regress_for_knowledge_verb(verb, lex, rng, rules)
-        else:
-            result = regress_for_verb(verb, lex, rng)
+        result = regress_for_verb(verb, lex, rng)
         if result is not None:
             return result
     return None
 
 
-def regress_for_knowledge_verb(verb_name, lex, rng, rules):
-    """Procedural seeder for knowledge drives. Replaces the trio of
-    `regress_for_demandi` / `regress_for_legi` / `regress_for_konas_verb`.
-
-    Introspects the verb's konas-adding rule (via `konas_adding_verbs`)
-    plus its action preconditions to:
-      - decide drive shape: self-learn (knower=actor) when the rule's
-        konas binds the agent (legi/demandi/vidi/flari/audi), or
-        altruistic-teach (knower=recipient) when the rule binds the
-        recipient (rakonti/instrui/montri/respondi).
-      - infer scaffolding:
-          * `priskribas(text, fakto)` in rule.given → pre-place a
-            readable text linked to the fakto (legi).
-          * `konas(recipient, theme)` in action.preconditions → pre-
-            place a knower with konas pre-asserted (demandi).
-        Other preconditions (samloke) handled by placement.
-
-    Adding a new konas-adding verb to the rule library picks up
-    regression coverage automatically."""
-    from ..dsl.introspect import konas_adding_verbs
-    from ..dsl.patterns import RelPattern
-    from ..schemas import RelationPrecondition
-
-    if lex.actions.get(verb_name) is None:
-        return None
-    specs = [s for s in konas_adding_verbs(rules) if s.verb == verb_name]
-    if not specs:
-        return None
-    spec = rng.choice(specs)
-
-    builder = (scene(lex, rng)
-        .location("here", is_scene=True)
-        .location("there", different_from="here")
-        .person("actor", in_="here")
-        .target("item", in_="there")
-        .fakto("fact", about=("en", "item", "there")))
-
-    if spec.knower_role == "recipient":
-        builder = builder.person("recipient", in_="here")
-        drive_knower = "recipient"
-    else:
-        drive_knower = "actor"
-
-    # Scaffolding from rule.given: priskribas pre-link for legi.
-    for given_pat in spec.given_rels:
-        if (isinstance(given_pat, RelPattern)
-                and given_pat.relation == "priskribas"):
-            text_loc = "here" if rng.random() < 0.5 else "there"
-            builder = (builder
-                .readable("text", in_=text_loc)
-                .priskribas("text", "fact"))
-
-    # Scaffolding from action preconditions: pre-konas a recipient
-    # for demandi (recipient must already konas the fakto for the
-    # extraction to make sense).
-    action = lex.actions[verb_name]
-    for pc in action.preconditions:
-        if (isinstance(pc, RelationPrecondition)
-                and pc.rel == "konas"
-                and len(pc.roles) == 2
-                and pc.roles[0] == "recipient"
-                and pc.roles[1] == "theme"):
-            builder = (builder
-                .person("knower", in_="there")
-                .konas("knower", "fact"))
-
-    return (builder
-        .drive("knowledge", actor="actor",
-               knower=drive_knower, fakto="fact")
-        .build())
-
-
 def regress_for_vehicle(lex, rng):
     """Person actor + vehicle in scene, location drive. veturi never
-    surfaces from the verb pool (no effects, no konas, animal-only
-    movement seeder excludes persons), so this seeder closes the gap.
+    surfaces from the verb pool (no effects, animal-only movement
+    seeder excludes persons), so this seeder closes the gap.
     Motorized vehicles bring motoro.power_state=neaktiva so the
     planner naturally chains ŝalti before veturi."""
     return (scene(lex, rng)
@@ -1555,11 +1340,10 @@ def regress_for_vehicle(lex, rng):
 
 def regress_for_movement(lex, rng):
     """Pick a non-person animate actor and drive a location goal.
-    Surfaces flugi / naĝi for fliers / swimmers — verbs the konas-
-    and property-effect seeders never reach because those pick
-    persons (for konas) or pick the actor implicitly via a verb's
-    role pool (which is usually any-animate but skewed to persons
-    by sheer concept count)."""
+    Surfaces flugi / naĝi for fliers / swimmers — verbs the
+    property-effect seeders never reach because those pick the actor
+    implicitly via a verb's role pool (which is usually any-animate
+    but skewed to persons by sheer concept count)."""
     return (scene(lex, rng)
         .location("here", is_scene=True)
         .location("there", different_from="here")

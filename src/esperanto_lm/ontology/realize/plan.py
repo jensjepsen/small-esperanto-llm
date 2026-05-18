@@ -193,7 +193,7 @@ def _relation_anchor(
     is something that breaks (transformative event), not just an
     arrival destination.
 
-    Other relations (havi, apud, sur, konas, havas_parton, …) anchor
+    Other relations (havi, apud, sur, scias, havas_parton, …) anchor
     at min over participants — both sides are narratively relevant
     whenever either first appears."""
     if rel.relation == "en" and len(rel.args) == 2:
@@ -582,10 +582,9 @@ def _synthetic_grounding_targets(
         # en la insulo" is wrong both spatially and narratively.
         if ent.entity_type == "location":
             continue
-        # Skip abstract entities (faktos and the like) — they don't
-        # live in the scene's physical containment graph; saying
-        # "Fakto estis en la dormejo" is incoherent. Knowledge of the
-        # fakto surfaces via konas-relation prose instead.
+        # Skip abstract entities — they don't live in the scene's
+        # physical containment graph. (Knowledge facts surface via
+        # scias-relation prose, not as scene contents.)
         if ent.entity_type == "abstract":
             continue
         # Skip sub-entity parts (body parts, locks). They surface via

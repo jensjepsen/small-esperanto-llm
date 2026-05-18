@@ -683,16 +683,14 @@ def _relation_subgoal_producible(
 #
 # Fix: after `_refresh()` brings the simulated post-subplan state into
 # `cur_trace`, look for a new entity that satisfies the goal "morally"
-# (same content for fakto, same concept for havi-target) and rebind
-# the parent action's role dict to use the new entity. The rest of the
-# precondition loop and the eventually-returned plan step both pick up
-# the rewritten role.
+# (same concept for havi-target) and rebind the parent action's role
+# dict to use the new entity. The rest of the precondition loop and
+# the eventually-returned plan step both pick up the rewritten role.
 #
 # Equivalence is relation-keyed: the right "find replacement" check
-# differs by relation (havi: same concept_lemma + actor havi's; konas:
-# same fakto content + knower konas; etc.). Resolvers are registered
-# in `_REBIND_RESOLVERS` so future cases drop in without touching the
-# pc-loop site.
+# differs by relation (havi: same concept_lemma + actor havi's, etc.).
+# Resolvers are registered in `_REBIND_RESOLVERS` so future cases drop
+# in without touching the pc-loop site.
 
 def _havi_split_replacement(role_eids, pre_event_count, cur_trace, lex):
     """For a havi(actor, X) goal where X may have been split: find a
@@ -729,9 +727,6 @@ def _havi_split_replacement(role_eids, pre_event_count, cur_trace, lex):
 
 _REBIND_RESOLVERS: dict = {
     "havi": _havi_split_replacement,
-    # Future: "konas" rebind once knowledge drives show the same
-    # fakto-recreation symptom in the sampler. Equivalence check there
-    # is content-based: same pri_relacio + subjekto + objekto.
 }
 
 
@@ -752,23 +747,6 @@ def _find_post_subplan_replacement(rel_name, role_eids, pre_event_count,
     if new_eid is None or new_eid == role_eids[1]:
         return None
     return (1, new_eid)
-
-
-def _knower_already_knows_about(knower, thing, trace) -> bool:
-    """True if knower has any konas(_, fakto) where the fakto's
-    subjekto or objekto relation points to `thing`. Coarse check used
-    by the drive sampler to skip already-known targets."""
-    fakto_args = {("subjekto", "fakto", "entity"),
-                  ("objekto", "fakto", "entity")}
-    for r in trace.relations:
-        if r.relation != "konas" or r.args[0] != knower:
-            continue
-        fakto_id = r.args[1]
-        for r2 in trace.relations:
-            if r2.relation in ("subjekto", "objekto") and r2.args[0] == fakto_id:
-                if r2.args[1] == thing:
-                    return True
-    return False
 
 
 def _bindings_ok_with_reflexive(roles: dict, action) -> bool:
@@ -891,10 +869,11 @@ def _find_relation_adders(rules, relation):
     of:
       ("role", role_name) — Var bound by event_pat's role pattern
       ("created", create_entity_eff) — Var bound by a create_entity in
-                                       the same `then` (e.g. fakto)
+                                       the same `then`
       ("given", given_pat, arg_name) — Var bound by a `given` rel
                                        pattern's named arg (e.g. legi
-                                       extracts a fakto via priskribas)
+                                       reads scias-tuple components
+                                       out of a priskribas given clause)
     Args that can't be sourced fail the rule entirely."""
     out = []
     for rule in rules:
@@ -910,9 +889,9 @@ def _find_relation_adders(rules, relation):
             if isinstance(eff, CreateEntity):
                 var_to_creator[id(eff.as_var)] = eff
         # Vars bound by `given` rel patterns (not also event-role-bound).
-        # Lets rules like legi_extracts_fakto — where the konas fakto
-        # is sourced from a priskribas given clause rather than an
-        # event role — surface as konas-adders to the planner.
+        # Lets rules like legi_extracts_scias — where the scias-tuple
+        # components are sourced from a priskribas given clause rather
+        # than event roles — surface as scias-adders to the planner.
         var_to_given: dict[int, tuple] = {}
         for g_pat in (rule.given or ()):
             if not isinstance(g_pat, RelPattern):
@@ -1412,7 +1391,7 @@ def _simulate_from_scratch(base_trace, plan, lex, rules, derivations):
     # Engine quirk: entities with `created_at_event=k` are visible
     # only at `t>k` (see `Trace.property_at` liveness check).
     # Without a follow-up event, derivations can't see freshly
-    # created entities like a fakto from `vidi`. Append a phantom
+    # created entities (e.g. a skribaĵo from `skribi`). Append a phantom
     # event so `len(trace.events)` is one past every created
     # entity's `created_at_event`, making them visible to the
     # post-simulation derivation pass we use for what-if checks.
@@ -2194,8 +2173,7 @@ def _plan_to_establish_relation_impl(
         # Bind from AddRelation arg sources. ("role", N) → role binding.
         # ("created", create_eff) → back-derive bindings for the
         # create_entity's id_parts/initial_properties Vars from the
-        # target entity's properties (which already exist for
-        # pre-created faktos in the scene).
+        # target entity's properties.
         roles = {}
         # Vars bound from create_entity back-derivation. Keyed by
         # id(Var); planner consults this when filling role/given
@@ -2218,11 +2196,11 @@ def _plan_to_establish_relation_impl(
                 # Back-derive from initial_properties (slot values
                 # set at creation), then from sibling AddRelation
                 # effects in the same `then` block (relations the
-                # rule asserts on the new entity, e.g. subjekto/objekto
-                # for fakto entities). Both sources let the planner
-                # recover bindings for vars the create_entity / sibling
-                # add_relation would emit, by reading the corresponding
-                # asserted state on the goal entity.
+                # rule asserts on the new entity). Both sources let
+                # the planner recover bindings for vars the
+                # create_entity / sibling add_relation would emit, by
+                # reading the corresponding asserted state on the goal
+                # entity.
                 if create_eff.initial_properties:
                     for slot, val in create_eff.initial_properties.items():
                         if not isinstance(val, Var):
@@ -2334,7 +2312,7 @@ def _plan_to_establish_relation_impl(
             continue
         # For created vars, back-propagate to event_pat role bindings:
         # if a Var is bound by a role pattern AND we've also derived
-        # its value from the target fakto, that role gets pre-bound.
+        # its value from the target entity, that role gets pre-bound.
         for role_name, role_pat in event_pat.role_patterns.items():
             for v in _extract_bind_vars(role_pat):
                 if id(v) in predetermined:
@@ -2795,10 +2773,10 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
 
             # Free-var candidate enumeration. Filter by any literal
             # entity-pattern constraint that binds the free var (so the
-            # planner doesn't try wrong-typed entities or wrong-relacio
-            # faktos when the derivation's `given` already pins them).
-            # Falls back to "containers + locations" when no constraint
-            # exists (samloke-style derivations where F is a location).
+            # planner doesn't try wrong-typed entities when the
+            # derivation's `given` already pins them). Falls back to
+            # "containers + locations" when no constraint exists
+            # (samloke-style derivations where F is a location).
             assignments: list[dict[int, str]]
             if not free_vars:
                 assignments = [{}]
@@ -2956,9 +2934,7 @@ def _plan_via_derivation(relation, target_args, actor_id, trace, lex, rules,
     # in the trace yet. Look for a causal rule whose `create_entity`
     # would produce a matching entity AND whose `add_relation` effects
     # satisfy the derivation's rel patterns about it. Plan that rule's
-    # trigger verb. For scias_lokon, this finds vidi: vidi creates a
-    # fakto and adds konas + subjekto + objekto in one shot, so firing
-    # vidi(actor, target) satisfies the entire derivation.
+    # trigger verb.
     sub = _plan_via_synthesis(
         relation, target_args, actor_id, trace, lex, rules,
         derivations, derived, max_depth, depth, seen)
@@ -2975,11 +2951,11 @@ def _plan_via_synthesis(relation, target_args, actor_id, trace, lex,
 
     Strategy: try firing each create-entity verb (with role bindings
     seeded from the goal's arg targets) on a forked trace; if the
-    goal relation then holds, plan that verb. This catches the
-    create-then-relate pattern (vidi creates a fakto whose subjekto
-    binding + konas relation, after derivation closure, satisfy
-    scias_lokon) without needing to reason symbolically about what
-    each rule's effects mean for the goal."""
+    goal relation then holds, plan that verb. Catches create-then-
+    relate patterns (e.g. skribi creates a skribaĵo and adds
+    priskribas linking it to scene entities, so legi(reader,
+    skribaĵo) becomes plannable after firing skribi) without
+    reasoning symbolically about each rule's effects."""
     # Pre-filter: only worth attempting synthesis when the goal
     # relation is reachable from some create-entity rule's add_relation
     # closure (directly or via one-step derivation). Avoids forking
@@ -3224,9 +3200,7 @@ def plan_event_firing(verb, requested_roles, actor_id,
                       max_depth=8, _depth=0, _seen=None):
     """Plan to fire `verb` with the requested roles, resolving any
     preconditions. Used by drives that target a specific verb-event
-    rather than a goal state — e.g. knowledge drives currently target
-    `vidi(knower, thing)` directly because the planner can't yet
-    synthesize the konas goal over a not-yet-existing fakto entity.
+    rather than a goal state.
 
     `requested_roles` is a partial role binding the caller already
     knows; remaining roles get filled from the scene the same way

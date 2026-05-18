@@ -296,9 +296,9 @@ def _entity_matches(ent, constraints: dict[str, Any], ctx, bindings) -> bool:
                 return False
             continue
         # Var-valued constraints resolve from current bindings — lets
-        # patterns like `entity(pri_subjekto=SKA)` test "this fakto's
-        # pri_subjekto equals the entity bound to SKA". An unbound Var
-        # fails the match (no candidate value to compare against yet).
+        # patterns like `entity(owner=A)` test "this entity's owner
+        # equals the entity bound to A". An unbound Var fails the
+        # match (no candidate value to compare against yet).
         if isinstance(expected, Var):
             resolved = bindings.get(expected)
             if resolved is None:
@@ -841,8 +841,7 @@ def _iter_entity_candidates(pattern: Pattern, ctx, bindings):
     Or-union of them. Dedupes across branches so an entity matching
     multiple branches yields once. `bindings` lets EntityPattern
     constraints with Var values resolve against the current bindings
-    (e.g. `entity(pri_subjekto=SKSA)` checks fakto.pri_subjekto ==
-    bindings[SKSA]).
+    (e.g. `entity(owner=A)` checks ent.owner == bindings[A]).
 
     Type-indexed fast path mirrors `EntityPattern.search` — when
     the pattern constrains `type=X`, hit `ctx.entities_of_type(X)`

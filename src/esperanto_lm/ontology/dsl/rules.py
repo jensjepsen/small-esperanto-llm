@@ -981,11 +981,11 @@ skribi_creates_text = rule(
 # When the writer knows a scias-tuple, the produced skribaĵo records
 # its content via 4-arity `priskribas(text, rel_type, subjekto,
 # objekto)` — text inherits the same propositional shape that
-# scias/rakonti/etc. use. Downstream `legi_extracts_fakto` reads the
+# scias/rakonti/etc. use. Downstream `legi_extracts_scias` reads the
 # tuple back out and adds it to the reader's scias. Split from
 # skribi_creates_text so the base case (writing produces a blank
 # text) still fires when the agent has no known scias.
-skribi_records_fakto = rule(
+skribi_records_scias = rule(
     when=event("skribi",
                agent=bind(SrA := var("A")),
                theme=bind(SrT := var("T"))),
@@ -1000,7 +1000,7 @@ skribi_records_fakto = rule(
                       as_var=(SrS := var("S")), from_=SrT),
         add_relation("priskribas", SrS, SrRT, SrSj, SrO),
     ],
-    name="skribi_records_fakto",
+    name="skribi_records_scias",
 )
 
 
@@ -1068,19 +1068,21 @@ person_slips_on_wet = rule(
 
 # ---------- causal: knowledge transfer ----------------------------------
 #
-# Knowledge is fact-grained. A `fakto` entity captures one specific
-# relation instance — `(pri_relacio, pri_subjekto, pri_objekto)` — and
-# `konas(agent, fakto)` means the agent knows that specific fact. The
-# fakto's id is composite-deterministic (`fakto_from_<rel>_<a>_<b>`)
-# so the same fact creates the same entity across rule firings.
+# Knowledge is fact-grained. `scias(knower, rel_type, subjekto, objekto)`
+# is a 4-arity relation: a knower knows that (rel_type, subjekto,
+# objekto) holds — one specific propositional fact, not a generic
+# "knows about". `scias_lokon(knower, located)` is the cheaper
+# 2-arity sibling for "knows where X is".
 #
-# When an agent `vidi`s an entity X, they learn one fakto per relation
-# X currently participates in — separate rule per relation kind /
-# arg-position so the binding stays explicit. Add more rules here as
-# new relations grow narrative weight (currently: en, sur, havi).
+# When an agent `vidi`s an entity X, they add one scias-tuple per
+# relation X currently participates in — separate rule per relation
+# kind / arg-position so the binding stays explicit. Add more rules
+# here as new relations grow narrative weight (currently: en, sur,
+# havi).
 #
-# `rakonti` transfers knowledge of one specific fakto from teller to
-# recipient — pure information move, no fakto creation.
+# `rakonti` transfers a specific scias-tuple from teller to recipient
+# — pure information move; the tuple's components come pre-bound on
+# the rakonti event itself.
 
 vidi_learns_en = rule(
     when=event("vidi",
@@ -1222,8 +1224,8 @@ miaui_announces_speaker = _vocal_announce_rule("miaŭi")
 # Playing an instrument is also a sound-broadcast: the player's
 # location becomes known to samloke can_hear animates. Same shape
 # as the vocal rules, just with `theme` (the instrument) bound too
-# in the trigger event so it doesn't matter for the outgoing fakto
-# — what propagates is the player's location.
+# in the trigger event so it doesn't matter for the outgoing
+# scias-tuple — what propagates is the player's location.
 def _ludi_announce_rule():
     A = var("LU_A")
     T = var("LU_T")
@@ -1247,14 +1249,13 @@ ludi_announces_player = _ludi_announce_rule()
 
 
 # forgesi: no automatic trigger and no rule consequences right now —
-# we removed the konas-removal effect alongside the fakto migration,
-# and the scias-removal equivalent would need a negative-knowledge
-# drive ("X wants to NOT know Y about Z") which we don't model.
-# Action def kept (so the lemma stays usable for ambient simulation
-# and future memory-management drives) but the DSL rule is gone.
+# a scias-removal effect would need a negative-knowledge drive
+# ("X wants to NOT know Y about Z") which we don't model. Action def
+# kept (so the lemma stays usable for ambient simulation and future
+# memory-management drives) but the DSL rule is gone.
 
 
-rakonti_transfers_fakto = rule(
+rakonti_transfers_scias = rule(
     when=event("rakonti",
                agent=bind(RKA := var("A")),
                recipient=bind(RKR := var("R")),
@@ -1263,11 +1264,11 @@ rakonti_transfers_fakto = rule(
                objekto=bind(RKO := var("O"))),
     # Transfer the specific scias(agent, rel_type, theme, objekto)
     # asserted by perception (and pre-grounded by
-    # _ground_action_from_precondition) over to the recipient. fakto
-    # reification is no longer touched here; the realizer reads
-    # scias on the recipient post-event for the ke-clause prose.
+    # _ground_action_from_precondition) over to the recipient. The
+    # realizer reads scias on the recipient post-event for the
+    # ke-clause prose.
     then=add_relation("scias", RKR, RKRT, RKT, RKO),
-    name="rakonti_transfers_fakto",
+    name="rakonti_transfers_scias",
 )
 
 
@@ -1275,7 +1276,7 @@ rakonti_transfers_fakto = rule(
 # scias-tuple from someone who already knows it (recipient). Modeled
 # as atomic Q&A — firing demandi adds scias(agent, ...), no separate
 # "recipient replies" event needed for the planner's purposes.
-demandi_extracts_fakto = rule(
+demandi_extracts_scias = rule(
     when=event("demandi",
                agent=bind(DEA := var("A")),
                recipient=bind(DER := var("R")),
@@ -1283,7 +1284,7 @@ demandi_extracts_fakto = rule(
                theme=bind(DET := var("T")),
                objekto=bind(DEO := var("O"))),
     then=add_relation("scias", DEA, DERT, DET, DEO),
-    name="demandi_extracts_fakto",
+    name="demandi_extracts_scias",
 )
 
 
@@ -1291,7 +1292,7 @@ demandi_extracts_fakto = rule(
 # scias-tuple to recipient. The conversational distinction (reply
 # vs initiating tell) doesn't change the semantics for the engine;
 # it gives the realizer a verb to pick when continuing a Q&A turn.
-respondi_transfers_fakto = rule(
+respondi_transfers_scias = rule(
     when=event("respondi",
                agent=bind(RPA := var("A")),
                recipient=bind(RPR := var("R")),
@@ -1299,7 +1300,7 @@ respondi_transfers_fakto = rule(
                theme=bind(RPT := var("T")),
                objekto=bind(RPO := var("O"))),
     then=add_relation("scias", RPR, RPRT, RPT, RPO),
-    name="respondi_transfers_fakto",
+    name="respondi_transfers_scias",
 )
 
 
@@ -1331,7 +1332,7 @@ montri_shows_location = rule(
 # semantics. Distinct lemma gives the realizer a verb choice for
 # instructional contexts (instructor → student) vs narrative ones
 # (storyteller → listener); the engine treats them identically.
-instrui_transfers_fakto = rule(
+instrui_transfers_scias = rule(
     when=event("instrui",
                agent=bind(ITA := var("A")),
                recipient=bind(ITR := var("R")),
@@ -1339,7 +1340,7 @@ instrui_transfers_fakto = rule(
                theme=bind(ITT := var("T")),
                objekto=bind(ITO := var("O"))),
     then=add_relation("scias", ITR, ITRT, ITT, ITO),
-    name="instrui_transfers_fakto",
+    name="instrui_transfers_scias",
 )
 
 
@@ -1348,9 +1349,9 @@ instrui_transfers_fakto = rule(
 # physically present, legi only needs the reader to be samloke with
 # the text. The text-to-content link comes from 4-arity
 # `priskribas(text, rel_type, subjekto, objekto)`, set either at
-# scene init (regression seed) or by skribi_records_fakto when the
+# scene init (regression seed) or by skribi_records_scias when the
 # writer's scias gets captured into the text.
-legi_extracts_fakto = rule(
+legi_extracts_scias = rule(
     when=event("legi",
                agent=bind(LeA := var("A")),
                theme=bind(LeT := var("T"))),
@@ -1361,16 +1362,16 @@ legi_extracts_fakto = rule(
             objekto=bind(LeO := var("O"))),
     ],
     then=add_relation("scias", LeA, LeRT, LeSj, LeO),
-    name="legi_extracts_fakto",
+    name="legi_extracts_scias",
 )
 
 
 # `mezuri` (measure) is a perception event for dimension/temperature.
-# The fakto-creation effect is gone (no consumer reads dimension-kind
-# scias-tuples yet, and the agent already learns the theme's location
-# via the planner's prerequisite samloke). Kept as a no-op rule
-# placeholder; reintroduce a scias_propon emission here when we
-# model property-knowledge transfer (mezuri → rakonti la temperaturon).
+# No scias emission yet — no consumer reads dimension-kind scias-tuples,
+# and the agent already learns the theme's location via the planner's
+# prerequisite samloke. Kept as a no-op rule placeholder; reintroduce
+# a scias_propon emission here when we model property-knowledge
+# transfer (mezuri → rakonti la temperaturon).
 mezuri_learns_dimension = rule(
     when=event("mezuri",
                agent=bind(MEA := var("A")),
@@ -2335,20 +2336,10 @@ host_openness_open_from_pordo = derive(
 )
 
 
-# ---------- derivation: knowing a location-fakto means knowing where ----
-#
-# An agent who knows a fakto whose relation is `en` or `sur` (and the
-# fakto's subjekto is some entity T) knows where T is. Two derivations,
-# one per locative relation. Used as a precondition by verbs that
-# require knowing the target's location (preni, kapti, veki, mortigi).
-
-# scias_lokon is now asserted directly by the perception rules
+# scias_lokon is asserted directly by the perception rules
 # (vidi_learns_en / _sur, flari_learns_en / _sur, audi_learns_en /
-# _sur) — the former derivation chain konas+subjekto+pri_relacio →
-# scias_lokon is redundant. Kept as historical reference for the
-# fakto migration: the fakto reification still produces equivalent
-# knowledge facts, the direct assertion just saves the planner an
-# extra rule firing per perception event.
+# _sur). Used as a precondition by verbs that require knowing the
+# target's location (preni, kapti, veki, mortigi).
 
 
 # ---------- derivation: parts inherit samloke from their host ----------
@@ -2550,7 +2541,7 @@ samloke_chains_through_en = derive(
              # Closed containers also block transit: a juvelo en a
              # fermita kofro is isolated from anyone outside the kofro
              # until malfermi flips the openness. Lifts perception
-             # (vidi → fakto), reach (preni samloke check), and any
+             # (vidi → scias), reach (preni samloke check), and any
              # other samloke-gated verb without per-verb modification.
              container=(~entity(type="location") &
                         ~entity(openness="fermita") &
@@ -2815,7 +2806,7 @@ DEFAULT_DSL_DERIVATIONS = [
 #
 # Classification rule: a derivation is RUNTIME if any of its
 # patterns reference a `varies=true` slot value or a non-static
-# relation (en, apud, samloke, havi, konas, sur, priskribas,
+# relation (en, apud, samloke, havi, sur, priskribas, scias,
 # scias_lokon, etc. — havas_parton is static). Everything else is
 # concept-stable. Curated by hand here rather than auto-detected
 # so the categorization is reviewable and stable across derivation
@@ -2899,12 +2890,12 @@ DEFAULT_DSL_RULES: list[Rule] = [
     flari_learns_sur,
     audi_learns_sur,
     vidi_learns_havi_owner,
-    rakonti_transfers_fakto,
-    demandi_extracts_fakto,
-    respondi_transfers_fakto,
+    rakonti_transfers_scias,
+    demandi_extracts_scias,
+    respondi_transfers_scias,
     montri_shows_location,
-    instrui_transfers_fakto,
-    legi_extracts_fakto,
+    instrui_transfers_scias,
+    legi_extracts_scias,
     mezuri_learns_dimension,
     hungry_eats_sated,
     thirsty_drinks_quenched,
@@ -2944,7 +2935,7 @@ DEFAULT_DSL_RULES: list[Rule] = [
     ĵeti_releases_possession,
     kapti_takes_possession,
     skribi_creates_text,
-    skribi_records_fakto,
+    skribi_records_scias,
     viŝi_destroys_skribaĵo,
     porti_establishes_carrying,
     # Previously factory-produced; now plain values after Phase 2.

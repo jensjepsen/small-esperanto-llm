@@ -134,7 +134,7 @@ def state_modifying_verbs(rules: list[Rule], lex) -> frozenset[str]:
     event has no downstream consequence (kanti, danci, plori, ami,
     timi, ridi, helpi, ludi, vivi, labori, ripozi …). Vocal verbs
     (bleki, boji, miaŭi, krii, flustri) are state-modifying — their
-    announce rules create fakto + add konas — so they stay in.
+    announce rules add scias entries — so they stay in.
     Computed once per (rules, lex); cheap fixpoint over Emit edges."""
     out: set[str] = {a.lemma for a in lex.actions.values() if a.effects}
 
@@ -329,8 +329,8 @@ def cascade_emerged_concepts_for(
 def cascade_emerged_concepts(rules: list[Rule]) -> frozenset[str]:
     """Concepts introduced by a `create_entity` effect in some rule's
     `then`. These are "transient" — they appear via cascade (flako from
-    rain/spill, vitropecetoj from breakage, fakto from learning) rather
-    than being authored into a scene.
+    rain/spill, vitropecetoj from breakage) rather than being authored
+    into a scene.
 
     Regression seeders (and lazy materialization) should skip these
     when picking a container or placing a target — pre-placing a flako
@@ -349,55 +349,6 @@ def cascade_emerged_concepts(rules: list[Rule]) -> frozenset[str]:
             if isinstance(eff, CreateEntity) and isinstance(eff.concept, str):
                 out.add(eff.concept)
     return frozenset(out)
-
-
-@dataclass(frozen=True)
-class KonasVerbSpec:
-    """How a single verb adds `konas`. Drives the procedural knowledge
-    seeder: the seeder reads `knower_role` to decide drive shape
-    (self-learn if `agent`, altruistic-teach if `recipient`) and
-    walks the rule's `given` clauses for any pre-relations to set
-    up (priskribas for legi, en/sur/havi for vidi/flari/audi)."""
-    verb: str
-    rule_name: str
-    knower_role: str  # "agent" or "recipient"
-    given_rels: tuple  # tuple of RelPattern objects from rule.given
-
-
-def konas_adding_verbs(rules: list[Rule]) -> list[KonasVerbSpec]:
-    """Walk rules to find verbs whose `then` adds the `konas` relation.
-    Returns one spec per (rule, verb) pair, with the role name that
-    binds the konas's first arg (the knower). Used by the procedural
-    knowledge-drive seeder to pick a target verb and infer the
-    scaffolding it needs."""
-    out: list[KonasVerbSpec] = []
-    for rule in rules:
-        if not isinstance(rule.when, EventPattern):
-            continue
-        # Build var → role map
-        var_to_role: dict[int, str] = {}
-        for role_name, role_pat in rule.when.role_patterns.items():
-            v = _bind_var_in_pattern(role_pat)
-            if v is not None:
-                var_to_role[id(v)] = role_name
-        for eff in _effects(rule):
-            if not isinstance(eff, AddRelation):
-                continue
-            if eff.relation != "konas" or len(eff.args) != 2:
-                continue
-            knower = eff.args[0]
-            if not isinstance(knower, Var):
-                continue
-            knower_role = var_to_role.get(id(knower))
-            if knower_role is None:
-                continue
-            out.append(KonasVerbSpec(
-                verb=rule.when.action,
-                rule_name=rule.name,
-                knower_role=knower_role,
-                given_rels=tuple(rule.given),
-            ))
-    return out
 
 
 @dataclass(frozen=True)

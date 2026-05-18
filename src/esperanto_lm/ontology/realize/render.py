@@ -652,7 +652,7 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
     if a is None or b is None:
         return None
     # Renderable-relation gate. Without this, non-renderable
-    # relations (havas_parton, subjekto, objekto, ...) still triggered
+    # relations (havas_parton, scias, ...) still triggered
     # name_for + note_mention as a side effect, marking entities as
     # "already mentioned" before any prose actually named them. That
     # caused first-reference pronominalization: "Ŝi estos en la
@@ -739,140 +739,6 @@ def _render_event(m: EventMessage, ctx: _Ctx) -> Optional[str]:
     return _append_precondition_clause(sentence, m.precondition, ctx)
 
 
-def _format_maso_adjective(raw: str) -> Optional[str]:
-    """Map a kg numeric (string) to an Esperanto magnitude adjective.
-    Five buckets, log-spaced — coarse enough to feel like natural
-    narrative ("tre malpeza", "mezpeza") and informative enough that
-    libro vs. ŝtono vs. elefanto come out distinct."""
-    try:
-        kg = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if kg < 0.1:
-        return "tre malpeza"
-    if kg < 1:
-        return "malpeza"
-    if kg < 10:
-        return "mezpeza"
-    if kg < 100:
-        return "peza"
-    return "tre peza"
-
-
-def _format_volumeno_adjective(raw: str) -> Optional[str]:
-    """Map an m³ numeric to a size adjective. Reuses grandeco
-    vocabulary the lexicon already has informally."""
-    try:
-        m3 = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if m3 < 0.001:
-        return "tre malgranda"
-    if m3 < 0.1:
-        return "malgranda"
-    if m3 < 1:
-        return "mezgranda"
-    if m3 < 10:
-        return "granda"
-    return "tre granda"
-
-
-_FAKTO_PROPERTY_KINDS = {
-    # pri_relacio value → (entity slot name, formatter | None).
-    # Formatter receives the raw slot value (string) and returns the
-    # rendered predicate; None means render the raw value as-is (so
-    # temperature's malvarma/varma render natively).
-    # Measurement faktos have no objekto; the predicate is derived
-    # from the subjekto's current slot value.
-    "temperaturo": ("temperature", None),
-    "maso":        ("maso", _format_maso_adjective),
-    "grandeco":    ("volumeno", _format_volumeno_adjective),
-}
-
-
-def _render_fakto_as_ke_clause(fakto_ent, ctx: _Ctx,
-                               *, mode: str = "assertion") -> Optional[str]:
-    """Unfold a fakto entity into a subordinate clause.
-    Reads the fakto's pri_relacio (still a property — string-valued)
-    and the subjekto/objekto relations.
-
-    `mode="assertion"` (default, for rakonti/etc.):
-      en  → "ke X estas en Y"
-      sur → "ke X estas sur Y"
-      havi → "ke X havas Y" (Y in accusative)
-      temperaturo / other property-kinds → "ke X estas V"
-        (V is the subjekto's current value for the mapped slot)
-    `mode="question"` (for demandi):
-      en/sur → "kie estas X"
-      havi → "kiu havas X"
-      property-kinds → "kia estas X"
-    Returns None if any field is missing or the relation isn't one
-    we know how to surface yet."""
-    def _unwrap_property(slot):
-        v = fakto_ent.properties.get(slot, [None])
-        return v[0] if isinstance(v, list) and v else v
-    rel = _unwrap_property("pri_relacio")
-    subj_id = None
-    obj_id = None
-    for r in ctx.trace.relations:
-        if r.args[0] != fakto_ent.id:
-            continue
-        if r.relation == "subjekto":
-            subj_id = r.args[1]
-        elif r.relation == "objekto":
-            obj_id = r.args[1]
-    if rel is None or subj_id is None:
-        return None
-    subj_ent = ctx.trace.entity(subj_id)
-    if subj_ent is None:
-        return None
-    subj_form = ctx.name_for(subj_ent)
-    ctx.note_mention(subj_ent)
-    # Property-kind fakto: subjekto's slot value is the predicate.
-    # Measurement faktos have no objekto, so check this branch before
-    # the en/sur/havi paths that require it.
-    if rel in _FAKTO_PROPERTY_KINDS:
-        slot, formatter = _FAKTO_PROPERTY_KINDS[rel]
-        vals = subj_ent.properties.get(slot, [])
-        raw = vals[0] if vals else None
-        if raw is None:
-            return None
-        rendered = formatter(raw) if formatter is not None else raw
-        if rendered is None:
-            return None
-        if mode == "question":
-            copula = f"est{ctx.tense}"
-            return f"kia {copula} {subj_form}"
-        copula = f"est{ctx.tense}"
-        return f"ke {subj_form} {copula} {rendered}"
-    # Below paths require an objekto.
-    if obj_id is None:
-        return None
-    obj_ent = ctx.trace.entity(obj_id)
-    if obj_ent is None:
-        return None
-    obj_form = ctx.name_for(obj_ent)
-    ctx.note_mention(obj_ent)
-    if mode == "question":
-        copula = f"est{ctx.tense}"
-        if rel in ("en", "sur"):
-            return f"kie {copula} {subj_form}"
-        if rel == "havi":
-            verb = "havis" if ctx.tense == "is" else "havas"
-            return f"kiu {verb} {to_accusative(subj_form)}"
-        return None
-    if rel == "en":
-        copula = f"est{ctx.tense}"
-        return f"ke {subj_form} {copula} en {obj_form}"
-    if rel == "sur":
-        copula = f"est{ctx.tense}"
-        return f"ke {subj_form} {copula} sur {obj_form}"
-    if rel == "havi":
-        verb = "havis" if ctx.tense == "is" else "havas"
-        return f"ke {subj_form} {verb} {to_accusative(obj_form)}"
-    return None
-
-
 # Surface forms for direct quotation. Picked uniformly per direct-
 # quote event so trace prose mixes all three styles. All three are
 # attested in Esperanto literature; em-dash is the most common in
@@ -887,97 +753,24 @@ _QUOTE_STYLES = ("single", "em_dash", "guillemets")
 _DIRECT_QUOTE_PROB = 0.30
 
 
-def _render_fakto_as_quote_body(fakto_ent, ctx: _Ctx,
-                                *, mode: str = "assertion") -> Optional[str]:
-    """Standalone utterance form of a fakto, suitable for embedding in
-    a direct-quote frame ("Maria diris al Petro: '...'").
-
-    Same semantic content as `_render_fakto_as_ke_clause` but:
-      - no leading `ke`/`kie`/`kiu` subordinator
-      - first letter capitalized
-      - terminal `.` (assertion) or `?` (question)
-      - tense is always present (`estas`/`havas`) — direct speech is
-        in-the-moment from the speaker's perspective, regardless of
-        the surrounding narrative's past-tense framing.
-
-    Returns None for fakto shapes we don't know how to surface yet
-    (caller falls back to the ke-clause path)."""
-    def _unwrap_property(slot):
-        v = fakto_ent.properties.get(slot, [None])
-        return v[0] if isinstance(v, list) and v else v
-    rel = _unwrap_property("pri_relacio")
-    subj_id = None
-    obj_id = None
-    for r in ctx.trace.relations:
-        if r.args[0] != fakto_ent.id:
-            continue
-        if r.relation == "subjekto":
-            subj_id = r.args[1]
-        elif r.relation == "objekto":
-            obj_id = r.args[1]
-    if rel is None or subj_id is None:
-        return None
-    subj_ent = ctx.trace.entity(subj_id)
-    if subj_ent is None:
-        return None
-    subj_form = ctx.name_for(subj_ent)
-    ctx.note_mention(subj_ent)
-
-    def _cap(s: str) -> str:
-        return s[0].upper() + s[1:] if s else s
-
-    # Property-kind: subjekto's slot value is the predicate.
-    if rel in _FAKTO_PROPERTY_KINDS:
-        slot, formatter = _FAKTO_PROPERTY_KINDS[rel]
-        vals = subj_ent.properties.get(slot, [])
-        raw = vals[0] if vals else None
-        if raw is None:
-            return None
-        rendered = formatter(raw) if formatter is not None else raw
-        if rendered is None:
-            return None
-        if mode == "question":
-            return f"Kia estas {subj_form}?"
-        return f"{_cap(subj_form)} estas {rendered}."
-    # Below paths require an objekto.
-    if obj_id is None:
-        return None
-    obj_ent = ctx.trace.entity(obj_id)
-    if obj_ent is None:
-        return None
-    obj_form = ctx.name_for(obj_ent)
-    ctx.note_mention(obj_ent)
-
-    if mode == "question":
-        if rel in ("en", "sur"):
-            return f"Kie estas {subj_form}?"
-        if rel == "havi":
-            return f"Kiu havas {to_accusative(subj_form)}?"
-        return None
-    # assertion
-    if rel == "en":
-        return f"{_cap(subj_form)} estas en {obj_form}."
-    if rel == "sur":
-        return f"{_cap(subj_form)} estas sur {obj_form}."
-    if rel == "havi":
-        return f"{_cap(subj_form)} havas {to_accusative(obj_form)}."
-    return None
-
-
 def _render_scias_tuple_as_ke_clause(
         rel_type, subj_id, obj_id, ctx: _Ctx, *, mode: str = "assertion",
 ) -> Optional[str]:
-    """Unfold a scias-tuple (rel_type, subj, obj) directly into the
-    subordinate clause that follows a speech-act verb.
+    """Unfold a scias-tuple (rel_type, subj, obj) into the subordinate
+    clause that follows a speech-act verb. Verbs like rakonti carry
+    their rel_type/theme/objekto directly via the from_precondition
+    role mechanism, so the renderer reads straight from event roles
+    without unfolding an entity.
 
-    Mirrors `_render_fakto_as_ke_clause` but reads its inputs from
-    scias roles on the event rather than from a reified fakto entity.
-    This is the post-fakto-migration path — verbs like rakonti now
-    carry their rel_type/theme/objekto directly via the
-    from_precondition role mechanism, so no entity unfolding is
-    needed. Property-kind faktos (temperaturo/maso/grandeco) don't
-    travel through scias today, so they're handled only by the
-    legacy fakto path until producers migrate."""
+    `mode="assertion"` (default, rakonti/respondi/instrui):
+      en  → "ke X estas en Y"
+      sur → "ke X estas sur Y"
+      havi → "ke X havas Y" (Y in accusative)
+    `mode="question"` (demandi):
+      en/sur → "kie estas X"
+      havi → "kiu havas X"
+    Returns None if any field is missing or the relation isn't one we
+    know how to surface yet."""
     if rel_type is None or subj_id is None:
         return None
     subj_ent = ctx.trace.entity(subj_id)
@@ -1247,7 +1040,7 @@ def _extract_var(pattern):
     return None
 
 
-def _render_learned_fakto(ev, ctx) -> Optional[str]:
+def _render_learned_scias(ev, ctx) -> Optional[str]:
     """If the event's theme is a text linked via 4-arity
     `priskribas(text, rel_type, subjekto, objekto)`, render
     `kaj eksciis ke <scias-tuple>` as a tail clause. The reader sees
@@ -1417,13 +1210,10 @@ def _render_event_phrase(
             # Speech-act verbs with a recipient unfold the propositional
             # content as a `al RECIP ke ...` clause: "rakontis al Petro
             # ke la libro estas en la breto" instead of the literal "la
-            # libron" accusative. Two paths feed this:
-            #   (a) Migrated verbs (rakonti) carry scias-shape roles
-            #       (rel_type, theme, objekto) on the event directly —
-            #       render straight from those, no entity unfolding.
-            #   (b) Legacy verbs (demandi/respondi/instrui/...) still
-            #       use an abstract fakto entity as theme and we read
-            #       its pri_relacio + subjekto/objekto relations.
+            # libron" accusative. The migrated verbs (rakonti / demandi
+            # / respondi / instrui) carry scias-shape roles (rel_type,
+            # theme, objekto) on the event itself, so we render straight
+            # from those — no entity unfolding.
             ke = None
             quote_phrase = None
             recipient_id = ev.roles.get("recipient")
@@ -1432,7 +1222,6 @@ def _render_event_phrase(
             mode = "question" if ev.action == "demandi" else "assertion"
             if (recipient_id is not None and rel_type_val is not None
                     and objekto_id is not None):
-                # Path (a): scias-shape event roles.
                 if (ctx.rng is not None
                         and ctx.rng.random() < _DIRECT_QUOTE_PROB):
                     body = _render_scias_tuple_as_quote_body(
@@ -1443,18 +1232,6 @@ def _render_event_phrase(
                 if quote_phrase is None:
                     ke = _render_scias_tuple_as_ke_clause(
                         rel_type_val, theme.id, objekto_id, ctx, mode=mode)
-            elif (theme.entity_type == "abstract"
-                    and recipient_id is not None):
-                # Path (b): legacy fakto-entity theme.
-                if (ctx.rng is not None
-                        and ctx.rng.random() < _DIRECT_QUOTE_PROB):
-                    body = _render_fakto_as_quote_body(
-                        theme, ctx, mode=mode)
-                    if body is not None:
-                        style = ctx.rng.choice(_QUOTE_STYLES)
-                        quote_phrase = _wrap_direct_quote(body, style)
-                if quote_phrase is None:
-                    ke = _render_fakto_as_ke_clause(theme, ctx, mode=mode)
             if quote_phrase is not None:
                 recip = ctx.trace.entity(ev.roles["recipient"])
                 if recip is not None:
@@ -1584,11 +1361,12 @@ def _render_event_phrase(
             ctx.note_mention(dest)
 
     # `legi` and other text-extraction verbs: append the discovered
-    # fakto as a "kaj eksciis ke ..." tail clause so the prose tells
-    # the reader WHAT was learned, not just that something was read.
-    # Driven by priskribas(theme, fakto) in the trace — verb-agnostic;
-    # any verb with a text theme that has a priskribas link gets this.
-    learned = _render_learned_fakto(ev, ctx)
+    # scias-tuple as a "kaj eksciis ke ..." tail clause so the prose
+    # tells the reader WHAT was learned, not just that something was
+    # read. Driven by priskribas(text, rel_type, subjekto, objekto) in
+    # the trace — verb-agnostic; any verb with a text theme that has
+    # a priskribas link gets this.
+    learned = _render_learned_scias(ev, ctx)
     if learned is not None:
         parts.append(learned)
 

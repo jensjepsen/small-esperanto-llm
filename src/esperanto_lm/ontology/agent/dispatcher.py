@@ -51,7 +51,7 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
 
     `rng` (optional): when given, the planner shuffles candidate verbs
     at each enumeration site so different runs surface different
-    chain shapes — e.g. rakonti vs respondi vs montri for konas
+    chain shapes — e.g. rakonti vs respondi vs montri for scias
     goals. None preserves the deterministic enumeration order.
 
     `simulation_budget`: cap on `_simulate_from_scratch` calls per
@@ -98,12 +98,6 @@ def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
             _, actor, item = drive
             plan = plan_to_establish_relation(
                 "havi", (actor, item), actor, t, lex, rules,
-                derived=derived, derivations=derivations,
-                max_depth=max_depth)
-        elif kind == "knowledge":
-            _, actor, knower, fakto_id = drive
-            plan = plan_to_establish_relation(
-                "konas", (knower, fakto_id), actor, t, lex, rules,
                 derived=derived, derivations=derivations,
                 max_depth=max_depth)
         elif kind == "wearing":
@@ -248,11 +242,6 @@ def _drive_summary(drive):
         return f"{drive[1]} wants {drive[2]}.{drive[3]}={drive[4]}"
     if kind == "location":
         return f"{drive[1]} wants to be in {drive[2]}"
-    if kind == "knowledge":
-        actor, knower, fakto_id = drive[1], drive[2], drive[3]
-        if actor == knower:
-            return f"{actor} wants to know fact {fakto_id}"
-        return f"{actor} wants {knower} to know fact {fakto_id}"
     if kind == "possession":
         return f"{drive[1]} wants to have {drive[2]}"
     if kind == "wearing":

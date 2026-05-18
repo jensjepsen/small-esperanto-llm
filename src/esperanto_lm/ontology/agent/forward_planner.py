@@ -127,11 +127,9 @@ def _preconditions_hold(action, roles, trace, derived, lex) -> bool:
     derived facts. Mirrors `_resolve_preconditions_in_order`'s
     CHECK side, without the subgoaling branch.
 
-    `scias_lokon`/`konas` ARE enforced; the relaxed encoding
-    synthesizes them as direct effects of perception verbs (vidi/
-    aŭdi/flari/montri) via `_build_rule_effects_index`, so the
-    fact-set search can plan through preni/kapti/veki's perception
-    preconditions without modeling fakto-entity creation."""
+    `scias_lokon` and `scias` ARE enforced; perception verbs (vidi/
+    aŭdi/flari/montri) emit them directly so the fact-set search
+    can plan through preni/kapti/veki's perception preconditions."""
     for pc in action.preconditions:
         if not _pc_holds(pc, roles, trace, derived, lex):
             return False
@@ -490,7 +488,7 @@ def _ground_action_facts(action, roles, lex, rule_effects, facts=None):
     """Return (precondition_facts, effect_facts) for a grounded
     action — both as sets of fact tuples. `rule_effects` is the
     `{verb: [(relation, role_arg_names)]}` index of rule-added
-    relations (preni adds havi, vidi adds konas, etc.) — without
+    relations (preni adds havi, vidi adds scias, etc.) — without
     these the relaxed graph misses key transitions and the
     heuristic returns INF for any chain that depends on them.
 
@@ -1445,17 +1443,6 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
     (delete-relaxation drops dels there), 'dels' for the
     fact-set incremental simulator (which DOES apply dels).
 
-    Synthesizes `scias_lokon` adds for perception verbs (vidi, aŭdi,
-    flari, montri) by detecting the canonical pattern:
-       create_entity(fakto, as_var=F)
-       add_relation(subjekto, F, X)
-       add_relation(konas, K, F)
-    The runtime engine derives `scias_lokon(K, X)` from these via
-    the konas+subjekto rule chain; we collapse that chain into a
-    direct relation effect so the fact-set search can plan through
-    perception preconditions on preni/kapti/veki/etc. without
-    modeling fakto-entity creation.
-
     Given-bound vars appearing in AddRelation args become lookup
     specs `("<lookup>", relation, args_template)`. `args_template`
     is positional; each entry is either an event-role name or None
@@ -1628,48 +1615,6 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
         if rule_adds or rule_dels:
             entry["rules"].append(
                 {"adds": rule_adds, "dels": rule_dels})
-        # Synthesize scias_lokon from the create-fakto+konas+subjekto
-        # pattern. We need: a CreateEntity(fakto, as_var=F), an
-        # AddRelation(subjekto, F, X) where X maps to a role, and an
-        # AddRelation(konas, K, F) where K maps to a role. Then add
-        # ("scias_lokon", (K_role, X_role)).
-        fakto_vars: set = set()
-        for eff in effects:
-            if isinstance(eff, CreateEntity):
-                concept = getattr(eff, "concept", None)
-                if concept != "fakto":
-                    continue
-                av = getattr(eff, "as_var", None)
-                if isinstance(av, Var):
-                    fakto_vars.add(id(av))
-        if not fakto_vars:
-            continue
-        for fv in fakto_vars:
-            subj_role = None
-            knower_role = None
-            for eff in effects:
-                if not isinstance(eff, AddRelation):
-                    continue
-                if eff.relation == "subjekto" and len(eff.args) == 2:
-                    if isinstance(eff.args[0], Var) and id(eff.args[0]) == fv:
-                        target = eff.args[1]
-                        if isinstance(target, Var):
-                            subj_role = var_to_role.get(id(target))
-                elif eff.relation == "konas" and len(eff.args) == 2:
-                    if isinstance(eff.args[1], Var) and id(eff.args[1]) == fv:
-                        knower = eff.args[0]
-                        if isinstance(knower, Var):
-                            knower_role = var_to_role.get(id(knower))
-            if subj_role and knower_role:
-                synth = ("scias_lokon", (knower_role, subj_role))
-                if synth not in entry["adds"]:
-                    entry["adds"].append(synth)
-                    # Mirror in a synthetic rule so the per-rule
-                    # _action_delta loop still emits it. Without this
-                    # the fact-set simulator drops scias_lokon and
-                    # downstream preni/kapti can't fire.
-                    entry["rules"].append(
-                        {"adds": [synth], "dels": []})
     return out
 
 
@@ -3013,13 +2958,11 @@ def plan_for_goal(
         relevant_entities=relevant_entities)
 
     # Event-fire goals: the goal is "fire verb V with these role
-    # bindings". Lacking direct property/relation effects (legi/
-    # skribi/vidi/flari/aŭdi all create a fakto + konas relation
-    # via the rule body, which the goal-index can't trace through
-    # role variables), we synthesize an `event_fired` pseudo-fact
-    # that the goal verb's grounding produces. The relaxed graph
-    # then has something to aim for; the search satisfies when the
-    # fact lands in the state.
+    # bindings". Lacking direct property/relation effects on most
+    # speech-act / perception verbs, we synthesize an `event_fired`
+    # pseudo-fact that the goal verb's grounding produces. The
+    # relaxed graph then has something to aim for; the search
+    # satisfies when the fact lands in the state.
     if goal[0] == "event_fire":
         _, gv_verb, gv_bindings_frozen = goal
         gv_bindings = dict(gv_bindings_frozen)

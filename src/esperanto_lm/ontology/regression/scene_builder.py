@@ -1,10 +1,10 @@
 """SceneBuilder fluent DSL + scene-pref/auto-pose/ownership build hooks.
 
 A SceneBuilder composes a regression scene by chaining
-location/person/target/relation/fakto calls. Slot names are local
-labels (e.g. "actor", "scene") that resolve to entity ids; pass slot
-names anywhere a method wants an entity reference. `build()` returns
-a `(trace, scene_id, drive)` triple ready for the planner, or `None`
+location/person/target/relation calls. Slot names are local labels
+(e.g. "actor", "scene") that resolve to entity ids; pass slot names
+anywhere a method wants an entity reference. `build()` returns a
+`(trace, scene_id, drive)` triple ready for the planner, or `None`
 on failure.
 
 Three composable build-time enrichers run in `build()`:
@@ -55,12 +55,12 @@ SCENE_PREFERENCES: list[tuple] = [
 
 
 def _standalone_target_concepts(lex):
-    """Concepts eligible to be standalone fakto-targets in regression
-    scenes: physical, non-person, non-location, NOT a category stub
-    (meblo, lignaĵo, …), AND not appearing as some other concept's
-    part. The parts filter excludes body parts (haro, dento, fingro,
-    brako, …) which would otherwise produce incoherent prose like
-    'Dorso estis en salono'."""
+    """Concepts eligible to be standalone targets in regression scenes:
+    physical, non-person, non-location, NOT a category stub (meblo,
+    lignaĵo, …), AND not appearing as some other concept's part. The
+    parts filter excludes body parts (haro, dento, fingro, brako, …)
+    which would otherwise produce incoherent prose like 'Dorso estis
+    en salono'."""
     parts_of_something = {
         p.concept for c in lex.concepts.values() for p in (c.parts or [])
     }
@@ -76,9 +76,9 @@ def _standalone_target_concepts(lex):
 
 class SceneBuilder:
     """Compose a regression scene by chaining location/person/target/
-    relation/fakto calls. Slot names are local labels (e.g. "actor",
-    "scene") that resolve to entity ids; pass slot names anywhere the
-    builder wants an entity reference."""
+    relation calls. Slot names are local labels (e.g. "actor", "scene")
+    that resolve to entity ids; pass slot names anywhere the builder
+    wants an entity reference."""
 
     def __init__(self, lex, rng):
         self.lex = lex
@@ -805,47 +805,6 @@ class SceneBuilder:
         return self._maybe_place_on(
             person_slot, probability=probability, attribute="lieable")
 
-    def konas(self, knower_slot, fakto_slot):
-        return self.relation("konas", knower_slot, fakto_slot)
-
-    def priskribas(self, text_slot, fakto_slot):
-        return self.relation("priskribas", text_slot, fakto_slot)
-
-    def fakto(self, slot, *, about):
-        """Pre-create a fakto entity. `about=(relation, target_slot,
-        location_slot)` makes the id mirror what `vidi_learns_en` would
-        synthesize, so the planner finds it by id rather than creating
-        a duplicate."""
-        if self._failed:
-            return self
-        rel_name, target_slot, loc_slot = about
-        target_eid = self._resolve(target_slot)
-        loc_eid = self._resolve(loc_slot)
-        if target_eid is None or loc_eid is None:
-            self._fail()
-            return self
-        fakto_concept = self.lex.concepts.get("fakto")
-        if fakto_concept is None:
-            self._fail()
-            return self
-        fakto_id = f"fakto_from_{rel_name}_{target_eid}_{loc_eid}"
-        if fakto_id not in self.t.entities:
-            self.t.entities[fakto_id] = EntityInstance(
-                id=fakto_id, concept_lemma="fakto",
-                entity_type=fakto_concept.entity_type,
-                properties={"pri_relacio": [rel_name]},
-            )
-            try:
-                self.t.assert_relation(
-                    "subjekto", (fakto_id, target_eid), self.lex)
-                self.t.assert_relation(
-                    "objekto", (fakto_id, loc_eid), self.lex)
-            except (KeyError, ValueError):
-                self._fail()
-                return self
-        self.slots[slot] = fakto_id
-        return self
-
     # ---------- drive + finalization ----------
 
     def drive(self, kind, **slots):
@@ -861,11 +820,7 @@ class SceneBuilder:
                 self._fail()
                 return self
             resolved[k] = r
-        if kind == "knowledge":
-            self._drive = (
-                "knowledge", resolved["actor"],
-                resolved["knower"], resolved["fakto"])
-        elif kind == "location":
+        if kind == "location":
             self._drive = ("location", resolved["actor"], resolved["loc"])
         elif kind == "possession":
             self._drive = ("possession", resolved["actor"], resolved["item"])

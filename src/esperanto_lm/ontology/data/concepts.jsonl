@@ -165,7 +165,6 @@
 {"lemma": "fulmo", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
 {"lemma": "nebulo", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
 {"lemma": "insulo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}, {"concept": "tero"}]}
-{"lemma": "fakto", "entity_type": "abstract", "properties": {}}
 {"lemma": "mondo", "entity_type": "abstract", "properties": {"tempo_de_tago": ["tago"], "weather": ["serena"]}, "is_category_stub": true}
 {"lemma": "piedo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "mano", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
