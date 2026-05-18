@@ -147,7 +147,12 @@ def _pc_holds(pc, roles, trace, derived, lex) -> bool:
     if isinstance(pc, RelationPrecondition):
         eids = tuple(roles.get(r) for r in pc.roles)
         if any(e is None for e in eids):
-            return False
+            # Unbound role — vacuous (matches IfPropertyPrecondition
+            # at line 154 and the grounding-template's skip-on-None
+            # at _ground_facts_from_template). Lets optional roles
+            # carry preconditions that only fire when bound (e.g.
+            # manĝi's havi(agent, instrument) when cutlery is used).
+            return True
         return _has_relation(pc.rel, eids, trace, derived, lex)
     if isinstance(pc, IfPropertyPrecondition):
         eid = roles.get(pc.role)
