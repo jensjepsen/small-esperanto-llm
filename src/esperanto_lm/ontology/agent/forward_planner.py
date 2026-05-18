@@ -1926,6 +1926,31 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 src = getattr(r, "from_precondition", None)
                 if src:
                     fp_groups.setdefault(src, []).append(r)
+        # Couple-all-precondition-roles optimization: when an action has
+        # a RelationPrecondition on `src` AND src is the source for one
+        # or more from_precondition roles, ALL roles in that
+        # precondition's role-tuple get bound from the same scias
+        # tuple — not just the from_precondition-marked ones. Without
+        # this, rakonti/demandi/respondi/instrui enumerate the cartesian
+        # `|agents| × |recipients| × |themes| × |scias_tuples|`
+        # because agent/recipient/theme are scalar roles, blowing the
+        # per-scene grounding count from ~hundreds to ~hundreds of
+        # thousands. With it: the action's grounding count is bounded
+        # by `|scias_tuples| × |free_roles|`. role_pos_map[src] maps
+        # role_name → position in the precondition's role-tuple.
+        role_pos_map: dict = {}
+        if fp_groups:
+            from ..schemas import RelationPrecondition
+            for pc in action.preconditions:
+                if (isinstance(pc, RelationPrecondition)
+                        and pc.rel in fp_groups):
+                    pos_map = role_pos_map.setdefault(pc.rel, {})
+                    for i, rname in enumerate(pc.roles):
+                        if rname not in pos_map:
+                            pos_map[rname] = i
+        coupled_role_names: set = set()
+        for src, pos_map in role_pos_map.items():
+            coupled_role_names.update(pos_map.keys())
         fp_pools: dict = {}
         for src in fp_groups:
             fp_pools[src] = _fp_tuple_pool(src, trace, lex, rule_effects)
@@ -1935,6 +1960,10 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
         ok = True
         seen_fp: set = set()
         for role_spec in action.roles:
+            # Coupled scalar role — handled as part of an fp group.
+            if (role_spec.name in coupled_role_names
+                    and getattr(role_spec, "kind", "single") != "from_precondition"):
+                continue  # picked up by the fp_groups iteration below
             if getattr(role_spec, "kind", "single") == "from_precondition":
                 src = getattr(role_spec, "from_precondition", None)
                 if src in seen_fp:
@@ -1945,11 +1974,19 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                     ok = False
                     break
                 per_role.append(tuples)
-                role_origin.append(
-                    ("fp", src,
-                     [(r.name,
-                       getattr(r, "from_precondition_position", None))
-                      for r in fp_groups[src]]))
+                # Group all roles tied to this scias tuple: marked
+                # from_precondition AND scalars sharing the precondition.
+                role_pos_list = [
+                    (r.name,
+                     getattr(r, "from_precondition_position", None))
+                    for r in fp_groups[src]]
+                pos_map = role_pos_map.get(src, {})
+                seen_role_names = {n for n, _ in role_pos_list}
+                for rname, pos in pos_map.items():
+                    if rname in seen_role_names:
+                        continue
+                    role_pos_list.append((rname, pos))
+                role_origin.append(("fp", src, role_pos_list))
                 continue
             # kind="relation": value is a relation name (string), not
             # an entity. Enumerate from allowed_values or all
@@ -2894,10 +2931,31 @@ def plan_for_goal(
     if rule_effects is None:
         rule_effects = _build_rule_effects_index(rules, lex)
         _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
-    grounded = _ground_all_actions(
-        initial_trace, lex, initial_derived, rule_effects)
-    grounded.extend(_ground_constructable_actions(
-        initial_trace, lex, rule_effects, derived=initial_derived))
+    # Per-trace grounding cache: regress_for_goal often calls
+    # plan_for_goal twice on the same trace state (once via
+    # _drive_is_h_reachable as max_states=0, once via execute_drive).
+    # `_ground_all_actions` + `_ground_constructable_actions` is
+    # ~400ms per call in the profile; caching by a fingerprint of
+    # entities + relations (which fully determines grounding)
+    # eliminates the second pass at a few μs of fingerprint cost.
+    cache = getattr(initial_trace, "_fwd_planner_grounding_cache", None)
+    fp = (id(lex), id(rule_effects), len(initial_trace.entities),
+          frozenset((eid, ent.entity_type)
+                    for eid, ent in initial_trace.entities.items()),
+          frozenset((r.relation, r.args) for r in initial_trace.relations))
+    if cache is not None and cache[0] == fp:
+        grounded = list(cache[1])
+    else:
+        grounded = _ground_all_actions(
+            initial_trace, lex, initial_derived, rule_effects)
+        grounded.extend(_ground_constructable_actions(
+            initial_trace, lex, rule_effects, derived=initial_derived))
+        try:
+            object.__setattr__(
+                initial_trace, "_fwd_planner_grounding_cache",
+                (fp, tuple(grounded)))
+        except Exception:
+            pass
     if exclude_verbs:
         grounded = [g for g in grounded if g[0].lemma not in exclude_verbs]
     # Goal-aware action pruning. Walk backward from the goal through
