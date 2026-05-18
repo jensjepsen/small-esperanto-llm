@@ -612,9 +612,14 @@ def regress_for_goal(
         if g[0] == "property":
             all_goals.append((g, verbs))
         elif g[0] == "relation":
+            from .goals import DERIVED_ROLE
             _, rel_name, role_args = g
-            if CREATED_ROLE in role_args:
-                # event_fire drive: rule creates the related entity.
+            if CREATED_ROLE in role_args or DERIVED_ROLE in role_args:
+                # event_fire drive: rule creates the related entity OR
+                # one arg is bound by the rule's `given` clause (e.g.
+                # mezuri's scias_propon slot derived from the
+                # instrument's mezuras). Either way, dispatch to
+                # event_fire and let the rule fill in the gap.
                 all_goals.append((g, verbs))
             elif role_args[0] in ("agent", "recipient",
                                   "theme", "instrument"):

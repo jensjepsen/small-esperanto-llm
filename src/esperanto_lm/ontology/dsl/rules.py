@@ -1357,12 +1357,13 @@ legi_extracts_scias = rule(
 )
 
 
-# `mezuri` (measure) is a perception event for dimension/temperature.
-# No scias emission yet — no consumer reads dimension-kind scias-tuples,
-# and the agent already learns the theme's location via the planner's
-# prerequisite samloke. Kept as a no-op rule placeholder; reintroduce
-# a scias_propon emission here when we model property-knowledge
-# transfer (mezuri → rakonti la temperaturon).
+# `mezuri` (measure) is a perception event for a property the
+# instrument reads (termometro→temperature, pesilo→maso, …). Emits
+# `scias_propon(agent, theme, slot)` — the general "knows property
+# of" predicate. Parallel to scias_lokon (knows location of) and
+# scias (knows relation between). The slot value is read from the
+# instrument's `mezuras` concept-field, so any future measuring tool
+# auto-extends scias_propon coverage by declaring its mezuras.
 mezuri_learns_dimension = rule(
     when=event("mezuri",
                agent=bind(MEA := var("A")),
@@ -1371,7 +1372,7 @@ mezuri_learns_dimension = rule(
     given=[
         has_concept_field(MEI, "mezuras", MES := var("S")),
     ],
-    then=[],
+    then=add_relation("scias_propon", MEA, MET, MES),
     name="mezuri_learns_dimension",
 )
 
@@ -1395,22 +1396,25 @@ flammability_from_material = derive(
 )
 
 
-# ---------- derivation: mezuri-instruments default to measuring grandeco
+# ---------- derivation: mezuri-instruments default to measuring volumeno
 #
 # The autoderived `mezurilo` (from `mezuri.derives_instrument=true`)
 # carries `functional_signature=mezuri` but no semantics about WHICH
-# property it reads off the theme. This default fills in
-# `mezuras=grandeco` for any concept that holds the mezuri signature,
-# so the canonical ruler measures length. Concepts that need a
-# different reading (termometro→temperaturo, peso→maso, horloĝo→tempo)
-# can declare their own `mezuras` value — asserted-wins-on-scalar
-# blocks this default for them, same as every other type-keyed
-# derivation default.
+# slot it reads off the theme. This default fills in
+# `mezuras=volumeno` for any concept that holds the mezuri signature,
+# so the canonical ruler measures size. Concepts that need a
+# different reading (termometro→temperature, pesilo→maso) can declare
+# their own `mezuras` value — asserted-wins-on-scalar blocks this
+# default for them, same as every other type-keyed derivation
+# default. The mezuras vocab IS the set of real slot names: scias_propon
+# emits `(agent, theme, <slot>)` from this directly, and slot-kind
+# validation in `validate_relation` requires the value to be in
+# lex.slots.
 
 mezuri_instruments_default_grandeco = derive(
     when=entity(functional_signature="mezuri") & bind(M_inst := var("M")),
-    implies=property(M_inst, "mezuras", "grandeco"),
-    name="mezuri_instruments_default_grandeco",
+    implies=property(M_inst, "mezuras", "volumeno"),
+    name="mezuri_instruments_default_volumeno",
 )
 
 

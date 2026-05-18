@@ -39,6 +39,14 @@ from ..dsl.patterns import EventPattern, Var
 CREATED_ROLE = "<created>"
 
 
+# Sentinel for relation-arg positions bound by a `given` clause
+# (e.g. mezuri's scias_propon slot arg, resolved at rule-fire time
+# from `has_concept_field(instrument, "mezuras", S)`). The goal
+# sampler treats these as event_fire drives — fire the verb with
+# the role-bindable args, the rule fills in the derived position.
+DERIVED_ROLE = "<derived>"
+
+
 # Goal kinds are tagged tuples; the regression sampler dispatches
 # on the tag.
 PropertyGoal = tuple[str, str, str]      # ("property", slot, value)
@@ -119,21 +127,31 @@ def verb_postconditions(verb_lemma: str, rules: list, lex) -> list[VerbPostcondi
                     relation=None, role_args=None,
                 ))
             elif isinstance(eff, AddRelation):
-                # All args must be Vars that map to roles. If any
-                # arg is a literal or unmapped Var, skip — we can't
-                # express a clean Goal for it.
+                # Args mapping: Var → role name; literal string → the
+                # literal itself; given-bound Var (not a role) → the
+                # DERIVED_ROLE sentinel meaning "the rule's given
+                # clause determines this arg at firing time". Skip
+                # the postcondition only if NO arg has a role-name
+                # mapping (a relation entirely between given-bound
+                # vars wouldn't be drivable via this verb).
                 role_args = []
-                ok = True
+                has_role = False
                 for a in eff.args:
-                    if not isinstance(a, Var):
-                        ok = False
-                        break
-                    rn = var_to_role.get(id(a))
-                    if rn is None:
-                        ok = False
-                        break
-                    role_args.append(rn)
-                if not ok:
+                    if isinstance(a, str):
+                        role_args.append(a)
+                        continue
+                    if isinstance(a, Var):
+                        rn = var_to_role.get(id(a))
+                        if rn is None:
+                            role_args.append(DERIVED_ROLE)
+                        else:
+                            role_args.append(rn)
+                            has_role = True
+                        continue
+                    has_role = False
+                    role_args = []
+                    break
+                if not role_args or not has_role:
                     continue
                 out.append(VerbPostcondition(
                     kind="relation", verb_lemma=verb_lemma,
