@@ -677,9 +677,209 @@ def _expand_list_role_args(role_arg_names, roles, facts=None):
             yield tuple(out)
 
 
+def _build_initial_evidence_pools(
+    trace, lex, rule_effects, relevant_entities,
+) -> dict:
+    """Per-rel evidence pool: set of canonical arg-tuples that could
+    satisfy a `rel(R, ...)` pattern given the current state +
+    rule-effects synthesis. Sources:
+
+      1. Real tuples in `trace.relations` (canonicalized for symmetric
+         rels). These are concrete evidence.
+      2. Producible tuples from `rule_effects.adds` — each verb whose
+         effect adds R contributes one tuple per type-compatible role
+         binding. Mirrors `_fp_tuple_pool`'s rule-effects half.
+
+    Derivation outputs (e.g. samloke from `en_implies_…`) are NOT
+    seeded here — they accumulate during the two-pass grounding loop
+    in `_ground_derivations` (seeds first, chains second).
+
+    Constrained to `relevant_entities` when supplied. Used by
+    `_evidence_join_combos` to drive evidence-based grounding for
+    multi-rel derivations, replacing the cubic var-domain cartesian
+    that dominated `_ground_derivations` cost for samloke chains."""
+    sym = _symmetric_relations(lex)
+    pools: dict[str, set] = {}
+
+    def _ent_ok(eid):
+        if eid == "mondo":
+            return False
+        ent = trace.entities.get(eid)
+        if ent is None or ent.entity_type == "inanimate":
+            return False
+        if relevant_entities is not None and eid not in relevant_entities:
+            return False
+        return True
+
+    def _add(rel_name, tup):
+        for a in tup:
+            if not _ent_ok(a):
+                return
+        pools.setdefault(rel_name, set()).add(
+            _canon_rel(rel_name, tup, sym))
+
+    for r in trace.relations:
+        _add(r.relation, tuple(r.args))
+
+    for verb, entry in rule_effects.items():
+        action_obj = lex.actions.get(verb)
+        if action_obj is None:
+            continue
+        role_cands: dict = {}
+        for rs in action_obj.roles:
+            rk = getattr(rs, "kind", "single")
+            if rk in ("list", "relation", "from_precondition"):
+                continue
+            cands = [
+                eid for eid, ent in trace.entities.items()
+                if _ent_ok(eid)
+                and lex.types.is_subtype(ent.entity_type, rs.type)
+            ]
+            role_cands[rs.name] = cands
+        for rel, role_args in entry.get("adds", []):
+            per_pos: list = []
+            ok = True
+            for arg in role_args:
+                if isinstance(arg, str) and arg in role_cands:
+                    pool = role_cands[arg]
+                    if not pool:
+                        ok = False
+                        break
+                    per_pos.append(pool)
+                else:
+                    # Skip <lookup>/<literal>/list markers — out of
+                    # scope for the prototype; the cartesian
+                    # fallback handles derivations with such args.
+                    ok = False
+                    break
+            if not ok:
+                continue
+            for tup in itertools.product(*per_pos):
+                if len(set(tup)) != len(tup):
+                    continue
+                _add(rel, tup)
+    return pools
+
+
+def _pool_position_index(pool, rel_name, sym) -> list:
+    """Per-position index of `pool`: list of dicts mapping `eid` →
+    list of tuples that have `eid` at that position. Used by
+    `_evidence_join_combos` to look up "tuples consistent with a
+    bound var" in O(matches), not O(pool).
+
+    For symmetric arity-2 relations, args are stored canonically
+    (sorted). To allow lookup by either argument, both orderings
+    are indexed; the join consumer treats this transparently."""
+    if not pool:
+        return []
+    arity = len(next(iter(pool)))
+    idx: list = [dict() for _ in range(arity)]
+    for tup in pool:
+        for pos, eid in enumerate(tup):
+            idx[pos].setdefault(eid, []).append(tup)
+        if rel_name in sym and arity == 2 and tup[0] != tup[1]:
+            # Index reverse ordering so lookup-by-either-arg works.
+            rev = (tup[1], tup[0])
+            idx[0].setdefault(rev[0], []).append(rev)
+            idx[1].setdefault(rev[1], []).append(rev)
+    return idx
+
+
+def _evidence_join_combos(
+    rel_patterns, rel_arg_vids, pool_indices, pools_all_tuples,
+    var_constraints, var_exclusions,
+    trace, lex, _entity_matches_constraints,
+):
+    """Generator over bindings (dict[vid → eid]) satisfying ALL
+    `rel_patterns` via a left-deep relational join. Replaces the
+    cartesian-over-var-domains enumeration when a derivation has
+    multiple rel-patterns and all of their relations have non-empty
+    evidence pools.
+
+    Each step picks a rel_pattern; if any of its arg_vids is already
+    bound, look up only tuples consistent with the bound eid (O(k)
+    via `pool_indices`); otherwise iterate the rel's full pool. Per-
+    var type/concept/NotPattern constraints are enforced as each var
+    is bound — mirrors the per-entity filter in the cartesian path.
+
+    Order: smallest pool first to maximize early pruning."""
+    if not rel_patterns:
+        return
+    sizes = [(len(pools_all_tuples[i]), i) for i in range(len(rel_patterns))]
+    sizes.sort()
+    order = [i for _, i in sizes]
+
+    def _recurse(step, binding):
+        if step == len(order):
+            yield dict(binding)
+            return
+        rp_idx = order[step]
+        rp = rel_patterns[rp_idx]
+        arg_vids = rel_arg_vids[rp_idx]
+        idx = pool_indices.get(rp.relation, [])
+        # Pick most-constrained lookup: any arg_vid already bound
+        # narrows the candidate list to O(matches) via the index.
+        candidates = None
+        for pos, av in enumerate(arg_vids):
+            anchor_eid = None
+            if isinstance(av, tuple) and av and av[0] == "<lit>":
+                anchor_eid = av[1]
+            elif not isinstance(av, tuple) and av in binding:
+                anchor_eid = binding[av]
+            if anchor_eid is None:
+                continue
+            if idx and pos < len(idx):
+                candidates = idx[pos].get(anchor_eid, ())
+                break
+        if candidates is None:
+            candidates = pools_all_tuples[rp_idx]
+        for tup in candidates:
+            new_binding = dict(binding)
+            ok = True
+            for av, eid in zip(arg_vids, tup):
+                if isinstance(av, tuple):
+                    if av and av[0] == "<lit>" and av[1] != eid:
+                        ok = False
+                        break
+                    continue
+                if av in new_binding:
+                    if new_binding[av] != eid:
+                        ok = False
+                        break
+                    continue
+                type_, concept_, _props = var_constraints.get(
+                    av, (None, None, ()))
+                ent = trace.entities.get(eid)
+                if ent is None:
+                    ok = False
+                    break
+                if type_ is not None and not lex.types.is_subtype(
+                        ent.entity_type, type_):
+                    ok = False
+                    break
+                if concept_ is not None and ent.concept_lemma != concept_:
+                    ok = False
+                    break
+                excluded = False
+                for excl in var_exclusions.get(av, ()):
+                    if _entity_matches_constraints(ent, excl, lex):
+                        excluded = True
+                        break
+                if excluded:
+                    ok = False
+                    break
+                new_binding[av] = eid
+            if not ok:
+                continue
+            yield from _recurse(step + 1, new_binding)
+
+    yield from _recurse(0, {})
+
+
 def _ground_derivations(
     derivations, trace, lex,
     relevant_entities: set | None = None,
+    rule_effects: dict | None = None,
 ) -> list:
     """Compile derivations into grounded pseudo-actions for the
     relaxed graph. Each binding of a derivation's variables to
@@ -886,6 +1086,62 @@ def _ground_derivations(
         next_synth_id[0] -= 1
         return next_synth_id[0]
 
+    # Evidence pools: real trace facts + rule_effects-producible
+    # tuples, accumulated with derivation outputs as we ground in
+    # dependency order. Multi-rel derivations (samloke chains,
+    # shared_*-samloke) use these to drive a left-deep relational
+    # join instead of the var-domain cartesian. Falls back to
+    # cartesian if rule_effects isn't supplied (legacy callers).
+    pools: dict | None = None
+    pool_indices: dict = {}
+    if rule_effects is not None:
+        pools = _build_initial_evidence_pools(
+            trace, lex, rule_effects, relevant_entities)
+        for rname, p in pools.items():
+            pool_indices[rname] = _pool_position_index(p, rname, sym_local)
+
+    def _initial_pool_for(d) -> bool:
+        """True if every rel-pattern in d's when+given refers to a
+        relation already present in the initial pool. Used to order
+        derivations so chains run AFTER their seed-derivation inputs
+        have populated the pool."""
+        if pools is None:
+            return True
+        for pat in [d.when] + list(d.given):
+            for rp in _walk_for_rel_patterns(pat):
+                if rp.relation not in pools or not pools[rp.relation]:
+                    return False
+        return True
+
+    if pools is not None:
+        # Stable two-pass: seeds first, then chains.
+        derivations = (
+            [d for d in derivations if _initial_pool_for(d)]
+            + [d for d in derivations if not _initial_pool_for(d)])
+
+    def _augment_pools_with_eff(eff_rel, eff_args):
+        """Add a derivation-produced rel tuple to pools/index so
+        downstream chain derivations can use it as evidence."""
+        if pools is None:
+            return
+        canon = _canon_rel(eff_rel, eff_args, sym_local)
+        pool = pools.setdefault(eff_rel, set())
+        if canon in pool:
+            return
+        pool.add(canon)
+        idx = pool_indices.get(eff_rel)
+        if idx is None or (canon and len(idx) != len(canon)):
+            pool_indices[eff_rel] = _pool_position_index(
+                pool, eff_rel, sym_local)
+            return
+        for pos, eid in enumerate(canon):
+            idx[pos].setdefault(eid, []).append(canon)
+        if (eff_rel in sym_local and len(canon) == 2
+                and canon[0] != canon[1]):
+            rev = (canon[1], canon[0])
+            idx[0].setdefault(rev[0], []).append(rev)
+            idx[1].setdefault(rev[1], []).append(rev)
+
     for d in derivations:
         # All explicit Vars used in when+given+implies.
         all_vars: dict = {}  # id(Var) -> Var (or synth-int)
@@ -1040,10 +1296,25 @@ def _ground_derivations(
                         if isinstance(a, _Var) and id(a) in all_vars:
                             chain_filter_vids.append(id(a))
 
-        for combo in itertools.product(*domains):
-            if len(set(combo)) != len(combo):
-                continue
-            binding = {vid: combo[i] for i, vid in enumerate(var_ids)}
+        # Evidence-driven join eligibility: multi-rel derivation AND
+        # every var appears in some rel-pattern AND every rel has a
+        # non-empty pool. Otherwise fall back to cartesian.
+        use_join = False
+        if pools is not None and len(rel_patterns) >= 2:
+            covered: set = set()
+            for arg_vids in rel_arg_vids:
+                for av in arg_vids:
+                    if not isinstance(av, tuple):
+                        covered.add(av)
+            if (set(var_ids) <= covered
+                    and all(rp.relation in pools and pools[rp.relation]
+                            for rp in rel_patterns)):
+                use_join = True
+
+        def _emit_binding(binding):
+            binding_vals = [binding[vid] for vid in var_ids]
+            if len(set(binding_vals)) != len(binding_vals):
+                return
             if chain_filter_vids:
                 has_animate = False
                 for vid in chain_filter_vids:
@@ -1056,11 +1327,7 @@ def _ground_derivations(
                         has_animate = True
                         break
                 if not has_animate:
-                    continue
-
-            # pres: each rel pattern grounded with binding, plus
-            # property constraints on each Var. Literal arg positions
-            # (encoded as ("<lit>", value)) bypass the binding lookup.
+                    return
             pres: set = set()
             ok = True
             for rp, arg_vids in zip(rel_patterns, rel_arg_vids):
@@ -1079,15 +1346,12 @@ def _ground_derivations(
                 pres.add(("rel", rp.relation,
                           _canon_rel(rp.relation, tuple(args), sym_local)))
             if not ok:
-                continue
-            # Property constraints from each Var → pres.
+                return
             for vid in var_ids:
                 _, _, props = var_constraints[vid]
                 eid = binding[vid]
                 for slot, val in props:
                     pres.add(("prop", eid, slot, val))
-
-            # effs: from impl_specs.
             effs: set = set()
             for spec in impl_specs:
                 if spec[0] == "prop":
@@ -1095,12 +1359,6 @@ def _ground_derivations(
                     eid = binding.get(id(e_var))
                     if eid is None:
                         continue
-                    # Scalar slots: asserted wins. Skip the
-                    # derivation grounding when the entity already has
-                    # an asserted value — otherwise default derivations
-                    # (physical_has_wetness=seka, ...) would shadow it
-                    # at cost 0 in the relaxed graph and make the goal
-                    # trivially reachable (h=0), gutting guidance.
                     ent = trace.entities.get(eid)
                     if (ent is not None
                             and _entity_has_asserted_scalar(
@@ -1110,23 +1368,36 @@ def _ground_derivations(
                 else:
                     _, name, arg_vars = spec
                     args = []
-                    ok = True
+                    ok2 = True
                     for a in arg_vars:
                         if isinstance(a, Var):
                             eid = binding.get(id(a))
                             if eid is None:
-                                ok = False
+                                ok2 = False
                                 break
                             args.append(eid)
                         else:
                             args.append(a)
-                    if not ok:
+                    if not ok2:
                         continue
-                    effs.add(("rel", name,
-                              _canon_rel(name, tuple(args), sym_local)))
-
+                    canon_args = _canon_rel(name, tuple(args), sym_local)
+                    effs.add(("rel", name, canon_args))
+                    _augment_pools_with_eff(name, canon_args)
             if effs:
                 out.append((None, binding, pres, effs))
+
+        if use_join:
+            for binding in _evidence_join_combos(
+                    rel_patterns, rel_arg_vids, pool_indices,
+                    [list(pools[rp.relation]) for rp in rel_patterns],
+                    var_constraints, var_exclusions,
+                    trace, lex, _entity_matches_constraints):
+                _emit_binding(binding)
+            continue
+
+        for combo in itertools.product(*domains):
+            binding = {vid: combo[i] for i, vid in enumerate(var_ids)}
+            _emit_binding(binding)
     return out
 
 
@@ -2552,7 +2823,8 @@ def _heuristic_and_helpful(
     else:
         from ..dsl.rules import runtime_derivations_for
         derivation_pseudos = _ground_derivations(
-            runtime_derivations_for(lex), trace, lex)
+            runtime_derivations_for(lex), trace, lex,
+            rule_effects=rule_effects)
     if consumer_index is None:
         fact_to, all_consumers, cid_to_info, pres_len = (
             _build_consumer_index(actions, derivation_pseudos))
@@ -3356,7 +3628,8 @@ def plan_for_goal(
             d for d in heuristic_derivations if d.name in relevant_derivs]
     grounded_derivs = _ground_derivations(
         heuristic_derivations, initial_trace, lex,
-        relevant_entities=relevant_entities)
+        relevant_entities=relevant_entities,
+        rule_effects=rule_effects)
 
     # Event-fire goals: the goal is "fire verb V with these role
     # bindings". Lacking direct property/relation effects on most
