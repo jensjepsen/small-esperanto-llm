@@ -22,23 +22,19 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-# `_inject_co_located_owner` builds a list of "spawnable person concepts"
-# every call: filters lex.concepts (~few hundred) through `is_subtype`,
-# itself a recursive walk. With NPC injection firing on ~60% of setup
-# spawns × ~3 spawns/scene × 500 scenes the per-call cost dominated the
-# parallel regression run (155ms/scene up from 89ms before injection).
-# Cache keyed by id(lex) — lexicons are immutable in our worker model.
 _PERSON_CONCEPTS_CACHE: dict[int, list[str]] = {}
 
 
 def _cached_person_concepts(lex) -> list[str]:
+    """Spawnable person concepts (excludes category stubs). Uses the
+    per-lex ConceptIndex for the type lookup; stub-filter result is
+    cached on id(lex) so the hot path is one dict lookup."""
     key = id(lex)
     cached = _PERSON_CONCEPTS_CACHE.get(key)
     if cached is None:
-        cached = [
-            c for c, cdef in lex.concepts.items()
-            if lex.types.is_subtype(cdef.entity_type, "person")
-            and not getattr(cdef, "is_category_stub", False)]
+        cands = lex.concept_index.concepts_matching("person")
+        cached = [c for c in cands
+                  if not getattr(lex.concepts[c], "is_category_stub", False)]
         _PERSON_CONCEPTS_CACHE[key] = cached
     return cached
 

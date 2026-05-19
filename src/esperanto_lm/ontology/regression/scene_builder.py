@@ -202,10 +202,7 @@ class SceneBuilder:
         of an already-placed vehicle."""
         if self._failed:
             return self
-        candidates = [
-            l for l, c in self.lex.concepts.items()
-            if self.lex.types.is_subtype(c.entity_type, "location")
-        ]
+        candidates = list(self.lex.concept_index.concepts_matching("location"))
         if different_from is not None:
             other = self._resolve(different_from)
             candidates = [l for l in candidates if l != other]
@@ -281,10 +278,7 @@ class SceneBuilder:
     def person(self, slot, *, in_=None):
         """Pick a person concept and bind it to `slot` with a name from
         the lexicon's name registry. Names are unique within a build."""
-        persons = [
-            c.lemma for c in self.lex.concepts.values()
-            if c.entity_type == "person"
-        ]
+        persons = list(self.lex.concept_index.concepts_matching("person"))
         return self._named_actor(slot, persons, in_=in_)
 
     def animal(self, slot, *, in_=None):
@@ -300,12 +294,10 @@ class SceneBuilder:
         planner can actually drive."""
         if self._failed:
             return self
-        animals = [
-            c.lemma for c in self.lex.concepts.values()
-            if self.lex.types.is_subtype(c.entity_type, "animate")
-            and not self.lex.types.is_subtype(c.entity_type, "person")
-            and c.properties.get("locomotion")
-        ]
+        idx = self.lex.concept_index
+        animals = list(
+            idx.concepts_matching("animate", {"locomotion": []})
+            - idx.concepts_matching("person"))
         if not animals:
             self._fail()
             return self
@@ -540,9 +532,8 @@ class SceneBuilder:
             roots_to_try = [scene_id]
         else:  # away
             locations = [
-                l for l, c in self.lex.concepts.items()
-                if self.lex.types.is_subtype(c.entity_type, "location")
-                and l != scene_id and l not in self.t.entities
+                l for l in self.lex.concept_index.concepts_matching("location")
+                if l != scene_id and l not in self.t.entities
             ]
             self.rng.shuffle(locations)
             roots_to_try = locations
@@ -592,10 +583,8 @@ class SceneBuilder:
         retargeting this builder to another action) keeps working."""
         if self._failed:
             return self
-        vehicles = [
-            c.lemma for c in self.lex.concepts.values()
-            if "yes" in c.properties.get("is_vehicle", [])
-        ]
+        vehicles = list(self.lex.concept_index.concepts_matching(
+            properties={"is_vehicle": ["yes"]}))
         if not vehicles:
             self._fail()
             return self
@@ -669,10 +658,8 @@ class SceneBuilder:
         """Pick a readable artifact (readability=legebla)."""
         if self._failed:
             return self
-        readables = [
-            c.lemma for c in self.lex.concepts.values()
-            if "legebla" in c.properties.get("readability", [])
-        ]
+        readables = list(self.lex.concept_index.concepts_matching(
+            properties={"readability": ["legebla"]}))
         if not readables:
             self._fail()
             return self
@@ -764,12 +751,12 @@ class SceneBuilder:
         idx = resolve_containment(self.lex)
         person_loc_lemma = self.t.entities[person_loc].concept_lemma
         candidates = [
-            c.lemma for c in self.lex.concepts.values()
-            if "yes" in c.properties.get(attribute, [])
-            and "en" in containment_relations_for(
-                person_loc_lemma, c.lemma, idx, self.lex)
+            c for c in self.lex.concept_index.concepts_matching(
+                properties={attribute: ["yes"]})
+            if "en" in containment_relations_for(
+                person_loc_lemma, c, idx, self.lex)
             and not required_fact_violations(
-                person_loc_lemma, c.lemma, "en", idx, self.lex)
+                person_loc_lemma, c, "en", idx, self.lex)
         ]
         if not candidates:
             return self
@@ -995,23 +982,14 @@ class SceneBuilder:
         scene_id = self.slots.get(self._scene_slot) if self._scene_slot else None
         if scene_id is None:
             return
+        idx = self.lex.concept_index
         instrument_concepts: set[str] = set()
         for action in self.lex.actions.values():
             for role in action.roles:
                 if role.name != "instrument":
                     continue
-                for c in self.lex.concepts.values():
-                    if not self.lex.types.is_subtype(
-                            c.entity_type, role.type):
-                        continue
-                    ok = True
-                    for slot, vals in role.properties.items():
-                        cvals = c.properties.get(slot, [])
-                        if not (set(vals) & set(cvals)):
-                            ok = False
-                            break
-                    if ok:
-                        instrument_concepts.add(c.lemma)
+                instrument_concepts.update(
+                    idx.concepts_matching(role.type, role.properties))
         if not instrument_concepts:
             return
         # Don't dupe an instrument already in the scene.

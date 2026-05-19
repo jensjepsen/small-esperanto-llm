@@ -270,9 +270,9 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
         return None
     if theme_concept is None:
         constructables = [
-            l for l, c in lex.concepts.items()
-            if "yes" in c.properties.get("constructable", ())
-            and c.parts]
+            l for l in lex.concept_index.concepts_matching(
+                properties={"constructable": ["yes"]})
+            if lex.concepts[l].parts]
         if not constructables:
             return None
         theme_concept = rng.choice(constructables)
@@ -292,9 +292,8 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
     if not agent_candidates:
         return None
     agent_concept = rng.choice(agent_candidates)
-    locations = [l for l, c in lex.concepts.items()
-                 if lex.types.is_subtype(c.entity_type, "location")
-                 and not getattr(c, "is_category_stub", False)]
+    locations = [l for l in lex.concept_index.concepts_matching("location")
+                 if not getattr(lex.concepts[l], "is_category_stub", False)]
     if not locations:
         return None
     # Pre-filter by the theme's containment rules: fari adds
@@ -790,9 +789,9 @@ def regress_for_goal(
         # Constrain scene pool to concepts that satisfy actor role.
         locations = list(agent_candidates)
     else:
-        locations = [l for l, c in lex.concepts.items()
-                     if lex.types.is_subtype(c.entity_type, "location")
-                     and not getattr(c, "is_category_stub", False)]
+        locations = [
+            l for l in lex.concept_index.concepts_matching("location")
+            if not getattr(lex.concepts[l], "is_category_stub", False)]
         # Filter to locations where placing the actor wouldn't
         # violate any required containment rule. The big one is the
         # `slot_overlap: [terrain]` rule: fish (terrain=water) en

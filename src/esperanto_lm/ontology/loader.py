@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from .concept_index import ConceptIndex
 from .morph import DefaultMorphParser, MorphParser
 from .schemas import (
     Action,
@@ -70,6 +71,11 @@ class Lexicon:
     # without an object reads as "Maria wakes (someone)" and is
     # wrong for the intransitive agent-state intent.
     agent_state_verbs: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
+    # Per-lex concept index for `(type, properties)` lookups. Built
+    # once at load time by `load_lexicon` against the baked concepts;
+    # callers use `lex.concept_index.concepts_matching(...)` for the
+    # uniform replacement of `is_subtype + property loop` patterns.
+    concept_index: "ConceptIndex | None" = None
 
     # ---------- read helpers ----------
     def concept(self, lemma: str) -> Concept:
@@ -741,6 +747,7 @@ def load_lexicon(
         person_names=person_names,
         state_verbs={k: tuple(v) for k, v in state_verbs.items()},
         agent_state_verbs={k: tuple(v) for k, v in agent_state_verbs.items()},
+        concept_index=ConceptIndex.build(concepts, spine),
     )
 
 
