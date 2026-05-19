@@ -67,6 +67,14 @@ class _Compiler:
         # Memoize so each rel(name) referenced multiple times reuses
         # the same prelude lookup.
         self._rel_argnames: dict[str, tuple[str, dict[str, str]]] = {}
+        # EntityIndex pool memos: type_name / concept_lemma -> prelude
+        # local holding the frozenset of matching eids. Literal type /
+        # concept constraints emit `if eid not in <pool>` instead of
+        # the per-entity `is_subtype` / `concept_lemma ==` check the
+        # compiler used to inline — the index already partitions
+        # entities by these dimensions.
+        self._type_pools: dict[str, str] = {}
+        self._concept_pools: dict[str, str] = {}
         self._indent = 1   # body of `def enum(event, ctx):`
         # Var -> local Python identifier holding the resolved entity_id.
         self.var_to_local: dict[Var, str] = {}
@@ -135,6 +143,35 @@ class _Compiler:
             f"if {argnames_local} is not None else -1)")
         idx_map[arg_name] = idx_local
         return idx_local
+
+    def _ensure_type_pool(self, type_name: str) -> str:
+        """Return a prelude-emitted local holding
+        `ctx._idx().entities_matching(type_name)` — a frozenset
+        bitmap of entities whose type is-a `type_name`. Memoized
+        per type so a derivation that constrains multiple vars by
+        the same type only pays one prelude lookup."""
+        cached = self._type_pools.get(type_name)
+        if cached is not None:
+            return cached
+        pool_local = self.fresh(f"pool_t_{type_name}")
+        self.emit_prelude(
+            f"{pool_local} = ctx._idx().entities_matching("
+            f"{type_name!r})")
+        self._type_pools[type_name] = pool_local
+        return pool_local
+
+    def _ensure_concept_pool(self, concept_lemma: str) -> str:
+        """Sibling of `_ensure_type_pool` for exact-concept
+        constraints — `ctx._idx().entities_of_concept(concept)`."""
+        cached = self._concept_pools.get(concept_lemma)
+        if cached is not None:
+            return cached
+        pool_local = self.fresh(f"pool_c_{concept_lemma}")
+        self.emit_prelude(
+            f"{pool_local} = ctx._idx().entities_of_concept("
+            f"{concept_lemma!r})")
+        self._concept_pools[concept_lemma] = pool_local
+        return pool_local
 
     def _push(self) -> None:
         self._indent += 1
@@ -539,11 +576,13 @@ class _Compiler:
                 self.emit(f"return  # unbound var constraint")
                 return
             resolved_local = self.var_to_local[expected]
-            self._emit_value_constraint(ent_local, eid_local, key,
-                                        resolved_local, is_local=True)
+            self._emit_value_constraint(
+                ent_local, eid_local, key, resolved_local,
+                is_local=True, expected=expected)
             return
         self._emit_value_constraint(
-            ent_local, eid_local, key, repr(expected), is_local=False)
+            ent_local, eid_local, key, repr(expected),
+            is_local=False, expected=expected)
 
     def _emit_compare_constraint(
         self, eid_local: str, slot: str, cmp: Compare,
@@ -640,16 +679,24 @@ class _Compiler:
 
     def _emit_value_constraint(
         self, ent_local: str, eid_local: str, key: str,
-        value_repr: str, *, is_local: bool,
+        value_repr: str, *, is_local: bool, expected=None,
     ) -> None:
         if key == "type":
-            # Subtype-aware via lex.types.is_subtype.
-            self.emit(
-                f"if not ctx.lexicon.types.is_subtype("
-                f"{ent_local}.entity_type, {value_repr}):")
+            if not is_local and isinstance(expected, str):
+                pool_local = self._ensure_type_pool(expected)
+                self.emit(f"if {eid_local} not in {pool_local}:")
+            else:
+                self.emit(
+                    f"if not ctx.lexicon.types.is_subtype("
+                    f"{ent_local}.entity_type, {value_repr}):")
             self._push(); self.emit("return"); self._pop()
         elif key == "concept":
-            self.emit(f"if {ent_local}.concept_lemma != {value_repr}:")
+            if not is_local and isinstance(expected, str):
+                pool_local = self._ensure_concept_pool(expected)
+                self.emit(f"if {eid_local} not in {pool_local}:")
+            else:
+                self.emit(
+                    f"if {ent_local}.concept_lemma != {value_repr}:")
             self._push(); self.emit("return"); self._pop()
         elif key == "has_suffix":
             self.emit(f"if not {ent_local}.concept_lemma.endswith("
@@ -932,12 +979,24 @@ class _Compiler:
             value_repr = repr(expected)
 
         if key == "type":
-            self.emit(
-                f"if not ctx.lexicon.types.is_subtype("
-                f"{ent_local}.entity_type, {value_repr}):")
+            if not is_local and isinstance(expected, str):
+                # Literal type — bitmap-pool membership.
+                pool_local = self._ensure_type_pool(expected)
+                self.emit(f"if {eid_local} not in {pool_local}:")
+            else:
+                # Var-bound type constraint: fall back to runtime
+                # `is_subtype` (the bitmap is keyed by literal name).
+                self.emit(
+                    f"if not ctx.lexicon.types.is_subtype("
+                    f"{ent_local}.entity_type, {value_repr}):")
             self._push(); self.emit("continue"); self._pop()
         elif key == "concept":
-            self.emit(f"if {ent_local}.concept_lemma != {value_repr}:")
+            if not is_local and isinstance(expected, str):
+                pool_local = self._ensure_concept_pool(expected)
+                self.emit(f"if {eid_local} not in {pool_local}:")
+            else:
+                self.emit(
+                    f"if {ent_local}.concept_lemma != {value_repr}:")
             self._push(); self.emit("continue"); self._pop()
         elif key == "has_suffix":
             self.emit(f"if not {ent_local}.concept_lemma.endswith("
