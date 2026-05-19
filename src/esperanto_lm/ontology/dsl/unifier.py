@@ -21,6 +21,12 @@ from ..loader import Lexicon
 from .patterns import Bindings, Pattern, Var
 
 
+# Shared empty mapping for `relations_position_bucket` when a
+# relation has no entries — avoids handing back a fresh `{}` each
+# call (and avoids `None`-checks in compiled enums).
+_EMPTY_BUCKET: dict = {}
+
+
 # ------------------- derived-state side table ---------------------
 
 @dataclass
@@ -180,6 +186,16 @@ class MatchContext:
     # `entity_index_for` helper does. Inside a unifier, the index
     # never changes identity.
     _entity_idx: Any = None
+    # Per-(rel_name, position) → dict[eid, list[args]] secondary
+    # index. Lets compiled enums anchor a rel iteration to a known
+    # eid (pre-bound var or pool member) instead of scanning every
+    # tuple of the relation. Built lazily on first
+    # `relations_with_arg` call; same incremental-version pattern
+    # as `_relations_by_name_cache`. Symmetric arity-2 relations
+    # are stored bidirectionally so the codegen symmetric-expansion
+    # dance disappears for callers that use this entry point.
+    _rel_pos_index_cache: Optional[dict] = None
+    _rel_pos_cache_version: int = 0
 
     def effective_property(self, eid: str, slot: str) -> Any:
         """Read asserted-then-derived. Used by EntityPattern constraint
@@ -258,6 +274,84 @@ class MatchContext:
             return [args for args in raw
                     if (relation_name, args) not in removals]
         return raw
+
+    def _ensure_rel_pos_index(self) -> dict:
+        """Build / incrementally maintain the per-(name, position)
+        index against `derived.relations`. Returns the index dict
+        `(name, pos) → {eid → [args, ...]}`. Symmetric arity-2
+        relations are stored bidirectionally."""
+        target_version = len(self.derived.relations)
+        idx = self._rel_pos_index_cache
+        if idx is None:
+            idx = {}
+            for r in self.trace.relations:
+                self._add_to_pos_index(
+                    idx, r.relation, tuple(r.args))
+            for (name, args) in self.derived.relations:
+                self._add_to_pos_index(idx, name, args)
+            self._rel_pos_index_cache = idx
+            self._rel_pos_cache_version = target_version
+        elif self._rel_pos_cache_version != target_version:
+            for i in range(
+                    self._rel_pos_cache_version, target_version):
+                name, args = self.derived.relations[i]
+                self._add_to_pos_index(idx, name, args)
+            self._rel_pos_cache_version = target_version
+        return idx
+
+    def relations_position_bucket(
+        self, relation_name: str, position: int,
+    ) -> dict:
+        """Return the `{eid → [args, ...]}` bucket for
+        `(relation_name, position)`. Suitable for hoisting to a
+        compiled enum's prelude — the (name, position) pair is
+        loop-invariant; only the eid lookup varies. Per-query cost
+        becomes one `dict.get`.
+
+        Returns `{}` if no relations of this name have been
+        asserted/derived. The compiled enum still has to filter
+        `derived.removals` itself when that set is non-empty."""
+        idx = self._ensure_rel_pos_index()
+        return idx.get((relation_name, position), _EMPTY_BUCKET)
+
+    def relations_with_arg(
+        self, relation_name: str, position: int, eid: str,
+    ) -> list:
+        """Convenience wrapper: bucket lookup + removal filter +
+        eid index. Kept for non-codegen callers that don't have a
+        prelude to hoist into.
+
+        Cuts compiled enums from O(|relations[name]|) per query to
+        O(|tuples involving eid|) — usually an order of magnitude
+        smaller. Symmetric arity-2 relations are stored
+        bidirectionally so a query at any position returns every
+        tuple involving `eid`."""
+        bucket = self.relations_position_bucket(relation_name, position)
+        raw = bucket.get(eid, [])
+        removals = self.derived.removals
+        if removals:
+            return [args for args in raw
+                    if (relation_name, args) not in removals]
+        return raw
+
+    def _add_to_pos_index(
+        self, idx: dict, name: str, args: tuple,
+    ) -> None:
+        """Insert a relation into the position index at every arg
+        position. For symmetric arity-2 (non-reflexive) tuples,
+        also insert the swapped form — query at any position will
+        then find every tuple involving the queried eid without a
+        downstream symmetric-expansion step."""
+        for pos, eid in enumerate(args):
+            idx.setdefault((name, pos), {}).setdefault(eid, []).append(
+                args)
+        rel_def = self.lexicon.relations.get(name)
+        if (rel_def is not None and rel_def.symmetric
+                and len(args) == 2 and args[0] != args[1]):
+            swapped = (args[1], args[0])
+            for pos, eid in enumerate(swapped):
+                idx.setdefault(
+                    (name, pos), {}).setdefault(eid, []).append(swapped)
 
 
 

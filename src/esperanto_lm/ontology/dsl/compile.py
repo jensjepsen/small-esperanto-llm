@@ -75,6 +75,11 @@ class _Compiler:
         # entities by these dimensions.
         self._type_pools: dict[str, str] = {}
         self._concept_pools: dict[str, str] = {}
+        # Position-index bucket memos: (rel_name, arg_name) -> prelude
+        # local holding `{eid → [args, ...]}`. Hoisted via the
+        # `relations_position_bucket` accessor so per-call cost in the
+        # rel-iteration loop is a single `dict.get`.
+        self._rel_pos_buckets: dict[tuple[str, str], str] = {}
         self._indent = 1   # body of `def enum(event, ctx):`
         # Var -> local Python identifier holding the resolved entity_id.
         self.var_to_local: dict[Var, str] = {}
@@ -159,6 +164,25 @@ class _Compiler:
             f"{type_name!r})")
         self._type_pools[type_name] = pool_local
         return pool_local
+
+    def _ensure_rel_pos_bucket(
+        self, rel_name: str, arg_name: str,
+    ) -> str:
+        """Return a prelude local holding the per-(rel, position)
+        bucket — the `{eid → [args, ...]}` map the anchored
+        rel-iteration loop hits with one `dict.get` per query.
+        Memoized per (rel_name, arg_name) so multiple anchored
+        loops on the same position reuse one prelude lookup."""
+        cached = self._rel_pos_buckets.get((rel_name, arg_name))
+        if cached is not None:
+            return cached
+        bucket_local = self.fresh(f"pos_{rel_name}_{arg_name}")
+        idx_local = self._arg_index_local(rel_name, arg_name)
+        self.emit_prelude(
+            f"{bucket_local} = ctx.relations_position_bucket("
+            f"{rel_name!r}, {idx_local})")
+        self._rel_pos_buckets[(rel_name, arg_name)] = bucket_local
+        return bucket_local
 
     def _ensure_concept_pool(self, concept_lemma: str) -> str:
         """Sibling of `_ensure_type_pool` for exact-concept
@@ -297,6 +321,14 @@ class _Compiler:
         as a direct-lookup filter on V (now bound by the given clause).
         Returns None if not swap-eligible.
 
+        Skip when WHEN already has a literal `type` or `concept`
+        constraint — `EntityIndex`-backed scans (`entities_of_type`,
+        `entities_of_concept`) are cheap, and once V is bound by the
+        outer scan, any rel-clause GIVEN referencing V picks up the
+        position-indexed `relations_with_arg` lookup in
+        `_compile_rel_clause`. Deferring would force a linear scan
+        of the relation instead — usually the larger pool.
+
         Negation safety: skip the optimization if any given clause is
         (or contains) a `NotPattern`. NotPattern's correctness depends
         on its referenced vars being bound before evaluation — with V
@@ -315,6 +347,13 @@ class _Compiler:
               and isinstance(when.left, BindPattern)):
             ent_pat, bind_pat = when.right, when.left
         if ent_pat is None:
+            return None
+        # Index-backed when scan is cheap — keep it as the driver
+        # so V is bound before the GIVEN rel clauses run, which lets
+        # the anchored `relations_with_arg` path engage.
+        if (isinstance(ent_pat.constraints.get("type"), str)
+                or isinstance(
+                    ent_pat.constraints.get("concept"), str)):
             return None
         target = bind_pat.target
         # Bail if any given clause uses negation — skipping when would
@@ -1042,30 +1081,96 @@ class _Compiler:
             self._push(); self.emit("continue"); self._pop()
             self._pop()
 
+    def _anchor_expr_for_arg(self, arg_pat: Pattern):
+        """If `arg_pat` would constrain its position to a pre-known
+        eid (pre-bound var or literal value), return the Python
+        expression evaluating to that eid. Returns None otherwise.
+
+        Drives the position-indexed `relations_with_arg` path:
+        when the codegen knows the eid at some arg position, it
+        can fetch only tuples with that arg = known_eid instead
+        of scanning every tuple of the relation.
+        """
+        if isinstance(arg_pat, BindPattern):
+            if arg_pat.target in self.var_to_local:
+                return self.var_to_local[arg_pat.target]
+            return None
+        if isinstance(arg_pat, Var):
+            if arg_pat in self.var_to_local:
+                return self.var_to_local[arg_pat]
+            return None
+        if isinstance(arg_pat, AndPattern):
+            for side in (arg_pat.left, arg_pat.right):
+                expr = self._anchor_expr_for_arg(side)
+                if expr is not None:
+                    return expr
+            return None
+        return None
+
     def _compile_rel_clause(self, clause: RelPattern) -> None:
-        """Generate a `for args in ctx.relations_of(name)` loop with
-        positional binding extraction. Pre-bound vars become equality
-        filters via `if args[i] != local: continue`. Loop-invariant
-        lookups (`lexicon.relations[name]`, `arg_names.index(role)`)
-        are hoisted to the function prelude — see `_ensure_rel_argnames`
-        and `_arg_index_local`.
+        """Generate a positional-binding loop over the rel tuples.
 
-        Symmetric-relation handling: for relations declared `symmetric`
-        in the lexicon (apud, samloke), the interpreter yields BOTH arg
-        orderings. We mirror that by generating an inner loop that
-        feeds each tuple twice — once as-asserted, once swapped — when
-        the relation is symmetric and arity is 2.
+        Two emission paths, chosen by whether any arg pattern
+        anchors its position to a pre-known eid:
 
-        Indexed-lookup optimization: if any arg's BindPattern targets
-        a Var already in `var_to_local`, that arg is effectively a
-        pre-known value. Use `ctx.relations_with_arg(name, idx, val)`
-        to fetch only matching relations, instead of iterating every
-        relation and post-filtering. Cuts O(N_rels) → O(matching).
-        Skipped for symmetric relations (the swap-yielding inner loop
-        complicates which arg-index actually carries the join key).
+        - **Anchored (`ctx.relations_with_arg`)** — when a pre-bound
+          var appears in some arg position, fetch only tuples with
+          that arg = known_eid. Cuts O(|rel|) → O(|tuples at eid|),
+          typically an order of magnitude. The position index also
+          stores symmetric tuples bidirectionally, so the
+          symmetric-expansion inner loop disappears.
+
+        - **Linear (`ctx.relations_of`)** — fallback when no arg is
+          pre-bound. Emits the symmetric-expansion guard the
+          interpreter mirrors.
+
+        Loop-invariant lookups (`lexicon.relations[name]`,
+        `arg_names.index(role)`) are hoisted to the function prelude
+        in both paths — see `_ensure_rel_argnames` /
+        `_arg_index_local`.
         """
         rel_name = clause.relation
         argnames_local, _ = self._ensure_rel_argnames(rel_name)
+
+        # Anchored path: pick the first arg with a pre-known eid.
+        anchor_arg_name = None
+        anchor_expr = None
+        for arg_name, arg_pat in clause.arg_patterns.items():
+            expr = self._anchor_expr_for_arg(arg_pat)
+            if expr is not None:
+                anchor_arg_name = arg_name
+                anchor_expr = expr
+                break
+        if anchor_expr is not None:
+            anchor_idx = self._arg_index_local(rel_name, anchor_arg_name)
+            # Hoist the per-(name, position) bucket to the prelude:
+            # (name, position) is loop-invariant; per-call cost drops
+            # to a single `dict.get`.
+            bucket_local = self._ensure_rel_pos_bucket(
+                rel_name, anchor_arg_name)
+            args_local = self.fresh("args")
+            self.emit(
+                f"for {args_local} in {bucket_local}.get("
+                f"{anchor_expr}, ()):")
+            self._push()
+            # Removal filter — skip the check when the removal set
+            # is empty (the common case).
+            self.emit(
+                f"if ctx.derived.removals and "
+                f"({rel_name!r}, {args_local}) in ctx.derived.removals:")
+            self._push(); self.emit("continue"); self._pop()
+            self.emit(f"if {argnames_local} is None or "
+                      f"len({args_local}) != len({argnames_local}):")
+            self._push(); self.emit("continue"); self._pop()
+            for arg_name, arg_pat in clause.arg_patterns.items():
+                idx_local = self._arg_index_local(rel_name, arg_name)
+                arg_val_local = self.fresh(f"arg_{arg_name}")
+                self.emit(
+                    f"{arg_val_local} = {args_local}[{idx_local}]")
+                self._apply_value_pattern_in_loop(arg_pat, arg_val_local)
+            return
+
+        # Linear path with symmetric-expansion guard.
         sym_local = self._sym_local_for(rel_name)
         outer_args = self.fresh("rawargs")
         self.emit(f"for {outer_args} in ctx.relations_of({rel_name!r}):")
@@ -1073,9 +1178,6 @@ class _Compiler:
         self.emit(f"if {argnames_local} is None or "
                   f"len({outer_args}) != len({argnames_local}):")
         self._push(); self.emit("continue"); self._pop()
-        # Yield the asserted ordering, plus the swap when symmetric +
-        # arity 2 + non-reflexive. Materializing as a tuple is cheap;
-        # we'd otherwise need to emit a duplicated body.
         args_local = self.fresh("args")
         self.emit(f"for {args_local} in ((({outer_args},) + "
                   f"((({outer_args}[1], {outer_args}[0]),) "
