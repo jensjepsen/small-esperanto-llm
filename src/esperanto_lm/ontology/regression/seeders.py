@@ -538,40 +538,25 @@ def _ensure_property_satisfiable(target_eid, slot, value, t, lex, rng,
                     if contained_var is None:
                         continue
                     # Find this var's entity-pattern constraints in `given`.
+                    # Drop structural keys (type/concept/has_suffix) so
+                    # the index's slot-only matcher applies; the
+                    # surrounding code already handled type via the
+                    # producer's action role spec.
                     constraints: dict[str, str] = {}
                     for q in patterns:
                         for ep, bv in _walk_entity_patterns_with_binds(q):
                             if bv is None or id(bv) != id(contained_var):
                                 continue
                             for k, v in ep.constraints.items():
-                                if isinstance(v, str):
+                                if (isinstance(v, str)
+                                        and k not in (
+                                            "type", "concept", "has_suffix")):
                                     constraints[k] = v
                     if not constraints:
                         continue
-                    # Find a concept whose properties satisfy all
-                    # non-varies constraints (varies slots like
-                    # power_state randomize, so any concept declaring
-                    # the slot can satisfy at instance time).
-                    candidate_concepts = []
-                    for lemma, concept in lex.concepts.items():
-                        match = True
-                        for k, v in constraints.items():
-                            if k in ("type", "concept", "has_suffix"):
-                                continue
-                            slot_d = lex.slots.get(k)
-                            cvals = concept.properties.get(k, [])
-                            if slot_d is not None and slot_d.varies:
-                                if getattr(slot_d, "pervasive", False):
-                                    pass  # type alone suffices
-                                elif not cvals:
-                                    match = False
-                                    break
-                            else:
-                                if v not in cvals:
-                                    match = False
-                                    break
-                        if match:
-                            candidate_concepts.append(lemma)
+                    candidate_concepts = list(
+                        lex.concept_index.concepts_matching_constraints(
+                            constraints))
                     if not candidate_concepts:
                         continue
                     # If any existing entity already satisfies the

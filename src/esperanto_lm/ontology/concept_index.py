@@ -111,6 +111,68 @@ class ConceptIndex:
             _category_map={k: frozenset(v) for k, v in cat_map_mut.items()},
         )
 
+    def concepts_matching_constraints(
+        self, constraints: dict, *,
+        type: Optional[str] = None,
+        allow_derivable: bool = False,
+    ) -> frozenset:
+        """Lower-level role-matching primitive: takes a flat (slot →
+        value) dict and applies the same varies/pervasive logic as
+        `concepts_matching_role`, but with:
+          - optional `type` filter (None = no type constraint),
+          - opt-in `allow_derivable` relaxation for slots whose
+            value is runtime-derivable for the concept's type.
+
+        Same per-slot semantics:
+          - varies + pervasive: type alone suffices,
+          - varies + non-pervasive: concept must declare the slot,
+          - immutable (or unknown slot): concept's declared values
+            must include `value`, unless deriv-covered.
+
+        Used by callers that build constraint dicts dynamically
+        (e.g. the chain seeder walking a derivation's `given`
+        clauses); `concepts_matching_role` is the higher-level
+        wrapper for static role-spec inputs.
+
+        Requires `with_role_semantics(lex, derivations)` when
+        `allow_derivable` is True or when any constraint references
+        a varies slot."""
+        pools: list = []
+        if type is not None:
+            pool = self.bms.get(("type", type))
+            if pool is None:
+                return _EMPTY
+            pools.append(pool)
+        for slot, value in constraints.items():
+            slot_def = (self.slots or {}).get(slot)
+            deriv_covered: frozenset = _EMPTY
+            if allow_derivable:
+                for t in (self.derivable or {}).get(slot, ()):
+                    deriv_covered = deriv_covered | self.bms.get(
+                        ("type", t), _EMPTY)
+            if slot_def is not None and slot_def.varies:
+                if getattr(slot_def, "pervasive", False):
+                    continue
+                slot_any = self.bms.get(("slot", slot, None), _EMPTY)
+                combined = slot_any | deriv_covered
+                if not combined:
+                    return _EMPTY
+                pools.append(combined)
+                continue
+            # Immutable (or unknown slot): declared value must
+            # include `value`, OR concept is in deriv-covered set.
+            union = deriv_covered | self.bms.get(("slot", slot, value), _EMPTY)
+            if not union:
+                return _EMPTY
+            pools.append(union)
+        if not pools:
+            all_concepts: set = set()
+            for (kind, *_), pool in self.bms.items():
+                if kind == "type":
+                    all_concepts.update(pool)
+            return frozenset(all_concepts)
+        return frozenset.intersection(*pools)
+
     def concepts_in_category(self, category: str) -> frozenset:
         """Concepts whose transitive `category` chain includes
         `category` — reflexive (a concept is in its own category).
