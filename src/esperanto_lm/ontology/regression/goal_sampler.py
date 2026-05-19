@@ -1213,6 +1213,31 @@ def regress_for_goal(
             if obj_role_spec is None or dest_role_spec is None:
                 _bail(f"place_missing_role:{verb_lemma}")
                 return None
+            # Pre-filter (obj_concept, dest_concept) pairs at pool
+            # construction — only obj concepts that have at least
+            # one valid container in the dest role's pool (under
+            # this goal relation) are allowed. Without this, the
+            # spawner could pick an obj whose only valid containers
+            # aren't in the verb's dest pool, then waste a spawn
+            # cycle before `is_relation_permitted` rejects.
+            from ..containment import containers_for, resolve_containment
+            containment_idx = resolve_containment(lex)
+            valid_dest_concepts = set(
+                lex.concept_index.concepts_matching_role(dest_role_spec))
+            obj_candidates = list(
+                lex.concept_index.concepts_matching_role(obj_role_spec))
+            workable_objs = {
+                c for c in obj_candidates
+                if any(
+                    container in valid_dest_concepts
+                    for container, rel in containers_for(
+                        c, containment_idx, lex)
+                    if rel == rel_name)
+            }
+            if not workable_objs:
+                last_loop_reason = (
+                    f"place_no_workable_pair:{verb_lemma}:{rel_name}")
+                continue
             from .spawner import make_spawner
             setup_spawner = make_spawner(
                 scene_id, lex, rng, budget=6,
@@ -1222,45 +1247,36 @@ def regress_for_goal(
             obj_eid = setup_spawner(
                 obj_role_spec, t, lex, set(t.entities.keys()),
                 action=action, role_name=obj_role_name,
-                inject_owner=False)
+                inject_owner=False,
+                concept_filter=lambda c, _ok=workable_objs: c in _ok)
             if obj_eid is None:
                 last_loop_reason = (
                     f"place_obj_spawn_failed:{verb_lemma}.{obj_role_name}")
                 continue
-            # Restrict the dest concept pool to containers the
-            # lexicon's containment rules permit for the spawned
-            # object under this goal relation. Without this, the
-            # spawner picks an arbitrary location, fari fires the
-            # AddRelation, `is_relation_permitted` rejects the
-            # pair, and the whole loop iteration is wasted (the
-            # `place_relation_not_permitted` bail). Pre-filtering
-            # at concept-pick time keeps the spawner inside the
-            # space of valid (obj_concept, dest_concept) pairs.
-            from ..containment import containers_for, resolve_containment
+            # The obj concept is guaranteed to have at least one
+            # valid dest container in the verb's pool — restrict
+            # dest accordingly so the spawner can't pick outside it.
             obj_concept = t.entities[obj_eid].concept_lemma
-            containment_idx = resolve_containment(lex)
             _allowed_dest_concepts = {
                 c for c, rel in containers_for(
                     obj_concept, containment_idx, lex)
                 if rel == rel_name}
-            dest_concept_filter = (
-                (lambda c, _ok=_allowed_dest_concepts: c in _ok)
-                if _allowed_dest_concepts else None)
             dest_eid = setup_spawner(
                 dest_role_spec, t, lex, set(t.entities.keys()),
                 action=action, role_name=dest_role_name,
-                concept_filter=dest_concept_filter)
+                concept_filter=lambda c, _ok=_allowed_dest_concepts: (
+                    c in _ok))
             if dest_eid is None:
                 last_loop_reason = (
                     f"place_dest_spawn_failed:{verb_lemma}.{dest_role_name}")
                 continue
             if not t.is_relation_permitted(
                     rel_name, (obj_eid, dest_eid), lex):
-                # Should be rare now that `_allowed_dest_concepts`
-                # pre-filters by concept, but `is_relation_permitted`
-                # may still reject on per-instance properties
-                # (e.g. an akra theme rejected by a fragile container)
-                # the concept-level check can't see.
+                # Per-instance properties (varies-slot values,
+                # spawn-time-randomized fields) may still reject —
+                # the concept-level filter can't see them. Rare in
+                # practice now that workable_objs pre-filters at
+                # pool-construction time.
                 last_loop_reason = (
                     f"place_relation_not_permitted:{rel_name}")
                 continue
