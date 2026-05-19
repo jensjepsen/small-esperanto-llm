@@ -4175,10 +4175,9 @@ def _goal_reachable_walk(
             # fires.
             if (getattr(role, "kind", "single") == "list"
                     and getattr(role, "from_field", None) == "parts"):
-                for c_def in lex.concepts.values():
-                    if "yes" not in c_def.properties.get(
-                            "constructable", ()):
-                        continue
+                for c_lemma in lex.concept_index.concepts_matching(
+                        properties={"constructable": ["yes"]}):
+                    c_def = lex.concepts[c_lemma]
                     for part_spec in getattr(c_def, "parts", ()) or ():
                         for r_slot, r_vals in (
                                 getattr(part_spec, "requires", None)

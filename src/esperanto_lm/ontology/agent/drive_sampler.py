@@ -48,11 +48,7 @@ def sample_scene(lex, rng, *, max_objects=4):
     step so the same scene can host different drives in different
     runs."""
     # 1. Random location.
-    location_concepts = [
-        lemma for lemma, c in lex.concepts.items()
-        if c.entity_type == "location"
-    ]
-    scene = rng.choice(location_concepts)
+    scene = rng.choice(list(lex.concept_index.concepts_matching("location")))
     idx = resolve_containment(lex)
     reachable = reachable_from(scene, idx, lex) - {scene}
 
@@ -191,11 +187,8 @@ def augment_scene_for_drive(t, drive, lex, rng, scene_id):
             if "manĝebla" in e.properties.get("edibility", [])
         ]
         if not existing_food:
-            food_concepts = [
-                lemma for lemma, c in lex.concepts.items()
-                if c.entity_type == "substance"
-                and "manĝebla" in c.properties.get("edibility", [])
-            ]
+            food_concepts = list(lex.concept_index.concepts_matching(
+                "substance", {"edibility": ["manĝebla"]}))
             if food_concepts:
                 food = rng.choice(food_concepts)
                 food_id = food

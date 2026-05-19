@@ -186,13 +186,13 @@ def _spawn_constructable_setup(
                         "functional_signature", [])
                     if not sigs:
                         continue
-                    for tool_lemma, tool_def in lex.concepts.items():
-                        if getattr(tool_def, "is_category_stub", False):
-                            continue
-                        tool_sigs = tool_def.properties.get(
-                            "functional_signature", [])
-                        if not any(s in tool_sigs for s in sigs):
-                            continue
+                    idx = lex.concept_index
+                    tool_candidates: set = set()
+                    for s in sigs:
+                        tool_candidates.update(idx.concepts_matching(
+                            properties={"functional_signature": [s]}))
+                    tool_candidates -= idx.stubs
+                    for tool_lemma in tool_candidates:
                         if _place_respecting_containment(
                                 t, lex, scene_id, tool_lemma, rng,
                                 preferred_id=scene_id,
@@ -533,13 +533,13 @@ def _ensure_obstacle_tools(t, lex, rng, scene_id) -> None:
                             break  # tool already available
                         # Find a concept matching the signature, spawn.
                         spawned = False
-                        for c_lemma, c_def in lex.concepts.items():
-                            if getattr(c_def, "is_category_stub", False):
-                                continue
-                            tool_sigs = c_def.properties.get(
-                                "functional_signature", ())
-                            if not any(s in tool_sigs for s in sigs):
-                                continue
+                        idx = lex.concept_index
+                        tool_cands: set = set()
+                        for s in sigs:
+                            tool_cands.update(idx.concepts_matching(
+                                properties={"functional_signature": [s]}))
+                        tool_cands -= idx.stubs
+                        for c_lemma in tool_cands:
                             if seeders_mod is None:
                                 from . import seeders as seeders_mod  # noqa: F401
                                 from .seeders import (
@@ -552,7 +552,9 @@ def _ensure_obstacle_tools(t, lex, rng, scene_id) -> None:
                                     t, lex, scene_id, c_lemma, rng,
                                     preferred_id=scene_id,
                                     existing_eid=None) is not None:
-                                present_sigs.update(tool_sigs)
+                                present_sigs.update(
+                                    lex.concepts[c_lemma].properties.get(
+                                        "functional_signature", ()))
                                 spawned = True
                                 break
                         if spawned:

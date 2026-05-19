@@ -79,8 +79,7 @@ def regress_for_verb(verb_name, lex, rng):
     if action is None or not action.effects:
         return None
 
-    locations = [l for l, c in lex.concepts.items()
-                 if lex.types.is_subtype(c.entity_type, "location")]
+    locations = list(lex.concept_index.concepts_matching("location"))
     if not locations:
         return None
     scene_lemma = rng.choice(locations)
