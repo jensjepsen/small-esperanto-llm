@@ -215,10 +215,8 @@ def expand_contained(
         if fact.contained in lexicon.concepts:
             result = [fact.contained]
         elif lexicon.types.known(fact.contained):
-            result = [
-                lemma for lemma, c in lexicon.concepts.items()
-                if lexicon.types.is_subtype(c.entity_type, fact.contained)
-            ]
+            result = list(
+                lexicon.concept_index.concepts_matching(fact.contained))
         else:
             result = []
     elif fact.contained_pattern is not None:

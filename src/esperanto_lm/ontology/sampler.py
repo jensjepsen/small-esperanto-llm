@@ -70,23 +70,18 @@ def _person_concepts(
     gendered super-category (persono, infano, bebo — sortal-neutral).
     Lets a name's gender flow through concept selection without
     forcing every name to a specific concept."""
-    out: list[str] = []
-    for c in lex.concepts.values():
-        if c.entity_type != "person":
-            continue
-        if gender is None:
-            out.append(c.lemma)
-            continue
-        # Match if concept is explicitly in `gender`'s category chain.
-        if c.lemma in lex.concept_index.concepts_in_category(gender):
-            out.append(c.lemma)
-            continue
-        # Sortal-neutral: no gendered ancestor at all. Recognized by
-        # the absence of "viro" / "virino" anywhere in the chain.
-        if (not c.lemma in lex.concept_index.concepts_in_category("viro")
-                and not c.lemma in lex.concept_index.concepts_in_category("virino")):
-            out.append(c.lemma)
-    return out
+    idx = lex.concept_index
+    persons = idx.concepts_matching("person")
+    if gender is None:
+        return list(persons)
+    # Match: in `gender`'s category chain, OR sortal-neutral
+    # (no gendered ancestor at all, i.e. not in viro AND not in
+    # virino). Pure set arithmetic on the index's category bitmaps.
+    in_gender = persons & idx.concepts_in_category(gender)
+    sortal_neutral = (persons
+                      - idx.concepts_in_category("viro")
+                      - idx.concepts_in_category("virino"))
+    return list(in_gender | sortal_neutral)
 
 
 # Backwards-compat: callers still importing the constant get the
