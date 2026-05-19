@@ -721,6 +721,8 @@ def _build_initial_evidence_pools(
     for r in trace.relations:
         _add(r.relation, tuple(r.args))
 
+    from ..entity_index import entity_index_for
+    entity_idx = entity_index_for(trace, lex)
     for verb, entry in rule_effects.items():
         action_obj = lex.actions.get(verb)
         if action_obj is None:
@@ -730,11 +732,8 @@ def _build_initial_evidence_pools(
             rk = getattr(rs, "kind", "single")
             if rk in ("list", "relation", "from_precondition"):
                 continue
-            cands = [
-                eid for eid, ent in trace.entities.items()
-                if _ent_ok(eid)
-                and lex.types.is_subtype(ent.entity_type, rs.type)
-            ]
+            cands = [eid for eid in entity_idx.entities_matching(rs.type)
+                     if _ent_ok(eid)]
             role_cands[rs.name] = cands
         for rel, role_args in entry.get("adds", []):
             per_pos: list = []
@@ -2202,14 +2201,14 @@ def _fp_tuple_pool(source_rel: str, trace, lex, rule_effects) -> list:
         # Per-verb-role enumeration: pre-bind role names to candidate
         # entities by type. Used to fill role-name positions in the
         # add template.
+        from ..entity_index import entity_index_for
+        entity_idx = entity_index_for(trace, lex)
         role_pools: dict = {}
         for rs in action_obj.roles:
             rk = getattr(rs, "kind", "single")
             if rk in ("list", "relation", "from_precondition"):
                 continue
-            cands = [eid for eid, ent in trace.entities.items()
-                     if lex.types.is_subtype(ent.entity_type, rs.type)]
-            role_pools[rs.name] = cands
+            role_pools[rs.name] = list(entity_idx.entities_matching(rs.type))
         for relation, role_args in entry.get("adds", []):
             if relation != source_rel or len(role_args) != arity:
                 continue
@@ -2293,14 +2292,17 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     # State facts for lookup resolution in given-bound add args
     # (fari's en(theme, agent_location)).
     state_facts = _state_facts(trace, derived, lex)
-    # Hoist per-type entity pools: one is_subtype scan per distinct
-    # role.type rather than one per (action, role).
+    # Per-type entity pools come from the trace-attached EntityIndex
+    # (lazy-built, keyed on len(entities); shared across grounding
+    # calls within a scene). list() materializes for itertools.product
+    # downstream.
+    from ..entity_index import entity_index_for
+    entity_idx = entity_index_for(trace, lex)
     type_pool: dict = {}
     def cands_for_type(type_name):
         pool = type_pool.get(type_name)
         if pool is None:
-            pool = [eid for eid, ent in trace.entities.items()
-                    if lex.types.is_subtype(ent.entity_type, type_name)]
+            pool = list(entity_idx.entities_matching(type_name))
             type_pool[type_name] = pool
         return pool
     # Effect-meaningfulness lookup: the per-slot bitmap on

@@ -182,10 +182,9 @@ def augment_scene_for_drive(t, drive, lex, rng, scene_id):
             and drive[2] == "hunger" and drive[3] == "sata"):
         actor = drive[1]
         # Already a food substance the actor can grab? Check trace.
-        existing_food = [
-            eid for eid, e in t.entities.items()
-            if "manĝebla" in e.properties.get("edibility", [])
-        ]
+        from ..entity_index import entity_index_for
+        existing_food = list(entity_index_for(t, lex).entities_matching(
+            properties={"edibility": ["manĝebla"]}))
         if not existing_food:
             food_concepts = list(lex.concept_index.concepts_matching(
                 "substance", {"edibility": ["manĝebla"]}))
@@ -393,11 +392,10 @@ def sample_drive(t, lex, rng, *, derivations=None, rules=None,
     (which the random `varies` init produced for free). This makes
     drive selection composable with whatever state the world arrived
     in, instead of overwriting it."""
-    animates = [
-        eid for eid, e in t.entities.items()
-        if lex.types.is_subtype(e.entity_type, "animate")
-        and e.destroyed_at_event is None
-    ]
+    from ..entity_index import entity_index_for
+    entity_idx = entity_index_for(t, lex)
+    animates = [eid for eid in entity_idx.entities_matching("animate")
+                if t.entities[eid].destroyed_at_event is None]
     if not animates:
         return None
 
@@ -464,10 +462,7 @@ def sample_drive(t, lex, rng, *, derivations=None, rules=None,
                             slot_name, goal))
 
     # location: actor wants to be in a location they're not in.
-    locations = [
-        eid for eid, e in t.entities.items()
-        if lex.types.is_subtype(e.entity_type, "location")
-    ]
+    locations = list(entity_idx.entities_matching("location"))
     for actor in animates:
         current_container = _container_of(actor, t)
         for loc in locations:
@@ -482,13 +477,11 @@ def sample_drive(t, lex, rng, *, derivations=None, rules=None,
         r.args[1] for r in t.relations
         if r.relation == "havas_parton" and len(r.args) == 2
     }
-    items = [
-        eid for eid, e in t.entities.items()
-        if lex.types.is_subtype(e.entity_type, "physical")
-        and not lex.types.is_subtype(e.entity_type, "animate")
-        and not lex.types.is_subtype(e.entity_type, "location")
-        and eid not in is_part
-    ]
+    items = list(
+        entity_idx.entities_matching("physical")
+        - entity_idx.entities_matching("animate")
+        - entity_idx.entities_matching("location")
+        - is_part)
     for actor in animates:
         for item in items:
             if _has_relation("havi", (actor, item), t):
