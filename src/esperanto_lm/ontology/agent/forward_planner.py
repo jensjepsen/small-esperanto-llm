@@ -38,8 +38,9 @@ from typing import Any, NamedTuple, Optional
 from ..causal import Trace
 from ..fact_table import FactTable, fact_table_for, iter_bits
 from .planner import (
-    _cached_compute_derived_state, _entity_has_asserted_scalar,
-    _entity_property_values, _find_role_filler, _has_relation,
+    _FAILURE_REASON, _cached_compute_derived_state,
+    _entity_has_asserted_scalar, _entity_property_values,
+    _find_role_filler, _has_relation, _record_failure,
     _simulate_from_scratch, _step_to_event,
 )
 
@@ -3582,8 +3583,16 @@ def plan_for_goal(
     `None` iff h is INF (unreachable). No search runs. Sampler-side
     callers use this as a viability gate — see the goal_sampler's
     relation-drive branch."""
+    # Reset failure-reason for this planner call so a prior call's
+    # leaf doesn't leak into this one's failure report. `bench`
+    # reads `get_planner_failure_reason()` after `execute_drive`
+    # returns None to bucket failures; without this reset, every
+    # forward-planner failure shows up as `('<no-leaf>',)` because
+    # the legacy backward chainer doesn't write into this slot.
+    _FAILURE_REASON.set(None)
     goal = _drive_to_goal(drive, initial_trace, lex)
     if goal is None:
+        _record_failure(("fwd_drive_unmappable", drive[0] if drive else None))
         return None
 
     # Augment the passed derivations with lex-derived dynamic ones
@@ -3749,6 +3758,7 @@ def plan_for_goal(
         event_fired_fact = ("event_fired", gv_verb, gv_bindings_frozen)
         action_obj = lex.actions.get(gv_verb)
         if action_obj is None:
+            _record_failure(("fwd_event_fire_no_verb", gv_verb))
             return None
         # Enumerate role bindings for gv_verb. Constrained roles are
         # forced to the drive's eid; unconstrained roles enumerate
@@ -3934,6 +3944,7 @@ def plan_for_goal(
     elif goal[0] == "event_fire":
         goal_fact = event_fired_fact
     else:
+        _record_failure(("fwd_goal_shape_unknown", goal[0]))
         return None
 
     # Bitmap-state representation. The FactTable interns each fact
@@ -3973,6 +3984,14 @@ def plan_for_goal(
 
     initial_h, initial_helpful = heuristic_and_helpful(initial_mask)
     if initial_h >= _HEURISTIC_INF:
+        # Relaxed-graph heuristic says the goal isn't reachable
+        # even ignoring delete effects. Most cases: a required
+        # action's pres genuinely can't be satisfied from the
+        # current state (e.g. flari needs samloke with a smell-
+        # source through a locked container with no key in
+        # reach), or the goal-aware backward filter dropped the
+        # verb that would have produced the goal fact.
+        _record_failure(("fwd_initial_h_inf", goal))
         return None
     if max_states == 0:
         # Reachability gate: h is finite, goal is reachable in the
@@ -4149,6 +4168,20 @@ def plan_for_goal(
                     plan + [(action.lemma, roles)],
                     new_mask, None))
             tiebreak += 1
+    # A* fell off the end. Two reasons can land here:
+    #   - `expansions >= max_states`: budget exhausted before the
+    #     goal was reached. Plan may exist; raise `max_states` to
+    #     find out.
+    #   - `open_list` drained: every reachable state explored,
+    #     none reached the goal — structurally unreachable from
+    #     the post-EHC anchor (heuristic was finite but plan
+    #     length exceeded `max_plan_length`, or visited dedup ate
+    #     all successors).
+    if expansions >= max_states:
+        _record_failure(
+            ("fwd_budget_exhausted", goal, expansions, max_states))
+    else:
+        _record_failure(("fwd_search_exhausted", goal, expansions))
     return None
 
 
