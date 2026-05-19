@@ -3270,12 +3270,13 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
     Then runs `_infra_prespawn` recursively to handle
     derivation-chain infrastructure (e.g., spawn a lampo when the
     chain requires illuminated agents)."""
-    from ..dsl.introspect import fully_derivable_slots
     rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
     if rule_effects is None:
         rule_effects = _build_rule_effects_index(rules, lex)
         _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
-    derivable_slots = fully_derivable_slots(lex, derivations)
+    # Pre-computed at lex-load time by the concept index — same
+    # value `fully_derivable_slots(lex, RUNTIME_DERIVATIONS)` returns.
+    derivable_slots = lex.concept_index.derivable or {}
 
     if goal[0] == "event_fire":
         # Specific verb already chosen; just fill any unbound roles.

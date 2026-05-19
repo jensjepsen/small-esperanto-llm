@@ -22,21 +22,13 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-_PERSON_CONCEPTS_CACHE: dict[int, list[str]] = {}
-
-
 def _cached_person_concepts(lex) -> list[str]:
-    """Spawnable person concepts (excludes category stubs). Uses the
-    per-lex ConceptIndex for the type lookup; stub-filter result is
-    cached on id(lex) so the hot path is one dict lookup."""
-    key = id(lex)
-    cached = _PERSON_CONCEPTS_CACHE.get(key)
-    if cached is None:
-        cands = lex.concept_index.concepts_matching("person")
-        cached = [c for c in cands
-                  if not getattr(lex.concepts[c], "is_category_stub", False)]
-        _PERSON_CONCEPTS_CACHE[key] = cached
-    return cached
+    """Spawnable person concepts (excludes category stubs). Both
+    parts come straight from the per-lex `ConceptIndex` — the type
+    bitmap and the `stubs` frozenset are pre-built at load time, so
+    no extra cache layer is needed."""
+    idx = lex.concept_index
+    return list(idx.concepts_matching("person") - idx.stubs)
 
 
 def make_spawner(

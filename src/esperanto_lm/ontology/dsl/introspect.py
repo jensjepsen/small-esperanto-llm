@@ -499,8 +499,6 @@ def slot_reachable_for_concept(
 # seruro part. Add others as new asserted-only relations appear.
 _STATIC_RELATIONS = frozenset({"havas_parton"})
 
-_DERIVABLE_CACHE: dict = {}
-
 
 def fully_derivable_slots(lex, derivations) -> dict:
     """Returns {slot_name: [type_name, ...]} — slots whose value is
@@ -514,11 +512,11 @@ def fully_derivable_slots(lex, derivations) -> dict:
     + lit_state=luma location) qualifies: samloke is runtime-mutable.
     A derivation like `host_lock_state_from_seruro` (given havas_parton
     on the host) doesn't: havas_parton is concept-time. Banano can't
-    be subgoaled into having a seruro part."""
-    key = id(lex)
-    cached = _DERIVABLE_CACHE.get(key)
-    if cached is not None:
-        return cached
+    be subgoaled into having a seruro part.
+
+    Called once per lex at load time; the result is cached on
+    `lex.concept_index.derivable`. Callers should read from there
+    instead of re-invoking this function."""
 
     def _entity_patterns_binding(pat, target_var):
         if isinstance(pat, AndPattern):
@@ -592,7 +590,6 @@ def fully_derivable_slots(lex, derivations) -> dict:
                 continue
             out.setdefault(imp.slot, []).append(type_constraint)
 
-    _DERIVABLE_CACHE[key] = out
     return out
 
 
