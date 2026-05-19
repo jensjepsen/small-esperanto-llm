@@ -36,6 +36,7 @@ import itertools
 from typing import Optional
 
 from ..causal import Trace
+from ..fact_table import FactTable, fact_table_for, iter_bits
 from .planner import (
     _cached_compute_derived_state, _entity_has_asserted_scalar,
     _entity_property_values, _find_role_filler, _has_relation,
@@ -591,7 +592,7 @@ def _resolve_lookup(rel_name, template, roles, facts):
     """Find facts matching `("rel", rel_name, args)` where args agree
     with template at every non-None position (resolved via roles),
     and return the values at the None position. Mirrors the dels-
-    wildcard resolution in _action_delta."""
+    wildcard resolution in _action_delta_mask."""
     extract_idx = template.index(None)
     pattern = tuple(roles.get(t) if t is not None else None
                     for t in template)
@@ -1400,50 +1401,52 @@ def _ground_derivations(
     return out
 
 
-def _action_delta(action, roles, rule_effects, lex, facts=None):
-    """Compute (adds, dels) fact deltas for firing this grounded
-    action. Used by the fact-set incremental simulator. Far cheaper
-    than `_simulate_from_scratch` (no Trace fork, no engine rerun)
-    at the cost of skipping cascades and entity creation. For our
-    common chains (preni, iri, eniri, sekigi, malŝalti) the action+
-    rule effects are sufficient.
+_ENTITIES_FOR_DELTA_CACHE: dict = {}
 
-    adds:
-      - action.effects (property writes on the target role)
-      - rule effects: AddRelation, TransferN-as-havi
-    dels:
-      - rule effects: RemoveRelation
-      - For scalar slot writes, the previous value on that slot is
-        implicitly displaced (caller treats slot=value as scalar).
 
-    When `facts` is supplied, dels with wildcard positions (None in
-    the role-arg tuple, indicating a given-bound var like iri's "from"
-    container) are expanded by querying the fact set for matching
-    relations. Without this, iri/veni/flugi would leave their old
-    en(agent, origin) fact in place and downstream movement actions
-    could fire spuriously from the stale origin.
+def _action_delta_mask(action, roles, rule_effects, lex,
+                       table: FactTable, state_mask: int):
+    """Compute the (add_mask, del_mask) bitmap delta for firing
+    this grounded action. Replaces the search loop's tuple-mode
+    `(adds, dels) → mask_for` two-step with direct `id_for | (1
+    << id)` accumulation, which was the bulk of the per-successor
+    cost on the old path.
+
+    Sources of facts:
+      - schema-level Effects (property writes on the target role)
+      - rule-level effects: AddRelation, TransferN-as-havi,
+        per-element list emissions
+      - rule-level dels: RemoveRelation, wildcard-position dels
+        resolved against the live state via `rel_name_mask` (only
+        inspect bits for the matching relation name)
+
+    Wildcard-pattern matching of dels is the only path that touches
+    individual facts in state: AND `state_mask` with
+    `table.rel_name_mask[relation]` and iterate just those bits,
+    instead of scanning every fact.
     """
-    adds: set = set()
-    dels: set = set()
     sym = _symmetric_relations(lex)
-    # Schema-level effects (property writes).
+    add_mask = 0
+    del_mask = 0
+    id_for = table.id_for
+    rel_name_mask = table.rel_name_mask
+
+    # Schema-level effects.
     for eff in action.effects:
         eid = roles.get(eff.target_role)
         if eid is None:
             continue
-        adds.add(("prop", eid, eff.property, eff.value))
-    # Rule-level effects: apply per-rule so cascade rules with
-    # wildcard pres (porti_drop_when_carrier_falls) don't gate the
-    # main rule's effects. A rule "fires" iff its wildcard dels
-    # match — same semantics as the engine's `given` patterns.
+        add_mask |= 1 << id_for(
+            ("prop", eid, eff.property, eff.value))
+
+    # Rule-level effects, per-rule (cascade rules with wildcard pres
+    # don't gate the main rule's effects).
     entry = rule_effects.get(action.lemma)
     if entry is not None:
         for rule_entry in entry.get("rules", ()):
-            this_dels: list = []
+            this_del = 0
             fires = True
             for relation, role_arg_names in rule_entry["dels"]:
-                # `<list>` markers (variadic dels like fari's
-                # per-part havi-detach) expand to one del per element.
                 has_list = any(
                     isinstance(a, tuple) and a and a[0] == "<list>"
                     for a in role_arg_names)
@@ -1452,82 +1455,79 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
                             role_arg_names, roles):
                         if any(e is None for e in eids):
                             continue
-                        this_dels.append(
+                        this_del |= 1 << id_for(
                             ("rel", relation,
                              _canon_rel(relation, eids, sym)))
                     continue
                 if None in role_arg_names:
-                    if facts is None:
-                        # Caller doesn't need accurate dels (relaxed
-                        # graph). Skip — adds still flow through.
-                        continue
                     pattern = tuple(roles.get(r) if r else None
                                     for r in role_arg_names)
                     matched = 0
-                    for f in facts:
-                        if (f[0] == "rel" and f[1] == relation
-                                and len(f[2]) == len(pattern)
+                    rel_bits = (state_mask
+                                & rel_name_mask.get(relation, 0))
+                    for fid in iter_bits(rel_bits):
+                        f = table.tuple_for(fid)
+                        args = f[2]
+                        if (len(args) == len(pattern)
                                 and all(p is None or p == a
-                                        for p, a in zip(pattern, f[2]))):
-                            this_dels.append(f)
+                                        for p, a in zip(pattern, args))):
+                            this_del |= 1 << fid
                             matched += 1
                     if matched == 0:
-                        # Rule's `given` doesn't hold — engine wouldn't
-                        # fire this rule, so neither its adds nor dels
-                        # apply. The action itself may still progress
-                        # (event_fire injection, schema effects); the
-                        # search loop's `not adds and not dels` check
-                        # skips pure no-ops.
                         fires = False
                         break
                 else:
                     eids = tuple(roles.get(r) for r in role_arg_names)
                     if any(e is None for e in eids):
                         continue
-                    this_dels.append(
+                    this_del |= 1 << id_for(
                         ("rel", relation,
                          _canon_rel(relation, eids, sym)))
             if not fires:
                 continue
+            # Lookup-add markers need a tuple view of state; build
+            # once per rule-entry only if such a marker is present.
+            facts_for_lookup = None
             for relation, role_arg_names in rule_entry["adds"]:
+                if (facts_for_lookup is None
+                        and any(isinstance(a, tuple) and a
+                                and a[0] == "<lookup>"
+                                for a in role_arg_names)):
+                    facts_for_lookup = {
+                        table.tuple_for(fid)
+                        for fid in iter_bits(state_mask)}
                 for eids in _expand_list_role_args(
-                        role_arg_names, roles, facts=facts):
+                        role_arg_names, roles, facts=facts_for_lookup):
                     if any(e is None for e in eids):
                         continue
-                    adds.add(
+                    add_mask |= 1 << id_for(
                         ("rel", relation,
                          _canon_rel(relation, eids, sym)))
-            for d in this_dels:
-                dels.add(d)
-    # Mirror engine.py:778: AddRelation effects whose validate_relation
-    # check fails are silently swallowed. The fact-set search must do
-    # the same — otherwise `fari(muro)` would add havi(agent, muro) to
-    # the fact set even though the engine wouldn't accept it, leaving
-    # the planner believing in a fact the runtime won't produce.
+            del_mask |= this_del
+
+    # validate_relation excludes filter: drop adds whose
+    # `("rel", rname, args)` would be silently rejected by the engine
+    # because some arg's entity has a forbidden value on a related
+    # slot. Mirrors engine.py:778.
     excludes = _REL_ARG_EXCLUDES_CACHE.get(id(lex))
     if excludes is None:
         from ..dsl.introspect import relation_arg_excludes
         excludes = relation_arg_excludes(lex)
         _REL_ARG_EXCLUDES_CACHE[id(lex)] = excludes
-    if excludes:
-        ent_map = _ENTITIES_FOR_DELTA_CACHE.get(id(lex))
-        if ent_map is None:
-            ent_map = {}
-            _ENTITIES_FOR_DELTA_CACHE[id(lex)] = ent_map
-        filtered_adds: set = set()
-        for fact in adds:
-            if fact[0] != "rel":
-                filtered_adds.add(fact)
+    if excludes and add_mask:
+        ent_map = _ENTITIES_FOR_DELTA_CACHE.get(id(lex), {})
+        filtered = 0
+        for fid in iter_bits(add_mask):
+            f = table.tuple_for(fid)
+            if f[0] != "rel":
+                filtered |= 1 << fid
                 continue
-            _, rname, args = fact
+            _, rname, args = f
             hit = False
             for i, eid in enumerate(args):
                 slot_map = excludes.get((rname, i))
                 if not slot_map:
                     continue
-                # _action_delta has no Trace; resolve eid → concept
-                # via the cached entity map populated by the planner's
-                # entry point. Falls back to "no info" if absent.
                 vals_by_slot = ent_map.get(eid, {})
                 for slot, forbidden in slot_map.items():
                     vals = vals_by_slot.get(slot, ())
@@ -1537,17 +1537,15 @@ def _action_delta(action, roles, rule_effects, lex, facts=None):
                 if hit:
                     break
             if not hit:
-                filtered_adds.add(fact)
-        adds = filtered_adds
-    return adds, dels
+                filtered |= 1 << fid
+        add_mask = filtered
 
-
-_ENTITIES_FOR_DELTA_CACHE: dict = {}
+    return add_mask, del_mask
 
 
 def _seed_entity_props_for_delta(trace, lex):
     """Populate `_ENTITIES_FOR_DELTA_CACHE[id(lex)]` with each entity's
-    relevant static slot values, so `_action_delta` can filter
+    relevant static slot values, so `_action_delta_mask` can filter
     forbidden adds without a trace handle. Run once per plan_for_goal
     invocation (entities don't change during search)."""
     rel_idx = _REL_ARG_EXCLUDES_CACHE.get(id(lex))
@@ -1732,6 +1730,145 @@ def _apply_delta(facts: frozenset, adds: set, dels: set,
     return frozenset(new_facts)
 
 
+_PSEUDOS_MASK_CACHE: dict = {}
+
+
+def _compile_pseudos_for_mask(pseudos, table: FactTable, slot_vocab: dict):
+    """Cached mask-form of the derivation pseudo list. Returns
+    `(pres_masks, eff_list_per_pi, fact_to_pi, no_pres_pis,
+    consumer_facts_mask)`:
+      - `pres_masks[pi]`: pres bitmap; subset test is one AND.
+      - `eff_list_per_pi[pi]`: list of `(fact_id, shadow_mask)` —
+        `shadow_mask = scalar_slot_mask[(eid, slot)]` for scalar
+        prop effects (intersect with state to detect shadowing),
+        else 0.
+      - `fact_to_pi[fact_id]`: pseudos whose pres includes that fact.
+      - `no_pres_pis`: pseudos with empty pres (always-firable).
+      - `consumer_facts_mask`: OR of fact IDs that appear in some
+        pres, used by `_apply_delta_mask` to seed the worklist
+        only with facts that actually trigger consumers.
+
+    Identity-verified cache: Python may reuse `id()` after GC, so
+    the stored pseudos reference is checked before reuse.
+    """
+    key = id(pseudos)
+    cached = _PSEUDOS_MASK_CACHE.get(key)
+    if cached is not None and cached[0] is pseudos:
+        return cached[1]
+    pres_masks: list = []
+    eff_list_per_pi: list = []
+    fact_to_pi: dict = {}
+    no_pres_pis: list = []
+    consumer_facts_mask = 0
+    id_for = table.id_for
+    for i, (_info, _binding, pres, effs) in enumerate(pseudos):
+        pres_mask = 0
+        for p in pres:
+            pid = id_for(p)
+            pres_mask |= 1 << pid
+            consumer_facts_mask |= 1 << pid
+            fact_to_pi.setdefault(pid, []).append(i)
+        pres_masks.append(pres_mask)
+        eff_list: list = []
+        for e in effs:
+            fid = id_for(e)
+            # shadow_key = (eid, slot) for scalar prop effects;
+            # looked up live in `scalar_slot_mask` at fire time so
+            # new prop bits interned later get checked.
+            if (e[0] == "prop"
+                    and slot_vocab.get(e[2], {}).get("scalar", True)):
+                eff_list.append((fid, (e[1], e[2])))
+            else:
+                eff_list.append((fid, None))
+        eff_list_per_pi.append(eff_list)
+        if not pres:
+            no_pres_pis.append(i)
+    result = (pres_masks, eff_list_per_pi, fact_to_pi,
+              no_pres_pis, consumer_facts_mask)
+    _PSEUDOS_MASK_CACHE[key] = (pseudos, result)
+    return result
+
+
+def _apply_delta_mask(state: int, add_mask: int, del_mask: int,
+                     derivation_pseudos, slot_vocab: dict,
+                     table: FactTable) -> int:
+    """Bitmap variant of `_apply_delta`. Same semantics:
+    apply dels, strip stale derived relations, apply scalar
+    displacement on adds, apply adds, then re-derive to fixed point.
+
+    The frozenset reconstruction the tuple-mode version does on every
+    call is the bottleneck _apply_delta was profiling at — here that
+    cost becomes a couple of int ops, and the derivation worklist
+    iterates fact IDs instead of hashing tuple keys.
+    """
+    new_state = state & ~del_mask
+
+    # Decode the delta to feed _derived_strip_set (which inspects
+    # relation names). Only the bits actually in the delta are
+    # touched, so this is O(|adds|+|dels|), not O(|state|).
+    add_tuples = [table.tuple_for(fid) for fid in iter_bits(add_mask)]
+    del_tuples = [table.tuple_for(fid) for fid in iter_bits(del_mask)]
+    strip_targets = _derived_strip_set(
+        derivation_pseudos, set(del_tuples), set(add_tuples))
+    if strip_targets:
+        new_state &= ~table.rel_mask(strip_targets)
+
+    # Scalar slot displacement: clear all known values for any scalar
+    # (eid, slot) we're writing, then OR in the adds.
+    for f in add_tuples:
+        if f[0] != "prop":
+            continue
+        _, eid, slot, _ = f
+        if slot_vocab.get(slot, {}).get("scalar", True):
+            new_state &= ~table.scalar_slot_mask.get((eid, slot), 0)
+    new_state |= add_mask
+
+    # Re-derivation worklist on mask form.
+    (pres_masks, eff_list_per_pi, fact_to_pi, no_pres_pis,
+        consumer_facts_mask) = _compile_pseudos_for_mask(
+            derivation_pseudos, table, slot_vocab)
+
+    # Scalar shadowing: live lookup against `scalar_slot_mask`
+    # (which can grow after compile time as new prop bits are
+    # interned by `_action_delta_mask`). An effect with
+    # shadow_key=(eid, slot) is blocked iff `new_state` already has
+    # some bit for that slot — we just checked `bit` isn't set, so
+    # any remaining bit in `slot_mask` is a competing scalar value.
+    fired: set = set()
+    scalar_slot_mask = table.scalar_slot_mask
+    from collections import deque
+    # Seed only with facts some pseudo cares about — most state
+    # facts have no consumers in the derivation graph.
+    worklist: deque = deque(iter_bits(new_state & consumer_facts_mask))
+
+    def try_fire(pi):
+        nonlocal new_state
+        if pi in fired:
+            return
+        pres_mask = pres_masks[pi]
+        if (new_state & pres_mask) != pres_mask:
+            return
+        fired.add(pi)
+        for efid, shadow_key in eff_list_per_pi[pi]:
+            bit = 1 << efid
+            if new_state & bit:
+                continue
+            if shadow_key is not None:
+                slot_mask = scalar_slot_mask.get(shadow_key, 0)
+                if new_state & slot_mask:
+                    continue
+            new_state |= bit
+            worklist.append(efid)
+
+    for pi in no_pres_pis:
+        try_fire(pi)
+    while worklist:
+        fid = worklist.popleft()
+        for pi in fact_to_pi.get(fid, ()):
+            try_fire(pi)
+    return new_state
+
+
 def _build_rule_effects_index(rules, lex=None) -> dict:
     """Index rules by their trigger verb, collecting AddRelation and
     RemoveRelation effects with role-arg-name mappings. Maps
@@ -1881,7 +2018,7 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
         # for-loop's item_var, which the planner resolves at grounding
         # time by reading the event's list-valued role binding. Encode
         # the substitution as a `("<list>", role_name)` marker so the
-        # downstream grounder / _action_delta can expand the variadic
+        # downstream grounder / _action_delta_mask can expand the variadic
         # effects per element.
         flat_effects: list = []
         for eff in effects:
@@ -1937,7 +2074,7 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
                 # Args may include given-bound vars (e.g. iri's "from"
                 # container O, matched against rel("en", agent, var(O)) in
                 # `given`). Those positions can't be resolved until
-                # simulation time. Encode them as None; _action_delta
+                # simulation time. Encode them as None; _action_delta_mask
                 # expands wildcards by querying the current fact set.
                 role_args = []
                 for arg in eff.args:
@@ -2060,7 +2197,7 @@ def _synthesize_implications_from_derivations(rule_effects: dict, lex) -> dict:
                 if synth_adds:
                     entry["adds"].extend(synth_adds)
                     # Mirror inside a rule entry so the per-rule
-                    # _action_delta loop emits the synth on fire too.
+                    # _action_delta_mask loop emits the synth on fire too.
                     entry["rules"].append(
                         {"adds": list(synth_adds), "dels": []})
     return rule_effects
@@ -2160,6 +2297,32 @@ def _state_facts(trace, derived, lex=None) -> set:
     except Exception:
         pass
     return facts
+
+
+def _state_facts_mask(trace, derived, lex=None) -> int:
+    """Bitmap form of `_state_facts`. Allocates fact IDs in the
+    trace's `FactTable` on first sight, returns the OR of bits for
+    every fact in the state.
+
+    Cached on the same `(entities, relations, events, derived_id)`
+    key as `_state_facts` but in a separate slot — the masks depend
+    on the table's assignment order, so a callsite that hasn't yet
+    primed the table can still hit the tuple-form cache without
+    contaminating the mask cache.
+    """
+    cache = getattr(trace, "_fwd_state_facts_mask_cache", None)
+    table = fact_table_for(trace)
+    key = (len(trace.entities), len(trace.relations),
+           len(trace.events), id(derived), id(table))
+    if cache is not None and cache[0] == key:
+        return cache[1]
+    facts = _state_facts(trace, derived, lex)
+    mask = table.mask_for(facts)
+    try:
+        object.__setattr__(trace, "_fwd_state_facts_mask_cache", (key, mask))
+    except Exception:
+        pass
+    return mask
 
 
 def _fp_tuple_pool(source_rel: str, trace, lex, rule_effects) -> list:
@@ -3467,7 +3630,7 @@ def plan_for_goal(
         # Re-derive after spawns may have added entities.
         initial_derived = _cached_compute_derived_state(
             initial_trace, derivations, lex)
-    # Seed the per-entity slot snapshot used by `_action_delta` to
+    # Seed the per-entity slot snapshot used by `_action_delta_mask` to
     # filter forbidden AddRelation effects without a trace handle.
     # Captures static properties only (varies-slot randomization is
     # already baked into entity.properties at this point).
@@ -3771,13 +3934,6 @@ def plan_for_goal(
         for name, s in lex.slots.items()
     }
 
-    def heuristic_and_helpful(facts):
-        return _heuristic_and_helpful(
-            goal, None, None, lex,
-            grounded_actions=grounded,
-            grounded_derivations=grounded_derivs,
-            consumer_index=consumer_index, facts=facts)
-
     # Goal as fact for direct fact-set check.
     if goal[0] == "property":
         _, eid, slot, value = goal
@@ -3791,24 +3947,51 @@ def plan_for_goal(
     else:
         return None
 
-    # Fact-set incremental search. State is frozenset(facts). Each
-    # successor: check pres ⊆ state, compute delta via
-    # `_action_delta`, apply via `_apply_delta` (which re-derives).
-    # Far faster than `_simulate_from_scratch` per successor (~1ms
-    # vs ~9ms) at the cost of skipping cascades / entity creation.
+    # Bitmap-state representation. The FactTable interns each fact
+    # tuple into a stable bit position; the search then carries
+    # state as a single `int`, subset checks become a 2-op AND/eq,
+    # `_apply_delta_mask` rebuilds the next state without allocating
+    # a frozenset. See ../fact_table.py for the table; the wire-in
+    # follows the foundation commit that landed it as `_fwd_*`-
+    # namespaced scaffolding.
+    table = fact_table_for(initial_trace)
+    grounded_pres_masks = [
+        table.mask_for(pres) for _a, _r, pres, _e in grounded]
+    grounded_effs_masks = [
+        table.mask_for(effs) for _a, _r, _p, effs in grounded]
+    goal_bit = 1 << table.id_for(goal_fact)
+
+    def heuristic_and_helpful(state_mask: int):
+        # The h_FF graph and helpful-set extraction still operate on
+        # fact tuples internally; rather than refactor it for the
+        # first wire-in cut, materialize on entry. State sizes are
+        # 100-300 facts on typical scenes — same scan the cached
+        # `_state_facts` does for the tuple-mode planner.
+        facts = frozenset(table.tuples_for_mask(state_mask))
+        return _heuristic_and_helpful(
+            goal, None, None, lex,
+            grounded_actions=grounded,
+            grounded_derivations=grounded_derivs,
+            consumer_index=consumer_index, facts=facts)
+
+    # Fact-set incremental search on bitmap state. Each successor:
+    # `(state & pres_mask) == pres_mask` for applicability, mask-form
+    # delta via `_action_delta_mask`, apply via `_apply_delta_mask`
+    # (which re-derives in-place on the int). Far faster than
+    # `_simulate_from_scratch` per successor (~1ms vs ~9ms) at the
+    # cost of skipping cascades / entity creation.
     H_WEIGHT = 2
 
-    initial_facts = frozenset(
-        _state_facts(initial_trace, initial_derived, lex))
+    initial_mask = _state_facts_mask(
+        initial_trace, initial_derived, lex)
     # Apply derivations to layer-0 to get full derived layer.
-    initial_facts = _apply_delta(
-        initial_facts, set(), set(),
-        grounded_derivs, slot_vocab)
+    initial_mask = _apply_delta_mask(
+        initial_mask, 0, 0, grounded_derivs, slot_vocab, table)
 
-    if goal_fact in initial_facts:
+    if initial_mask & goal_bit:
         return []
 
-    initial_h, initial_helpful = heuristic_and_helpful(initial_facts)
+    initial_h, initial_helpful = heuristic_and_helpful(initial_mask)
     if initial_h >= _HEURISTIC_INF:
         return None
     if max_states == 0:
@@ -3827,72 +4010,80 @@ def plan_for_goal(
     # Falls back to weighted A* when EHC dead-ends (helpful set
     # incomplete) or hits its slice of the search budget.
     ehc_budget = max_states // 2
-    anchor_facts = initial_facts
+    anchor_mask = initial_mask
     anchor_h = initial_h
     anchor_helpful = initial_helpful
     anchor_plan: list = []
-    ehc_visited: set = {initial_facts}
+    ehc_visited: set = {initial_mask}
     expansions = 0
     while expansions < ehc_budget and anchor_h > 0:
         bfs: deque = deque(
-            [(anchor_facts, anchor_plan, anchor_helpful)])
+            [(anchor_mask, anchor_plan, anchor_helpful)])
         found = None
         while bfs and expansions < ehc_budget:
-            cur_facts, cur_plan, cur_helpful = bfs.popleft()
+            cur_mask, cur_plan, cur_helpful = bfs.popleft()
             expansions += 1
             if len(cur_plan) >= max_plan_length:
                 continue
-            for action, roles, pres, _effs in grounded:
-                if not all(p in cur_facts for p in pres):
+            for i, (action, roles, _pres, _effs) in enumerate(grounded):
+                pres_mask = grounded_pres_masks[i]
+                if (cur_mask & pres_mask) != pres_mask:
                     continue
                 key = (action.lemma, frozenset(
                     (k, tuple(v) if isinstance(v, list) else v)
                     for k, v in roles.items()))
                 if cur_helpful and key not in cur_helpful:
                     continue
-                adds, dels = _action_delta(
-                    action, roles, rule_effects, lex, facts=cur_facts)
-                if goal[0] == "event_fire" and goal_fact in _effs:
-                    adds = set(adds) | {goal_fact}
-                if not adds and not dels:
+                add_mask, del_mask = _action_delta_mask(
+                    action, roles, rule_effects, lex, table, cur_mask)
+                # Event-fire goal injection: the synthetic
+                # event_fired fact lives in the grounded effs; the
+                # native delta of perception/speech verbs may be
+                # empty, so inject the goal bit when this action's
+                # effs would have produced it.
+                if (goal[0] == "event_fire"
+                        and (grounded_effs_masks[i] & goal_bit)):
+                    add_mask |= goal_bit
+                if add_mask == 0 and del_mask == 0:
                     continue
-                new_facts = _apply_delta(
-                    cur_facts, adds, dels, grounded_derivs, slot_vocab)
-                if new_facts == cur_facts or new_facts in ehc_visited:
+                new_mask = _apply_delta_mask(
+                    cur_mask, add_mask, del_mask,
+                    grounded_derivs, slot_vocab, table)
+                if new_mask == cur_mask or new_mask in ehc_visited:
                     continue
-                ehc_visited.add(new_facts)
+                ehc_visited.add(new_mask)
                 new_plan = cur_plan + [(action.lemma, roles)]
-                if goal_fact in new_facts:
+                if new_mask & goal_bit:
                     return new_plan
-                new_h, new_helpful = heuristic_and_helpful(new_facts)
+                new_h, new_helpful = heuristic_and_helpful(new_mask)
                 if new_h >= _HEURISTIC_INF:
                     continue
                 if new_h < anchor_h:
-                    found = (new_facts, new_h, new_helpful, new_plan)
+                    found = (new_mask, new_h, new_helpful, new_plan)
                     break
-                bfs.append((new_facts, new_plan, new_helpful))
+                bfs.append((new_mask, new_plan, new_helpful))
             if found:
                 break
         if not found:
             break  # EHC plateau — drop to A*.
-        anchor_facts, anchor_h, anchor_helpful, anchor_plan = found
+        anchor_mask, anchor_h, anchor_helpful, anchor_plan = found
     if anchor_h == 0:
         return anchor_plan
 
     # Phase 2: weighted A* from the deepest EHC anchor reached. The
-    # anchor's facts/h/helpful/plan replace the initial seed so we
+    # anchor's mask/h/helpful/plan replace the initial seed so we
     # don't redo the EHC progress.
     open_list: list = []
-    # (f, helpful_priority, tiebreak, g, h, plan, facts, helpful)
+    # (f, helpful_priority, tiebreak, g, h, plan, state_mask, helpful)
     heapq.heappush(open_list, (
         len(anchor_plan) + H_WEIGHT * anchor_h, 0, 0,
         len(anchor_plan), anchor_h,
-        anchor_plan, anchor_facts, anchor_helpful))
-    visited: dict = {anchor_facts: len(anchor_plan)}
+        anchor_plan, anchor_mask, anchor_helpful))
+    visited: dict = {anchor_mask: len(anchor_plan)}
     tiebreak = 1
 
     while open_list and expansions < max_states:
-        (f, _hp, _tie, g, h_cur, plan, facts, helpful) = (
+        (f, _hp, _tie, g, h_cur, plan, cur_mask, helpful) = (
             heapq.heappop(open_list))
         if h_cur >= _HEURISTIC_INF:
             continue
@@ -3903,54 +4094,51 @@ def plan_for_goal(
         # as the "is this entry fully evaluated" flag: None means
         # stale, a set means fresh.
         if helpful is None:
-            real_h, real_helpful = heuristic_and_helpful(facts)
+            real_h, real_helpful = heuristic_and_helpful(cur_mask)
             if real_h >= _HEURISTIC_INF:
                 continue
             if real_h > h_cur:
-                # Stale priority was optimistic — re-push with real h
-                # so the heap re-orders this entry against fresher ones.
                 heapq.heappush(open_list, (
                     g + H_WEIGHT * real_h,
-                    1, tiebreak, g, real_h, plan, facts, real_helpful))
+                    1, tiebreak, g, real_h, plan, cur_mask, real_helpful))
                 tiebreak += 1
                 continue
             helpful = real_helpful
             h_cur = real_h
-        if goal_fact in facts:
+        if cur_mask & goal_bit:
             return plan
         expansions += 1
         if g >= max_plan_length:
             continue
 
-        # Iterate grounded actions: pres-check is just subset on
-        # frozenset (O(|pres|), ~5 facts per action). Helpful actions
-        # get real h computed immediately; non-helpful are pushed with
-        # parent's h as a placeholder (lazy h) and re-evaluated only
-        # when popped — saves ~90% of heuristic calls.
-        for action, roles, pres, _effs in grounded:
-            if not all(p in facts for p in pres):
+        # Iterate grounded actions: pres-check is a single AND+eq
+        # on int (was an O(|pres|) frozenset membership loop).
+        # Helpful actions get real h computed immediately; non-
+        # helpful are pushed with parent's h as a placeholder (lazy
+        # h) and re-evaluated only when popped — saves ~90% of
+        # heuristic calls.
+        for i, (action, roles, _pres, _effs) in enumerate(grounded):
+            pres_mask = grounded_pres_masks[i]
+            if (cur_mask & pres_mask) != pres_mask:
                 continue
-            adds, dels = _action_delta(
-                action, roles, rule_effects, lex, facts=facts)
-            # For event-fire goal entries, the synthetic event_fired
-            # fact lives in the grounded `effs` set; inject it so the
-            # action can fire even when its native delta is empty
-            # (legi/skribi have no property changes, only rule-mediated
-            # CreateEntity that the fact-set search can't represent).
-            if goal[0] == "event_fire" and goal_fact in _effs:
-                adds = set(adds) | {goal_fact}
-            if not adds and not dels:
+            add_mask, del_mask = _action_delta_mask(
+                action, roles, rule_effects, lex, table, cur_mask)
+            if (goal[0] == "event_fire"
+                    and (grounded_effs_masks[i] & goal_bit)):
+                add_mask |= goal_bit
+            if add_mask == 0 and del_mask == 0:
                 continue
-            new_facts = _apply_delta(
-                facts, adds, dels, grounded_derivs, slot_vocab)
-            if new_facts == facts:
+            new_mask = _apply_delta_mask(
+                cur_mask, add_mask, del_mask,
+                grounded_derivs, slot_vocab, table)
+            if new_mask == cur_mask:
                 continue  # no-op event
             new_g = g + 1
-            prev_g = visited.get(new_facts)
+            prev_g = visited.get(new_mask)
             if prev_g is not None and prev_g <= new_g:
                 continue
-            visited[new_facts] = new_g
-            if goal_fact in new_facts:
+            visited[new_mask] = new_g
+            if new_mask & goal_bit:
                 return plan + [(action.lemma, roles)]
             key = (action.lemma, frozenset(
                 (k, tuple(v) if isinstance(v, list) else v)
@@ -3958,14 +4146,11 @@ def plan_for_goal(
             is_helpful = key in helpful
             # Diversity noise: small uniform perturbation on the open-list
             # priority shuffles equal-and-near-equal paths so different
-            # rng seeds explore different sub-optimal plans (e.g. bike vs.
-            # walk for the same en-goal). new_g stays integer for visited
-            # bookkeeping so depth comparisons remain stable; only the
-            # heap ordering sees the noise. Without rng, exact original
-            # behavior.
+            # rng seeds explore different sub-optimal plans. new_g stays
+            # integer for visited bookkeeping; only the heap sees noise.
             noise = (rng.random() * 0.5 if rng is not None else 0.0)
             if is_helpful:
-                new_h, new_helpful = heuristic_and_helpful(new_facts)
+                new_h, new_helpful = heuristic_and_helpful(new_mask)
                 if new_h >= _HEURISTIC_INF:
                     continue
                 heapq.heappush(open_list, (
@@ -3973,15 +4158,14 @@ def plan_for_goal(
                     0, tiebreak,
                     new_g, new_h,
                     plan + [(action.lemma, roles)],
-                    new_facts, new_helpful))
+                    new_mask, new_helpful))
             else:
-                # Lazy: use parent's h as the optimistic estimate.
                 heapq.heappush(open_list, (
                     new_g + H_WEIGHT * h_cur + noise,
                     1, tiebreak,
                     new_g, h_cur,
                     plan + [(action.lemma, roles)],
-                    new_facts, None))
+                    new_mask, None))
             tiebreak += 1
     return None
 
