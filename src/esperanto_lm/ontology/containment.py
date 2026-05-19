@@ -257,6 +257,9 @@ def reachable_from(
     return visited
 
 
+_CONTAINERS_FOR_CACHE_ATTR = "_containers_for_cache"
+
+
 def containers_for(
     contained_lemma: str,
     containment_index: dict[str, list[ContainmentFact]],
@@ -272,14 +275,40 @@ def containers_for(
     materialize it (recursively place IT in scene), then put butero
     on it. Without this, butero would fall back to placement
     directly under the scene location, missing the natural
-    'on a table' / 'in a basket' framing."""
-    parser = parser or DefaultMorphParser()
+    'on a table' / 'in a basket' framing.
+
+    Memoized per lexicon on first call: the result for a given
+    `contained_lemma` depends only on `(containment_index,
+    lexicon)`, both stable for the lifetime of the lex. Callers
+    that didn't pass a custom `parser` get the cached pool;
+    the rare custom-parser caller skips the cache (and pays the
+    walk)."""
+    if parser is None:
+        cache = getattr(lexicon, _CONTAINERS_FOR_CACHE_ATTR, None)
+        if cache is None:
+            cache = {}
+            try:
+                object.__setattr__(
+                    lexicon, _CONTAINERS_FOR_CACHE_ATTR, cache)
+            except Exception:
+                cache = None
+        if cache is not None:
+            hit = cache.get(contained_lemma)
+            if hit is not None:
+                return hit
+        parser_used = DefaultMorphParser()
+    else:
+        cache = None
+        parser_used = parser
     out: list[tuple[str, str]] = []
     for container_lemma, facts in containment_index.items():
         for fact in facts:
-            if contained_lemma in expand_contained(fact, lexicon, parser):
+            if contained_lemma in expand_contained(
+                    fact, lexicon, parser_used):
                 out.append((container_lemma, fact.relation))
                 break
+    if cache is not None:
+        cache[contained_lemma] = out
     return out
 
 

@@ -1227,15 +1227,40 @@ def regress_for_goal(
                 last_loop_reason = (
                     f"place_obj_spawn_failed:{verb_lemma}.{obj_role_name}")
                 continue
+            # Restrict the dest concept pool to containers the
+            # lexicon's containment rules permit for the spawned
+            # object under this goal relation. Without this, the
+            # spawner picks an arbitrary location, fari fires the
+            # AddRelation, `is_relation_permitted` rejects the
+            # pair, and the whole loop iteration is wasted (the
+            # `place_relation_not_permitted` bail). Pre-filtering
+            # at concept-pick time keeps the spawner inside the
+            # space of valid (obj_concept, dest_concept) pairs.
+            from ..containment import containers_for, resolve_containment
+            obj_concept = t.entities[obj_eid].concept_lemma
+            containment_idx = resolve_containment(lex)
+            _allowed_dest_concepts = {
+                c for c, rel in containers_for(
+                    obj_concept, containment_idx, lex)
+                if rel == rel_name}
+            dest_concept_filter = (
+                (lambda c, _ok=_allowed_dest_concepts: c in _ok)
+                if _allowed_dest_concepts else None)
             dest_eid = setup_spawner(
                 dest_role_spec, t, lex, set(t.entities.keys()),
-                action=action, role_name=dest_role_name)
+                action=action, role_name=dest_role_name,
+                concept_filter=dest_concept_filter)
             if dest_eid is None:
                 last_loop_reason = (
                     f"place_dest_spawn_failed:{verb_lemma}.{dest_role_name}")
                 continue
             if not t.is_relation_permitted(
                     rel_name, (obj_eid, dest_eid), lex):
+                # Should be rare now that `_allowed_dest_concepts`
+                # pre-filters by concept, but `is_relation_permitted`
+                # may still reject on per-instance properties
+                # (e.g. an akra theme rejected by a fragile container)
+                # the concept-level check can't see.
                 last_loop_reason = (
                     f"place_relation_not_permitted:{rel_name}")
                 continue
