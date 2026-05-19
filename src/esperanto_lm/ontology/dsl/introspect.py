@@ -492,6 +492,110 @@ def slot_reachable_for_concept(
     return False
 
 
+# Relations whose participants are fixed at concept-time (asserted
+# from concept.parts when the entity is instantiated). A derivation
+# whose `given` references one of these on its implied entity can't
+# be subgoaled by the planner — banano can't be made to have a
+# seruro part. Add others as new asserted-only relations appear.
+_STATIC_RELATIONS = frozenset({"havas_parton"})
+
+_DERIVABLE_CACHE: dict = {}
+
+
+def fully_derivable_slots(lex, derivations) -> dict:
+    """Returns {slot_name: [type_name, ...]} — slots whose value is
+    produced by a derivation whose `when`/`given` constrain the
+    implied entity only via dynamic (runtime-mutable) state. The
+    planner can subgoal any dynamic constraint, so any concept of
+    one of the listed types is eligible to satisfy a role-property
+    requirement on that slot.
+
+    A derivation like `agent_illuminated` (when=animate, given=samloke
+    + lit_state=luma location) qualifies: samloke is runtime-mutable.
+    A derivation like `host_lock_state_from_seruro` (given havas_parton
+    on the host) doesn't: havas_parton is concept-time. Banano can't
+    be subgoaled into having a seruro part."""
+    key = id(lex)
+    cached = _DERIVABLE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    def _entity_patterns_binding(pat, target_var):
+        if isinstance(pat, AndPattern):
+            if (isinstance(pat.left, EntityPattern)
+                    and isinstance(pat.right, BindPattern)
+                    and pat.right.target is target_var):
+                yield pat.left
+            elif (isinstance(pat.right, EntityPattern)
+                    and isinstance(pat.left, BindPattern)
+                    and pat.left.target is target_var):
+                yield pat.right
+            else:
+                yield from _entity_patterns_binding(pat.left, target_var)
+                yield from _entity_patterns_binding(pat.right, target_var)
+
+    def _rel_patterns(pat):
+        if isinstance(pat, RelPattern):
+            yield pat
+        elif isinstance(pat, AndPattern):
+            yield from _rel_patterns(pat.left)
+            yield from _rel_patterns(pat.right)
+
+    def _arg_uses(arg_pat, var):
+        if arg_pat is var:
+            return True
+        if isinstance(arg_pat, BindPattern) and arg_pat.target is var:
+            return True
+        if isinstance(arg_pat, AndPattern):
+            return (_arg_uses(arg_pat.left, var)
+                    or _arg_uses(arg_pat.right, var))
+        return False
+
+    out: dict = {}
+    for d in derivations:
+        for imp in d.implies:
+            if not isinstance(imp, PropertyImplication):
+                continue
+            if not isinstance(imp.entity, Var):
+                continue
+            target = imp.entity
+            type_constraint = None
+            for ep in _entity_patterns_binding(d.when, target):
+                t = ep.constraints.get("type")
+                if isinstance(t, str):
+                    type_constraint = t
+            if type_constraint is None:
+                for clause in d.given:
+                    for ep in _entity_patterns_binding(clause, target):
+                        t = ep.constraints.get("type")
+                        if isinstance(t, str):
+                            type_constraint = t
+                            break
+                    if type_constraint is not None:
+                        break
+            if type_constraint is None:
+                continue
+            has_static = False
+            for clause in d.given:
+                for rp in _rel_patterns(clause):
+                    if rp.relation not in _STATIC_RELATIONS:
+                        continue
+                    for arg in rp.arg_patterns.values():
+                        if _arg_uses(arg, target):
+                            has_static = True
+                            break
+                    if has_static:
+                        break
+                if has_static:
+                    break
+            if has_static:
+                continue
+            out.setdefault(imp.slot, []).append(type_constraint)
+
+    _DERIVABLE_CACHE[key] = out
+    return out
+
+
 def concept_models_slot(
     concept, slot: str, lex, derivations: list,
 ) -> bool:

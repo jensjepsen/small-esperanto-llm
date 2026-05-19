@@ -145,8 +145,7 @@ def make_spawner(
                 return rng.choice(pool)
             # entity source: fall through to normal entity spawn below
         from .seeders import (
-            _candidate_weights, _concepts_matching_role,
-            _place_respecting_containment,
+            _candidate_weights, _place_respecting_containment,
         )
 
         # Concept pick. Verb-aware bias when caller supplied action +
@@ -166,7 +165,7 @@ def make_spawner(
                 if e.target_role == role_name:
                     eff = e
                     break
-        candidates = _concepts_matching_role(lex_arg, role_spec)
+        candidates = list(lex_arg.concept_index.concepts_matching_role(role_spec))
         if not candidates:
             return None
         # Caller-supplied predicate (cross-role coordination from

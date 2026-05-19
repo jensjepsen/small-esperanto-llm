@@ -55,181 +55,14 @@ def _verb_chain_weight(action) -> float:
     return float(score)
 
 
-# Relations that are concept-time identity, not runtime-mutable: the
-# planner can't subgoal these because no rule produces or removes them
-# after instance creation. (havas_parton is asserted from
-# concept.parts at instance time. Add others here when they appear.)
-_STATIC_RELATIONS = frozenset({"havas_parton"})
-
-_DERIVABLE_CACHE: dict = {}
+# `fully_derivable_slots` lives in dsl/introspect.py now; the
+# role-matching predicates that used it live on `Lex.concept_index`
+# as `concepts_matching_role`. Kept here as a comment trail for
+# future archeology.
 
 
-def _fully_derivable_slots(lex, derivations) -> dict:
-    """Returns {slot_name: [type_name, ...]} — slots whose value is
-    produced by a derivation whose `when`/`given` constrain the
-    implied entity only via dynamic (runtime-mutable) state. The
-    planner can subgoal any dynamic constraint, so any concept of
-    one of the listed types is eligible to satisfy a role-property
-    requirement on that slot.
-
-    A derivation like `agent_illuminated` (when=animate, given=samloke
-    + lit_state=luma location) qualifies: samloke is runtime-mutable.
-    A derivation like `host_lock_state_from_seruro` (given havas_parton
-    on the host) doesn't: havas_parton is concept-time. Banano can't
-    be subgoaled into having a seruro part."""
-    key = id(lex)
-    cached = _DERIVABLE_CACHE.get(key)
-    if cached is not None:
-        return cached
-
-    from ..dsl.implications import PropertyImplication
-    from ..dsl.patterns import (
-        AndPattern, BindPattern, EntityPattern, NotPattern,
-        RelPattern, Var,
-    )
-
-    def _entity_patterns_binding(pat, target_var):
-        """EntityPatterns co-bound with target_var via `& bind(target)`."""
-        if isinstance(pat, AndPattern):
-            if (isinstance(pat.left, EntityPattern)
-                    and isinstance(pat.right, BindPattern)
-                    and pat.right.target is target_var):
-                yield pat.left
-            elif (isinstance(pat.right, EntityPattern)
-                    and isinstance(pat.left, BindPattern)
-                    and pat.left.target is target_var):
-                yield pat.right
-            else:
-                yield from _entity_patterns_binding(pat.left, target_var)
-                yield from _entity_patterns_binding(pat.right, target_var)
-
-    def _rel_patterns(pat):
-        """Yield RelPatterns in conjunctions; skip negations."""
-        if isinstance(pat, RelPattern):
-            yield pat
-        elif isinstance(pat, AndPattern):
-            yield from _rel_patterns(pat.left)
-            yield from _rel_patterns(pat.right)
-
-    def _arg_uses(arg_pat, var):
-        """Does this rel arg reference var directly or via bind?"""
-        if arg_pat is var:
-            return True
-        if isinstance(arg_pat, BindPattern) and arg_pat.target is var:
-            return True
-        if isinstance(arg_pat, AndPattern):
-            return (_arg_uses(arg_pat.left, var)
-                    or _arg_uses(arg_pat.right, var))
-        return False
-
-    out: dict = {}
-    for d in derivations:
-        for imp in d.implies:
-            if not isinstance(imp, PropertyImplication):
-                continue
-            if not isinstance(imp.entity, Var):
-                continue
-            target = imp.entity
-            # Find target's type constraint via EntityPattern bound to it.
-            type_constraint = None
-            for ep in _entity_patterns_binding(d.when, target):
-                t = ep.constraints.get("type")
-                if isinstance(t, str):
-                    type_constraint = t
-            if type_constraint is None:
-                for clause in d.given:
-                    for ep in _entity_patterns_binding(clause, target):
-                        t = ep.constraints.get("type")
-                        if isinstance(t, str):
-                            type_constraint = t
-                            break
-                    if type_constraint is not None:
-                        break
-            if type_constraint is None:
-                continue
-            # Any given clause that puts target on a STATIC relation
-            # disqualifies — concept-time identity, planner can't change.
-            has_static = False
-            for clause in d.given:
-                for rp in _rel_patterns(clause):
-                    if rp.relation not in _STATIC_RELATIONS:
-                        continue
-                    for arg in rp.arg_patterns.values():
-                        if _arg_uses(arg, target):
-                            has_static = True
-                            break
-                    if has_static:
-                        break
-                if has_static:
-                    break
-            if has_static:
-                continue
-            out.setdefault(imp.slot, []).append(type_constraint)
-
-    _DERIVABLE_CACHE[key] = out
-    return out
 
 
-def _concepts_matching_role(lex, role_spec) -> list[str]:
-    """Concepts compatible with role_spec: subtype-correct AND every
-    role.properties slot is meaningful for the concept.
-
-    For immutable slots (e.g. functional_signature=ŝlosi) the concept's
-    declared value must intersect the role's required set.
-
-    For varies=True slots, the value gets randomized at instance-time —
-    but only if the concept declares the slot. A concept that doesn't
-    declare openness can't be a meaningful malfermi.theme even though
-    the type spine allows it.
-
-    For slots whose value is fully produced by a runtime-mutable
-    derivation (see `_fully_derivable_slots`), the concept doesn't
-    need to declare it — the planner can establish the underlying
-    state. illuminated, water_body, and any future derivation-only
-    slots end up here."""
-    from ..dsl.rules import RUNTIME_DERIVATIONS
-    derivable = _fully_derivable_slots(lex, RUNTIME_DERIVATIONS)
-    out = []
-    for lemma, concept in lex.concepts.items():
-        if not lex.types.is_subtype(concept.entity_type, role_spec.type):
-            continue
-        # Category stubs (besto, planto, …) are abstract — they
-        # exist for category-derivation purposes only and don't
-        # carry concrete properties like terrain or locomotion. If
-        # picked as an actor, the planner has nothing to work with;
-        # if picked as a theme, the spawner has nothing to place.
-        if getattr(concept, "is_category_stub", False):
-            continue
-        ok = True
-        for slot, vals in role_spec.properties.items():
-            slot_def = lex.slots.get(slot)
-            if slot_def is None:
-                continue
-            cvals = concept.properties.get(slot, [])
-            # Slot is fully derivable for some type T that includes
-            # this concept's type → runtime can establish.
-            deriv_types = derivable.get(slot, ())
-            if any(lex.types.is_subtype(concept.entity_type, t)
-                   for t in deriv_types):
-                continue
-            if slot_def.varies:
-                # Pervasive slots (hunger, wetness, etc.) apply to every
-                # concept of the slot's applies_to type via a default
-                # derivation — no per-concept declaration needed.
-                # Opt-in slots (openness, lock_state) require the
-                # concept to declare them.
-                if getattr(slot_def, "pervasive", False):
-                    continue
-                if not cvals:
-                    ok = False
-                    break
-                continue
-            if not (set(vals) & set(cvals)):
-                ok = False
-                break
-        if ok:
-            out.append(lemma)
-    return out
 
 
 
@@ -282,7 +115,7 @@ def regress_for_verb(verb_name, lex, rng):
     eff = action.effects[0]
     role_eids: dict[str, str] = {}
     for role in action.roles:
-        candidates = _concepts_matching_role(lex, role)
+        candidates = list(lex.concept_index.concepts_matching_role(role))
         weights: list[float] | None = None
         if role.name == eff.target_role:
             # We don't filter candidates here on whether the effect
@@ -403,27 +236,6 @@ def _force_conditional_gates(t, action, role_eids: dict, lex, rng) -> None:
         ent.set_property(pc.then_property, rng.choice(adverse))
 
 
-def _concept_satisfies_role_props(concept, role, lex) -> bool:
-    """Does this concept satisfy role.properties? Mirrors
-    `_concepts_matching_role`'s per-slot checks but for a single
-    (concept, role) pair. Used by the chain seeder to decide whether
-    an existing role binding can be reused for a producer's role."""
-    for slot, vals in role.properties.items():
-        slot_def = lex.slots.get(slot)
-        if slot_def is None:
-            continue
-        cvals = concept.properties.get(slot, [])
-        if slot_def.varies:
-            # Pervasive slots are always meaningful via default-derivation;
-            # opt-in slots require concept-level declaration.
-            if getattr(slot_def, "pervasive", False):
-                continue
-            if not cvals:
-                return False
-            continue
-        if not (set(vals) & set(cvals)):
-            return False
-    return True
 
 
 def _verbs_producing(lex, slot: str, value: str) -> list:
@@ -1148,10 +960,10 @@ def _seed_role_chain_dependencies(t, action, role_eids: dict,
                                     and lex.types.is_subtype(
                                         ent_p.entity_type, p_role.type)
                                     and role_concept is not None
-                                    and _concept_satisfies_role_props(
-                                        role_concept, p_role, lex)):
+                                    and (
+                                        role_concept.lemma in lex.concept_index.concepts_matching_role(p_role))):
                                 continue
-                        cands = _concepts_matching_role(lex, p_role)
+                        cands = list(lex.concept_index.concepts_matching_role(p_role))
                         if not cands:
                             ok = False
                             break
@@ -1219,10 +1031,10 @@ def _seed_chain_dependencies(t, action, role_eids: dict, scene_id: str,
                     role_concept = lex.concepts.get(ent.concept_lemma)
                     if (lex.types.is_subtype(ent.entity_type, p_role.type)
                             and role_concept is not None
-                            and _concept_satisfies_role_props(
-                                role_concept, p_role, lex)):
+                            and (
+                                role_concept.lemma in lex.concept_index.concepts_matching_role(p_role))):
                         continue   # reusable for producer's role
-                cands = _concepts_matching_role(lex, p_role)
+                cands = list(lex.concept_index.concepts_matching_role(p_role))
                 if not cands:
                     continue
                 concept_lemma = rng.choice(cands)
@@ -1633,7 +1445,7 @@ def _seed_cascade_self_slot(cascades, slot, target_value, lex, rng):
     for role in action.roles:
         if role.name == spec.agent_role or role.name == "instrument":
             continue
-        candidates = set(_concepts_matching_role(lex, role))
+        candidates = set(lex.concept_index.concepts_matching_role(role))
         if not candidates:
             return None
         builder = builder.scatter(
@@ -1679,7 +1491,7 @@ def _seed_reflexive_self_slot(action, slot, target_value, lex, rng):
             continue
         # Scatter instruments and other roles in-scene so the chain
         # stays samloke-safe through the reflexive action.
-        candidates = set(_concepts_matching_role(lex, role))
+        candidates = set(lex.concept_index.concepts_matching_role(role))
         if not candidates:
             return None
         builder = builder.scatter(
@@ -1716,7 +1528,7 @@ def _seed_agent_self_slot(action, slot, target_value, lex, rng):
     for role in action.roles:
         if role.name == "agent":
             continue
-        candidates = set(_concepts_matching_role(lex, role))
+        candidates = set(lex.concept_index.concepts_matching_role(role))
         if not candidates:
             return None
         builder = builder.scatter(

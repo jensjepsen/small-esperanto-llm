@@ -287,8 +287,7 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
         (r for r in fari.roles if r.name == "agent"), None)
     if agent_role is None:
         return None
-    from .seeders import _concepts_matching_role
-    agent_candidates = _concepts_matching_role(lex, agent_role)
+    agent_candidates = list(lex.concept_index.concepts_matching_role(agent_role))
     if not agent_candidates:
         return None
     agent_concept = rng.choice(agent_candidates)
@@ -599,7 +598,6 @@ def regress_for_goal(
     fresh scene and can't safely splice onto an existing one.
     """
     from ..sampler import _add_entity_randomized, _ensure_world
-    from .seeders import _concepts_matching_role
     from .goals import CREATED_ROLE
 
     in_followup = existing_trace is not None
@@ -654,7 +652,7 @@ def regress_for_goal(
                 return None
             fari_agent = next(
                 (r for r in fari.roles if r.name == "agent"), None)
-            fari_candidates = _concepts_matching_role(lex, fari_agent) \
+            fari_candidates = list(lex.concept_index.concepts_matching_role(fari_agent)) \
                 if fari_agent else []
             fitting = [
                 eid for eid in existing_trace.entities
@@ -751,7 +749,7 @@ def regress_for_goal(
     # that satisfy the role's properties (ekstera for pluvi).
     actor_is_scene = lex.types.is_subtype(
         agent_role_spec.type, "location")
-    agent_candidates = _concepts_matching_role(lex, agent_role_spec)
+    agent_candidates = list(lex.concept_index.concepts_matching_role(agent_role_spec))
     if not agent_candidates:
         _bail(f"no_agent_candidates:{verb_lemma}")
         return None

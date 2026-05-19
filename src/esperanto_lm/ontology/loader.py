@@ -740,7 +740,7 @@ def load_lexicon(
             if eff.target_role == "agent":
                 agent_state_verbs.setdefault(key, []).append(lemma)
 
-    return Lexicon(
+    lex = Lexicon(
         types=spine, slots=slots, concepts=concepts,
         relations=relations, actions=actions, affixes=affixes,
         containment=containment, qualities=qualities,
@@ -749,6 +749,16 @@ def load_lexicon(
         agent_state_verbs={k: tuple(v) for k, v in agent_state_verbs.items()},
         concept_index=ConceptIndex.build(concepts, spine),
     )
+    # Role-semantic queries (concepts_matching_role) need slot
+    # metadata and the runtime-derivable map. Computed once here so
+    # callers can do `lex.concept_index.concepts_matching_role(role)`
+    # without each site re-walking RUNTIME_DERIVATIONS. Lazy imports
+    # break the loader↔dsl.rules cycle.
+    from .dsl.introspect import fully_derivable_slots
+    from .dsl.rules import RUNTIME_DERIVATIONS
+    lex.concept_index.with_role_semantics(
+        slots, fully_derivable_slots(lex, RUNTIME_DERIVATIONS))
+    return lex
 
 
 def _validate_containment_fact(
