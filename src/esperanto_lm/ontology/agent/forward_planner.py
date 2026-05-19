@@ -2845,149 +2845,118 @@ def _ground_constructable_actions(
     return out
 
 
-def _build_consumer_index(actions, derivations):
-    """Inverted index: fact → list of (base_cost, pres_set, effs_set,
-    pres_tuple) consumers that need this fact in their pres. Actions
-    have base_cost=1, derivations have base_cost=0. Used by the
-    worklist h_add relaxation so each fact addition only re-checks
-    the consumers that actually care about it, instead of iterating
-    all ~5000 grounded actions+derivations per layer.
+def _build_consumer_index(actions, derivations, table: FactTable):
+    """Inverted index: fact_id → list of (base_cost, pres_fids,
+    effs_fids, cid) consumers that need this fact in their pres.
+    Actions have base_cost=1, derivations have base_cost=0. Used
+    by the worklist h_add relaxation so each fact addition only
+    re-checks the consumers that actually care about it.
+
+    Pres/effs are translated through `table.id_for` once at build
+    time; the h_add loop and back-walk then operate on `int` fact
+    IDs all the way through (no tuple hashing on the hot path).
 
     Returns (fact_to_consumers, all_consumers, cid_to_info,
-    pres_len) — the latter two are per-plan invariants precomputed
-    once and reused across the ~100 h_add calls in one search:
+    pres_len) — the latter two are per-plan invariants reused
+    across the ~100 h_add calls in one search:
       - cid_to_info: list indexed by cid → (verb_lemma_or_None,
-        roles, pres, effs). Used by h_add's helpful-action backtrack.
+        roles, pres_fids, effs_fids). Used by h_add's helpful-
+        action backtrack — pres_fids feeds the back-walk stack.
       - pres_len: list indexed by cid → len(pres). Used to seed
         unsat[cid] each h_add call without re-iterating all_consumers.
     """
-    fact_to: dict[tuple, list] = {}
+    fact_to: dict[int, list] = {}
     all_consumers: list = []
     cid_to_info: list = []
     pres_len: list = []
     cid = 0
+    id_for = table.id_for
     for action, roles, pres, effs in actions:
-        pres_set = frozenset(pres)
-        consumer = (1, pres_set, frozenset(effs), cid)
+        pres_fids = tuple({id_for(p) for p in pres})
+        effs_fids = tuple({id_for(e) for e in effs})
+        consumer = (1, pres_fids, effs_fids, cid)
         all_consumers.append(consumer)
-        cid_to_info.append((action.lemma, roles, pres, effs))
-        pres_len.append(len(pres_set))
-        for p in pres_set:
-            fact_to.setdefault(p, []).append(consumer)
+        cid_to_info.append((action.lemma, roles, pres_fids, effs_fids))
+        pres_len.append(len(pres_fids))
+        for pid in pres_fids:
+            fact_to.setdefault(pid, []).append(consumer)
         cid += 1
     for _, _, pres, effs in derivations:
-        pres_set = frozenset(pres)
-        consumer = (0, pres_set, frozenset(effs), cid)
+        pres_fids = tuple({id_for(p) for p in pres})
+        effs_fids = tuple({id_for(e) for e in effs})
+        consumer = (0, pres_fids, effs_fids, cid)
         all_consumers.append(consumer)
-        cid_to_info.append((None, None, pres, effs))
-        pres_len.append(len(pres_set))
-        for p in pres_set:
-            fact_to.setdefault(p, []).append(consumer)
+        cid_to_info.append((None, None, pres_fids, effs_fids))
+        pres_len.append(len(pres_fids))
+        for pid in pres_fids:
+            fact_to.setdefault(pid, []).append(consumer)
         cid += 1
     return fact_to, all_consumers, cid_to_info, pres_len
 
 
 def _heuristic_and_helpful(
-    goal, trace, derived, lex, grounded_actions=None,
-    grounded_derivations=None, consumer_index=None,
-    facts: set | None = None,
+    goal_fact_id: int, facts_mask: int, consumer_index,
 ) -> tuple[int, set]:
-    """h_add over the relaxed planning graph using a worklist with
-    an inverted fact→consumers index. Also returns the "helpful
+    """h_FF over the relaxed planning graph using a worklist with
+    an inverted fact_id→consumers index. Also returns the "helpful
     actions" set — verbs whose grounded effects appear on the
     cheapest path back from the goal in the relaxed plan.
 
-    Initial: cost(initial_facts) = 0. For each consumer c (action or
-    derivation) whose pres are all known: tentative_cost = c.base +
-    sum(cost[p] for p in c.pres). For each effect e: if
+    Operates entirely on fact IDs / bitmaps — `consumer_index` is
+    built mask-native by `_build_consumer_index(_, _, table)`,
+    `facts_mask` is the bitmap state, `goal_fact_id` is the
+    single goal literal's interned ID. The h_FF graph and the
+    helpful-action back-walk both run on integer keys: no tuple
+    hashing on the hot path.
+
+    Initial: cost(initial_facts) = 0. For each consumer c (action
+    or derivation) whose pres are all known: tentative_cost =
+    c.base + sum(cost[p] for p in c.pres). For each effect e: if
     tentative_cost < cost[e], update cost[e] and remember the
     producer. Terminates when the worklist is empty.
 
-    Helpful action extraction: walk back from goal facts through
-    cheapest producers; collect the (verb, roles) pairs of action
-    producers (skipping derivation pseudo-actions). Forward search
-    only expands these — typically 3-8 out of ~80 applicable, so
-    the branching factor collapses to something tractable.
+    Helpful action extraction: walk back from the goal through
+    cheapest producers; collect (verb, roles) pairs of action
+    producers (skipping derivation pseudo-actions). The forward
+    search only expands these — typically 3-8 out of ~80
+    applicable.
 
     Returns (h, helpful_actions) — h is 0 if goal holds, INF if
-    unreached, else sum of costs over goal literals.
+    unreached, else the count of unique action cids on the
+    relaxed plan back from the goal.
     """
-    # If facts provided, skip trace-based goal check (used in
-    # fact-set search where there's no real Trace per state).
-    if facts is None:
-        if _goal_satisfied(goal, trace, derived, lex):
-            return 0, set()
-    else:
-        # Goal as fact-set check.
-        if goal[0] == "property":
-            _, eid, slot, value = goal
-            if ("prop", eid, slot, value) in facts:
-                return 0, set()
-        elif goal[0] == "relation":
-            _, relation, args = goal
-            _sym_h = _symmetric_relations(lex)
-            if ("rel", relation,
-                    _canon_rel(relation, tuple(args), _sym_h)) in facts:
-                return 0, set()
-        elif goal[0] == "event_fire":
-            _, verb_lemma, bindings_frozen = goal
-            if ("event_fired", verb_lemma, bindings_frozen) in facts:
-                return 0, set()
+    if facts_mask & (1 << goal_fact_id):
+        return 0, set()
 
-    rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
-    if rule_effects is None:
-        from ..dsl.rules import DEFAULT_DSL_RULES
-        rule_effects = _build_rule_effects_index(DEFAULT_DSL_RULES, lex)
-        _RULE_EFFECTS_CACHE[id(lex)] = rule_effects
+    fact_to, all_consumers, cid_to_info, pres_len = consumer_index
 
-    actions = (grounded_actions if grounded_actions is not None
-                else _ground_all_actions(trace, lex, derived, rule_effects))
-    if grounded_derivations is not None:
-        derivation_pseudos = grounded_derivations
-    else:
-        from ..dsl.rules import runtime_derivations_for
-        derivation_pseudos = _ground_derivations(
-            runtime_derivations_for(lex), trace, lex,
-            rule_effects=rule_effects)
-    if consumer_index is None:
-        fact_to, all_consumers, cid_to_info, pres_len = (
-            _build_consumer_index(actions, derivation_pseudos))
-    else:
-        fact_to, all_consumers, cid_to_info, pres_len = consumer_index
-
-    # Layer 0: state facts at cost 0. Either from a fact set
-    # (incremental sim) or extracted from the trace+derived.
-    if facts is not None:
-        cost: dict = {f: 0 for f in facts}
-    else:
-        cost: dict = {f: 0 for f in _state_facts(trace, derived, lex)}
-    # producer[fact] = cid of the consumer that achieved cost[fact].
+    # Layer 0: state facts at cost 0.
+    cost: dict = {fid: 0 for fid in iter_bits(facts_mask)}
+    # producer[fid] = cid of the consumer that achieved cost[fid].
     producer: dict = {}
-
-    from collections import deque
-    # producers_cheapest[fact] = consumer cids that achieved the
+    # producers_cheapest[fid] = consumer cids that achieved the
     # current cheapest cost for that fact. On strict cost
     # improvement, reset to [new_cid]; on tie, append. Used for
     # both h_FF count and the helpful set.
-    producers_cheapest: dict[tuple, list] = {}
+    producers_cheapest: dict = {}
 
+    from collections import deque
     # Counter-based h_add propagation. Maintain per-consumer:
-    #   unsat[cid] = number of pres still at INF (consumer fires
-    #                when this hits 0)
+    #   unsat[cid] = number of pres still at INF
     #   pre_sum[cid] = sum of cost[p] for known pres
-    # List-indexed-by-cid (cids are sequential from _build_consumer_index)
-    # — faster init and access than dict because the consumer set is
-    # the same across all h_add calls in one plan, only values reset.
+    # List-indexed-by-cid (sequential from _build_consumer_index)
+    # — faster than dict because the consumer set is the same
+    # across all h_add calls in one plan; only values reset.
     n_consumers = len(all_consumers)
     pre_sum = [0] * n_consumers
-    unsat = pres_len[:]  # copy of the precomputed pres lengths
+    unsat = pres_len[:]
     ready_consumers: deque = deque(
         cid_ for cid_, u in enumerate(unsat) if u == 0)
 
     # Seed: each cost-0 fact decrements unsat for its consumers.
     # pre_sum stays 0 since cost is 0.
-    for f in cost:
-        for _base, _pres, _effs, cid_ in fact_to.get(f, ()):
+    for fid in cost:
+        for _base, _pres, _effs, cid_ in fact_to.get(fid, ()):
             unsat[cid_] -= 1
             if unsat[cid_] == 0:
                 ready_consumers.append(cid_)
@@ -3006,7 +2975,6 @@ def _heuristic_and_helpful(
                 cost[e] = new_cost
                 producer[e] = cid_
                 producers_cheapest[e] = [cid_]
-                # Emit fact-cost event for consumers of e.
                 if prev >= INF:
                     # First time e is reached.
                     for _b2, _p2, _e2, cid2_ in fact_to.get(e, ()):
@@ -3024,43 +2992,23 @@ def _heuristic_and_helpful(
             elif new_cost == prev:
                 producers_cheapest.setdefault(e, []).append(cid_)
 
-    if goal[0] == "property":
-        _, eid, slot, value = goal
-        goal_facts = [("prop", eid, slot, value)]
-    elif goal[0] == "relation":
-        _, relation, args = goal
-        goal_facts = [("rel", relation,
-                       _canon_rel(relation, tuple(args),
-                                   _symmetric_relations(lex)))]
-    elif goal[0] == "event_fire":
-        _, verb_lemma, bindings_frozen = goal
-        goal_facts = [("event_fired", verb_lemma, bindings_frozen)]
-    else:
-        return _HEURISTIC_INF, set()
+    if cost.get(goal_fact_id, INF) >= INF:
+        return INF, set()
 
-    # Check goal reachability.
-    for g in goal_facts:
-        if cost.get(g, _HEURISTIC_INF) >= _HEURISTIC_INF:
-            return _HEURISTIC_INF, set()
-
-    # producers_cheapest / producers_all built incrementally during
-    # the worklist above — no second pass needed.
-    #
-    # h_FF: walk back from goal through CHEAPEST producers,
+    # h_FF: walk back from the goal through CHEAPEST producers,
     # collecting unique action cids. h = |unique actions|.
     relaxed_action_cids: set = set()
     visited_cheapest: set = set()
-    stack = list(goal_facts)
+    stack = [goal_fact_id]
     while stack:
-        f = stack.pop()
-        if f in visited_cheapest:
+        fid = stack.pop()
+        if fid in visited_cheapest:
             continue
-        visited_cheapest.add(f)
-        for cid_ in producers_cheapest.get(f, ()):
+        visited_cheapest.add(fid)
+        for cid_ in producers_cheapest.get(fid, ()):
             if cid_ < 0 or cid_ >= len(cid_to_info):
                 continue
-            info = cid_to_info[cid_]
-            verb, _roles, pres, _effs = info
+            verb, _roles, pres, _effs = cid_to_info[cid_]
             if verb is not None:
                 relaxed_action_cids.add(cid_)
             for p in pres:
@@ -3070,31 +3018,25 @@ def _heuristic_and_helpful(
     h_ff = len(relaxed_action_cids)
 
     # Helpful set: walk back through cheapest producers, collect
-    # verbs. (Earlier versions also walked sub-cheapest producers via
-    # a separate producers_all map for diversity; profiling showed
-    # that map's setdefault was a hot loop and the broader set
-    # didn't materially change search outcomes.)
+    # verbs. (Earlier versions also walked sub-cheapest producers
+    # via a separate `producers_all` map for diversity; profiling
+    # showed that map's setdefault was a hot loop and the broader
+    # set didn't materially change search outcomes.)
     helpful: set = set()
     visited_all: set = set()
-    stack = list(goal_facts)
+    stack = [goal_fact_id]
     while stack:
-        f = stack.pop()
-        if f in visited_all:
+        fid = stack.pop()
+        if fid in visited_all:
             continue
-        visited_all.add(f)
-        # Take ONE cheapest producer per fact (mirroring the h_FF
-        # block above). For perception of papero, the relaxed graph
-        # might list vidi/flari/montri all at the same cost — adding
-        # every alternative to helpful inflates the search's branching
-        # factor (e.g. 4 parts × 3 perception verbs = 12 redundant
-        # entries) without any new reachable state. Picking one keeps
-        # the helpful set tight; the search can still consider the
-        # alternatives if they become helpful from later states.
-        for cid_ in producers_cheapest.get(f, ()):
+        visited_all.add(fid)
+        # Take ONE cheapest producer per fact (mirroring h_FF).
+        # Adding every alternative to helpful inflates branching
+        # factor without changing reachability.
+        for cid_ in producers_cheapest.get(fid, ()):
             if cid_ < 0 or cid_ >= len(cid_to_info):
                 continue
-            info = cid_to_info[cid_]
-            verb, roles, pres, _effs = info
+            verb, roles, pres, _effs = cid_to_info[cid_]
             if verb is not None:
                 helpful.add((verb, frozenset(
                     (k, tuple(v) if isinstance(v, list) else v)
@@ -3105,15 +3047,6 @@ def _heuristic_and_helpful(
             break
 
     return h_ff, helpful
-
-
-def _heuristic(goal, trace, derived, lex, grounded_actions=None,
-                grounded_derivations=None, consumer_index=None) -> int:
-    """Backward-compatible: just the h value, without helpful set."""
-    h, _ = _heuristic_and_helpful(
-        goal, trace, derived, lex, grounded_actions,
-        grounded_derivations, consumer_index)
-    return h
 
 
 # ---------- search ----------
@@ -3925,7 +3858,6 @@ def plan_for_goal(
 
     grounded = [grounded[i] for i in sorted(relevant_act)]
     grounded_derivs = [grounded_derivs[i] for i in sorted(relevant_deriv)]
-    consumer_index = _build_consumer_index(grounded, grounded_derivs)
 
     # Slot scalar info for the fact-set incremental simulator —
     # needed to correctly displace prior values on scalar slots.
@@ -3951,28 +3883,23 @@ def plan_for_goal(
     # tuple into a stable bit position; the search then carries
     # state as a single `int`, subset checks become a 2-op AND/eq,
     # `_apply_delta_mask` rebuilds the next state without allocating
-    # a frozenset. See ../fact_table.py for the table; the wire-in
-    # follows the foundation commit that landed it as `_fwd_*`-
-    # namespaced scaffolding.
+    # a frozenset. See ../fact_table.py for the table.
     table = fact_table_for(initial_trace)
+    consumer_index = _build_consumer_index(
+        grounded, grounded_derivs, table)
     grounded_pres_masks = [
         table.mask_for(pres) for _a, _r, pres, _e in grounded]
     grounded_effs_masks = [
         table.mask_for(effs) for _a, _r, _p, effs in grounded]
-    goal_bit = 1 << table.id_for(goal_fact)
+    goal_fact_id = table.id_for(goal_fact)
+    goal_bit = 1 << goal_fact_id
 
     def heuristic_and_helpful(state_mask: int):
-        # The h_FF graph and helpful-set extraction still operate on
-        # fact tuples internally; rather than refactor it for the
-        # first wire-in cut, materialize on entry. State sizes are
-        # 100-300 facts on typical scenes — same scan the cached
-        # `_state_facts` does for the tuple-mode planner.
-        facts = frozenset(table.tuples_for_mask(state_mask))
+        # Fully bitmap-native: the consumer index is fact-id keyed,
+        # cost/producer dicts use int keys, the back-walk walks
+        # `pres_fids` lists. No tuple hashing on the hot path.
         return _heuristic_and_helpful(
-            goal, None, None, lex,
-            grounded_actions=grounded,
-            grounded_derivations=grounded_derivs,
-            consumer_index=consumer_index, facts=facts)
+            goal_fact_id, state_mask, consumer_index)
 
     # Fact-set incremental search on bitmap state. Each successor:
     # `(state & pres_mask) == pres_mask` for applicability, mask-form
