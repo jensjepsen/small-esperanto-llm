@@ -92,6 +92,63 @@ class EntityIndex:
             return frozenset(all_eids)
         return frozenset.intersection(*pools)
 
+    def matches_constraints(self, constraints: dict) -> frozenset:
+        """Bitmap pool of entities satisfying ALL literal constraints
+        in `constraints`. Mirrors the per-entity matcher that the
+        planner's `_ground_derivations` used to call inline — keys
+        are `"type"` / `"concept"` / slot names; list/tuple values on
+        a slot use "any-of" (union) semantics, matching the raw
+        EntityPattern constraint shape. `Var` values are treated as
+        unconstrained (they bind at use time, not match time).
+
+        Empty constraints return the full entity universe; an empty
+        list value on a slot returns the empty set (mirrors the
+        `not any(x in vals for x in v)` short-circuit in the
+        former matcher).
+        """
+        self._ensure_fresh()
+        # Local import keeps entity_index.py independent of dsl/.
+        from .dsl.patterns import Var
+        pools: list = []
+        for k, v in constraints.items():
+            if isinstance(v, Var):
+                continue
+            if k == "type":
+                pool = self._bms.get(("type", v))
+                if pool is None:
+                    return _EMPTY
+                pools.append(pool)
+            elif k == "concept":
+                pool = self._bms.get(("concept", v))
+                if pool is None:
+                    return _EMPTY
+                pools.append(pool)
+            elif isinstance(v, (list, tuple)):
+                # "any-of" semantics: union of per-value pools.
+                if not v:
+                    return _EMPTY
+                union: frozenset = _EMPTY
+                for x in v:
+                    p = self._bms.get(("slot", k, x))
+                    if p is not None:
+                        union = union | p
+                if not union:
+                    return _EMPTY
+                pools.append(union)
+            else:
+                pool = self._bms.get(("slot", k, v))
+                if pool is None:
+                    return _EMPTY
+                pools.append(pool)
+        if not pools:
+            # No literal constraints — everything matches.
+            all_eids: set = set()
+            for (kind, *_), pool in self._bms.items():
+                if kind == "type":
+                    all_eids.update(pool)
+            return frozenset(all_eids)
+        return frozenset.intersection(*pools)
+
 
 def entity_index_for(trace, lex) -> EntityIndex:
     """Cached per-trace EntityIndex. Stored on the trace via

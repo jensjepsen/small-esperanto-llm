@@ -43,6 +43,8 @@ from .planner import (
     _simulate_from_scratch, _step_to_event,
 )
 
+_EMPTY_FROZENSET: frozenset = frozenset()
+
 
 # ---------- applicability ----------
 
@@ -787,8 +789,7 @@ def _pool_position_index(pool, rel_name, sym) -> list:
 
 def _evidence_join_combos(
     rel_patterns, rel_arg_vids, pool_indices, pools_all_tuples,
-    var_constraints, var_exclusions,
-    trace, lex, _entity_matches_constraints,
+    var_pool, trace, lex,
 ):
     """Generator over bindings (dict[vid → eid]) satisfying ALL
     `rel_patterns` via a left-deep relational join. Replaces the
@@ -847,25 +848,13 @@ def _evidence_join_combos(
                         ok = False
                         break
                     continue
-                type_, concept_, _props = var_constraints.get(
-                    av, (None, None, ()))
-                ent = trace.entities.get(eid)
-                if ent is None:
-                    ok = False
-                    break
-                if type_ is not None and not lex.types.is_subtype(
-                        ent.entity_type, type_):
-                    ok = False
-                    break
-                if concept_ is not None and ent.concept_lemma != concept_:
-                    ok = False
-                    break
-                excluded = False
-                for excl in var_exclusions.get(av, ()):
-                    if _entity_matches_constraints(ent, excl, lex):
-                        excluded = True
-                        break
-                if excluded:
+                # All constraint checks collapse to a single set
+                # membership: `var_pool[av]` is the precomputed
+                # bitmap of entities satisfying this var's type +
+                # concept + exclusions + body-part/mondo filters,
+                # built once in `_ground_derivations` via
+                # `EntityIndex.matches_constraints`.
+                if eid not in var_pool.get(av, _EMPTY_FROZENSET):
                     ok = False
                     break
                 new_binding[av] = eid
@@ -1030,29 +1019,6 @@ def _ground_derivations(
                             out.append(structural_only)
         return out
 
-    def _entity_matches_constraints(ent, constraints, lex) -> bool:
-        """Does ent satisfy ALL literal type/concept/slot constraints
-        in the dict? Mirrors the matcher in dsl/patterns.py but without
-        Var or has_suffix support (negated exclusions use literals)."""
-        for k, v in constraints.items():
-            if isinstance(v, Var):
-                continue
-            if k == "type":
-                if not lex.types.is_subtype(ent.entity_type, v):
-                    return False
-            elif k == "concept":
-                if ent.concept_lemma != v:
-                    return False
-            elif k in lex.slots:
-                vals = ent.properties.get(k, [])
-                if isinstance(v, (list, tuple)):
-                    if not any(x in vals for x in v):
-                        return False
-                else:
-                    if v not in vals:
-                        return False
-        return True
-
     def _constraints_from_ep(ep, lex):
         """Pull literal type/concept/property constraints from an
         EntityPattern.constraints dict. Returns
@@ -1141,6 +1107,30 @@ def _ground_derivations(
             rev = (canon[1], canon[0])
             idx[0].setdefault(rev[0], []).append(rev)
             idx[1].setdefault(rev[1], []).append(rev)
+
+    # Per-trace state for the var-pool construction: each Var's
+    # binding domain is built by composing `EntityIndex` queries —
+    # type/concept (via `entities_matching` / `entities_of_concept`),
+    # NotPattern exclusions (via `matches_constraints`), and the
+    # planner-specific drops (body-part `inanimate`-typed entities
+    # + `mondo` + `relevant_entities` filter when provided).
+    from ..entity_index import entity_index_for
+    entity_idx = entity_index_for(trace, lex)
+    # Body parts (entities with EXACT type "inanimate" — kapo, piedo,
+    # vosto, …) collapse the samloke binding count by ~10× when
+    # excluded. Note `inanimate` is the parent of artifact /
+    # natural_object / substance, so we can't use
+    # `entities_matching("inanimate")` for this — that would be the
+    # broader subtype pool. Build the exact-type set by direct
+    # scan, one-shot per call.
+    exclude_base = {
+        eid for eid, ent in trace.entities.items()
+        if ent.entity_type == "inanimate"
+    }
+    exclude_base.add("mondo")
+    relevant_set = (
+        frozenset(relevant_entities)
+        if relevant_entities is not None else None)
 
     for d in derivations:
         # All explicit Vars used in when+given+implies.
@@ -1235,43 +1225,39 @@ def _ground_derivations(
         if not impl_specs:
             continue
 
-        # Ground each Var to entities matching its constraints.
-        # Body parts (inanimate sub-entities like virino_piedo) and
-        # the mondo singleton aren't goal-relevant for plan search;
-        # excluding them collapses the grounding count by ~10× on
-        # typical scenes (was 42k samloke groundings → ~4k).
-        domains: list = []
+        # Build each Var's binding pool by composing `EntityIndex`
+        # queries — the index already encapsulates the type/concept/
+        # slot-value matching this site used to do inline. The
+        # resulting `var_pool` is the single source of truth for
+        # "what entities this Var can bind to", reused below by
+        # both the cartesian-product path (`domains`) and the
+        # relational-join path (`_evidence_join_combos`, via
+        # `eid in var_pool[av]` membership tests).
         var_ids = list(all_vars.keys())
+        var_pool: dict = {}
         for vid in var_ids:
             type_, concept_, _props = var_constraints[vid]
-            exclusions = var_exclusions.get(vid, [])
-            cands = []
-            for eid, ent in trace.entities.items():
-                if eid == "mondo":
-                    continue
-                if ent.entity_type == "inanimate":
-                    continue  # body parts
-                if (relevant_entities is not None
-                        and eid not in relevant_entities):
-                    continue
-                if type_ is not None:
-                    if not lex.types.is_subtype(
-                            ent.entity_type, type_):
-                        continue
+            if type_ is not None:
+                pool = set(entity_idx.entities_matching(type_))
                 if concept_ is not None:
-                    if ent.concept_lemma != concept_:
-                        continue
-                # NotPattern exclusion: if the entity matches ALL of any
-                # excluded EntityPattern's literal constraints, skip.
-                excluded = False
-                for excl in exclusions:
-                    if _entity_matches_constraints(ent, excl, lex):
-                        excluded = True
-                        break
-                if excluded:
-                    continue
-                cands.append(eid)
-            domains.append(cands)
+                    pool &= entity_idx.entities_of_concept(concept_)
+            elif concept_ is not None:
+                pool = set(entity_idx.entities_of_concept(concept_))
+            else:
+                pool = set(trace.entities.keys())
+            # NotPattern exclusions: each is a literal constraint
+            # dict that `matches_constraints` resolves to a bitmap
+            # to subtract. The matcher previously walked per-entity
+            # in the planner; now it lives where the entity index
+            # does, alongside `entities_matching` /
+            # `entities_of_concept`.
+            for excl in var_exclusions.get(vid, ()):
+                pool -= entity_idx.matches_constraints(excl)
+            pool -= exclude_base
+            if relevant_set is not None:
+                pool &= relevant_set
+            var_pool[vid] = frozenset(pool)
+        domains = [list(var_pool[vid]) for vid in var_ids]
 
         if not all(domains):
             continue
@@ -1390,8 +1376,7 @@ def _ground_derivations(
             for binding in _evidence_join_combos(
                     rel_patterns, rel_arg_vids, pool_indices,
                     [list(pools[rp.relation]) for rp in rel_patterns],
-                    var_constraints, var_exclusions,
-                    trace, lex, _entity_matches_constraints):
+                    var_pool, trace, lex):
                 _emit_binding(binding)
             continue
 
