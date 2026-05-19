@@ -267,6 +267,7 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
 
     fari = lex.actions.get("fari")
     if fari is None:
+        _bail("construct_no_fari_verb")
         return None
     if theme_concept is None:
         constructables = [
@@ -274,10 +275,12 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
                 properties={"constructable": ["yes"]})
             if lex.concepts[l].parts]
         if not constructables:
+            _bail("construct_no_constructables_in_lex")
             return None
         theme_concept = rng.choice(constructables)
     theme_def = lex.concepts.get(theme_concept)
     if theme_def is None or not theme_def.parts:
+        _bail(f"construct_no_theme_def:{theme_concept}")
         return None
     part_concepts = [p.concept for p in theme_def.parts]
     crafted_with = list(theme_def.crafted_with)
@@ -286,14 +289,17 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
     agent_role = next(
         (r for r in fari.roles if r.name == "agent"), None)
     if agent_role is None:
+        _bail("construct_fari_no_agent_role")
         return None
     agent_candidates = list(lex.concept_index.concepts_matching_role(agent_role))
     if not agent_candidates:
+        _bail("construct_no_agent_candidates")
         return None
     agent_concept = rng.choice(agent_candidates)
     locations = [l for l in lex.concept_index.concepts_matching("location")
                  if not getattr(lex.concepts[l], "is_category_stub", False)]
     if not locations:
+        _bail("construct_no_locations")
         return None
     # Pre-filter by the theme's containment rules: fari adds
     # en(theme, agent_loc), silently swallowed if containment.jsonl
@@ -602,6 +608,13 @@ def regress_for_goal(
     from ..sampler import _add_entity_randomized, _ensure_world
     from .goals import CREATED_ROLE
 
+    # Reset the no-sample reason so this call's exit isn't reported
+    # using a stale leaf from the previous one. Bench reads
+    # `LAST_NO_SAMPLE_REASON` after each `None` return to bucket
+    # failures; without this reset, an un-bailed early-out would
+    # inherit whatever the prior call wrote.
+    global LAST_NO_SAMPLE_REASON
+    LAST_NO_SAMPLE_REASON = None
     in_followup = existing_trace is not None
     index = _cached_goal_index(lex, rules)
     all_goals = []

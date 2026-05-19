@@ -89,8 +89,9 @@ def _entities_summary(t):
 def _run_batch(args):
     """Process one batch. args = (seed, n, sampler_name, max_depth,
     capture_samples). Returns (fired, failed, no_sample, failures,
-    samples) where samples is a list of {kind, scene, drive, plan?,
-    entities} dicts (cap at ~3 per batch each for fired/failed)."""
+    no_sample_reasons, samples) where samples is a list of {kind,
+    scene, drive, plan?, entities} dicts (cap at ~3 per batch each
+    for fired/failed)."""
     seed, n, sampler_name, max_depth, capture = args
     import os
     # Forward planner (h_FF + EHC/weighted-A*) is the default — strictly
@@ -102,6 +103,7 @@ def _run_batch(args):
     )
     from esperanto_lm.ontology.agent.planner import get_planner_failure_reason
     from esperanto_lm.ontology.regression import sample_regression_scene
+    from esperanto_lm.ontology.regression import goal_sampler as _gs
     from esperanto_lm.ontology.regression.goal_sampler import regress_for_goal
     from esperanto_lm.ontology.regression.spawner import make_spawner
 
@@ -112,6 +114,7 @@ def _run_batch(args):
     failed = 0
     no_sample = 0
     failures: list[tuple] = []
+    no_sample_reasons: list[str] = []
     samples: list = []
     SAMPLES_PER_KIND = 3
     fired_seen = 0
@@ -123,6 +126,15 @@ def _run_batch(args):
             sample = regress_for_goal(_LEX, rng, _RULES)
         if sample is None:
             no_sample += 1
+            # `regress_for_goal` writes the reason via `_bail` into
+            # the module-level `LAST_NO_SAMPLE_REASON`. The verb-
+            # first sampler doesn't, so its no_sample stays
+            # uncategorized — coarse-grain to a sentinel.
+            if sampler_name == "goal":
+                no_sample_reasons.append(
+                    _gs.LAST_NO_SAMPLE_REASON or "<no-leaf>")
+            else:
+                no_sample_reasons.append("<verb-sampler-no-leaf>")
             continue
         t, scene_id, drive = sample
         try:
@@ -190,7 +202,8 @@ def _run_batch(args):
                     "entities": _entities_summary(t),
                     "leaf": str(leaf) if leaf is not None else None})
                 failed_seen += 1
-    return fired, failed, no_sample, failures, samples
+    return (fired, failed, no_sample, failures,
+            no_sample_reasons, samples)
 
 
 def main():
@@ -227,16 +240,19 @@ def main():
         start = time.time()
         fired = failed = no_sample = 0
         all_failures: Counter = Counter()
+        all_no_sample: Counter = Counter()
         all_samples: list = []
         with Pool(processes=args.workers,
                    initializer=_init_worker) as pool:
-            for f, fa, ns, failures, samples in (
+            for (f, fa, ns, failures, ns_reasons, samples) in (
                     pool.imap_unordered(_run_batch, tasks)):
                 fired += f
                 failed += fa
                 no_sample += ns
                 for k in failures:
                     all_failures[k] += 1
+                for r in ns_reasons:
+                    all_no_sample[r] += 1
                 all_samples.extend(samples)
         elapsed = time.time() - start
         total = fired + failed
@@ -248,6 +264,10 @@ def main():
         print(f"    top failures:")
         for k, v in all_failures.most_common(10):
             print(f"      {v}x {k}")
+        if no_sample:
+            print(f"    top no_sample reasons:")
+            for k, v in all_no_sample.most_common(10):
+                print(f"      {v}x {k}")
 
         if args.samples_out:
             path = args.samples_out
