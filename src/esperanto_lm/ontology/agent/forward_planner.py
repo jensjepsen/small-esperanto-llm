@@ -33,7 +33,7 @@ POC scope (first iteration):
 from __future__ import annotations
 
 import itertools
-from typing import Optional
+from typing import Any, NamedTuple, Optional
 
 from ..causal import Trace
 from ..fact_table import FactTable, fact_table_for, iter_bits
@@ -44,6 +44,55 @@ from .planner import (
 )
 
 _EMPTY_FROZENSET: frozenset = frozenset()
+
+
+class GroundedAction(NamedTuple):
+    """One grounded action with both tuple-form and bitmap-form
+    pres/effs carried alongside. Produced by `_ground_all_actions`
+    and `_ground_constructable_actions` once per plan; downstream
+    consumers (`_build_consumer_index`, the EHC + A* successor
+    loops, the goal-aware back-walk) read whichever form they
+    need without re-translating.
+
+    Eliminates the per-plan `mask_for` / `id_for` second pass the
+    old `grounded_pres_masks` / `grounded_effs_masks` list
+    comprehensions did, and the per-consumer `id_for(p) for p in
+    pres` translation `_build_consumer_index` ran on top.
+    """
+    action: Any
+    roles: dict
+    pres: set
+    effs: set
+    pres_fids: tuple
+    effs_fids: tuple
+    pres_mask: int
+    effs_mask: int
+
+
+def _make_grounded(action, roles, pres, effs, table: FactTable):
+    """Build a `GroundedAction` from raw pres/effs sets, interning
+    each fact through `table.id_for` exactly once. Returns the
+    full bundle of tuple/id/mask views so downstream consumers
+    don't re-translate."""
+    id_for = table.id_for
+    pres_fid_set: set = set()
+    pres_mask = 0
+    for f in pres:
+        fid = id_for(f)
+        if fid not in pres_fid_set:
+            pres_fid_set.add(fid)
+            pres_mask |= 1 << fid
+    effs_fid_set: set = set()
+    effs_mask = 0
+    for f in effs:
+        fid = id_for(f)
+        if fid not in effs_fid_set:
+            effs_fid_set.add(fid)
+            effs_mask |= 1 << fid
+    return GroundedAction(
+        action, roles, pres, effs,
+        tuple(pres_fid_set), tuple(effs_fid_set),
+        pres_mask, effs_mask)
 
 
 # ---------- applicability ----------
@@ -2421,12 +2470,18 @@ def _fp_tuple_pool(source_rel: str, trace, lex, rule_effects) -> list:
 
 
 def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
-    """All (action, roles, pres, effs) for actions whose roles can
-    be bound to current entities. Pure enumeration — preconditions
-    not checked here (the relaxed graph layer decides applicability).
-    Skips bindings where the same entity fills two roles, matches the
-    behavior of `_applicable_actions`. `rule_effects` is the
-    rule-effect index built by `_build_rule_effects_index`.
+    """All (action, roles, pres, effs) tuples for actions whose
+    roles can be bound to current entities. Pure enumeration —
+    preconditions not checked here (the relaxed graph layer
+    decides applicability). Skips bindings where the same entity
+    fills two roles, matches the behavior of
+    `_applicable_actions`. `rule_effects` is the rule-effect
+    index built by `_build_rule_effects_index`.
+
+    Pres/effs stay as tuple sets here. `plan_for_goal` promotes
+    the survivors of the goal-aware filter to `GroundedAction`
+    via `_make_grounded` — interning happens once, only for
+    actions the search will actually consider.
 
     Also enforces *effect meaningfulness*: an action whose effect
     writes slot S on target T is skipped when T's concept doesn't
@@ -2859,16 +2914,21 @@ def _build_consumer_index(actions, derivations, table: FactTable):
     pres_len: list = []
     cid = 0
     id_for = table.id_for
-    for action, roles, pres, effs in actions:
-        pres_fids = tuple({id_for(p) for p in pres})
-        effs_fids = tuple({id_for(e) for e in effs})
+    # Actions arrive as `GroundedAction` — pres/effs already
+    # interned at grounding time. Reuse the precomputed fids
+    # tuples instead of re-walking through `id_for`.
+    for ga in actions:
+        pres_fids = ga.pres_fids
+        effs_fids = ga.effs_fids
         consumer = (1, pres_fids, effs_fids, cid)
         all_consumers.append(consumer)
-        cid_to_info.append((action.lemma, roles, pres_fids, effs_fids))
+        cid_to_info.append(
+            (ga.action.lemma, ga.roles, pres_fids, effs_fids))
         pres_len.append(len(pres_fids))
         for pid in pres_fids:
             fact_to.setdefault(pid, []).append(consumer)
         cid += 1
+    # Derivation pseudos are still plain tuples; translate as before.
     for _, _, pres, effs in derivations:
         pres_fids = tuple({id_for(p) for p in pres})
         effs_fids = tuple({id_for(e) for e in effs})
@@ -3844,7 +3904,16 @@ def plan_for_goal(
                 if p not in visited_facts:
                     stack.append(p)
 
-    grounded = [grounded[i] for i in sorted(relevant_act)]
+    # After the goal-aware filter cuts ~80% of grounded actions,
+    # promote the survivors to `GroundedAction` — interning each
+    # pres/effs fact through the `FactTable` exactly once.
+    # Eagerly wrapping pre-filter would waste interning on
+    # actions that don't survive (the cost was 2s+ cum in the
+    # bench profile when this was tried).
+    table = fact_table_for(initial_trace)
+    grounded = [
+        _make_grounded(*grounded[i], table=table)
+        for i in sorted(relevant_act)]
     grounded_derivs = [grounded_derivs[i] for i in sorted(relevant_deriv)]
 
     # Slot scalar info for the fact-set incremental simulator —
@@ -3875,10 +3944,6 @@ def plan_for_goal(
     table = fact_table_for(initial_trace)
     consumer_index = _build_consumer_index(
         grounded, grounded_derivs, table)
-    grounded_pres_masks = [
-        table.mask_for(pres) for _a, _r, pres, _e in grounded]
-    grounded_effs_masks = [
-        table.mask_for(effs) for _a, _r, _p, effs in grounded]
     goal_fact_id = table.id_for(goal_fact)
     goal_bit = 1 << goal_fact_id
 
@@ -3940,10 +4005,11 @@ def plan_for_goal(
             expansions += 1
             if len(cur_plan) >= max_plan_length:
                 continue
-            for i, (action, roles, _pres, _effs) in enumerate(grounded):
-                pres_mask = grounded_pres_masks[i]
-                if (cur_mask & pres_mask) != pres_mask:
+            for ga in grounded:
+                if (cur_mask & ga.pres_mask) != ga.pres_mask:
                     continue
+                action = ga.action
+                roles = ga.roles
                 key = (action.lemma, frozenset(
                     (k, tuple(v) if isinstance(v, list) else v)
                     for k, v in roles.items()))
@@ -3957,7 +4023,7 @@ def plan_for_goal(
                 # empty, so inject the goal bit when this action's
                 # effs would have produced it.
                 if (goal[0] == "event_fire"
-                        and (grounded_effs_masks[i] & goal_bit)):
+                        and (ga.effs_mask & goal_bit)):
                     add_mask |= goal_bit
                 if add_mask == 0 and del_mask == 0:
                     continue
@@ -4032,14 +4098,15 @@ def plan_for_goal(
         # helpful are pushed with parent's h as a placeholder (lazy
         # h) and re-evaluated only when popped — saves ~90% of
         # heuristic calls.
-        for i, (action, roles, _pres, _effs) in enumerate(grounded):
-            pres_mask = grounded_pres_masks[i]
-            if (cur_mask & pres_mask) != pres_mask:
+        for ga in grounded:
+            if (cur_mask & ga.pres_mask) != ga.pres_mask:
                 continue
+            action = ga.action
+            roles = ga.roles
             add_mask, del_mask = _action_delta_mask(
                 action, roles, rule_effects, lex, table, cur_mask)
             if (goal[0] == "event_fire"
-                    and (grounded_effs_masks[i] & goal_bit)):
+                    and (ga.effs_mask & goal_bit)):
                 add_mask |= goal_bit
             if add_mask == 0 and del_mask == 0:
                 continue
