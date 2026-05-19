@@ -1131,6 +1131,13 @@ def _ground_derivations(
     relevant_set = (
         frozenset(relevant_entities)
         if relevant_entities is not None else None)
+    # The samloke-chain filter in `_emit_binding` requires at least
+    # one of A/C to be animate — checked per binding in the
+    # cartesian product, so up to ~1M hits in a typical bench.
+    # Precompute the animate pool once via the same `EntityIndex`
+    # the var-pool construction uses, so the per-binding check
+    # collapses to one frozenset membership.
+    animate_pool = entity_idx.entities_matching("animate")
 
     for d in derivations:
         # All explicit Vars used in when+given+implies.
@@ -1305,11 +1312,7 @@ def _ground_derivations(
                 has_animate = False
                 for vid in chain_filter_vids:
                     eid = binding.get(vid)
-                    if eid is None:
-                        continue
-                    ent = trace.entities.get(eid)
-                    if ent is not None and lex.types.is_subtype(
-                            ent.entity_type, "animate"):
+                    if eid is not None and eid in animate_pool:
                         has_animate = True
                         break
                 if not has_animate:
