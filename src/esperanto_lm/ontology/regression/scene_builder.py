@@ -61,17 +61,13 @@ def _standalone_target_concepts(lex):
     parts filter excludes body parts (haro, dento, fingro, brako, …)
     which would otherwise produce incoherent prose like 'Dorso estis
     en salono'."""
-    parts_of_something = {
-        p.concept for c in lex.concepts.values() for p in (c.parts or [])
-    }
-    return [
-        c.lemma for c in lex.concepts.values()
-        if lex.types.is_subtype(c.entity_type, "physical")
-        and c.entity_type != "person"
-        and not lex.types.is_subtype(c.entity_type, "location")
-        and c.lemma not in parts_of_something
-        and not getattr(c, "is_category_stub", False)
-    ]
+    idx = lex.concept_index
+    return list(
+        idx.concepts_matching("physical")
+        - idx.concepts_matching("person")
+        - idx.concepts_matching("location")
+        - idx.stubs
+        - idx.parts_used)
 
 
 class SceneBuilder:
@@ -252,16 +248,12 @@ class SceneBuilder:
         # animal seeder).
         gender = _person_gender(self.lex, name)
         if gender is not None:
-            from ..containment import _concept_in_category
             filtered = [
                 c for c in concept_pool
-                if _concept_in_category(
-                    self.lex.concepts[c], gender, self.lex)
+                if self.lex.concepts[c].lemma in self.lex.concept_index.concepts_in_category(gender)
                 or (
-                    not _concept_in_category(
-                        self.lex.concepts[c], "viro", self.lex)
-                    and not _concept_in_category(
-                        self.lex.concepts[c], "virino", self.lex))
+                    not self.lex.concepts[c].lemma in self.lex.concept_index.concepts_in_category("viro")
+                    and not self.lex.concepts[c].lemma in self.lex.concept_index.concepts_in_category("virino"))
             ]
             if filtered:
                 concept_pool = filtered

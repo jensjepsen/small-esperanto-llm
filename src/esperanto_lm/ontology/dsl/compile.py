@@ -944,10 +944,10 @@ class _Compiler:
                       f"{value_repr}):")
             self._push(); self.emit("continue"); self._pop()
         elif key == "category":
-            # Walk the concept's transitive `category` chain — same
-            # logic as `_entity_matches`'s category branch, just inlined
-            # so the compiled enum doesn't fall back to a slot lookup
-            # (which returns None and falsely fails the check).
+            # Bake-time compatible: `_concept_in_category` falls back
+            # to a recursive walk when the index isn't built yet,
+            # then uses `concept_index.concepts_in_category` for the
+            # O(1) lookup at runtime. Same path either way.
             cat_check = self.fresh("cat_ok")
             self.emit(
                 "from esperanto_lm.ontology.containment import "

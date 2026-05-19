@@ -289,7 +289,6 @@ def _concept_satisfies_constraints(concept, constraints: dict, lex) -> bool:
     """True iff `concept` satisfies every static EntityPattern
     constraint. Mirrors the runtime matcher in `patterns._entity_matches`
     but at the concept (lex) level — no trace, no derived state."""
-    from ..containment import _concept_in_category
     for key, expected in constraints.items():
         if key == "type":
             if not lex.types.is_subtype(concept.entity_type, expected):
@@ -298,7 +297,7 @@ def _concept_satisfies_constraints(concept, constraints: dict, lex) -> bool:
             if concept.lemma != expected:
                 return False
         elif key == "category":
-            if not _concept_in_category(concept, expected, lex):
+            if not concept.lemma in lex.concept_index.concepts_in_category(expected):
                 return False
         elif key == "has_suffix":
             if not concept.lemma.endswith(expected):

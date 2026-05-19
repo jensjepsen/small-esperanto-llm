@@ -47,6 +47,17 @@ class ConceptIndex:
     derivable: Optional[dict] = None
     types: Any = None
     stubs: frozenset = field(default_factory=frozenset)
+    # Concepts that appear as some other concept's `parts[*].concept`
+    # (body parts, components, recipe ingredients tagged as parts).
+    # Used by the regression standalone-target picker to exclude
+    # body parts ("la dorso estis en salono") from scene targets.
+    parts_used: frozenset = field(default_factory=frozenset)
+    # Per-category transitive closure of concept membership. Built at
+    # `build()` time by walking each concept's `category` chain
+    # (reflexive: every concept is in its own category). Replaces
+    # the recursive `_concept_in_category` walk with an O(1)
+    # set lookup.
+    _category_map: dict = field(default_factory=dict)
     # Held for lazy `concepts_modeling_slot` queries (which need to
     # call `concept_models_slot` against the lex's parts).
     _lex: Any = None
@@ -59,20 +70,53 @@ class ConceptIndex:
     def build(cls, concepts: dict, types) -> "ConceptIndex":
         bms_mut: dict = {}
         stubs: set = set()
+        parts_used: set = set()
         for lemma, concept in concepts.items():
             if getattr(concept, "is_category_stub", False):
                 stubs.add(lemma)
+            for part in (concept.parts or ()):
+                parts_used.add(part.concept)
             for t in types._ancestors.get(concept.entity_type, ()):
                 bms_mut.setdefault(("type", t), set()).add(lemma)
             for slot, values in concept.properties.items():
                 bms_mut.setdefault(("slot", slot, None), set()).add(lemma)
                 for v in values:
                     bms_mut.setdefault(("slot", slot, v), set()).add(lemma)
+        # Category transitive closure. For each concept, walk its
+        # category chain (cycle-safe). Every visited category gets
+        # the concept added to its membership set; the reflexive
+        # case (concept is in its own category) is captured by
+        # always seeding the closure with the concept's own lemma.
+        cat_map_mut: dict = {}
+        for lemma, concept in concepts.items():
+            closure: set = {lemma}
+            visited: set = set()
+            queue: list = list(concept.category or ())
+            while queue:
+                cat = queue.pop()
+                if cat in visited:
+                    continue
+                visited.add(cat)
+                closure.add(cat)
+                cat_concept = concepts.get(cat)
+                if cat_concept is not None:
+                    queue.extend(cat_concept.category or ())
+            for cat in closure:
+                cat_map_mut.setdefault(cat, set()).add(lemma)
         return cls(
             bms={k: frozenset(v) for k, v in bms_mut.items()},
             stubs=frozenset(stubs),
+            parts_used=frozenset(parts_used),
             types=types,
+            _category_map={k: frozenset(v) for k, v in cat_map_mut.items()},
         )
+
+    def concepts_in_category(self, category: str) -> frozenset:
+        """Concepts whose transitive `category` chain includes
+        `category` — reflexive (a concept is in its own category).
+        Replaces the recursive `_concept_in_category` walk with an
+        O(1) frozenset lookup; pre-built at index time."""
+        return self._category_map.get(category, _EMPTY)
 
     def with_role_semantics(
         self, lex, derivations,

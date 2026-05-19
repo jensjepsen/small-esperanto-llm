@@ -350,11 +350,10 @@ def _entity_matches(ent, constraints: dict[str, Any], ctx, bindings) -> bool:
             # e.g. `entity(category="surfaco")` matches tablo, breto,
             # sofo (all categorized as surfaco). Mirrors the
             # `containment.jsonl` `category` pattern field.
-            from ..containment import _concept_in_category
             concept = ctx.lexicon.concepts.get(ent.concept_lemma)
             if concept is None:
                 return False
-            if not _concept_in_category(concept, expected, ctx.lexicon):
+            if not concept.lemma in ctx.lexicon.concept_index.concepts_in_category(expected):
                 return False
         else:
             # Slot lookup: check effective property (asserted | derived).
@@ -1041,7 +1040,6 @@ def entity_matches_static(entity, pattern, lex) -> bool:
 
 
 def _entity_static_matches(entity, constraints: dict, lex) -> bool:
-    from ..containment import _concept_in_category
     for key, expected in constraints.items():
         if key == "type":
             if not lex.types.is_subtype(entity.entity_type, expected):
@@ -1056,7 +1054,7 @@ def _entity_static_matches(entity, constraints: dict, lex) -> bool:
             concept = lex.concepts.get(entity.concept_lemma)
             if concept is None:
                 return False
-            if not _concept_in_category(concept, expected, lex):
+            if not concept.lemma in lex.concept_index.concepts_in_category(expected):
                 return False
         else:
             vals = entity.properties.get(key, [])

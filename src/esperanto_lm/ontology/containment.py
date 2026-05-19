@@ -41,13 +41,15 @@ def _concept_in_category(
     concept: Concept, category_lemma: str, lexicon: Lexicon,
     visited: set[str] | None = None,
 ) -> bool:
-    """True iff concept's transitive `category` chain contains
-    `category_lemma`. Reflexive: a concept is considered to be in its
-    own category (a viro IS-A viro), so callers can use `category=X`
-    to match both X-categorized concepts AND X itself when X is a
-    real instantiable concept (not just a stub). Walks up through
-    `concept.category` ↦ `<parent>.category`, cycle-safe via
-    `visited`."""
+    """Reflexive transitive `category`-chain membership check —
+    delegates to `lexicon.concept_index.concepts_in_category(...)`
+    when the index is built, otherwise walks the chain directly.
+    The fallback path is needed for bake-time use (compiled
+    derivation enums fire BEFORE Lexicon is constructed, so the
+    index doesn't exist yet)."""
+    if lexicon.concept_index is not None:
+        return concept.lemma in lexicon.concept_index.concepts_in_category(
+            category_lemma)
     if visited is None:
         visited = set()
     if concept.lemma in visited:
@@ -88,7 +90,7 @@ def _concept_matches_intrinsic(
             if value not in concept.properties.get(slot_name, []):
                 return False
     if pattern.category is not None:
-        if not _concept_in_category(concept, pattern.category, lexicon):
+        if not concept.lemma in lexicon.concept_index.concepts_in_category(pattern.category):
             return False
     return True
 
