@@ -41,17 +41,19 @@ class ConceptIndex:
       ("slot", slot_name, value_or_None) → frozenset[lemma]
     """
     # Populated by `with_role_semantics` so `concepts_matching_role`
-    # can apply varies/pervasive/derivable semantics. When None, only
-    # the literal `concepts_matching` query is available.
+    # and `concepts_modeling_slot` can apply slot semantics. When
+    # None, only the literal `concepts_matching` query is available.
     slots: Optional[dict] = None
     derivable: Optional[dict] = None
     types: Any = None
     stubs: frozenset = field(default_factory=frozenset)
-    # Cache for concepts_matching_role — role-spec descriptors hash
-    # as `(type, frozenset((slot, value-or-None) ...))`. Membership
-    # check via the returned frozenset is the single-concept variant
-    # (`_concept_satisfies_role_props` use case).
+    # Held for lazy `concepts_modeling_slot` queries (which need to
+    # call `concept_models_slot` against the lex's parts).
+    _lex: Any = None
+    _derivations: Any = None
+    # Per-query caches.
     _role_cache: dict = field(default_factory=dict)
+    _modeling_cache: dict = field(default_factory=dict)
 
     @classmethod
     def build(cls, concepts: dict, types) -> "ConceptIndex":
@@ -73,15 +75,44 @@ class ConceptIndex:
         )
 
     def with_role_semantics(
-        self, slots: dict, derivable: dict,
+        self, lex, derivations,
     ) -> "ConceptIndex":
-        """Attach slot metadata + runtime-derivable map so
-        `concepts_matching_role` can apply varies/pervasive/derivable
-        rules. Idempotent — sets attributes in place."""
-        self.slots = slots
-        self.derivable = derivable
+        """Attach slot metadata, the runtime-derivable map, and a
+        lazy handle on (lex, derivations) for
+        `concepts_modeling_slot`. Idempotent — sets attributes in
+        place."""
+        # Lazy import to break loader↔dsl cycle when called from the
+        # loader at import time.
+        from .dsl.introspect import fully_derivable_slots
+        self.slots = lex.slots
+        self.derivable = fully_derivable_slots(lex, derivations)
+        self._lex = lex
+        self._derivations = derivations
         self._role_cache.clear()
+        self._modeling_cache.clear()
         return self
+
+    def concepts_modeling_slot(self, slot: str) -> frozenset:
+        """Concepts where `slot` is meaningfully tracked: declared,
+        pervasive, or part-derivable via some derivation whose
+        `given` is satisfiable by the concept's parts. Same predicate
+        as `dsl.introspect.concept_models_slot`, vectorized + cached
+        per-slot for use in hot loops (e.g. action-grounding's
+        effect-target validity check).
+
+        Requires `with_role_semantics(lex, derivations)`."""
+        cached = self._modeling_cache.get(slot)
+        if cached is not None:
+            return cached
+        assert self._lex is not None, (
+            "concepts_modeling_slot requires with_role_semantics()")
+        from .dsl.introspect import concept_models_slot
+        result = frozenset(
+            lemma for lemma, concept in self._lex.concepts.items()
+            if concept_models_slot(
+                concept, slot, self._lex, self._derivations))
+        self._modeling_cache[slot] = result
+        return result
 
     def concepts_matching(
         self, role_type: Optional[str] = None,

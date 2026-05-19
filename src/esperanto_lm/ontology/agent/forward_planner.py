@@ -2270,45 +2270,6 @@ def _fp_tuple_pool(source_rel: str, trace, lex, rule_effects) -> list:
     return list(out)
 
 
-def _build_effect_meaningfulness_cache(lex) -> dict:
-    """Per (action.lemma -> property -> set[concept_lemma]) cache of
-    which target-concepts make each effect meaningful.
-
-    Hoists `concept_models_slot` (action × slot × concept) out of the
-    grounding hot loop: the answer is invariant per scene, so we
-    compute once per lex and stash on the lex object. Combo loop then
-    becomes an O(1) `concept_lemma in valid_set` check.
-
-    Cache structure: `{action.lemma: {effect.property: frozenset[
-    concept_lemma_that_models_slot]}}`. Missing action key = no
-    effects to check (returns empty cache_entry and gates out)."""
-    cached = getattr(lex, "_fwd_planner_effect_meaningful", None)
-    if cached is not None:
-        return cached
-    from ..dsl.introspect import concept_models_slot
-    from ..dsl.rules import runtime_derivations_for
-    derivs = runtime_derivations_for(lex)
-    out: dict = {}
-    for action in lex.actions.values():
-        if not action.effects:
-            continue
-        per_slot: dict = {}
-        for eff in action.effects:
-            if eff.property in per_slot:
-                continue
-            valid_concepts: set = set()
-            for lemma, concept in lex.concepts.items():
-                if concept_models_slot(concept, eff.property, lex, derivs):
-                    valid_concepts.add(lemma)
-            per_slot[eff.property] = frozenset(valid_concepts)
-        out[action.lemma] = per_slot
-    try:
-        object.__setattr__(lex, "_fwd_planner_effect_meaningful", out)
-    except Exception:
-        pass
-    return out
-
-
 def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     """All (action, roles, pres, effs) for actions whose roles can
     be bound to current entities. Pure enumeration — preconditions
@@ -2342,12 +2303,12 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                     if lex.types.is_subtype(ent.entity_type, type_name)]
             type_pool[type_name] = pool
         return pool
-    # Effect-meaningfulness lookup: per (action.lemma, target_role)
-    # we cache the set of concept lemmas whose effects are meaningful.
-    # _meaningful_concepts is built lazily; combo just does a set check.
-    meaningful_cache = _build_effect_meaningfulness_cache(lex)
-    # Hoist concept_models_slot deps out of the combo loop — same lex,
-    # same derivations across every combo.
+    # Effect-meaningfulness lookup: the per-slot bitmap on
+    # `lex.concept_index.concepts_modeling_slot(eff.property)` gives
+    # the set of concept lemmas where the slot is meaningfully
+    # tracked; combo loop just does a `concept_lemma in frozenset`
+    # check. Hoist concept_models_slot deps out of the combo loop —
+    # same lex, same derivations across every combo.
     from ..dsl.introspect import concept_models_slot
     from ..dsl.rules import runtime_derivations_for
     _runtime_derivs = runtime_derivations_for(lex)
@@ -2488,13 +2449,11 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
         eff_target_roles: list = []
         eff_target_valid: list = []
         if action.effects:
-            cache_entry = meaningful_cache.get(action.lemma)
-            if cache_entry:
-                for eff in action.effects:
-                    valid = cache_entry.get(eff.property)
-                    if valid is not None:
-                        eff_target_roles.append(eff.target_role)
-                        eff_target_valid.append(valid)
+            for eff in action.effects:
+                valid = lex.concept_index.concepts_modeling_slot(eff.property)
+                if valid:
+                    eff_target_roles.append(eff.target_role)
+                    eff_target_valid.append(valid)
         for combo in itertools.product(*per_role):
             # Unpack: regular role slots take their value; fp slots
             # carry a tuple to be exploded across multiple role names.

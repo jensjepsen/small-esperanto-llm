@@ -749,15 +749,13 @@ def load_lexicon(
         agent_state_verbs={k: tuple(v) for k, v in agent_state_verbs.items()},
         concept_index=ConceptIndex.build(concepts, spine),
     )
-    # Role-semantic queries (concepts_matching_role) need slot
-    # metadata and the runtime-derivable map. Computed once here so
-    # callers can do `lex.concept_index.concepts_matching_role(role)`
-    # without each site re-walking RUNTIME_DERIVATIONS. Lazy imports
-    # break the loader↔dsl.rules cycle.
-    from .dsl.introspect import fully_derivable_slots
+    # Role-semantic queries (concepts_matching_role,
+    # concepts_modeling_slot) need slot metadata, the runtime-
+    # derivable map, and a handle on derivations. Wired here so
+    # downstream callers don't each re-walk RUNTIME_DERIVATIONS.
+    # Lazy import breaks the loader↔dsl.rules cycle.
     from .dsl.rules import RUNTIME_DERIVATIONS
-    lex.concept_index.with_role_semantics(
-        slots, fully_derivable_slots(lex, RUNTIME_DERIVATIONS))
+    lex.concept_index.with_role_semantics(lex, RUNTIME_DERIVATIONS)
     return lex
 
 
