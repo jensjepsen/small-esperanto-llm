@@ -46,12 +46,19 @@ class EntityIndex:
         for eid, ent in self._trace.entities.items():
             for t in self._lex.types._ancestors.get(ent.entity_type, ()):
                 bms_mut.setdefault(("type", t), set()).add(eid)
+            bms_mut.setdefault(
+                ("concept", ent.concept_lemma), set()).add(eid)
             for slot, values in ent.properties.items():
                 bms_mut.setdefault(("slot", slot, None), set()).add(eid)
                 for v in values:
                     bms_mut.setdefault(("slot", slot, v), set()).add(eid)
         self._bms = {k: frozenset(v) for k, v in bms_mut.items()}
         self._size = cur
+
+    def entities_of_concept(self, concept_lemma: str) -> frozenset:
+        """Entities whose `concept_lemma` matches exactly."""
+        self._ensure_fresh()
+        return self._bms.get(("concept", concept_lemma), _EMPTY)
 
     def entities_matching(
         self, role_type: Optional[str] = None,

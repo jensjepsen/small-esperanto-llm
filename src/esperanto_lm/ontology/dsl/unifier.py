@@ -172,9 +172,14 @@ class MatchContext:
     lexicon: Lexicon
     derived: DerivedState
     focus_event: Optional[Event] = None
-    _entities_by_type_cache: Optional[dict] = None
+    _entities_by_type_cache: dict = field(default_factory=dict)
     _relations_by_name_cache: Optional[dict] = None
-    _entities_by_concept_cache: Optional[dict] = None
+    _entities_by_concept_cache: dict = field(default_factory=dict)
+    # Cached EntityIndex handle — avoids the per-call
+    # `getattr(trace, _fwd_entity_index, None)` lookup the
+    # `entity_index_for` helper does. Inside a unifier, the index
+    # never changes identity.
+    _entity_idx: Any = None
 
     def effective_property(self, eid: str, slot: str) -> Any:
         """Read asserted-then-derived. Used by EntityPattern constraint
@@ -184,56 +189,42 @@ class MatchContext:
             return asserted
         return self.derived.get(eid, slot)
 
+    def _idx(self):
+        if self._entity_idx is None:
+            from ..entity_index import entity_index_for
+            object.__setattr__(
+                self, "_entity_idx",
+                entity_index_for(self.trace, self.lexicon))
+        return self._entity_idx
+
     def entities_of_type(self, type_name: str) -> list:
         """Return [(eid, ent)] where ent.entity_type is-a `type_name`.
-        Cached: built on first call by walking trace.entities once and
-        bucketing by every ancestor type. Subsequent lookups are O(1)
-        in the bucket."""
-        if self._entities_by_type_cache is None:
-            spine = self.lexicon.types
-            buckets: dict[str, list] = {}
-            # For each entity, add it to the bucket for its exact type
-            # AND every ancestor type. is_subtype handles the spine
-            # walk once per (entity_type × candidate-ancestor) but we
-            # only call it for ancestors actually queried — so do
-            # exact-type bucketing here, expand on lookup.
-            for eid, ent in self.trace.entities.items():
-                buckets.setdefault(ent.entity_type, []).append((eid, ent))
-            self._entities_by_type_cache = buckets
-        cache = self._entities_by_type_cache
-        # Direct hit
-        direct = cache.get(type_name, [])
-        # Walk other buckets to find subtype matches and merge.
-        # Memoize the merged result under the queried type so future
-        # queries are O(1).
-        merged_key = ("__merged__", type_name)
-        if merged_key in cache:
-            return cache[merged_key]
-        spine = self.lexicon.types
-        merged = []
-        for et, ents in cache.items():
-            if isinstance(et, tuple):
-                continue
-            try:
-                if spine.is_subtype(et, type_name):
-                    merged.extend(ents)
-            except KeyError:
-                continue
-        cache[merged_key] = merged
-        return merged
+        Backed by the per-trace `EntityIndex` — its type bitmap is
+        subtype-closed and shared across unifier instances built
+        against the same trace (engine fixed-point loop, multiple
+        plan_for_goal calls). Result list is memoized per type."""
+        cached = self._entities_by_type_cache.get(type_name)
+        if cached is not None:
+            return cached
+        result = [(eid, self.trace.entities[eid])
+                  for eid in self._idx().entities_matching(type_name)]
+        self._entities_by_type_cache[type_name] = result
+        return result
 
     def entities_of_concept(self, concept_lemma: str) -> list:
         """Return [(eid, ent)] where ent.concept_lemma == `concept_lemma`.
-        Cached lazily; built on first call by bucketing trace.entities.
-        Pattern matching for `entity(concept=X)` uses this instead of
-        scanning every entity — frequent in host-derivations like
-        `host_lock_state_*_from_seruro` that gate on a part's concept."""
-        if self._entities_by_concept_cache is None:
-            buckets: dict[str, list] = {}
-            for eid, ent in self.trace.entities.items():
-                buckets.setdefault(ent.concept_lemma, []).append((eid, ent))
-            self._entities_by_concept_cache = buckets
-        return self._entities_by_concept_cache.get(concept_lemma, [])
+        Backed by the per-trace `EntityIndex.entities_of_concept`
+        bitmap. Pattern matching for `entity(concept=X)` uses this
+        instead of scanning every entity — frequent in host-derivations
+        like `host_lock_state_*_from_seruro` that gate on a part's
+        concept."""
+        cached = self._entities_by_concept_cache.get(concept_lemma)
+        if cached is not None:
+            return cached
+        result = [(eid, self.trace.entities[eid])
+                  for eid in self._idx().entities_of_concept(concept_lemma)]
+        self._entities_by_concept_cache[concept_lemma] = result
+        return result
 
     def relations_of(self, relation_name: str) -> list:
         """Return [args_tuple] for asserted + derived relations with
