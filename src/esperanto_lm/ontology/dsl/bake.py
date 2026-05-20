@@ -512,8 +512,20 @@ def _bake_parts_aware(
             _run_derivations_to_fixed_point(
                 trace, eligible_derivations, proto_lex, derived)
 
+            # Map proto-trace eids back to concept lemmas. The host
+            # is HOST_ID; parts are __part_<idx>. Writes targeting a
+            # part propagate back to that part's concept (e.g.
+            # body_part_from_animate_host writes is_body_part=yes
+            # onto the part entity in the proto-trace; we need that
+            # to land on the part concept itself so every instance
+            # of fingro/kapo/etc. carries it).
+            eid_to_lemma = {HOST_ID: host_lemma}
+            for i, part in enumerate(host_concept.parts):
+                eid_to_lemma[f"__part_{i}"] = part.concept
+
             for (eid, slot), value in derived.properties.items():
-                if eid != HOST_ID:
+                target_lemma = eid_to_lemma.get(eid)
+                if target_lemma is None:
                     continue
                 slot_def = slots.get(slot) if slots else None
                 # varies=true slots: same reasoning as the simple-pass —
@@ -522,7 +534,7 @@ def _bake_parts_aware(
                 if slot_def is not None and slot_def.varies:
                     continue
                 is_scalar = slot_def is None or slot_def.scalar
-                props = work[host_lemma]
+                props = work[target_lemma]
                 if slot in props:
                     if is_scalar:
                         continue

@@ -15,12 +15,36 @@ single-threaded.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import random
 import sys
 import time
 from multiprocessing import Pool, cpu_count
+
+
+# Diagnostic side-log for plans whose RSS delta exceeds the
+# threshold. Append-mode, one JSONL line per offender. The path is
+# fixed so all workers + the main process write to the same file;
+# Linux append writes are atomic under PIPE_BUF (4 KB), and our
+# records fit comfortably under that. Empty string disables.
+_FAT_PLAN_LOG = "/tmp/espllm-runs/fat-plans-A.jsonl"
+_FAT_PLAN_THRESHOLD_KB = 200_000  # 200 MB delta triggers logging
+
+
+def _rss_kb() -> int:
+    """Current resident-set size in KB from /proc/self/status.
+    Returns 0 on non-Linux or read failure (instrumentation
+    gracefully no-ops)."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except OSError:
+        pass
+    return 0
 from pathlib import Path
 
 # Worker-local state. Each forked process imports this module fresh,
@@ -53,12 +77,24 @@ def _init_worker():
 
 
 def _json_safe(value):
-    """Recursively convert non-JSON-encodable atoms in a failure
-    reason. Currently catches Ellipsis (which can appear as a
-    wildcard slot value in derivation patterns the planner walks).
-    Tuples → lists; everything else passed through."""
+    """Recursively convert non-JSON-encodable atoms in records so
+    `json.dumps` can serialize them. Handles:
+      - Ellipsis → "..."  (wildcard slot value from derivation
+        patterns that bubble up in failure reasons).
+      - frozenset / set → sorted-when-possible list  (event_fire
+        drives carry their role-bindings as `frozenset` of
+        (role_name, eid) pairs).
+      - tuple / list → recursively converted list.
+    Everything else passed through."""
     if value is Ellipsis:
         return "..."
+    if isinstance(value, (frozenset, set)):
+        items = [_json_safe(x) for x in value]
+        try:
+            items.sort()
+        except TypeError:
+            pass    # mixed types — order doesn't matter for JSON
+        return items
     if isinstance(value, (tuple, list)):
         return [_json_safe(x) for x in value]
     return value
@@ -302,6 +338,8 @@ def _worker_task(args):
         kind = drive[0]
         setup = t.snapshot_relations()
         plan_exc: Exception | None = None
+        rss_before = _rss_kb()
+        t_plan_start = time.time()
         try:
             if use_forward:
                 plan = execute_drive(
@@ -320,6 +358,32 @@ def _worker_task(args):
         except Exception as e:
             plan = None
             plan_exc = e
+        rss_after = _rss_kb()
+        t_plan_wall = time.time() - t_plan_start
+        # Fat-plan diagnostic: log the scene+drive of any plan
+        # whose RSS jumped past the threshold. The append-mode
+        # write is atomic for short JSON records (each well under
+        # PIPE_BUF), so workers can share the file without locking.
+        rss_delta = rss_after - rss_before
+        if (_FAT_PLAN_LOG
+                and rss_delta >= _FAT_PLAN_THRESHOLD_KB):
+            try:
+                with open(_FAT_PLAN_LOG, "a") as ff:
+                    ff.write(json.dumps({
+                        "pid": os.getpid(),
+                        "scene": scene_id,
+                        "drive_kind": kind,
+                        "drive_spec": _json_safe(list(drive[1:])),
+                        "rss_before_mb": round(rss_before / 1024, 1),
+                        "rss_after_mb": round(rss_after / 1024, 1),
+                        "rss_delta_mb": round(rss_delta / 1024, 1),
+                        "wall_s": round(t_plan_wall, 2),
+                        "n_entities": len(t.entities),
+                        "n_relations": len(t.relations),
+                        "fired": bool(plan),
+                    }, ensure_ascii=False) + "\n")
+            except OSError:
+                pass    # Best-effort — diagnostic, not load-bearing.
         failure_reason = get_planner_failure_reason() if not plan else None
         if not plan:
             # Failed-plan record: emit setup state + drive so callers
@@ -344,7 +408,8 @@ def _worker_task(args):
             out.append({
                 "status": "failed",
                 "scene": scene_id,
-                "drive": {"kind": kind, "spec": list(drive[1:])},
+                "drive": {"kind": kind,
+                          "spec": _json_safe(list(drive[1:]))},
                 "drive_summary": _drive_summary(drive),
                 "chain": "",
                 "n_events": 0,
@@ -400,6 +465,17 @@ def main():
                    help="Base seed; each task gets seed + task_index")
     p.add_argument("--out", type=str, default=None,
                    help="JSONL output path (default: print summary only)")
+    p.add_argument("--maxtasksperchild", type=int, default=10,
+                   help="Recycle each worker process after this many "
+                        "tasks. PyPy's heap grows to fit the peak "
+                        "working set of any expensive plan and doesn't "
+                        "return memory to the OS — recycling caps the "
+                        "leak by forcing periodic worker restarts (each "
+                        "pays ~5-10 s lex-load on restart). With "
+                        "batch=20, the default 10 → recycle every 200 "
+                        "scenes/worker; lower for tighter memory bound, "
+                        "higher for less restart overhead, 0 to "
+                        "disable (workers live for the full run).")
     args = p.parse_args()
 
     n_tasks = (args.scenes + args.batch - 1) // args.batch
@@ -408,41 +484,26 @@ def main():
           f"× {args.batch} scenes each (~{args.scenes} total)")
 
     start = time.time()
-    records = []
+    fired_count = 0
+    ok_count = 0
     chain_counts: dict[str, int] = {}
     verb_counts: dict[str, int] = {}
     drive_kind_counts: dict[str, int] = {}
     completed_tasks = 0
+    # Accumulate prose for the gzip-ratio diagnostic. A drop in the
+    # ratio over time signals the realizer is leaning harder on a
+    # finite phrase inventory (more compressible = less diverse);
+    # a rise signals genuine diversity gains. Compared against
+    # Gutenberg Esperanto (~2.6× / ratio 0.38) — see the docstring.
+    prose_chunks: list = []
+    prose_raw_bytes = 0
 
-    with Pool(processes=args.workers, initializer=_init_worker) as pool:
-        for batch_records in pool.imap_unordered(_worker_task, tasks):
-            completed_tasks += 1
-            for rec in batch_records:
-                records.append(rec)
-                chain_counts[rec["chain"]] = (
-                    chain_counts.get(rec["chain"], 0) + 1)
-                drive_kind_counts[rec["drive"]["kind"]] = (
-                    drive_kind_counts.get(rec["drive"]["kind"], 0) + 1)
-                for v in rec["chain"].split(" → "):
-                    verb_counts[v] = verb_counts.get(v, 0) + 1
-            if completed_tasks % max(1, n_tasks // 20) == 0:
-                elapsed = time.time() - start
-                print(f"  {completed_tasks}/{n_tasks} tasks done "
-                      f"({len(records)} fired) — {elapsed:.1f}s")
-
-    elapsed = time.time() - start
-    print(f"\n=== Done: {len(records)} fired scenes in {elapsed:.1f}s "
-          f"({elapsed*1000/max(len(records),1):.0f}ms/scene; "
-          f"{len(records)/elapsed:.1f}/s) ===")
-    print(f"\nDrive kinds: {drive_kind_counts}")
-    print(f"\nTop verbs:")
-    for v in sorted(verb_counts, key=lambda x: -verb_counts[x])[:15]:
-        print(f"  {v:<14} {verb_counts[v]}")
-    print(f"\nTop chains (showing 10):")
-    for chain, n in sorted(
-            chain_counts.items(), key=lambda x: -x[1])[:10]:
-        print(f"  {n:>4}×  {chain}")
-
+    # Open the output file early and stream records as they arrive.
+    # Loses fewer samples if the run crashes mid-stream (vs. holding
+    # everything in memory until the pool exits and writing once at
+    # end). flush() per record so the file is consistent on disk
+    # even if the process is killed.
+    out_f = None
     if args.out:
         parent = Path(args.out).parent
         try:
@@ -452,10 +513,78 @@ def main():
             # raises FileExistsError on PyPy when the target dir is
             # absent. Let the open() below surface the real error.
             pass
-        with open(args.out, "w") as f:
-            for rec in records:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        print(f"\nWrote {len(records)} records to {args.out}")
+        out_f = open(args.out, "w")
+
+    pool_kwargs = {
+        "processes": args.workers,
+        "initializer": _init_worker,
+    }
+    if args.maxtasksperchild > 0:
+        pool_kwargs["maxtasksperchild"] = args.maxtasksperchild
+    try:
+        with Pool(**pool_kwargs) as pool:
+            for batch_records in pool.imap_unordered(_worker_task, tasks):
+                completed_tasks += 1
+                for rec in batch_records:
+                    fired_count += 1
+                    if rec.get("status") == "ok":
+                        ok_count += 1
+                    chain_counts[rec["chain"]] = (
+                        chain_counts.get(rec["chain"], 0) + 1)
+                    drive_kind_counts[rec["drive"]["kind"]] = (
+                        drive_kind_counts.get(rec["drive"]["kind"], 0) + 1)
+                    for v in rec["chain"].split(" → "):
+                        verb_counts[v] = verb_counts.get(v, 0) + 1
+                    prose = rec.get("prose") or ""
+                    if prose:
+                        prose_chunks.append(prose)
+                        prose_raw_bytes += len(prose.encode("utf-8"))
+                    if out_f is not None:
+                        out_f.write(
+                            json.dumps(rec, ensure_ascii=False) + "\n")
+                        out_f.flush()
+                if completed_tasks % max(1, n_tasks // 20) == 0:
+                    elapsed = time.time() - start
+                    print(f"  {completed_tasks}/{n_tasks} tasks done "
+                          f"({fired_count} fired) — {elapsed:.1f}s")
+    finally:
+        if out_f is not None:
+            out_f.close()
+
+    elapsed = time.time() - start
+    print(f"\n=== Done: {fired_count} fired scenes "
+          f"({ok_count} ok / {fired_count - ok_count} failed) "
+          f"in {elapsed:.1f}s "
+          f"({elapsed*1000/max(fired_count,1):.0f}ms/scene; "
+          f"{fired_count/elapsed:.1f}/s) ===")
+    print(f"\nDrive kinds: {drive_kind_counts}")
+    print(f"\nTop verbs:")
+    for v in sorted(verb_counts, key=lambda x: -verb_counts[x])[:15]:
+        print(f"  {v:<14} {verb_counts[v]}")
+    print(f"\nTop chains (showing 10):")
+    for chain, n in sorted(
+            chain_counts.items(), key=lambda x: -x[1])[:10]:
+        print(f"  {n:>4}×  {chain}")
+    # Prose gzip-ratio diagnostic. Cheaper-than-bench signal on
+    # realizer diversity: 2.6× = roughly Gutenberg Esperanto
+    # baseline; rising past 5-6× means the realizer is converging
+    # on a fixed phrase inventory and the corpus is losing
+    # informational density. Joined with `\n` so cross-record
+    # repetition (formulaic scene-openers, recurring verb forms)
+    # is visible to gzip's sliding window.
+    if prose_chunks:
+        joined = "\n".join(prose_chunks).encode("utf-8")
+        compressed = gzip.compress(joined, compresslevel=9)
+        ratio = len(compressed) / len(joined)
+        print(f"\nProse gzip ratio:")
+        print(f"  records w/ prose: {len(prose_chunks)}")
+        print(f"  raw bytes:        {len(joined):>10,}")
+        print(f"  gzipped (lvl 9):  {len(compressed):>10,}")
+        print(f"  ratio:            {ratio:.3f}  "
+              f"({len(joined)/max(len(compressed), 1):.2f}× shrink)")
+        print(f"  Gutenberg eo ref: 0.380  (2.63×) — natural prose")
+    if args.out:
+        print(f"\nWrote {fired_count} records to {args.out}")
 
 
 if __name__ == "__main__":

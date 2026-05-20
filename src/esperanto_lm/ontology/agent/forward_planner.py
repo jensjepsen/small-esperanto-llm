@@ -47,6 +47,66 @@ from .planner import (
 _EMPTY_FROZENSET: frozenset = frozenset()
 
 
+# Per-stage RSS tracing. Off by default — set FWD_TRACE_MEM=1 in
+# the environment to enable. Writes one JSON line per (plan_id,
+# stage) tuple to FWD_TRACE_MEM_OUT (default
+# /tmp/espllm-runs/rss-trace.jsonl). Used to localize which phase
+# of plan_for_goal allocates the bulk of a fat plan's memory.
+_RSS_TRACE_ENABLED: Optional[bool] = None
+_RSS_TRACE_PATH: Optional[str] = None
+_RSS_TRACE_FILE = None
+_RSS_TRACE_PLAN_COUNTER = 0
+
+
+def _rss_trace_kb() -> int:
+    """Snapshot RSS in KB from /proc/self/status. 0 on read failure."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except OSError:
+        pass
+    return 0
+
+
+def _rss_trace_log(plan_id: int, stage: str, drive_kind: str = "?",
+                   extra: Optional[dict] = None) -> None:
+    """Append `(plan_id, stage, rss_kb, ...)` to the trace file when
+    enabled. Cheap when disabled (one env-var lookup once per
+    process, then a global-flag check)."""
+    global _RSS_TRACE_ENABLED, _RSS_TRACE_PATH, _RSS_TRACE_FILE
+    if _RSS_TRACE_ENABLED is None:
+        import os as _os
+        _RSS_TRACE_ENABLED = bool(_os.environ.get("FWD_TRACE_MEM"))
+        if _RSS_TRACE_ENABLED:
+            _RSS_TRACE_PATH = _os.environ.get(
+                "FWD_TRACE_MEM_OUT",
+                "/tmp/espllm-runs/rss-trace.jsonl")
+            try:
+                _RSS_TRACE_FILE = open(_RSS_TRACE_PATH, "a")
+            except OSError:
+                _RSS_TRACE_ENABLED = False
+    if not _RSS_TRACE_ENABLED or _RSS_TRACE_FILE is None:
+        return
+    import json as _json
+    import os as _os2
+    rec = {
+        "pid": _os2.getpid(),
+        "plan_id": plan_id,
+        "stage": stage,
+        "drive_kind": drive_kind,
+        "rss_mb": round(_rss_trace_kb() / 1024, 1),
+    }
+    if extra:
+        rec.update(extra)
+    try:
+        _RSS_TRACE_FILE.write(_json.dumps(rec) + "\n")
+        _RSS_TRACE_FILE.flush()
+    except OSError:
+        pass
+
+
 class GroundedAction(NamedTuple):
     """One grounded action with both tuple-form and bitmap-form
     pres/effs carried alongside. Produced by `_ground_all_actions`
@@ -195,6 +255,7 @@ def _pc_holds(pc, roles, trace, derived, lex) -> bool:
     bindings."""
     from ..schemas import (
         HasPropertyPrecondition, IfPropertyPrecondition, MatchPrecondition,
+        NotPropertyPrecondition, NotRelationPrecondition,
         OrPrecondition, RelationPrecondition,
     )
     if isinstance(pc, RelationPrecondition):
@@ -238,6 +299,29 @@ def _pc_holds(pc, roles, trace, derived, lex) -> bool:
             return False
         return pc.value in _entity_property_values(
             ent, pc.property, trace, derived)
+    if isinstance(pc, NotPropertyPrecondition):
+        # Mirror of HasPropertyPrecondition: reject when the role's
+        # entity currently holds the forbidden value (from either
+        # asserted state or a derivation). Absence of the slot —
+        # because the concept doesn't model it or no derivation
+        # fired — passes.
+        eid = roles.get(pc.role)
+        if eid is None:
+            return True   # unbound role — vacuous
+        ent = trace.entities.get(eid)
+        if ent is None:
+            return False
+        return pc.value not in _entity_property_values(
+            ent, pc.property, trace, derived)
+    if isinstance(pc, NotRelationPrecondition):
+        # Mirror of RelationPrecondition: reject when the named
+        # relation currently holds for the bound role tuple.
+        # Unbound roles → vacuously pass (the relation can't hold
+        # on missing args).
+        eids = tuple(roles.get(r) for r in pc.roles)
+        if any(e is None for e in eids):
+            return True
+        return not _has_relation(pc.rel, eids, trace, derived)
     if isinstance(pc, OrPrecondition):
         return any(_pc_holds(alt, roles, trace, derived, lex)
                    for alt in pc.alternatives)
@@ -398,9 +482,11 @@ def _compile_action_template(action, rule_effects, sym, forbid_rels=None):
       * `sym` — symmetric-relation frozenset, passed through so the
         per-combo path doesn't redo the lookup."""
     from ..schemas import (
-        IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
+        IfPropertyPrecondition, MatchPrecondition,
+        NotPropertyPrecondition, RelationPrecondition,
     )
     prop_pres: list = []
+    not_prop_pres: list = []
     rel_pres_simple: list = []
     rel_pres_list: list = []
     for role_spec in action.roles:
@@ -427,6 +513,8 @@ def _compile_action_template(action, rule_effects, sym, forbid_rels=None):
                 rel_pres_list.append((pc.rel, pc_roles, list_pos))
             else:
                 rel_pres_simple.append((pc.rel, pc_roles))
+        elif isinstance(pc, NotPropertyPrecondition):
+            not_prop_pres.append((pc.role, pc.property, pc.value))
         # IfPropertyPrecondition / MatchPrecondition skipped in relaxed encoding.
     eff_props: list = [
         (eff.target_role, eff.property, eff.value)
@@ -461,6 +549,7 @@ def _compile_action_template(action, rule_effects, sym, forbid_rels=None):
     concept_constraints = tuple(entry.get("concept_constraints", ()))
     return _CompiledAction(
         prop_pres=prop_pres,
+        not_prop_pres=tuple(not_prop_pres),
         rel_pres_simple=rel_pres_simple,
         rel_pres_list=rel_pres_list,
         eff_props=eff_props,
@@ -477,14 +566,21 @@ class _CompiledAction:
     data, no methods — the substitution loop lives in the fast
     `_ground_facts_from_template` helper."""
     __slots__ = (
-        "prop_pres", "rel_pres_simple", "rel_pres_list",
+        "prop_pres", "not_prop_pres", "rel_pres_simple", "rel_pres_list",
         "eff_props", "rule_adds_simple", "rule_adds_marker", "sym",
         "skip_filter", "concept_constraints")
 
     def __init__(self, prop_pres, rel_pres_simple, rel_pres_list,
                  eff_props, rule_adds_simple, rule_adds_marker, sym,
-                 skip_filter=False, concept_constraints=()):
+                 skip_filter=False, concept_constraints=(),
+                 not_prop_pres=()):
         self.prop_pres = prop_pres
+        # NotPropertyPrecondition encoded as positive pres on an
+        # auxiliary `("not_prop", eid, slot, value)` fact. The state
+        # carries that fact iff the entity does NOT have the
+        # corresponding positive `prop` fact — emitted by
+        # `_state_facts`. List of (role_name, slot, value) tuples.
+        self.not_prop_pres = not_prop_pres
         self.rel_pres_simple = rel_pres_simple
         self.rel_pres_list = rel_pres_list
         self.eff_props = eff_props
@@ -514,6 +610,15 @@ def _ground_facts_from_template(tmpl, roles, facts):
         eid = roles_get(role_name)
         if eid is not None:
             pres.add(("prop", eid, slot, value))
+    # NotPropertyPrecondition pres: encoded as positive pres on the
+    # auxiliary "not_prop" fact. `_state_facts` emits it iff the
+    # entity does NOT have the corresponding positive fact, so the
+    # relaxed graph correctly rules out body parts (which have the
+    # positive `is_part=yes` fact) at h_FF time.
+    for role_name, slot, value in tmpl.not_prop_pres:
+        eid = roles_get(role_name)
+        if eid is not None:
+            pres.add(("not_prop", eid, slot, value))
     # Simple rel pres (no list-role expansion).
     for rel, pc_roles in tmpl.rel_pres_simple:
         eids = tuple(roles_get(r) for r in pc_roles)
@@ -2278,6 +2383,47 @@ def _canon_rel(rel_name: str, args: tuple, sym: frozenset) -> tuple:
     return args
 
 
+_NOT_PROP_INDEX_CACHE: dict = {}
+
+
+def _not_prop_index(lex) -> tuple:
+    """Set of (slot, value, applies_to_types) tuples referenced by
+    any action's NotPropertyPrecondition. Computed once per lex and
+    cached. Used by `_state_facts` to emit the auxiliary `not_prop`
+    facts the relaxed-graph heuristic consumes.
+
+    Each entry includes the precondition's role.type so we only
+    emit `not_prop` facts for entities that could plausibly fill
+    the role — keeps the state-mask compact (a typical action
+    references one or two NotPropertyPreconditions on inanimate or
+    physical themes, so the emission walks tens of entities, not
+    hundreds)."""
+    key = id(lex)
+    cached = _NOT_PROP_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from ..schemas import NotPropertyPrecondition
+    out: list = []
+    seen: set = set()
+    for action in lex.actions.values():
+        # Look up each NotPP's role to find the type constraint.
+        role_types = {r.name: r.type for r in action.roles}
+        for pc in action.preconditions:
+            if not isinstance(pc, NotPropertyPrecondition):
+                continue
+            role_type = role_types.get(pc.role)
+            if role_type is None:
+                continue
+            triple = (pc.property, pc.value, role_type)
+            if triple in seen:
+                continue
+            seen.add(triple)
+            out.append(triple)
+    result = tuple(out)
+    _NOT_PROP_INDEX_CACHE[key] = result
+    return result
+
+
 def _state_facts(trace, derived, lex=None) -> set:
     """Snapshot of state facts (property + relation) for the
     relaxed graph's layer 0. Symmetric arity-2 relation tuples are
@@ -2330,6 +2476,23 @@ def _state_facts(trace, derived, lex=None) -> set:
                     facts.add(("prop", eid, slot, v))
             else:
                 facts.add(("prop", eid, slot, val))
+    # Emit `not_prop` auxiliary facts for each (slot, value) any
+    # action's NotPropertyPrecondition references — required by the
+    # h_FF relaxed encoding (`_ground_facts_from_template` adds the
+    # corresponding pres entry). The fact is in state IFF the
+    # positive `prop` fact is NOT — so the relaxed graph correctly
+    # rules out body parts at initial-state-h_FF time.
+    if lex is not None:
+        not_prop_idx = _not_prop_index(lex)
+        if not_prop_idx:
+            for eid, ent in trace.entities.items():
+                for slot, value, role_type in not_prop_idx:
+                    if not lex.types.is_subtype(
+                            ent.entity_type, role_type):
+                        continue
+                    if ("prop", eid, slot, value) in facts:
+                        continue
+                    facts.add(("not_prop", eid, slot, value))
     try:
         object.__setattr__(trace, "_fwd_state_facts_cache", (key, facts))
     except Exception:
@@ -2550,6 +2713,13 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     for action in lex.actions.values():
         if not action.roles:
             continue
+        # Cascade-only intransitives (morti/rompiĝi/fali/satiĝi/
+        # sensoifiĝi/bruli) are reactive — emitted by DSL rules from
+        # other events, never picked as deliberate actions. Skip
+        # them in grounding so the planner doesn't waste search on
+        # them as drives.
+        if getattr(action, "cascade_only", False):
+            continue
         # Actions with list-kind roles (fari.parts) can't be enumerated
         # combinatorially — the role binds to a TUPLE of entities, not
         # to one entity per slot. `_ground_constructable_actions`
@@ -2557,6 +2727,21 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
         # graph for valid recipes.
         if any(getattr(r, "kind", "single") == "list" for r in action.roles):
             continue
+        # Hoist negative preconditions (NotPropertyPrecondition and
+        # NotRelationPrecondition) out of the combo loop. Both are
+        # per-action exclusion lists that the relaxed-graph
+        # encoding can't model directly (delete-relaxed h_FF is
+        # monotonic-positive). Checked per-combo below to filter
+        # out groundings whose negative gate currently fires
+        # (e.g. fali on a havas_parton parto; eniri on a room the
+        # agent is already in).
+        from ..schemas import (
+            NotPropertyPrecondition as _NotPP,
+            NotRelationPrecondition as _NotRP,
+        )
+        action_not_pres = [
+            pc for pc in action.preconditions
+            if isinstance(pc, (_NotPP, _NotRP))]
         # Group from_precondition roles by source relation; each group
         # enumerates from a shared pool of tuples (real scias from
         # trace + hypothetical producible by rule_effects), so the
@@ -2751,6 +2936,15 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 effs = _filter_forbidden_effs(effs, trace, lex)
                 if not effs:
                     continue
+            if action_not_pres:
+                rejected = False
+                for pc in action_not_pres:
+                    if not _pc_holds(
+                            pc, roles, trace, derived, lex):
+                        rejected = True
+                        break
+                if rejected:
+                    continue
             out.append((action, roles, pres, effs))
     return out
 
@@ -2943,8 +3137,52 @@ def _build_consumer_index(actions, derivations, table: FactTable):
     return fact_to, all_consumers, cid_to_info, pres_len
 
 
+class HeuristicScratch(NamedTuple):
+    """Hoisted workspace for `_heuristic_and_helpful` invocations
+    within a single `plan_for_goal` call. The dicts, lists, and
+    deque are mutable containers reset at the top of each
+    heuristic call instead of being freshly allocated — eliminates
+    the ~50 MB of per-call allocation churn that accumulates
+    during fat plans (~1000 heuristic calls each touching
+    consumer-index-sized arrays).
+
+    Sized to the plan's `n_consumers` once at construction; reused
+    across every heuristic call until the plan returns.
+
+    `helpful` is intentionally NOT here — the search loops store
+    returned helpful sets in heap entries and read them later, so
+    each call needs a fresh set to avoid the next call's reset
+    wiping it.
+    """
+    cost: dict             # fact_id -> int (incremental cost)
+    producer: dict         # fact_id -> cid that achieved cost
+    producers_cheapest: dict  # fact_id -> list[cid] at cheapest
+    pre_sum: list          # cid -> sum of cost[p] for known pres
+    unsat: list            # cid -> count of pres still at INF
+    ready: "deque"         # cids ready to fire
+    relaxed_action_cids: set  # h_FF action set
+    visited_cheapest: set  # h_FF back-walk visited
+    visited_all: set       # helpful back-walk visited
+    stack: list            # reusable walk stack
+
+
+def _new_heuristic_scratch(n_consumers: int) -> HeuristicScratch:
+    """Allocate fresh scratch sized for this plan's consumer set."""
+    from collections import deque
+    return HeuristicScratch(
+        cost={}, producer={}, producers_cheapest={},
+        pre_sum=[0] * n_consumers,
+        unsat=[0] * n_consumers,
+        ready=deque(),
+        relaxed_action_cids=set(),
+        visited_cheapest=set(),
+        visited_all=set(),
+        stack=[])
+
+
 def _heuristic_and_helpful(
     goal_fact_id: int, facts_mask: int, consumer_index,
+    scratch: HeuristicScratch,
 ) -> tuple[int, set]:
     """h_FF over the relaxed planning graph using a worklist with
     an inverted fact_id→consumers index. Also returns the "helpful
@@ -2957,6 +3195,10 @@ def _heuristic_and_helpful(
     single goal literal's interned ID. The h_FF graph and the
     helpful-action back-walk both run on integer keys: no tuple
     hashing on the hot path.
+
+    `scratch` carries the workspace dicts/lists/deque; reset at
+    entry and reused across calls within a plan. See
+    `HeuristicScratch` for the rationale.
 
     Initial: cost(initial_facts) = 0. For each consumer c (action
     or derivation) whose pres are all known: tentative_cost =
@@ -2979,29 +3221,34 @@ def _heuristic_and_helpful(
 
     fact_to, all_consumers, cid_to_info, pres_len = consumer_index
 
-    # Layer 0: state facts at cost 0.
-    cost: dict = {fid: 0 for fid in iter_bits(facts_mask)}
-    # producer[fid] = cid of the consumer that achieved cost[fid].
-    producer: dict = {}
-    # producers_cheapest[fid] = consumer cids that achieved the
-    # current cheapest cost for that fact. On strict cost
-    # improvement, reset to [new_cid]; on tie, append. Used for
-    # both h_FF count and the helpful set.
-    producers_cheapest: dict = {}
-
-    from collections import deque
-    # Counter-based h_add propagation. Maintain per-consumer:
-    #   unsat[cid] = number of pres still at INF
-    #   pre_sum[cid] = sum of cost[p] for known pres
-    # List-indexed-by-cid (sequential from _build_consumer_index)
-    # — faster than dict because the consumer set is the same
-    # across all h_add calls in one plan; only values reset.
+    # Reset scratch in place — keeps backing memory across calls.
+    cost = scratch.cost
+    cost.clear()
+    producer = scratch.producer
+    producer.clear()
+    producers_cheapest = scratch.producers_cheapest
+    producers_cheapest.clear()
+    pre_sum = scratch.pre_sum
+    unsat = scratch.unsat
+    ready_consumers = scratch.ready
+    ready_consumers.clear()
     n_consumers = len(all_consumers)
-    pre_sum = [0] * n_consumers
-    unsat = pres_len[:]
-    ready_consumers: deque = deque(
-        cid_ for cid_, u in enumerate(unsat) if u == 0)
+    # In-place reset of pre_sum/unsat. `unsat[:] = pres_len` does
+    # the same allocation `pres_len[:]` used to do, but writes
+    # into the existing backing list instead of replacing it.
+    for i in range(n_consumers):
+        pre_sum[i] = 0
+        unsat[i] = pres_len[i]
 
+    # Layer 0: state facts at cost 0.
+    for fid in iter_bits(facts_mask):
+        cost[fid] = 0
+    # Empty-pres consumers fire immediately. Order them BEFORE
+    # the state-seeded fires so producers_cheapest ties resolve
+    # the same way the pre-hoist code did.
+    for cid_ in range(n_consumers):
+        if pres_len[cid_] == 0:
+            ready_consumers.append(cid_)
     # Seed: each cost-0 fact decrements unsat for its consumers.
     # pre_sum stays 0 since cost is 0.
     for fid in cost:
@@ -3046,9 +3293,13 @@ def _heuristic_and_helpful(
 
     # h_FF: walk back from the goal through CHEAPEST producers,
     # collecting unique action cids. h = |unique actions|.
-    relaxed_action_cids: set = set()
-    visited_cheapest: set = set()
-    stack = [goal_fact_id]
+    relaxed_action_cids = scratch.relaxed_action_cids
+    relaxed_action_cids.clear()
+    visited_cheapest = scratch.visited_cheapest
+    visited_cheapest.clear()
+    stack = scratch.stack
+    stack.clear()
+    stack.append(goal_fact_id)
     while stack:
         fid = stack.pop()
         if fid in visited_cheapest:
@@ -3067,13 +3318,14 @@ def _heuristic_and_helpful(
     h_ff = len(relaxed_action_cids)
 
     # Helpful set: walk back through cheapest producers, collect
-    # verbs. (Earlier versions also walked sub-cheapest producers
-    # via a separate `producers_all` map for diversity; profiling
-    # showed that map's setdefault was a hot loop and the broader
-    # set didn't materially change search outcomes.)
+    # verbs. `helpful` itself is freshly allocated — the search
+    # loops store it in heap entries and read later, so it can't
+    # be reused across calls.
     helpful: set = set()
-    visited_all: set = set()
-    stack = [goal_fact_id]
+    visited_all = scratch.visited_all
+    visited_all.clear()
+    stack.clear()
+    stack.append(goal_fact_id)
     while stack:
         fid = stack.pop()
         if fid in visited_all:
@@ -3590,6 +3842,29 @@ def plan_for_goal(
     # forward-planner failure shows up as `('<no-leaf>',)` because
     # the legacy backward chainer doesn't write into this slot.
     _FAILURE_REASON.set(None)
+    # Per-stage RSS tracing: enabled by FWD_TRACE_MEM env var.
+    # Captures the plan's memory growth across phases so a fat
+    # plan's profile can be localized to a specific stage.
+    global _RSS_TRACE_PLAN_COUNTER
+    _RSS_TRACE_PLAN_COUNTER += 1
+    _trace_plan_id = _RSS_TRACE_PLAN_COUNTER
+    _trace_drive_kind = drive[0] if drive else "?"
+    _rss_trace_log(_trace_plan_id, "entry", _trace_drive_kind,
+                   {"n_entities": len(initial_trace.entities),
+                    "n_relations": len(initial_trace.relations)})
+    # Drop per-pseudo cache entries from prior plan_for_goal calls.
+    # `_DERIV_PRES_IDX_CACHE` / `_DERIV_RELDEP_CACHE` /
+    # `_PSEUDOS_MASK_CACHE` are keyed by `id(derivation_pseudos)`;
+    # each plan grounds a fresh pseudo list, so cross-call cache
+    # hits never happen anyway. Without this clear, long batches
+    # accumulate ~300-500 KB per plan in stale entries — OOMs a
+    # 5 K-scene run on a constrained box. Within-call hits (the
+    # design intent — `_apply_delta_mask` re-uses the same pseudos
+    # many times per plan) are preserved because we clear only at
+    # entry.
+    _DERIV_PRES_IDX_CACHE.clear()
+    _DERIV_RELDEP_CACHE.clear()
+    _PSEUDOS_MASK_CACHE.clear()
     goal = _drive_to_goal(drive, initial_trace, lex)
     if goal is None:
         _record_failure(("fwd_drive_unmappable", drive[0] if drive else None))
@@ -3659,6 +3934,8 @@ def plan_for_goal(
                 (fp, tuple(grounded)))
         except Exception:
             pass
+    _rss_trace_log(_trace_plan_id, "after_ground_all", _trace_drive_kind,
+                   {"n_grounded": len(grounded)})
     if exclude_verbs:
         grounded = [g for g in grounded if g[0].lemma not in exclude_verbs]
     # Goal-aware action + derivation pruning. Walk backward from the
@@ -3676,6 +3953,32 @@ def plan_for_goal(
         grounded = [g for g in grounded if g[0].lemma in relevant_verbs]
     else:
         relevant_derivs = None
+    # Cheap role-binding reachability check on the goal's args
+    # against producer role-specs. Sound — returns False only
+    # when no producer can possibly accept the goal-pinned args.
+    # Catches a subset of unreachable goals at the type level
+    # (e.g. property goals on concepts that don't model the
+    # slot). The relation branch is conservative — most relation
+    # spikes need a full backward walk to detect.
+    if not _goal_args_match_any_producer(
+            goal, lex, rule_effects, initial_trace):
+        _record_failure(("fwd_initial_h_inf", goal))
+        return None
+    # Grounded-count cap: when the goal-aware filter still leaves
+    # tens of thousands of grounded actions, `_build_consumer_index`
+    # allocates ~hundreds of MB translating them. Most of those
+    # plans turn out to have h=INF anyway (they're sampler
+    # reachability gates whose goal isn't actually achievable in
+    # the scene). Bailing here saves the consumer_index spike.
+    # Set MAX_GROUNDED env var to override; default 50000 chosen
+    # from the trace data (most successful plans ground < 30K).
+    import os as _os
+    _max_grounded = int(_os.environ.get("MAX_GROUNDED", "50000"))
+    if len(grounded) > _max_grounded:
+        _record_failure(
+            ("fwd_grounding_explosion", goal,
+             len(grounded), _max_grounded))
+        return None
     # Restrict derivation var domains to entities that actually
     # participate in some action's pres/effs. This is the cubic
     # samloke-chain bound: a scene with 19 non-inanimate entities
@@ -3955,15 +4258,26 @@ def plan_for_goal(
     table = fact_table_for(initial_trace)
     consumer_index = _build_consumer_index(
         grounded, grounded_derivs, table)
+    _rss_trace_log(_trace_plan_id, "after_consumer_index",
+                   _trace_drive_kind,
+                   {"n_grounded": len(grounded),
+                    "n_derivs": len(grounded_derivs),
+                    "n_consumers": len(consumer_index[1])})
     goal_fact_id = table.id_for(goal_fact)
     goal_bit = 1 << goal_fact_id
+    # Hoisted scratch for the ~1000 heuristic calls this plan
+    # makes. Each call resets the scratch's dicts/lists in place
+    # rather than allocating fresh — eliminates ~50 MB of
+    # per-call allocation churn during fat plans (the dominant
+    # source of the planner's memory spikes on big scenes).
+    _h_scratch = _new_heuristic_scratch(len(consumer_index[1]))
 
     def heuristic_and_helpful(state_mask: int):
         # Fully bitmap-native: the consumer index is fact-id keyed,
         # cost/producer dicts use int keys, the back-walk walks
         # `pres_fids` lists. No tuple hashing on the hot path.
         return _heuristic_and_helpful(
-            goal_fact_id, state_mask, consumer_index)
+            goal_fact_id, state_mask, consumer_index, _h_scratch)
 
     # Fact-set incremental search on bitmap state. Each successor:
     # `(state & pres_mask) == pres_mask` for applicability, mask-form
@@ -3978,11 +4292,15 @@ def plan_for_goal(
     # Apply derivations to layer-0 to get full derived layer.
     initial_mask = _apply_delta_mask(
         initial_mask, 0, 0, grounded_derivs, slot_vocab, table)
+    _rss_trace_log(_trace_plan_id, "after_initial_state",
+                   _trace_drive_kind)
 
     if initial_mask & goal_bit:
         return []
 
     initial_h, initial_helpful = heuristic_and_helpful(initial_mask)
+    _rss_trace_log(_trace_plan_id, "after_initial_heuristic",
+                   _trace_drive_kind, {"initial_h": initial_h})
     if initial_h >= _HEURISTIC_INF:
         # Relaxed-graph heuristic says the goal isn't reachable
         # even ignoring delete effects. Most cases: a required
@@ -4067,7 +4385,11 @@ def plan_for_goal(
         if not found:
             break  # EHC plateau — drop to A*.
         anchor_mask, anchor_h, anchor_helpful, anchor_plan = found
+    _rss_trace_log(_trace_plan_id, "after_ehc", _trace_drive_kind,
+                   {"expansions": expansions, "anchor_h": anchor_h})
     if anchor_h == 0:
+        _rss_trace_log(_trace_plan_id, "exit_ehc_solved",
+                       _trace_drive_kind)
         return anchor_plan
 
     # Phase 2: weighted A* from the deepest EHC anchor reached. The
@@ -4106,6 +4428,9 @@ def plan_for_goal(
             helpful = real_helpful
             h_cur = real_h
         if cur_mask & goal_bit:
+            _rss_trace_log(_trace_plan_id, "exit_astar_solved",
+                           _trace_drive_kind,
+                           {"expansions": expansions})
             return plan
         expansions += 1
         if g >= max_plan_length:
@@ -4168,6 +4493,11 @@ def plan_for_goal(
                     plan + [(action.lemma, roles)],
                     new_mask, None))
             tiebreak += 1
+    _rss_trace_log(_trace_plan_id, "after_astar_unsolved",
+                   _trace_drive_kind,
+                   {"expansions": expansions,
+                    "visited": len(visited),
+                    "open_list": len(open_list)})
     # A* fell off the end. Two reasons can land here:
     #   - `expansions >= max_states`: budget exhausted before the
     #     goal was reached. Plan may exist; raise `max_states` to
@@ -4186,6 +4516,123 @@ def plan_for_goal(
 
 
 _RELEVANT_VERBS_CACHE: dict = {}
+
+
+def _goal_args_match_any_producer(goal, lex, rule_effects, trace) -> bool:
+    """Soundness-preserving cheap reachability check on the goal's
+    concrete role bindings: for each producer of the goal fact,
+    check whether the goal's argument entities match that
+    producer's role-spec type/property requirements.
+
+    Returns False ONLY when no producer can possibly accept the
+    goal-pinned args at the positions the rule-add lands them.
+    Returns True on any uncertainty (no goal args to check,
+    unrecognized goal shape, producer with marker-based role-args,
+    missing entity, etc.) — falls back to current planner behavior.
+
+    Catches the case where a reachability gate would build the
+    full consumer_index just to discover h=INF because no producer
+    accepts the goal's specific args. Cheap (no walk-back through
+    pres or derivations) — runs in O(|producers| × |goal args|).
+
+    Stage 1 of the role-binding walk. If yield holds, stage 2
+    extends this to propagate through pres + derivations and
+    restrict per-role pools in grounding.
+    """
+    kind = goal[0]
+    if kind == "property":
+        _, eid, slot, value = goal
+        target_ent = trace.entities.get(eid)
+        if target_ent is None:
+            return True  # can't check — uncertain
+        target_concept = lex.concepts.get(target_ent.concept_lemma)
+        if target_concept is None:
+            return True
+        # Look for any action whose effect writes `slot=value` on a
+        # role whose type spec accepts target_ent.
+        from ..dsl.introspect import concept_models_slot
+        from ..dsl.rules import runtime_derivations_for
+        derivs = runtime_derivations_for(lex)
+        # First: does the target concept even model the slot?
+        if not concept_models_slot(
+                target_concept, slot, lex, derivs):
+            # The slot isn't a tracked dimension for this concept;
+            # no action can meaningfully write it. (Also no
+            # derivation will produce it.) Already filtered by
+            # `_action_effects_meaningful`, so getting here means
+            # the goal is genuinely on an unmodeled slot.
+            return False
+        # Walk all actions, look for one whose schema-level effect
+        # matches and whose target role-spec admits this entity.
+        for action in lex.actions.values():
+            for eff in action.effects:
+                if eff.property != slot or eff.value != value:
+                    continue
+                role = next(
+                    (r for r in action.roles
+                     if r.name == eff.target_role), None)
+                if role is None:
+                    return True  # uncertain — skip this verb
+                if lex.types.is_subtype(
+                        target_ent.entity_type, role.type):
+                    return True  # this action could fire
+        # Property goals can also be produced by derivations —
+        # if any derivation can yield the property for THIS
+        # entity's concept, defer to the planner (return True).
+        # `concept_models_slot` above already accounts for
+        # derivation pathways via `runtime_derivations_for`.
+        return False
+    elif kind == "relation":
+        _, rel_name, args = goal
+        # Walk rule-add producers + check role-spec compatibility
+        # at each positional arg. If any producer's roles admit
+        # the goal's args at the right positions, reachable.
+        for verb, entry in rule_effects.items():
+            action = lex.actions.get(verb)
+            if action is None:
+                continue
+            for add_rel, role_arg_names in entry.get("adds", ()):
+                if add_rel != rel_name:
+                    continue
+                if len(role_arg_names) != len(args):
+                    continue
+                # Marker-based role-args (<list>, <lookup>,
+                # <literal>) can't be cleanly pinned to a single
+                # eid — fall back to uncertain.
+                if any(isinstance(rn, tuple) for rn in role_arg_names):
+                    return True
+                # Match each positional arg to the role spec.
+                ok = True
+                for role_name, eid in zip(role_arg_names, args):
+                    if not isinstance(eid, str):
+                        continue
+                    ent = trace.entities.get(eid)
+                    if ent is None:
+                        # Goal arg isn't an in-trace entity (might
+                        # be a literal like "en") — let the planner
+                        # decide.
+                        return True
+                    role = next(
+                        (r for r in action.roles
+                         if r.name == role_name), None)
+                    if role is None:
+                        return True  # uncertain
+                    if not lex.types.is_subtype(
+                            ent.entity_type, role.type):
+                        ok = False
+                        break
+                if ok:
+                    return True  # this verb's role specs admit the args
+        # No rule-add producer accepts the goal args.
+        # Derivation producers also exist — defer to the planner
+        # for those (return True) to stay sound. Conservative; a
+        # full walk would check derivation reachability too.
+        return True
+    elif kind == "event_fire":
+        # event_fire bindings are caller-pinned; the planner enforces
+        # them at the grounding stage. No upstream uncertainty.
+        return True
+    return True  # unrecognized — be conservative
 
 
 def _goal_reachable_verbs(goal, lex, rule_effects, derivations) -> set | None:

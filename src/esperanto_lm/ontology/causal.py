@@ -107,6 +107,48 @@ class EntityInstance:
             if value not in existing:
                 existing.append(value)
 
+    @classmethod
+    def from_concept(
+        cls, concept, eid: str, lexicon,
+        *,
+        created_at_event: Optional[int] = None,
+        extra_props: Optional[dict[str, list[str]]] = None,
+    ) -> "EntityInstance":
+        """Canonical EntityInstance constructor. Copies the concept's
+        on-disk properties, applies any `extra_props` overrides, and
+        populates `slot.unmarked` defaults for in-scope, non-varies
+        slots the concept didn't declare. Single place that knows
+        about defaults — used by `Trace.add_entity` and the engine's
+        mid-trace creation paths.
+
+        The bake's proto-trace construction intentionally bypasses
+        this (uses the raw `EntityInstance(...)` constructor): the
+        bake itself is where derived properties like `is_body_part`
+        get computed, so populating defaults there would block the
+        derivation under asserted-wins semantics."""
+        props = {k: list(v) for k, v in concept.properties.items()}
+        if extra_props:
+            for slot, vals in extra_props.items():
+                props[slot] = list(vals)
+        # Note: slot.unmarked is NOT auto-populated here. It's a
+        # rendering hint ("if value equals this, skip the
+        # adjective"), not a default to inject onto every
+        # applicable entity. Auto-populating would make
+        # `concept_models_slot` ambiguous (every entity would
+        # carry every applicable slot) and phantom-match role-
+        # property filters like ŝalti(theme.power_state=neaktiva)
+        # against entities whose concept never declares power_state.
+        # Non-derived slots take values from concept declarations
+        # or engine actions; derived slots (is_part, ...) take
+        # values from the runtime derivation engine.
+        return cls(
+            id=eid,
+            concept_lemma=concept.lemma,
+            entity_type=concept.entity_type,
+            properties=props,
+            created_at_event=created_at_event,
+        )
+
     def get_property(self, slot: str) -> list[str]:
         """Read scene-initial state (shortcut for `properties.get(...)`).
         For current-at-time-t state, use `trace.property_at(id, slot, t)`.
@@ -297,11 +339,7 @@ class Trace:
         if eid in self.entities:
             raise ValueError(f"entity id {eid!r} already in trace")
         self._next_entity_id += 1
-        ent = EntityInstance(
-            id=eid, concept_lemma=concept_lemma,
-            entity_type=concept.entity_type,
-            properties={k: list(v) for k, v in concept.properties.items()},
-        )
+        ent = EntityInstance.from_concept(concept, eid, lexicon)
         self.entities[eid] = ent
         return ent
 

@@ -5,7 +5,7 @@
 {"name": "edibility", "vocabulary": ["manĝebla", "nemanĝebla"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "unmarked": "manĝebla"}
 {"name": "functional_signature", "vocabulary": null, "applies_to": ["artifact"], "scalar": true}
 {"name": "hunger", "vocabulary": ["malsata", "sata"], "applies_to": ["animate"], "scalar": true, "varies": true, "pervasive": true, "adjectival": true, "unmarked": "sata"}
-{"name": "presence", "vocabulary": ["ĉeesta", "manĝita"], "applies_to": ["physical"], "scalar": true}
+{"name": "presence", "vocabulary": ["ĉeesta", "manĝita"], "applies_to": ["physical"], "scalar": true, "unmarked": "ĉeesta"}
 {"name": "openness", "vocabulary": ["malfermita", "fermita"], "applies_to": ["physical"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "fermita"}
 {"name": "water_state", "vocabulary": ["soifa", "akvumita"], "applies_to": ["physical"], "scalar": true, "varies": true, "adjectival": true, "unmarked": "akvumita"}
 {"name": "cleanliness", "vocabulary": ["malpura", "pura"], "applies_to": ["physical"], "scalar": true, "varies": true, "pervasive": true, "adjectival": true, "unmarked": "pura"}
@@ -66,3 +66,4 @@
 {"name": "lift_capacity", "vocabulary": null, "applies_to": ["animate"], "scalar": true}
 {"name": "support_capacity", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
 {"name": "enterable", "vocabulary": ["yes", "no"], "applies_to": ["physical"], "scalar": true}
+{"name": "is_part", "vocabulary": ["yes", "no"], "applies_to": ["physical"], "scalar": true, "unmarked": "no", "derived": true}

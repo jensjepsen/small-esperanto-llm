@@ -591,6 +591,48 @@ def load_lexicon(
             )
         actions[a.lemma] = a
 
+    # Auto-synthesize redundancy gates from declared effects: for
+    # every action whose effect writes `target_role.property=value`,
+    # append a NotPropertyPrecondition that rejects bindings where
+    # the target already holds that value. The action's effect is
+    # a no-op in that case — firing it would mean writing the same
+    # value the entity already has, producing the rampant
+    # "X brulis kaj brulis kaj brulis" / "X rompiĝis kaj rompiĝis"
+    # patterns we saw before this synthesis was in place. The
+    # planner's negative-precondition machinery (`action_not_pres`
+    # post-filter, `not_prop` auxiliary facts in h_FF) and the
+    # sampler's `_action_preconds_satisfied` both honour these
+    # without further wiring. Skipped when the action already has
+    # an equivalent NotPropertyPrecondition (manual override
+    # wins). Rule-effect-add synthesis (NotRelationPrecondition
+    # for relations the action implicitly adds via DSL rules)
+    # would also be valuable but needs the rule-effects index
+    # currently built in agent/forward_planner.py; deferred to
+    # avoid a load-time circular import.
+    from .schemas import NotPropertyPrecondition
+    for lemma, action in list(actions.items()):
+        synth: list = []
+        existing_keys: set = set()
+        for pc in action.preconditions:
+            if isinstance(pc, NotPropertyPrecondition):
+                existing_keys.add(
+                    (pc.role, pc.property, pc.value))
+        for eff in action.effects:
+            key = (eff.target_role, eff.property, eff.value)
+            if key in existing_keys:
+                continue
+            existing_keys.add(key)
+            synth.append(NotPropertyPrecondition(
+                kind="not_property",
+                role=eff.target_role,
+                property=eff.property,
+                value=eff.value,
+            ))
+        if synth:
+            actions[lemma] = action.model_copy(
+                update={"preconditions":
+                        list(action.preconditions) + synth})
+
     affixes: dict[str, Affix] = {}
     for d in _read_jsonl(data_dir / "affixes.jsonl"):
         af = Affix(**d)

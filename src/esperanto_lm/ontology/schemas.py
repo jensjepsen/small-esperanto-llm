@@ -87,6 +87,16 @@ class PropertySlot(_Frozen):
     # malsata) still render. None means every value is potentially
     # marked (e.g. hazard: akra and glita are both noteworthy).
     unmarked: Optional[str] = None
+    # Marks a slot whose value is produced by a RUNTIME derivation
+    # rather than being authored on concepts or randomized per
+    # instance. Entity creation skips populating the unmarked
+    # default for these slots — otherwise the asserted value would
+    # win under scalar-wins semantics and block the derivation from
+    # setting a derived value at runtime. The unmarked default is
+    # consulted only at state-fact emission time as a fallback for
+    # entities whose derivation hasn't fired (e.g. `is_part` on
+    # entities that aren't currently a `havas_parton` parto).
+    derived: bool = False
     # Optional sampling weights aligned 1:1 with `vocabulary`. When
     # set, `_randomize_state` uses `rng.choices(vocabulary, weights)`
     # instead of uniform `rng.choice`. Lets the world bias toward
@@ -380,6 +390,51 @@ class HasPropertyPrecondition(_Frozen):
     value: str
 
 
+class NotRelationPrecondition(_Frozen):
+    """Hard exclusion: the named relation must NOT hold for the
+    given role bindings. Passes when the relation is absent from
+    both asserted and derived state. Mirror of RelationPrecondition.
+
+    Use case: eniri's agent must NOT already be `en` the theme
+    (entering a room you're already in is incoherent). Distinct
+    from a positive RelationPrecondition because it gates against
+    a CURRENT state rather than requiring one to hold.
+
+    Like NotPropertyPrecondition, this fits the delete-relaxed
+    h_FF heuristic via an auxiliary `not_rel` fact: `_state_facts`
+    emits `("not_rel", rel_name, args)` iff the positive
+    `("rel", rel_name, args)` is NOT in state. Initial-state
+    correctness is exact; the heuristic may over-explore branches
+    where a relation could be ADDED mid-plan, but the grounding
+    post-filter catches those."""
+    kind: Literal["not_relation"] = "not_relation"
+    rel: str
+    roles: list[str]  # role names; positions match the relation's arg order
+
+
+class NotPropertyPrecondition(_Frozen):
+    """Hard exclusion: the role entity must NOT have `property=value`.
+    Passes when the entity has the property set to a different value
+    OR has no value for the property at all (i.e. its concept doesn't
+    model the slot). Mirror image of HasPropertyPrecondition.
+
+    The schema-clean way to gate verbs against derived-slot states
+    without needing instance-time defaults to "fill in" the absent
+    case. Use case: fali/aperi/ĵeti/porti/etc. forbid theme entities
+    that are currently `is_part=yes` — the runtime
+    `entity_is_part_if_attached` derivation writes that value on
+    things currently a `havas_parton` parto; absence of the value
+    means "not currently attached", which is fine.
+
+    Distinct from IfPropertyPrecondition with a contradictory then-
+    clause (which would be silent on the same-absence case but
+    semantically opaque)."""
+    kind: Literal["not_property"] = "not_property"
+    role: str
+    property: str
+    value: str
+
+
 class OrPrecondition(_Frozen):
     """Disjunction of preconditions: the action is plannable when ANY
     alternative is satisfied. Lifts the AND-only ceiling of the
@@ -397,11 +452,12 @@ class OrPrecondition(_Frozen):
 
 
 # Discriminated union point — when more precondition kinds appear
-# (e.g. quantitative comparisons, negation), add them here. The kind
-# field is the tag the planner dispatches on.
+# (e.g. quantitative comparisons), add them here. The kind field is
+# the tag the planner dispatches on.
 Precondition = (
     RelationPrecondition | IfPropertyPrecondition | MatchPrecondition
-    | HasPropertyPrecondition | OrPrecondition
+    | HasPropertyPrecondition | NotPropertyPrecondition
+    | NotRelationPrecondition | OrPrecondition
 )
 
 
@@ -433,6 +489,19 @@ class Action(_Frozen):
     derives_thing: bool = False
     derives_place: bool = False
     derives_quality: bool = False
+    # When True, the sampler / planner SKIP this verb as a candidate
+    # for goal pursuit or forward-step picking. The verb still exists
+    # in the schema (roles, effects, preconditions kept intact) and
+    # gets emitted by DSL rules (`emit("X", ...)`) as a cascade
+    # effect of other events — but it isn't a deliberate "action"
+    # an agent chooses. Used for reactive intransitives whose
+    # Esperanto form names a state-becoming, not a volition:
+    # morti/rompiĝi/fali/satiĝi/sensoifiĝi/bruli — they happen TO
+    # things because of what other actions caused, not because the
+    # actor decided to. Keeping them out of the action pool removes
+    # the "Maria mortis. La lampo falis kaj falis." filler that
+    # appears when the sampler treats them as picks.
+    cascade_only: bool = False
     # When True, the planner permits agent==theme bindings for this
     # action (sekigi/lavi/vesti — actions one can plausibly do to
     # oneself). The realizer renders the theme as the reflexive
@@ -455,11 +524,15 @@ def _check_pc_roles(pc, lemma: str, role_names: set) -> None:
     its alternatives."""
     if isinstance(pc, RelationPrecondition):
         referenced = pc.roles
+    elif isinstance(pc, NotRelationPrecondition):
+        referenced = pc.roles
     elif isinstance(pc, MatchPrecondition):
         referenced = [pc.role_a, pc.role_b]
     elif isinstance(pc, HasPropertyPrecondition):
         referenced = [pc.role]
     elif isinstance(pc, IfPropertyPrecondition):
+        referenced = [pc.role]
+    elif isinstance(pc, NotPropertyPrecondition):
         referenced = [pc.role]
     elif isinstance(pc, OrPrecondition):
         for alt in pc.alternatives:

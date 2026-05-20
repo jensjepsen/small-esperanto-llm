@@ -1840,6 +1840,35 @@ person_has_human_parts = derive(
 )
 
 
+# Runtime "is this entity currently a sub-component of another?"
+# marker. Fires whenever the trace asserts `havas_parton(H, P)`:
+# P (the parto) gets `is_part = yes` in derived state.
+#
+# Used by verbs whose theme shouldn't be a part-of-something —
+# fali/aperi/ĵeti/porti/detrui/rompiĝi/bruli/timi all declare
+# `theme.properties: {is_part: ["no"]}`. Body parts of animates
+# pick this up at scene setup (the seeder asserts
+# `havas_parton(person, fingo)` for every human part), and
+# constructables pick it up at fari-time (the engine asserts
+# `havas_parton(lito, ligno)` once the bed is built — after that,
+# the wood can't be independently carried). Schema-driven, no
+# trace-inspecting filter logic outside the derivation framework.
+#
+# `is_part` is marked `derived: true` in slots.jsonl so
+# EntityInstance.from_concept skips populating the unmarked
+# default — otherwise the asserted "no" would block this
+# derivation under scalar-wins. The state-emission machinery
+# (_state_facts in forward_planner) falls back to slot.unmarked
+# at fact-emit time for derived slots without a derived value.
+entity_is_part_if_attached = derive(
+    when=rel("havas_parton",
+             tuto=var("EIPA_H"),
+             parto=bind(EIPA_P := var("P"))),
+    implies=property(EIPA_P, "is_part", "yes"),
+    name="entity_is_part_if_attached",
+)
+
+
 # Indoor locations have a door. Mirrors person_has_human_parts —
 # materialized at bake time onto every indoor concept, including
 # affix-derived ones like kuirejo, lavejo, dormejo. Combined with
@@ -2041,6 +2070,37 @@ physical_has_wetness = derive(
     when=entity(type="physical") & bind(T_we := var("T")),
     implies=property(T_we, "wetness", "seka"),
     name="physical_has_wetness",
+)
+
+# Fragile entities default to integrity=tuta. Runtime-only because
+# `integrity` is `varies: true` (varies-slots are skipped at bake-
+# time so per-instance state — broken glass on the floor, intact
+# cup on the shelf — can be authored or set via events). Lets
+# verbs like rompiĝi gate `role.theme.properties: {integrity:
+# tuta}` and reject fragile-but-already-broken targets without
+# requiring every fragile concept to declare integrity in
+# concepts.jsonl. After rompiĝi fires (effect: integrity=rompita
+# via property_changes), the asserted value wins on the scalar
+# slot, suppressing this derivation for that entity instance.
+fragile_default_integrity_tuta = derive(
+    when=entity(fragility="fragila") & bind(T_fi := var("T")),
+    implies=property(T_fi, "integrity", "tuta"),
+    name="fragile_default_integrity_tuta",
+)
+
+
+# Every physical entity defaults to presence=ĉeesta (present).
+# Lets verbs whose effect consumes the entity (bruli sets
+# presence=manĝita) gate on `presence: ["ĉeesta"]` without
+# requiring every concept to declare presence in concepts.jsonl.
+# Same lifecycle as `fragile_default_integrity_tuta`: after the
+# consuming verb fires, asserted-wins on the scalar slot
+# suppresses this derivation, and the role-filter sees the
+# asserted manĝita and rejects subsequent attempts.
+physical_default_presence_ceesta = derive(
+    when=entity(type="physical") & bind(T_pr := var("T")),
+    implies=property(T_pr, "presence", "ĉeesta"),
+    name="physical_default_presence_ceesta",
 )
 
 meat_is_edible = derive(
@@ -2866,6 +2926,24 @@ DEFAULT_DSL_DERIVATIONS = [
 # additions; new derivations default to RUNTIME unless explicitly
 # moved here.
 RUNTIME_DERIVATIONS = [
+    # `is_part` is a runtime-derived slot: fires for any entity
+    # currently on the `parto` side of a havas_parton fact (body
+    # parts of animates at scene setup, constructable ingredients
+    # post-fari). See its definition for why it's runtime-only.
+    entity_is_part_if_attached,
+    # Fragile entities default to integrity=tuta. Runtime-only
+    # because `integrity` is varies-true; the bake skips varies
+    # slots so the default must be derived per-instance instead.
+    # After rompiĝi fires (effect: integrity=rompita via
+    # property_changes), asserted-wins suppresses this derivation
+    # for that entity — subsequent rompiĝi attempts see integrity
+    # =rompita in state and the role-filter rejects.
+    fragile_default_integrity_tuta,
+    # Physical entities default to presence=ĉeesta. Same
+    # lifecycle as fragile_default_integrity_tuta — gates bruli/
+    # manĝi-style consuming verbs against re-firing once the
+    # asserted manĝita lands via property_changes.
+    physical_default_presence_ceesta,
     # Posture / sleep_state derivations are runtime-only (NOT in
     # DEFAULT_DSL_DERIVATIONS): if the defaults were baked, every
     # animate concept's properties would carry posture=staranta /

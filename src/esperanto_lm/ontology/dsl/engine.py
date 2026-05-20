@@ -281,7 +281,24 @@ def run_dsl(
     # per matching binding (per the spec). New bindings — opened by
     # derivations re-materializing or by new entities/relations — get
     # to fire freely.
-    fired_bindings: set[tuple[str, str, frozenset]] = set()
+    #
+    # Persisted on the trace so memoization carries across
+    # incremental run_dsl calls (the forward sampler invokes
+    # run_dsl after each event). Without persistence, a movement
+    # rule like kuri_moves_agent re-fires on event 0 in every
+    # subsequent call: its given clauses re-match whenever state
+    # makes the source/dest binding valid again, and the rule's
+    # effect undoes whatever en-transition a later eniri put
+    # in place. With persistence, each (rule, event_id, binding)
+    # triple fires at most once per trace lifetime — matching the
+    # batched-run semantics.
+    fired_bindings = getattr(trace, "_fired_bindings", None)
+    if fired_bindings is None:
+        fired_bindings = set()
+        try:
+            object.__setattr__(trace, "_fired_bindings", fired_bindings)
+        except Exception:
+            pass
     for cycle in range(1, max_cycles + 1):
         _run_derivations_to_fixed_point(
             trace, derivations, lexicon, derived)
@@ -630,17 +647,15 @@ def _apply_effect_list(
             if eid in trace.entities:
                 b[eff.as_var] = eid
                 continue
-            props = {k: list(v) for k, v in concept.properties.items()}
+            extra: dict[str, list[str]] = {}
             if eff.initial_properties:
                 for slot, val in eff.initial_properties.items():
                     resolved_val = resolve(val, b) if isinstance(val, Var) else val
-                    props[slot] = [resolved_val]
-            ent = EntityInstance(
-                id=eid,
-                concept_lemma=concept_lemma,
-                entity_type=concept.entity_type,
-                properties=props,
+                    extra[slot] = [resolved_val]
+            ent = EntityInstance.from_concept(
+                concept, eid, lexicon,
                 created_at_event=len(trace.events),
+                extra_props=extra or None,
             )
             trace.entities[eid] = ent
             b[eff.as_var] = eid
@@ -749,19 +764,28 @@ def _apply_effect_list(
                 f"{src_ent.concept_lemma}_from_{cause_event.id[:12]}")
             if new_eid not in trace.entities:
                 concept = lexicon.concepts.get(src_ent.concept_lemma)
-                props = (
-                    {k: list(v) for k, v in concept.properties.items()}
-                    if concept is not None
-                    else {k: list(v) for k, v in src_ent.properties.items()}
-                )
-                props["count"] = [str(qty)]
-                new_ent = EntityInstance(
-                    id=new_eid,
-                    concept_lemma=src_ent.concept_lemma,
-                    entity_type=src_ent.entity_type,
-                    properties=props,
-                    created_at_event=len(trace.events),
-                )
+                if concept is not None:
+                    new_ent = EntityInstance.from_concept(
+                        concept, new_eid, lexicon,
+                        created_at_event=len(trace.events),
+                        extra_props={"count": [str(qty)]},
+                    )
+                else:
+                    # No concept registered — fall back to a copy of the
+                    # source's instance properties. Bypasses unmarked
+                    # defaults, but src_ent's properties already carry
+                    # them from its own from_concept construction.
+                    props = {
+                        k: list(v) for k, v in src_ent.properties.items()
+                    }
+                    props["count"] = [str(qty)]
+                    new_ent = EntityInstance(
+                        id=new_eid,
+                        concept_lemma=src_ent.concept_lemma,
+                        entity_type=src_ent.entity_type,
+                        properties=props,
+                        created_at_event=len(trace.events),
+                    )
                 trace.entities[new_eid] = new_ent
                 changed = True
             # Decrement source's count via synthetic _change.
