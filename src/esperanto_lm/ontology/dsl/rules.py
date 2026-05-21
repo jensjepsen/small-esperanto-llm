@@ -2545,6 +2545,52 @@ havi_implies_samloke_with_carried = derive(
 )
 
 
+# `effective_en(X, L)` — the location where X is for narrative/query
+# purposes. For most entities this equals their asserted `en`. For
+# HELD items, this is the carrier's current `en` — so a basket
+# carried into the garden has `effective_en(basket, ĝardeno)` even
+# though `en(basket, kuirejo)` remains asserted (the spawn-time fact).
+#
+# Pure derivation: monotone, no removal, no paradox. Consumers
+# (realizer, queries about "where is X now") can opt in by checking
+# `effective_en` first and falling back to asserted `en` when
+# absent. The planner doesn't need this — it uses `samloke` for
+# co-location, which is already covered by
+# `havi_implies_samloke_with_carried` + the samloke chains.
+#
+# Scope: single-level carrying (A holds X, A is en L). Nested
+# carrying (A holds B, B holds C) is left for a future extension —
+# the derivation would need to chain via effective_en itself, which
+# requires careful fixed-point reasoning.
+held_item_effective_en_via_carrier = derive(
+    when=rel("havi",
+             owner=bind(EFCO := var("O")),
+             theme=bind(EFCT := var("T"))),
+    given=[
+        rel("en", contained=EFCO, container=bind(EFCL := var("L"))),
+    ],
+    implies=relation("effective_en", EFCT, EFCL),
+    name="held_item_effective_en_via_carrier",
+)
+
+
+# Default: every asserted `en(X, L)` also has `effective_en(X, L)`.
+# This makes `effective_en` a complete view of "where is this entity
+# now" — consumers don't need separate fallback logic to read en for
+# unheld items. The combination with the carrier-derived effective_en
+# gives held items potentially TWO effective_en values (original +
+# carrier's location) — consumers that need a single value should
+# prefer the carrier-derived one (e.g., by checking havi first), but
+# for the "is X at L?" predicate-style queries, having both is fine.
+asserted_en_implies_effective_en = derive(
+    when=rel("en",
+             contained=bind(EFAEX := var("X")),
+             container=bind(EFAEL := var("L"))),
+    implies=relation("effective_en", EFAEX, EFAEL),
+    name="asserted_en_implies_effective_en",
+)
+
+
 # `apud_implies_samloke_with_neighbor` was removed: it leaked
 # location-to-location samloke through the seeder's sibling-room
 # placement (e.g. forno en kuirejo, kuirejo apud maro → samloke(forno,
@@ -2874,6 +2920,8 @@ DEFAULT_DSL_DERIVATIONS = [
     samloke_propagates_through_location_parts,
     en_implies_samloke_with_container,
     havi_implies_samloke_with_carried,
+    held_item_effective_en_via_carrier,
+    asserted_en_implies_effective_en,
     sur_implies_samloke_with_supporter,
     samloke_chains_through_en,
     samloke_chains_through_sur,
@@ -2968,6 +3016,8 @@ RUNTIME_DERIVATIONS = [
     samloke_propagates_through_location_parts,
     en_implies_samloke_with_container,
     havi_implies_samloke_with_carried,
+    held_item_effective_en_via_carrier,
+    asserted_en_implies_effective_en,
     sur_implies_samloke_with_supporter,
     samloke_chains_through_en,
     samloke_chains_through_sur,
