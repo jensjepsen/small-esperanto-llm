@@ -684,21 +684,27 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
     # mentions only happen when the message produces text.
     if rel.relation not in ("havi", "sur", "en", "apud"):
         return None
-    # Held-item en suppression. When the contained entity is held by
-    # an actor (havi(?, X) somewhere in trace state), its asserted
-    # `en` is stale w.r.t. narrative — the item travels with its
-    # carrier. Rendering "Banano troviĝos en salono" while a
-    # parrot owns the banana and flies elsewhere reads as a false
+    # Held-item positional suppression. When the contained/subject
+    # entity is held by an actor (havi(?, X) somewhere in trace
+    # state), any asserted positional relation (en/sur/apud) on X
+    # is stale w.r.t. narrative — the item travels with its carrier.
+    # Rendering "Banano troviĝos en salono" or "Libro kuŝas sur
+    # tablo" while another entity owns the item reads as a false
     # claim. The havi relation itself ("La papago posedas la
-    # bananon") and the carrier's movements implicitly communicate
-    # the item's location; the en rendering would only confuse.
-    # Cheap check: scan trace.relations for any havi pair with this
-    # eid as theme. Covers both setup-asserted havi (pre-staged
-    # ownership) and event-added havi (preni cascade).
-    if rel.relation == "en":
-        contained_eid = rel.args[0]
+    # bananon") plus the carrier's movements implicitly communicate
+    # the item's location; positional renderings would only
+    # confuse. Cheap check: scan trace.relations for any havi pair
+    # with this eid as theme. Covers both setup-asserted havi
+    # (pre-staged ownership) and event-added havi (preni cascade).
+    # The first arg of en/sur/apud is the positional subject — the
+    # thing whose location is being claimed. For apud (symmetric)
+    # we'd ideally check both args; in practice the realizer's apud
+    # rendering always uses arg[0] as the subject so this is OK.
+    if rel.relation in ("en", "sur", "apud"):
+        subject_eid = rel.args[0]
         for r in ctx.trace.relations:
-            if r.relation == "havi" and len(r.args) == 2 and r.args[1] == contained_eid:
+            if (r.relation == "havi" and len(r.args) == 2
+                    and r.args[1] == subject_eid):
                 return None
     a_form = ctx.name_for(a)
     ctx.note_mention(a)
@@ -1739,11 +1745,25 @@ def _render_grouped_relation(
     container = ctx.trace.entities.get(m.container_id)
     if container is None:
         return None
+    # Held-item positional suppression in grouped form. Same logic as
+    # `_render_relation` — drop held items from the contents list so
+    # we don't claim "En salono estas la banano kaj tablo" when the
+    # banano is actually with its carrier elsewhere. Skipped for
+    # `havi` (which IS the possession relation; we'd be suppressing
+    # the very rendering that establishes ownership).
+    suppress_held = m.relation in ("en", "sur", "apud")
+    held_set: set = set()
+    if suppress_held:
+        for r in ctx.trace.relations:
+            if (r.relation == "havi" and len(r.args) == 2):
+                held_set.add(r.args[1])
     container_form = ctx.name_for(container)
     ctx.note_mention(container)
 
     contained_forms: list[str] = []
     for cid in m.contained_ids:
+        if suppress_held and cid in held_set:
+            continue
         ent = ctx.trace.entities.get(cid)
         if ent is None:
             continue
