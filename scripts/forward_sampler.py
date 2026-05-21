@@ -45,6 +45,7 @@ from esperanto_lm.ontology.schemas import (
     MatchPrecondition, NotPropertyPrecondition, NotRelationPrecondition,
     OrPrecondition, RelationPrecondition,
 )
+from esperanto_lm.ontology.entity_index import entity_index_for
 
 
 # =================== artifact types ====================
@@ -177,13 +178,25 @@ def _role_filler_candidates(role_spec, trace, lex, exclude,
 
     Negative gating (e.g. "theme must NOT be currently a part") is
     expressed as a `NotPropertyPrecondition` on the action and
-    enforced in `_action_preconds_satisfied`, NOT here."""
-    for eid, ent in trace.entities.items():
+    enforced in `_action_preconds_satisfied`, NOT here.
+
+    Fast path: the EntityIndex's type-keyed bitmap (re-cached on
+    `len(trace.entities)` change) narrows the scan to entities of
+    `role_spec.type` first, then we re-check role.properties with
+    derived-state awareness. The bitmap alone can't subset on
+    derivable slots (is_part, can_use_tools, illuminated, etc.) —
+    those flip at runtime via DSL derivations rather than living
+    statically on the entity — so we keep the per-entity property
+    check. Saves the 80%+ of entities whose type doesn't match the
+    role at all (e.g. searching for an `animate` agent in a scene
+    where 40/50 entities are body parts / artifacts)."""
+    idx = entity_index_for(trace, lex)
+    pool = idx.entities_matching(role_type=role_spec.type)
+    for eid in pool:
         if eid in exclude:
             continue
-        if ent.destroyed_at_event is not None:
-            continue
-        if not lex.types.is_subtype(ent.entity_type, role_spec.type):
+        ent = trace.entities.get(eid)
+        if ent is None or ent.destroyed_at_event is not None:
             continue
         if role_spec.properties:
             ok = True
@@ -457,6 +470,9 @@ def _inject_underused_concepts(trace, scene_id: str, lex, rng,
     """
     from esperanto_lm.ontology.regression.seeders import (
         _place_respecting_containment)
+    # Build the set of concepts already in scene once — avoids
+    # the O(concepts × entities) any() scan in the per-lemma loop.
+    in_scene = {ent.concept_lemma for ent in trace.entities.values()}
 
     candidates: list[tuple[str, int]] = []
     for lemma, c in lex.concepts.items():
@@ -470,7 +486,7 @@ def _inject_underused_concepts(trace, scene_id: str, lex, rng,
             continue
         # Skip concepts already present in the scene — injection
         # is for ADDING variety, not duplicating.
-        if any(e.concept_lemma == lemma for e in trace.entities.values()):
+        if lemma in in_scene:
             continue
         candidates.append((lemma, _CONCEPT_SPAWN_HIST.get(lemma, 0)))
     if not candidates:
@@ -604,6 +620,10 @@ def _prestate_rare_verb_preconds(t, scene_id: str, lex, rng) -> None:
         runtime_derivations_for(lex))
     derived = compute_derived_state(t, all_derivs, lex)
 
+    # Cache the entity index once for the entire candidate sweep;
+    # the bitmap re-builds only if entity count changes.
+    idx = entity_index_for(t, lex)
+
     weighted: list = []
     weights: list = []
     pair_cache: dict = {}
@@ -621,13 +641,20 @@ def _prestate_rare_verb_preconds(t, scene_id: str, lex, rng) -> None:
             None)
         if actor_role_spec is None or partner_role_spec is None:
             continue
-        actor_eids = [eid for eid, ent in t.entities.items()
-                      if _matches(ent, actor_role_spec)]
+        # Type-pool from the index; property check still needs to
+        # consult `_matches` since `_matches` looks at ent.properties
+        # directly and role properties may include literal values.
+        actor_pool = idx.entities_matching(role_type=actor_role_spec.type)
+        actor_eids = [eid for eid in actor_pool
+                       if _matches(t.entities[eid], actor_role_spec)]
         if not actor_eids:
             continue
-        partner_eids = [eid for eid, ent in t.entities.items()
-                        if eid not in actor_eids
-                        and _matches(ent, partner_role_spec)]
+        partner_pool = idx.entities_matching(
+            role_type=partner_role_spec.type)
+        actor_set = set(actor_eids)
+        partner_eids = [eid for eid in partner_pool
+                         if eid not in actor_set
+                         and _matches(t.entities[eid], partner_role_spec)]
         if not partner_eids:
             continue
         actor_eid = rng.choice(actor_eids)
