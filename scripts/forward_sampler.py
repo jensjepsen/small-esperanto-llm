@@ -390,7 +390,7 @@ _CONCEPT_SPAWN_HIST: dict[str, int] = {}
 
 
 def _inject_underused_concepts(trace, scene_id: str, lex, rng,
-                                n: int = 2, candidate_pool: int = 30) -> int:
+                                n: int = 2, candidate_pool: int = 100) -> int:
     """Spawn up to `n` extra entities into `trace` from the
     least-used concepts in this worker's history. Uses the
     spawner's containment-aware placement so injection respects
