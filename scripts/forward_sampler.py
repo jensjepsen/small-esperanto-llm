@@ -204,15 +204,40 @@ def _bind_roles(action: Action, trace, lex, rng, max_per_action=8,
     for each role, pick uniformly from the candidate filler set; reject
     bindings that put the same entity in two roles. Returns up to
     `max_per_action` distinct binding sets (caps combinatorics on
-    actions with many roles)."""
+    actions with many roles).
+
+    From-precondition roles (rakonti.rel_type, rakonti.objekto, etc.)
+    are pre-bound from real relation tuples via
+    `from_precondition_role_bindings` — without this, the naive
+    type-match would try to bind rel_type (type=abstract) to entities
+    of type abstract (only `mondo` exists), and the scias precondition
+    would never be satisfied. The fp helper also couples scalar roles
+    in the same precondition so agent/theme stay consistent with the
+    chosen scias tuple."""
+    from esperanto_lm.ontology.agent.role_binding import (
+        from_precondition_role_bindings)
+    fp_bindings = from_precondition_role_bindings(action, trace, lex)
+    if not fp_bindings:
+        # Action has fp roles but no matching tuples in state. Not
+        # currently groundable — skip.
+        return []
+
     seen: set[tuple] = set()
     out = []
     attempts = 0
     while len(out) < max_per_action and attempts < max_per_action * 4:
         attempts += 1
-        roles: dict[str, str] = {}
+        # Pick a from-precondition binding (one tuple's worth of
+        # bound roles). When the action has no fp roles, this is
+        # `{}` and we proceed with full naive binding for every
+        # role.
+        fp_binding = rng.choice(fp_bindings)
+        roles: dict[str, str] = dict(fp_binding)
         ok = True
         for role_spec in action.roles:
+            if role_spec.name in roles:
+                # Already bound via fp coupling.
+                continue
             cands = list(_role_filler_candidates(
                 role_spec, trace, lex, exclude=set(roles.values()),
                 derived=derived))
