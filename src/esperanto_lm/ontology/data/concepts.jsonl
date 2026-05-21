@@ -167,10 +167,10 @@
 {"lemma": "insulo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}, {"concept": "tero"}]}
 {"lemma": "mondo", "entity_type": "abstract", "properties": {"tempo_de_tago": ["tago"], "weather": ["serena"]}, "is_category_stub": true}
 {"lemma": "piedo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
-{"lemma": "mano", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"], "grasp_capable": ["yes"]}}
+{"lemma": "mano", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"], "grasp_capable": ["yes"], "count": ["2"]}, "slot_overrides": {"count": {"varies": false}}}
 {"lemma": "kapo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "vosto", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
-{"lemma": "okulo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "okulo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"], "see_capable": ["yes"], "count": ["2"]}, "slot_overrides": {"count": {"varies": false}}}
 {"lemma": "lampo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["neaktiva"], "lights_when_on": ["yes"], "posture": ["staranta"], "longeco": ["0.3"], "larĝeco": ["0.3"], "alteco": ["0.5"], "maso": ["3"]}}
 {"lemma": "motoro", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["metal"], "power_state": ["neaktiva"], "longeco": ["0.5"], "larĝeco": ["0.5"], "alteco": ["0.5"], "maso": ["100"]}}
 {"lemma": "patro", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["viro"]}
@@ -189,8 +189,8 @@
 {"lemma": "brako", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "dento", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "buŝo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
-{"lemma": "nazo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
-{"lemma": "orelo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
+{"lemma": "nazo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"], "smell_capable": ["yes"], "count": ["1"]}, "slot_overrides": {"count": {"varies": false}}}
+{"lemma": "orelo", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"], "hear_capable": ["yes"], "count": ["2"]}, "slot_overrides": {"count": {"varies": false}}}
 {"lemma": "dorso", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "haro", "entity_type": "inanimate", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "banano", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "koloro": ["flava"]}, "category": ["frukto"]}

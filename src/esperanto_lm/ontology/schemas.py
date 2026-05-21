@@ -191,6 +191,22 @@ class Concept(_Frozen):
     # Provenance for derived concepts: which lemma(s) + affix(es) produced
     # this. Empty for authored concepts.
     derived_from: Optional[dict[str, str]] = None
+    # Per-concept overrides for slot-level configuration. Schema:
+    #   {slot_name: {field_name: override_value}}
+    # Fields supported by the spawner / realizer:
+    #   "varies": bool   — when False, the concept's authored value
+    #                      for this slot sticks instead of being
+    #                      randomized from the slot's full vocab.
+    #                      Used on body parts: okulo/orelo declare
+    #                      `count=["2"]` and want it to stick (not
+    #                      get randomized to 1-5 by the count slot's
+    #                      slot-level varies=true).
+    #   "weights": list[float] — per-concept sampling distribution.
+    #   "vocabulary": list[str] — restrict to a per-concept subset.
+    # The slot-level config stays the default; per-concept overrides
+    # win when present. Scoped to the concept — no slot-level
+    # pollution, no escape-hatch flag accumulation.
+    slot_overrides: dict[str, dict] = Field(default_factory=dict)
 
 
 class Quality(_Frozen):

@@ -825,19 +825,28 @@ def _randomize_state(entity, lex: Lexicon, rng: random.Random) -> None:
         every persono instance gets random hungry or sated → manĝi
         with hunger=hungry precondition fires naturally
     """
+    concept = lex.concepts.get(entity.concept_lemma)
+    overrides = getattr(concept, "slot_overrides", {}) if concept else {}
     for slot_name in list(entity.properties.keys()):
         slot = lex.slots.get(slot_name)
         if slot is None or slot.vocabulary is None or not slot.scalar:
             continue
-        if slot.varies:
+        ovr = overrides.get(slot_name, {})
+        # Per-concept override: `varies: false` opts THIS concept out
+        # of slot-level varies-randomization. okulo's count=["2"] then
+        # sticks instead of getting random-picked into 1-5.
+        effective_varies = ovr.get("varies", slot.varies)
+        if effective_varies:
             # Full-vocab randomization: ignore the concept's
             # authored value (it's just an opt-in marker).
-            if (slot.weights is not None
-                    and len(slot.weights) == len(slot.vocabulary)):
+            effective_weights = ovr.get("weights", slot.weights)
+            effective_vocab = ovr.get("vocabulary", slot.vocabulary)
+            if (effective_weights is not None
+                    and len(effective_weights) == len(effective_vocab)):
                 choice = rng.choices(
-                    slot.vocabulary, weights=slot.weights, k=1)[0]
+                    effective_vocab, weights=effective_weights, k=1)[0]
             else:
-                choice = rng.choice(slot.vocabulary)
+                choice = rng.choice(effective_vocab)
             entity.set_property(slot_name, choice)
             continue
         if getattr(slot, "samples_per_instance", False):
