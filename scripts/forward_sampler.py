@@ -590,10 +590,23 @@ def _prestate_rare_verb_preconds(t, scene_id: str, lex, rng) -> None:
     # draw. Net effect: rare verbs whose partner concept happens to
     # be in scene get prioritized; rare verbs with no partner
     # in-scene fall through to other rare candidates.
+    # Compute derived state once. The same view is reused for every
+    # candidate's "is the precondition already satisfied?" check —
+    # without this, pre-asserting `samloke(actor, theme)` is a no-op
+    # because samloke is already true via shared-container
+    # derivation; that wastes the per-scene pre-stage budget on a
+    # state change that doesn't move the planner's view.
+    # scias_lokon is the other big offender, derived from scias.
+    from esperanto_lm.ontology.dsl import compute_derived_state
+    from esperanto_lm.ontology.dsl.rules import (
+        DEFAULT_DSL_DERIVATIONS, runtime_derivations_for)
+    all_derivs = list(DEFAULT_DSL_DERIVATIONS) + list(
+        runtime_derivations_for(lex))
+    derived = compute_derived_state(t, all_derivs, lex)
+
     weighted: list = []
     weights: list = []
     pair_cache: dict = {}
-    existing_rels = {(r.relation, tuple(r.args)) for r in t.relations}
     for entry in raw_candidates:
         verb_name, rel_name, partner_role_name = entry
         seen = _CROSS_TRACE_VERB_HIST.get(verb_name, 0)
@@ -621,7 +634,10 @@ def _prestate_rare_verb_preconds(t, scene_id: str, lex, rng) -> None:
         partner_eid = rng.choice(partner_eids)
         if actor_eid == partner_eid:
             continue
-        if (rel_name, (actor_eid, partner_eid)) in existing_rels:
+        # Skip if the relation is already true — asserted OR derived.
+        # `_has_relation` consults both; only entries that pre-stage
+        # an actual state change make it into the weighted draw.
+        if _has_relation(rel_name, (actor_eid, partner_eid), t, derived):
             continue
         pair_cache[entry] = (actor_eid, partner_eid)
         weighted.append(entry)
