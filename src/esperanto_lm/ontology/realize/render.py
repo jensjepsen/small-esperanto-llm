@@ -318,6 +318,7 @@ def _pick_adjective(
     entity, *, lexicon, rng: Optional[random.Random],
     history: Optional[dict[str, set[str]]] = None,
     relevant_slots: Optional[set[str]] = None,
+    derived=None,
 ) -> Optional[str]:
     """Return a slot value to render attributively for `entity`, or None.
 
@@ -328,6 +329,13 @@ def _pick_adjective(
     malsata Maria") read stilted. The `history` map lets the caller
     cycle through different slots across multiple mentions of the
     same entity so we don't get "fragila pomo … fragila pomo".
+
+    `derived` (when provided) is also walked for adjectival slot
+    values — surfaces things like a kitchen's derived
+    `temperature=malvarma` (from an active fridujo via
+    `location_cold_via_active_cooler`) as "malvarma kuirejo".
+    The asserted/instance value still wins when both exist; this
+    just lets purely-derived adjectives reach prose.
     """
     if rng is None or lexicon is None:
         return None
@@ -336,28 +344,45 @@ def _pick_adjective(
     if rng.random() >= ADJECTIVE_RATE:
         return None
     candidates: list[tuple[str, str]] = []   # (slot, value)
-    for slot_name, values in entity.properties.items():
+
+    def _consider(slot_name: str, value: str) -> None:
         slot_def = lexicon.slots.get(slot_name)
         if slot_def is None or not getattr(slot_def, "adjectival", False):
-            continue
-        if not values:
-            continue
-        # Relevance gate: no event in this trace touches this slot on
-        # this entity, so the adjective is narratively orphaned.
-        # Slots flagged `always_relevant: true` (color, eventually
-        # other purely-visual dimensions) opt out — they're
-        # descriptive rather than action-relevant.
+            return
+        # Relevance gate (same as before for asserted; honors
+        # always_relevant escape).
         if (relevant_slots is not None
                 and slot_name not in relevant_slots
                 and not getattr(slot_def, "always_relevant", False)):
-            continue
-        value = values[0]
-        # Skip unmarked / default values — saying "fortika lampo" or
-        # "luma valo" or "sata Maria" is noise. Only marked deviations
-        # (fragila, malluma, malsata) carry information worth surfacing.
+            return
+        # Skip unmarked / default values.
         if getattr(slot_def, "unmarked", None) == value:
-            continue
+            return
         candidates.append((slot_name, value))
+
+    seen_slots: set[str] = set()
+    for slot_name, values in entity.properties.items():
+        if not values:
+            continue
+        seen_slots.add(slot_name)
+        _consider(slot_name, values[0])
+    # Also pull adjectival slot values from derived state. Skipped if
+    # the slot was already considered via asserted (asserted wins for
+    # scalar slots — we don't want to surface a derived default when
+    # an explicit asserted value exists). Most use case: location
+    # temperature set by warmer/cooler derivations on a room that
+    # didn't have temperature on its concept.
+    if derived is not None:
+        for (eid, slot_name), value in derived.properties.items():
+            if eid != entity.id:
+                continue
+            if slot_name in seen_slots:
+                continue
+            if isinstance(value, list):
+                if not value:
+                    continue
+                value = value[0]
+            _consider(slot_name, value)
     if not candidates:
         return None
     used = (history.get(entity.id, set())
@@ -470,7 +495,7 @@ def _name_for(
     # persons inside `_pick_adjective`.
     adj = _pick_adjective(
         entity, lexicon=lexicon, rng=rng, history=adjective_history,
-        relevant_slots=relevant_slots)
+        relevant_slots=relevant_slots, derived=derived)
     if count > 1:
         plural_lemma = to_plural(lemma)
         numeral = int_to_esperanto(count)

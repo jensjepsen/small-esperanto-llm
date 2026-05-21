@@ -2252,8 +2252,10 @@ location_lit_by_active_lamp = derive(
 location_warm_via_active_warmer = derive(
     when=entity(type="location") & bind(LWL := var("L")),
     given=[
-        rel("samloke", a=LWL, b=bind(LWD := var("D"))),
-        entity(power_state="aktiva", warms_when_on="yes") & bind(LWD),
+        rel("en",
+            contained=(entity(power_state="aktiva", warms_when_on="yes") &
+                       bind(LWD := var("D"))),
+            container=LWL),
     ],
     implies=property(LWL, "temperature", "varma"),
     name="location_warm_via_active_warmer",
@@ -2263,8 +2265,10 @@ location_warm_via_active_warmer = derive(
 location_cold_via_active_cooler = derive(
     when=entity(type="location") & bind(LCL := var("L")),
     given=[
-        rel("samloke", a=LCL, b=bind(LCD := var("D"))),
-        entity(power_state="aktiva", cools_when_on="yes") & bind(LCD),
+        rel("en",
+            contained=(entity(power_state="aktiva", cools_when_on="yes") &
+                       bind(LCD := var("D"))),
+            container=LCL),
     ],
     implies=property(LCL, "temperature", "malvarma"),
     name="location_cold_via_active_cooler",
@@ -2940,6 +2944,13 @@ DEFAULT_DSL_DERIVATIONS = [
     # materialize `vekita` onto every animate concept, preempting the
     # `lying_when_on_lieable` runtime override that sets dormanta.
     physical_has_cleanliness,
+    # Warmer/cooler-driven location temperatures must precede
+    # physical_has_temperature so first-write-wins on scalar
+    # temperature gives us the active-appliance-derived value
+    # (malvarma room when fridujo is on) rather than the bland
+    # `varma` default.
+    location_warm_via_active_warmer,
+    location_cold_via_active_cooler,
     physical_has_temperature,
     physical_has_wetness,
     shared_container_means_samloke,
@@ -2963,8 +2974,6 @@ DEFAULT_DSL_DERIVATIONS = [
     # a varies=true slot, so the rule is RUNTIME-only and removed from
     # the bake list. The runtime list below carries it.
     location_lit_by_active_lamp,
-    location_warm_via_active_warmer,
-    location_cold_via_active_cooler,
     indoor_dark_without_active_lamp,
     agent_illuminated,
     vehicle_powered_from_active_motoro,
