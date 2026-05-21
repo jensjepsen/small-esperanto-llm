@@ -67,4 +67,4 @@
 {"name": "support_capacity", "vocabulary": null, "applies_to": ["physical"], "scalar": true}
 {"name": "enterable", "vocabulary": ["yes", "no"], "applies_to": ["physical"], "scalar": true}
 {"name": "is_part", "vocabulary": ["yes", "no"], "applies_to": ["physical"], "scalar": true, "unmarked": "no", "derived": true}
-{"name": "koloro", "vocabulary": ["ruĝa", "blua", "verda", "flava", "blanka", "nigra", "bruna", "griza", "oranĝa"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "always_relevant": true}
+{"name": "koloro", "vocabulary": ["ruĝa", "blua", "verda", "flava", "blanka", "nigra", "bruna", "griza", "oranĝa"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "always_relevant": true, "samples_per_instance": true}

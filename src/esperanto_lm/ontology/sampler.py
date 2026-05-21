@@ -829,17 +829,27 @@ def _randomize_state(entity, lex: Lexicon, rng: random.Random) -> None:
         slot = lex.slots.get(slot_name)
         if slot is None or slot.vocabulary is None or not slot.scalar:
             continue
-        if not slot.varies:
+        if slot.varies:
+            # Full-vocab randomization: ignore the concept's
+            # authored value (it's just an opt-in marker).
+            if (slot.weights is not None
+                    and len(slot.weights) == len(slot.vocabulary)):
+                choice = rng.choices(
+                    slot.vocabulary, weights=slot.weights, k=1)[0]
+            else:
+                choice = rng.choice(slot.vocabulary)
+            entity.set_property(slot_name, choice)
             continue
-        # Honor optional per-slot sampling weights (e.g. tempo_de_tago
-        # biased 30/30/30/10 toward day; nokto rare). Defaults to
-        # uniform when no weights set.
-        if (slot.weights is not None
-                and len(slot.weights) == len(slot.vocabulary)):
-            choice = rng.choices(slot.vocabulary, weights=slot.weights, k=1)[0]
-        else:
-            choice = rng.choice(slot.vocabulary)
-        entity.set_property(slot_name, choice)
+        if getattr(slot, "samples_per_instance", False):
+            # Concept-declared-subset randomization: pick one
+            # from the entity's authored value list. Single-value
+            # lists collapse to that value (banano=flava stays
+            # flava); multi-value lists vary per instance (aŭto
+            # rotates among ruĝa/blua/verda/nigra/blanka/griza).
+            current = entity.properties.get(slot_name, [])
+            if len(current) > 1:
+                entity.set_property(slot_name, rng.choice(current))
+            continue
 
 
 def _ensure_world(trace: Trace, lex: Lexicon, rng: random.Random) -> None:

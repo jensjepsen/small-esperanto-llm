@@ -133,7 +133,8 @@ def _validate_property_bundle(
                     raise ValueError(
                         f"{owner}: slot {slot_name!r} value {v!r} not in "
                         f"vocabulary {slot.vocabulary}")
-        if slot.scalar and len(values) > 1:
+        if (slot.scalar and len(values) > 1
+                and not getattr(slot, "samples_per_instance", False)):
             raise ValueError(
                 f"{owner}: slot {slot_name!r} is scalar but got "
                 f"{len(values)} values")

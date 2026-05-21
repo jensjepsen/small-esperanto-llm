@@ -105,6 +105,23 @@ class PropertySlot(_Frozen):
     # like color surface freely whenever the entity is referenced,
     # because they're descriptive rather than action-relevant.
     always_relevant: bool = False
+    # When True, the slot allows concepts to author a MULTI-VALUE
+    # list of allowed options, and the spawner picks one uniformly
+    # per instance. Distinct from `varies`:
+    #   - varies=True samples from the slot's FULL vocabulary,
+    #     ignoring concept-declared values (the value is an opt-in
+    #     marker only). Use for transient state (hunger, openness,
+    #     cooking_state) where the concept's intrinsic value
+    #     shouldn't constrain the spawn distribution.
+    #   - samples_per_instance=True samples from the CONCEPT'S
+    #     declared subset. Use for dimensions where some concepts
+    #     have a canonical value (banano=flava) and others have a
+    #     range (aŭto can be ruĝa/blua/verda/...). The concept
+    #     declares the menu; the spawner picks one entry.
+    # Relaxes the scalar+multi-value validation: scalar slots with
+    # samples_per_instance=True may have >1 declared value on a
+    # concept (the spawner collapses to one at instance time).
+    samples_per_instance: bool = False
     # Optional sampling weights aligned 1:1 with `vocabulary`. When
     # set, `_randomize_state` uses `rng.choices(vocabulary, weights)`
     # instead of uniform `rng.choice`. Lets the world bias toward
