@@ -123,6 +123,26 @@ class DerivedState:
     def has_relation(self, name: str, args: tuple[str, ...]) -> bool:
         return (name, tuple(args)) in self._relation_set
 
+    def remove_relation(self, name: str, args: tuple[str, ...]) -> bool:
+        """Retract a previously-added derived relation. Returns True
+        if the relation was present (and is now gone). Used by the
+        derivation engine's TMS path: when a derivation's `new_outputs`
+        no longer includes a fact it produced last cycle AND no other
+        derivation supports it, the fact is retracted from derived
+        state. Maintains both `_relation_set` and the `relations`
+        list — O(n) on the list because consumers (MatchContext)
+        iterate it in order, but retractions are rare enough that
+        the linear scan doesn't dominate."""
+        key = (name, tuple(args))
+        if key not in self._relation_set:
+            return False
+        self._relation_set.discard(key)
+        try:
+            self.relations.remove(key)
+        except ValueError:
+            pass
+        return True
+
     def add_removal(self, name: str, args: tuple[str, ...]) -> bool:
         """Mark a relation as hidden in effective state. Returns True
         if this is a new removal (drives the fixed-point delta loop)."""
@@ -130,6 +150,15 @@ class DerivedState:
         if key in self.removals:
             return False
         self.removals.add(key)
+        return True
+
+    def remove_removal(self, name: str, args: tuple[str, ...]) -> bool:
+        """Reverse of add_removal: un-hide a relation. Used by the
+        TMS path when a derivation no longer asks for the removal."""
+        key = (name, tuple(args))
+        if key not in self.removals:
+            return False
+        self.removals.discard(key)
         return True
 
     def has_removal(self, name: str, args: tuple[str, ...]) -> bool:
