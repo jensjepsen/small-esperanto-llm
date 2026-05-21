@@ -178,23 +178,35 @@ RELATION_TEMPLATES = {
         lambda a, b, t: f"{a} est{t} en {b}.",
         lambda a, b, t: f"En {b} est{t} {a}.",
         lambda a, b, t: f"Est{t} {a} en {b}.",
+        lambda a, b, t: f"{a} troviĝ{t} en {b}.",
+        lambda a, b, t: f"En {b} troviĝ{t} {a}.",
     ],
     "sur": [
         lambda a, b, t: f"{a} kuŝ{t} sur {b}.",
         lambda a, b, t: f"Sur {b} kuŝ{t} {a}.",
         lambda a, b, t: f"Sur {b} est{t} {a}.",
+        lambda a, b, t: f"{a} troviĝ{t} sur {b}.",
     ],
     "havi": [
         lambda a, b_acc, t: f"{a} hav{t} {b_acc}.",
         lambda a, b_acc, t: f"{a} ten{t} {b_acc}.",
+        lambda a, b_acc, t: f"{a} posed{t} {b_acc}.",
     ],
     "apud": [
         lambda a, b, t: f"{a} est{t} apud {b}.",
         lambda a, b, t: f"Apud {b} est{t} {a}.",
+        lambda a, b, t: f"Apud {b} troviĝ{t} {a}.",
     ],
 }
 
-CONNECTIVES = ["Tial", "Sekve", "Pro tio", ""]
+# Cascade-marker prefixes for follow-on sentences in a chain.
+# Mix of consequence ("Tial", "Sekve", "Pro tio", "Rezulte"),
+# proximity ("Tuj", "Pro ĉi tio"), and bare-continuation ("").
+# Empty strings are duplicated so the no-prefix rate stays near
+# 25%; otherwise every cascade sentence would start with a marker
+# and read as too-many-thereforese.
+CONNECTIVES = ["Tial", "Sekve", "Pro tio", "Rezulte",
+                "Tuj", "Pro ĉi tio", "", ""]
 TENSES = ["is", "as", "os"]
 
 
