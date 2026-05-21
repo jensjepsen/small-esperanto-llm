@@ -277,50 +277,13 @@ def _bind_roles(action: Action, trace, lex, rng, max_per_action=8,
     return out
 
 
-_SYM_REL_CACHE: dict = {}
-
-
-def _symmetric_relations(lex) -> frozenset:
-    """Cached frozenset of arity-2 symmetric relation names declared
-    in the lex. Used by `_has_relation` to try both argument
-    orderings when checking symmetric relations — without this,
-    `_has_relation('apud', (B, A))` returns False even when
-    `apud(A, B)` is asserted, because the engine stores one
-    canonical direction at assert-time and doesn't materialize the
-    swap. Bug affected the pre-stage's already-true check (would
-    re-assert symmetric facts) and the sampler's symmetric
-    precondition evaluation (samloke, apud, frato, edzo, amiko,
-    najbaro)."""
-    cached = _SYM_REL_CACHE.get(id(lex))
-    if cached is not None:
-        return cached
-    result = frozenset(
-        name for name, rel in lex.relations.items()
-        if getattr(rel, "symmetric", False) and rel.arity == 2)
-    _SYM_REL_CACHE[id(lex)] = result
-    return result
-
-
-def _has_relation(rel_name, args, trace, derived, lex=None):
-    """True if the relation holds in asserted state OR in derived
-    state. For arity-2 symmetric relations (apud, samloke, frato,
-    edzo, amiko, najbaro) checks both arg orderings."""
-    args_t = tuple(args)
-    for r in trace.relations:
-        if r.relation == rel_name and tuple(r.args) == args_t:
-            return True
-    if derived.has_relation(rel_name, args_t):
-        return True
-    # Symmetric: try swapped args.
-    if lex is not None and len(args_t) == 2:
-        if rel_name in _symmetric_relations(lex):
-            swapped = (args_t[1], args_t[0])
-            for r in trace.relations:
-                if r.relation == rel_name and tuple(r.args) == swapped:
-                    return True
-            if derived.has_relation(rel_name, swapped):
-                return True
-    return False
+# `_has_relation` and `_pc_holds` live in agent.precondition_eval
+# so the sampler / planners agree on semantics (unbound-role
+# vacuity, derived-aware property reads, symmetric-relation swaps).
+# Re-imported here so existing callsites in this module don't move.
+from esperanto_lm.ontology.agent.precondition_eval import (
+    _has_relation, _pc_holds,
+)
 
 
 def _action_preconds_satisfied(action: Action, roles, trace, derived, lex):
@@ -330,65 +293,6 @@ def _action_preconds_satisfied(action: Action, roles, trace, derived, lex):
         if not _pc_holds(pc, roles, trace, derived, lex):
             return False
     return True
-
-
-def _pc_holds(pc, roles, trace, derived, lex) -> bool:
-    """Evaluate a single precondition. Recursive on OrPrecondition.
-    Returns True iff satisfied for the given role binding."""
-    if isinstance(pc, RelationPrecondition):
-        args = [roles.get(rn) for rn in pc.roles]
-        if any(a is None for a in args):
-            return False
-        return _has_relation(pc.rel, tuple(args), trace, derived, lex)
-    if isinstance(pc, IfPropertyPrecondition):
-        eid = roles.get(pc.role)
-        if eid is None:
-            return True   # missing role — gate vacuously holds
-        ent = trace.entities.get(eid)
-        if ent is None:
-            return False
-        cur = ent.properties.get(pc.if_property, [])
-        if pc.if_value not in cur:
-            return True   # gate not active — pc vacuously holds
-        target = ent.properties.get(pc.then_property, [])
-        return pc.then_value in target
-    if isinstance(pc, MatchPrecondition):
-        ent_a = trace.entities.get(roles.get(pc.role_a))
-        ent_b = trace.entities.get(roles.get(pc.role_b))
-        if ent_a is None or ent_b is None:
-            return False
-        vals_a = set(ent_a.properties.get(pc.slot_a, []))
-        vals_b = set(ent_b.properties.get(pc.slot_b, []))
-        return bool(vals_a & vals_b)
-    if isinstance(pc, HasPropertyPrecondition):
-        eid = roles.get(pc.role)
-        if eid is None:
-            return False
-        ent = trace.entities.get(eid)
-        if ent is None:
-            return False
-        actual = _entity_property_values(
-            ent, pc.property, trace=trace, derived=derived, lex=lex)
-        return pc.value in actual
-    if isinstance(pc, NotRelationPrecondition):
-        args = [roles.get(rn) for rn in pc.roles]
-        if any(a is None for a in args):
-            return True   # unbound role — vacuously passes
-        return not _has_relation(pc.rel, tuple(args), trace, derived, lex)
-    if isinstance(pc, NotPropertyPrecondition):
-        eid = roles.get(pc.role)
-        if eid is None:
-            return True
-        ent = trace.entities.get(eid)
-        if ent is None:
-            return False
-        actual = _entity_property_values(
-            ent, pc.property, trace=trace, derived=derived, lex=lex)
-        return pc.value not in actual
-    if isinstance(pc, OrPrecondition):
-        return any(_pc_holds(alt, roles, trace, derived, lex)
-                   for alt in pc.alternatives)
-    return True   # unknown kind — vacuously holds (forward-compat)
 
 
 def enumerate_applicable_steps(trace, lex, derived, rng,

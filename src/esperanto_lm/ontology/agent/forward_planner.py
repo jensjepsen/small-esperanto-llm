@@ -249,83 +249,14 @@ def _preconditions_hold(action, roles, trace, derived, lex) -> bool:
     return True
 
 
-def _pc_holds(pc, roles, trace, derived, lex) -> bool:
-    """Evaluate a single precondition. Recursive over OrPrecondition.
-    Returns True iff the precondition is satisfied for the given role
-    bindings."""
-    from ..schemas import (
-        HasPropertyPrecondition, IfPropertyPrecondition, MatchPrecondition,
-        NotPropertyPrecondition, NotRelationPrecondition,
-        OrPrecondition, RelationPrecondition,
-    )
-    if isinstance(pc, RelationPrecondition):
-        eids = tuple(roles.get(r) for r in pc.roles)
-        if any(e is None for e in eids):
-            # Unbound role — vacuous (matches IfPropertyPrecondition
-            # at line 154 and the grounding-template's skip-on-None
-            # at _ground_facts_from_template). Lets optional roles
-            # carry preconditions that only fire when bound (e.g.
-            # manĝi's havi(agent, instrument) when cutlery is used).
-            return True
-        return _has_relation(pc.rel, eids, trace, derived, lex)
-    if isinstance(pc, IfPropertyPrecondition):
-        eid = roles.get(pc.role)
-        if eid is None:
-            return True  # missing role — pc vacuously holds
-        ent = trace.entities.get(eid)
-        if ent is None:
-            return False
-        gate = _entity_property_values(
-            ent, pc.if_property, trace, derived)
-        if pc.if_value not in gate:
-            return True  # Gate not active — pc vacuously holds.
-        then_vals = _entity_property_values(
-            ent, pc.then_property, trace, derived)
-        return pc.then_value in then_vals
-    if isinstance(pc, MatchPrecondition):
-        ea = trace.entities.get(roles.get(pc.role_a))
-        eb = trace.entities.get(roles.get(pc.role_b))
-        if ea is None or eb is None:
-            return False
-        va = set(ea.properties.get(pc.slot_a, []))
-        vb = set(eb.properties.get(pc.slot_b, []))
-        return bool(va & vb)
-    if isinstance(pc, HasPropertyPrecondition):
-        eid = roles.get(pc.role)
-        if eid is None:
-            return False
-        ent = trace.entities.get(eid)
-        if ent is None:
-            return False
-        return pc.value in _entity_property_values(
-            ent, pc.property, trace, derived)
-    if isinstance(pc, NotPropertyPrecondition):
-        # Mirror of HasPropertyPrecondition: reject when the role's
-        # entity currently holds the forbidden value (from either
-        # asserted state or a derivation). Absence of the slot —
-        # because the concept doesn't model it or no derivation
-        # fired — passes.
-        eid = roles.get(pc.role)
-        if eid is None:
-            return True   # unbound role — vacuous
-        ent = trace.entities.get(eid)
-        if ent is None:
-            return False
-        return pc.value not in _entity_property_values(
-            ent, pc.property, trace, derived)
-    if isinstance(pc, NotRelationPrecondition):
-        # Mirror of RelationPrecondition: reject when the named
-        # relation currently holds for the bound role tuple.
-        # Unbound roles → vacuously pass (the relation can't hold
-        # on missing args).
-        eids = tuple(roles.get(r) for r in pc.roles)
-        if any(e is None for e in eids):
-            return True
-        return not _has_relation(pc.rel, eids, trace, derived)
-    if isinstance(pc, OrPrecondition):
-        return any(_pc_holds(alt, roles, trace, derived, lex)
-                   for alt in pc.alternatives)
-    return True  # unknown kind — vacuous (forward-compat)
+# `_pc_holds` is the engine-aligned precondition evaluator —
+# hoisted to agent.precondition_eval so the backward planner,
+# forward planner, and forward sampler share one implementation.
+# Drift between independent copies has bitten us (unbound-role
+# vacuous-vs-fail, derived-aware vs raw property reads,
+# symmetric-relation swaps); the shared module is the single
+# source of truth.
+from .precondition_eval import _pc_holds  # noqa: F401
 
 
 # ---------- goal test ----------

@@ -397,28 +397,11 @@ def _action_writes(action, slot, value):
     return None
 
 
-def _has_relation(relation, args, trace, derived=None, lex=None) -> bool:
-    """True if rel(relation, *args) currently holds — checks asserted
-    trace.relations first, then derived (via DerivedState) if given.
-    For symmetric relations (per lex), also checks the swapped pair."""
-    target = tuple(args)
-    for r in trace.relations:
-        if r.relation == relation and r.args == target:
-            return True
-    if derived is not None and derived.has_relation(relation, target):
-        return True
-    is_symmetric = (
-        lex is not None
-        and relation in lex.relations
-        and lex.relations[relation].symmetric)
-    if is_symmetric and len(target) == 2 and target[0] != target[1]:
-        swapped = (target[1], target[0])
-        for r in trace.relations:
-            if r.relation == relation and r.args == swapped:
-                return True
-        if derived is not None and derived.has_relation(relation, swapped):
-            return True
-    return False
+# Hoisted to agent.precondition_eval so the forward planner +
+# forward sampler share one implementation (and one symmetric-
+# relation semantics). Re-imported here for back-compat — many
+# call sites in this module use `_has_relation` directly.
+from .precondition_eval import _has_relation  # noqa: F401
 
 
 def _relation_args_admissible(relation, concrete, trace, lex) -> bool:
