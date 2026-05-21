@@ -277,12 +277,50 @@ def _bind_roles(action: Action, trace, lex, rng, max_per_action=8,
     return out
 
 
-def _has_relation(rel_name, args, trace, derived):
-    """True if the relation holds in asserted state OR in derived state."""
+_SYM_REL_CACHE: dict = {}
+
+
+def _symmetric_relations(lex) -> frozenset:
+    """Cached frozenset of arity-2 symmetric relation names declared
+    in the lex. Used by `_has_relation` to try both argument
+    orderings when checking symmetric relations — without this,
+    `_has_relation('apud', (B, A))` returns False even when
+    `apud(A, B)` is asserted, because the engine stores one
+    canonical direction at assert-time and doesn't materialize the
+    swap. Bug affected the pre-stage's already-true check (would
+    re-assert symmetric facts) and the sampler's symmetric
+    precondition evaluation (samloke, apud, frato, edzo, amiko,
+    najbaro)."""
+    cached = _SYM_REL_CACHE.get(id(lex))
+    if cached is not None:
+        return cached
+    result = frozenset(
+        name for name, rel in lex.relations.items()
+        if getattr(rel, "symmetric", False) and rel.arity == 2)
+    _SYM_REL_CACHE[id(lex)] = result
+    return result
+
+
+def _has_relation(rel_name, args, trace, derived, lex=None):
+    """True if the relation holds in asserted state OR in derived
+    state. For arity-2 symmetric relations (apud, samloke, frato,
+    edzo, amiko, najbaro) checks both arg orderings."""
+    args_t = tuple(args)
     for r in trace.relations:
-        if r.relation == rel_name and tuple(r.args) == tuple(args):
+        if r.relation == rel_name and tuple(r.args) == args_t:
             return True
-    return derived.has_relation(rel_name, tuple(args))
+    if derived.has_relation(rel_name, args_t):
+        return True
+    # Symmetric: try swapped args.
+    if lex is not None and len(args_t) == 2:
+        if rel_name in _symmetric_relations(lex):
+            swapped = (args_t[1], args_t[0])
+            for r in trace.relations:
+                if r.relation == rel_name and tuple(r.args) == swapped:
+                    return True
+            if derived.has_relation(rel_name, swapped):
+                return True
+    return False
 
 
 def _action_preconds_satisfied(action: Action, roles, trace, derived, lex):
@@ -301,7 +339,7 @@ def _pc_holds(pc, roles, trace, derived, lex) -> bool:
         args = [roles.get(rn) for rn in pc.roles]
         if any(a is None for a in args):
             return False
-        return _has_relation(pc.rel, tuple(args), trace, derived)
+        return _has_relation(pc.rel, tuple(args), trace, derived, lex)
     if isinstance(pc, IfPropertyPrecondition):
         eid = roles.get(pc.role)
         if eid is None:
@@ -336,7 +374,7 @@ def _pc_holds(pc, roles, trace, derived, lex) -> bool:
         args = [roles.get(rn) for rn in pc.roles]
         if any(a is None for a in args):
             return True   # unbound role — vacuously passes
-        return not _has_relation(pc.rel, tuple(args), trace, derived)
+        return not _has_relation(pc.rel, tuple(args), trace, derived, lex)
     if isinstance(pc, NotPropertyPrecondition):
         eid = roles.get(pc.role)
         if eid is None:
@@ -377,7 +415,7 @@ def enumerate_applicable_steps(trace, lex, derived, rng,
             if not _action_preconds_satisfied(
                     action, roles, trace, derived, lex):
                 continue
-            if _is_redundant(action.lemma, roles, trace, derived):
+            if _is_redundant(action.lemma, roles, trace, derived, lex):
                 continue
             out.append((action.lemma, roles))
     return out
@@ -664,7 +702,7 @@ def _prestate_rare_verb_preconds(t, scene_id: str, lex, rng) -> None:
         # Skip if the relation is already true — asserted OR derived.
         # `_has_relation` consults both; only entries that pre-stage
         # an actual state change make it into the weighted draw.
-        if _has_relation(rel_name, (actor_eid, partner_eid), t, derived):
+        if _has_relation(rel_name, (actor_eid, partner_eid), t, derived, lex):
             continue
         pair_cache[entry] = (actor_eid, partner_eid)
         weighted.append(entry)
@@ -700,9 +738,9 @@ def _no_op_verbs(lex, rules) -> frozenset[str]:
 # would be a no-op for THIS binding). Pure no-op verbs (kanti, ami,
 # plori …) are dropped earlier in `enumerate_applicable_steps` via
 # the introspected `_no_op_verbs` set, so they don't appear here.
-def _is_redundant(action_name, roles, trace, derived):
+def _is_redundant(action_name, roles, trace, derived, lex=None):
     def has(rel, args):
-        return _has_relation(rel, args, trace, derived)
+        return _has_relation(rel, args, trace, derived, lex)
 
     def prop(eid, slot):
         ent = trace.entities.get(eid)
