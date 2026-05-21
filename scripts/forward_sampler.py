@@ -470,6 +470,151 @@ def _inject_underused_concepts(trace, scene_id: str, lex, rng,
     return placed
 
 
+# Static index of verbs whose preconditions include an
+# actor-↔-partner relation that the forward sampler can't bridge
+# in a single step. The forward sampler picks one verb per step
+# whose preconditions ALREADY hold; verbs like veturi (needs
+# en(agent, instrument)) or rajdi (needs sur(agent, instrument))
+# would require a 2-3 step setup (iri → eniri → veturi). To get
+# these to fire, we occasionally pre-assert the role-relation at
+# scene-setup time, in some fraction of scenes weighted by the
+# verb's freshness.
+_ACTOR_REL_INDEX_CACHE: dict = {}
+
+
+def _build_actor_relation_index(lex) -> list:
+    """Per-lex list of (verb_name, rel_name, partner_role_name).
+    Built once, cached. Captures every RelationPrecondition on a
+    verb whose roles list has agent (or a single-role intransitive)
+    paired with a non-agent role — that's the actor-partner shape
+    the pre-stage targets."""
+    key = id(lex)
+    cached = _ACTOR_REL_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    out: list = []
+    for verb_name, action in lex.actions.items():
+        # Find the actor role. Usually "agent"; intransitives may
+        # have only "theme" as the subject.
+        actor_role = next(
+            (r.name for r in action.roles if r.name == "agent"), None)
+        if actor_role is None:
+            continue  # skip intransitives — they don't have a partner-relation pattern
+        for pc in action.preconditions:
+            # Only positive RelationPrecondition between agent and another role.
+            if type(pc).__name__ != "RelationPrecondition":
+                continue
+            roles = list(pc.roles)
+            if len(roles) != 2:
+                continue
+            if actor_role not in roles:
+                continue
+            partner = roles[1] if roles[0] == actor_role else roles[0]
+            if partner == actor_role:
+                continue
+            # Sanity: the partner role exists on the action.
+            if not any(r.name == partner for r in action.roles):
+                continue
+            out.append((verb_name, pc.rel, partner))
+    _ACTOR_REL_INDEX_CACHE[key] = out
+    return out
+
+
+def _prestate_rare_verb_preconds(t, scene_id: str, lex, rng) -> None:
+    """Pre-assert one role-relation precondition for a rare verb,
+    so the forward sampler can fire that verb on step 1 instead
+    of needing a multi-step setup chain. Probabilistic — only
+    fires for some fraction of scenes — and only when a matching
+    partner entity already lives in the scene (no new spawning).
+
+    Selection:
+      - Take all (verb, rel, partner_role) entries from the lex
+        index.
+      - Weight by verb_freshness = 1/(1+seen_count) so verbs the
+        sampler has never picked (veturi, rajdi, surgrimpi) win
+        over saturated verbs (preni, vidi).
+      - Sample one entry via weighted choice.
+      - Find an animate actor + a partner matching the partner
+        role's type/property constraints.
+      - Try to assert the relation. Containment violations and
+        symmetric-relation duplications are silently skipped.
+
+    At most one pre-assertion per scene to keep the initial state
+    coherent (no contradictory pre-staging like en(actor, vehicleA)
+    AND apud(actor, vehicleB))."""
+    raw_candidates = _build_actor_relation_index(lex)
+    if not raw_candidates:
+        return
+
+    def _matches(ent, role_spec):
+        if not lex.types.is_subtype(ent.entity_type, role_spec.type):
+            return False
+        for slot, vals in (role_spec.properties or {}).items():
+            if not vals:
+                continue
+            ent_vals = ent.properties.get(slot, [])
+            if not any(v in ent_vals for v in vals):
+                return False
+        return True
+
+    # Filter to candidates where (a) freshness clears the cull bar,
+    # AND (b) the scene actually has matching actor+partner pairs.
+    # This avoids picking a candidate (say veturi) that we'd
+    # immediately abandon because no vehicle is in scene — instead,
+    # only verbs we can actually pre-stage compete in the weighted
+    # draw. Net effect: rare verbs whose partner concept happens to
+    # be in scene get prioritized; rare verbs with no partner
+    # in-scene fall through to other rare candidates.
+    weighted: list = []
+    weights: list = []
+    pair_cache: dict = {}
+    existing_rels = {(r.relation, tuple(r.args)) for r in t.relations}
+    for entry in raw_candidates:
+        verb_name, rel_name, partner_role_name = entry
+        seen = _CROSS_TRACE_VERB_HIST.get(verb_name, 0)
+        freshness = 1.0 / (1.0 + seen)
+        if freshness < 0.05:
+            continue
+        action = lex.actions[verb_name]
+        actor_role_spec = next(
+            (r for r in action.roles if r.name == "agent"), None)
+        partner_role_spec = next(
+            (r for r in action.roles if r.name == partner_role_name),
+            None)
+        if actor_role_spec is None or partner_role_spec is None:
+            continue
+        actor_eids = [eid for eid, ent in t.entities.items()
+                      if _matches(ent, actor_role_spec)]
+        if not actor_eids:
+            continue
+        partner_eids = [eid for eid, ent in t.entities.items()
+                        if eid not in actor_eids
+                        and _matches(ent, partner_role_spec)]
+        if not partner_eids:
+            continue
+        actor_eid = rng.choice(actor_eids)
+        partner_eid = rng.choice(partner_eids)
+        if actor_eid == partner_eid:
+            continue
+        if (rel_name, (actor_eid, partner_eid)) in existing_rels:
+            continue
+        pair_cache[entry] = (actor_eid, partner_eid)
+        weighted.append(entry)
+        weights.append(freshness)
+    if not weighted:
+        return
+    max_fresh = max(weights)
+    if rng.random() > max_fresh * 0.5:
+        return
+    entry = rng.choices(weighted, weights=weights, k=1)[0]
+    _verb, rel_name, _partner = entry
+    actor_eid, partner_eid = pair_cache[entry]
+    try:
+        t.assert_relation(rel_name, (actor_eid, partner_eid), lex)
+    except Exception:
+        pass
+
+
 def _no_op_verbs(lex, rules) -> frozenset[str]:
     key = (id(lex), id(rules))
     cached = _NO_OP_VERBS_CACHE.get(key)
@@ -1183,6 +1328,7 @@ def goal_regression_seed(lex, rng):
         # this worker's prior traces; cold-start (first ~20 traces)
         # the injection is essentially uniform across the bottom-30.
         _inject_underused_concepts(t, scene_id, lex, rng, n=2)
+        _prestate_rare_verb_preconds(t, scene_id, lex, rng)
         return t, scene_id
     return None
 
