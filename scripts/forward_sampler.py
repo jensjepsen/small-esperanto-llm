@@ -41,9 +41,9 @@ from esperanto_lm.ontology.dsl.rules import (
     DEFAULT_DSL_RULES, RUNTIME_DERIVATIONS,
 )
 from esperanto_lm.ontology.schemas import (
-    Action, IfPropertyPrecondition, MatchPrecondition,
-    NotPropertyPrecondition, NotRelationPrecondition,
-    RelationPrecondition,
+    Action, HasPropertyPrecondition, IfPropertyPrecondition,
+    MatchPrecondition, NotPropertyPrecondition, NotRelationPrecondition,
+    OrPrecondition, RelationPrecondition,
 )
 
 
@@ -217,6 +217,13 @@ def _bind_roles(action: Action, trace, lex, rng, max_per_action=8,
                 role_spec, trace, lex, exclude=set(roles.values()),
                 derived=derived))
             if not cands:
+                # Optional roles (flugi.instrument, manĝi.instrument)
+                # may legitimately have no candidate in this scene.
+                # Leave them unbound — _action_preconds_satisfied will
+                # treat a missing role binding as "this precondition
+                # branch doesn't apply" rather than failing.
+                if getattr(role_spec, "optional", False):
+                    continue
                 ok = False
                 break
             roles[role_spec.name] = rng.choice(cands)
@@ -244,61 +251,68 @@ def _action_preconds_satisfied(action: Action, roles, trace, derived, lex):
     """All preconditions hold in the current trace + derived state.
     Pure check — no subgoaling, no plan fabrication."""
     for pc in action.preconditions:
-        if isinstance(pc, RelationPrecondition):
-            args = [roles.get(rn) for rn in pc.roles]
-            if any(a is None for a in args):
-                return False
-            if not _has_relation(pc.rel, tuple(args), trace, derived):
-                return False
-        elif isinstance(pc, IfPropertyPrecondition):
-            eid = roles.get(pc.role)
-            if eid is None:
-                return False
-            ent = trace.entities.get(eid)
-            if ent is None:
-                return False
-            cur = ent.properties.get(pc.if_property, [])
-            if pc.if_value in cur:
-                target = ent.properties.get(pc.then_property, [])
-                if pc.then_value not in target:
-                    return False
-        elif isinstance(pc, MatchPrecondition):
-            ent_a = trace.entities.get(roles.get(pc.role_a))
-            ent_b = trace.entities.get(roles.get(pc.role_b))
-            if ent_a is None or ent_b is None:
-                return False
-            vals_a = set(ent_a.properties.get(pc.slot_a, []))
-            vals_b = set(ent_b.properties.get(pc.slot_b, []))
-            if not (vals_a & vals_b):
-                return False
-        elif isinstance(pc, NotRelationPrecondition):
-            # Reject if the relation currently holds for the given
-            # role bindings (asserted or derived). Mirror of the
-            # positive RelationPrecondition path.
-            args = [roles.get(rn) for rn in pc.roles]
-            if any(a is None for a in args):
-                return False
-            if _has_relation(pc.rel, tuple(args), trace, derived):
-                return False
-        elif isinstance(pc, NotPropertyPrecondition):
-            # Reject if the role entity currently holds the
-            # forbidden value. Consults `_entity_property_values`
-            # which merges `trace.property_at` (event-driven
-            # current state — catches `malŝalti` having flipped
-            # power_state to neaktiva already), instance state,
-            # and derived state. Absence in all three passes the
-            # gate.
-            eid = roles.get(pc.role)
-            if eid is None:
-                return False
-            ent = trace.entities.get(eid)
-            if ent is None:
-                return False
-            actual = _entity_property_values(
-                ent, pc.property, trace=trace, derived=derived, lex=lex)
-            if pc.value in actual:
-                return False
+        if not _pc_holds(pc, roles, trace, derived, lex):
+            return False
     return True
+
+
+def _pc_holds(pc, roles, trace, derived, lex) -> bool:
+    """Evaluate a single precondition. Recursive on OrPrecondition.
+    Returns True iff satisfied for the given role binding."""
+    if isinstance(pc, RelationPrecondition):
+        args = [roles.get(rn) for rn in pc.roles]
+        if any(a is None for a in args):
+            return False
+        return _has_relation(pc.rel, tuple(args), trace, derived)
+    if isinstance(pc, IfPropertyPrecondition):
+        eid = roles.get(pc.role)
+        if eid is None:
+            return True   # missing role — gate vacuously holds
+        ent = trace.entities.get(eid)
+        if ent is None:
+            return False
+        cur = ent.properties.get(pc.if_property, [])
+        if pc.if_value not in cur:
+            return True   # gate not active — pc vacuously holds
+        target = ent.properties.get(pc.then_property, [])
+        return pc.then_value in target
+    if isinstance(pc, MatchPrecondition):
+        ent_a = trace.entities.get(roles.get(pc.role_a))
+        ent_b = trace.entities.get(roles.get(pc.role_b))
+        if ent_a is None or ent_b is None:
+            return False
+        vals_a = set(ent_a.properties.get(pc.slot_a, []))
+        vals_b = set(ent_b.properties.get(pc.slot_b, []))
+        return bool(vals_a & vals_b)
+    if isinstance(pc, HasPropertyPrecondition):
+        eid = roles.get(pc.role)
+        if eid is None:
+            return False
+        ent = trace.entities.get(eid)
+        if ent is None:
+            return False
+        actual = _entity_property_values(
+            ent, pc.property, trace=trace, derived=derived, lex=lex)
+        return pc.value in actual
+    if isinstance(pc, NotRelationPrecondition):
+        args = [roles.get(rn) for rn in pc.roles]
+        if any(a is None for a in args):
+            return True   # unbound role — vacuously passes
+        return not _has_relation(pc.rel, tuple(args), trace, derived)
+    if isinstance(pc, NotPropertyPrecondition):
+        eid = roles.get(pc.role)
+        if eid is None:
+            return True
+        ent = trace.entities.get(eid)
+        if ent is None:
+            return False
+        actual = _entity_property_values(
+            ent, pc.property, trace=trace, derived=derived, lex=lex)
+        return pc.value not in actual
+    if isinstance(pc, OrPrecondition):
+        return any(_pc_holds(alt, roles, trace, derived, lex)
+                   for alt in pc.alternatives)
+    return True   # unknown kind — vacuously holds (forward-compat)
 
 
 def enumerate_applicable_steps(trace, lex, derived, rng,
@@ -380,6 +394,80 @@ def _update_cross_trace_histogram(trace) -> None:
             ev.action, dict(ev.roles or {}), trace)
         if key is not None:
             _CROSS_TRACE_HIST[key] = _CROSS_TRACE_HIST.get(key, 0) + 1
+    # Concept usage histogram — every entity present in the trace
+    # contributes to its concept's count. Drives the spawn-time
+    # injection of underused concepts (see `_inject_underused_concepts`)
+    # so the corpus eventually exercises the long tail of the lexicon
+    # (zepelino, lupeo, harpo, violono, kameleono — all the rare
+    # concepts the goal sampler doesn't naturally pull in for typical
+    # drives).
+    for ent in trace.entities.values():
+        _CONCEPT_SPAWN_HIST[ent.concept_lemma] = (
+            _CONCEPT_SPAWN_HIST.get(ent.concept_lemma, 0) + 1)
+
+
+_CONCEPT_SPAWN_HIST: dict[str, int] = {}
+
+
+def _inject_underused_concepts(trace, scene_id: str, lex, rng,
+                                n: int = 2, candidate_pool: int = 30) -> int:
+    """Spawn up to `n` extra entities into `trace` from the
+    least-used concepts in this worker's history. Uses the
+    spawner's containment-aware placement so injection respects
+    containment.jsonl (a zepelino can only land in a place big
+    enough to hold it; lupeo lands in a hand or on a table; etc.).
+
+    Selection: among physical concepts, take the bottom
+    `candidate_pool` by histogram count, shuffle, try placement
+    in turn. Returns the number successfully placed.
+
+    Skipped concept categories:
+      - non-physical (abstract, event, information)
+      - body-part concepts (is_part=yes; they only exist as parts
+        of hosts, never standalone)
+      - person concepts (rendered as specific names via the
+        person_names mechanism, not by spawning generic instances)
+      - concepts whose concept_lemma equals the scene_id (don't
+        spawn another kuirejo inside kuirejo)
+    """
+    from esperanto_lm.ontology.regression.seeders import (
+        _place_respecting_containment)
+
+    candidates: list[tuple[str, int]] = []
+    for lemma, c in lex.concepts.items():
+        if not lex.types.is_subtype(c.entity_type, "physical"):
+            continue
+        if c.properties.get("is_part") == ["yes"]:
+            continue
+        if c.entity_type == "person":
+            continue
+        if lemma == scene_id:
+            continue
+        # Skip concepts already present in the scene — injection
+        # is for ADDING variety, not duplicating.
+        if any(e.concept_lemma == lemma for e in trace.entities.values()):
+            continue
+        candidates.append((lemma, _CONCEPT_SPAWN_HIST.get(lemma, 0)))
+    if not candidates:
+        return 0
+    candidates.sort(key=lambda x: x[1])
+    # Take the bottom `candidate_pool` and shuffle so we don't
+    # always pick the alphabetically-first underused concept.
+    bottom = candidates[:candidate_pool]
+    rng.shuffle(bottom)
+    placed = 0
+    for lemma, _count in bottom:
+        if placed >= n:
+            break
+        try:
+            eid = _place_respecting_containment(
+                trace, lex, scene_id, lemma, rng,
+                preferred_id=scene_id)
+        except Exception:
+            eid = None
+        if eid is not None:
+            placed += 1
+    return placed
 
 
 def _no_op_verbs(lex, rules) -> frozenset[str]:
@@ -1090,6 +1178,11 @@ def goal_regression_seed(lex, rng):
         if sample is None:
             continue
         t, scene_id, _drive = sample
+        # Inject 1-2 underused concepts to push the corpus toward
+        # the long tail of the lexicon. The histogram comes from
+        # this worker's prior traces; cold-start (first ~20 traces)
+        # the injection is essentially uniform across the bottom-30.
+        _inject_underused_concepts(t, scene_id, lex, rng, n=2)
         return t, scene_id
     return None
 
