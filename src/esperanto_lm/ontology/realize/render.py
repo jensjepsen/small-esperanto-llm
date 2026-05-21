@@ -495,7 +495,7 @@ class _Ctx:
                  "scene_location_id", "rendered_event_ids",
                  "last_nonperson", "adjective_history",
                  "alias_history", "derived", "setup_derived",
-                 "relevant_slots")
+                 "relevant_slots", "opening_adverb")
 
     def __init__(self, trace, lexicon, *, scene_location_id, rng, tense,
                  derived=None, setup_derived=None):
@@ -538,6 +538,13 @@ class _Ctx:
         # _pick_adjective doesn't re-walk the trace per mention.
         self.relevant_slots: dict[str, set[str]] = (
             _compute_relevant_slots(trace, lexicon))
+        # When set by `_render_world_preamble` in a variation path
+        # (e.g. "Vespere"), the render loop consumes this on the
+        # first downstream sentence and prepends it as an adverbial
+        # opener: "Vespere, en la kuirejo estis Maria.". Reset to
+        # None after first use so it doesn't echo onto later
+        # sentences in the same trace.
+        self.opening_adverb: Optional[str] = None
 
     def name_for(self, entity, *,
                  count_override: Optional[int] = None) -> str:
@@ -1836,11 +1843,22 @@ def _render_world_preamble(ctx: _Ctx) -> Optional[str]:
     Weather renders as an impersonal verb derived from the adjective
     root ("Pluvis." from `pluva`, "Neĝis." from `neĝa`) — natural
     Esperanto for atmospheric conditions. Tense matches the trace's
-    narrative tense throughout."""
+    narrative tense throughout.
+
+    Stochastic variation (when ctx.rng is set):
+      - Time-of-day surfaces in three shapes:
+          (a) "Estis vespero." — copular sentence (current default)
+          (b) deferred adverb — `ctx.opening_adverb` is set to
+              "Vespere"/"Matene"/"Nokte" and prepended onto the
+              first downstream message ("Vespere, en la kuirejo
+              estis Maria"). Skips the standalone sentence.
+          (c) compact merge with weather — when BOTH time and
+              weather are marked, emit one sentence
+              "Vespere pluvis." instead of two.
+        Roughly equal mix across (a)/(b)/(c)."""
     mondo = ctx.trace.entities.get("mondo")
     if mondo is None:
         return None
-    parts: list[str] = []
 
     val = mondo.properties.get("tempo_de_tago")
     if isinstance(val, list):
@@ -1848,9 +1866,8 @@ def _render_world_preamble(ctx: _Ctx) -> Optional[str]:
     if val is not None:
         slot_def = ctx.lexicon.slots.get("tempo_de_tago")
         unmarked = slot_def.unmarked if slot_def is not None else "tago"
-        if val != unmarked:
-            copula = f"est{ctx.tense}"
-            parts.append(f"{copula.capitalize()} {val}.")
+        if val == unmarked:
+            val = None
 
     weather = mondo.properties.get("weather")
     if isinstance(weather, list):
@@ -1858,14 +1875,58 @@ def _render_world_preamble(ctx: _Ctx) -> Optional[str]:
     if weather is not None:
         slot_def = ctx.lexicon.slots.get("weather")
         unmarked = slot_def.unmarked if slot_def is not None else "serena"
-        if weather != unmarked:
-            # Adjective root → impersonal verb. `pluva` → `pluv` →
-            # `pluvis`/`pluvas`/`pluvos`. Trim a trailing -a only;
-            # other endings are left to fail loudly so a typo in the
-            # vocabulary doesn't silently produce ungrammatical output.
-            root = weather[:-1] if weather.endswith("a") else weather
-            parts.append(f"{root.capitalize()}{ctx.tense}.")
+        if weather == unmarked:
+            weather = None
 
+    if val is None and weather is None:
+        return None
+
+    def _weather_verb(w):
+        # Adjective root → impersonal verb. `pluva` → `pluv` →
+        # `pluvis`/`pluvas`/`pluvos`. Trim a trailing -a only;
+        # other endings are left to fail loudly so a typo in the
+        # vocabulary doesn't silently produce ungrammatical output.
+        root = w[:-1] if w.endswith("a") else w
+        return f"{root}{ctx.tense}"
+
+    def _time_adverb(v):
+        # tempo_de_tago value → adverbial form. vespero → vespere,
+        # mateno → matene, nokto → nokte, tagmezo → tagmeze.
+        # All current time values end in -o and convert to -e.
+        if v.endswith("o"):
+            return v[:-1] + "e"
+        return None
+
+    # Variation dice. rng=None ⇒ deterministic, use shape (a).
+    if val is not None and weather is not None and ctx.rng is not None:
+        r = ctx.rng.random()
+        if r < 0.33:
+            # (c) compact merge: "Vespere pluvis."
+            adv = _time_adverb(val)
+            if adv is not None:
+                return f"{adv.capitalize()} {_weather_verb(weather)}."
+        elif r < 0.66:
+            # (b) defer time as opening adverb; emit only weather.
+            adv = _time_adverb(val)
+            if adv is not None:
+                ctx.opening_adverb = adv.capitalize()
+                return f"{_weather_verb(weather)[0].upper()}{_weather_verb(weather)[1:]}."
+        # else (a) below: two-sentence form
+    elif val is not None and weather is None and ctx.rng is not None:
+        # Time only: with 50% prob, defer as opening adverb instead
+        # of emitting "Estis vespero." standalone.
+        if ctx.rng.random() < 0.5:
+            adv = _time_adverb(val)
+            if adv is not None:
+                ctx.opening_adverb = adv.capitalize()
+                return None
+
+    parts: list[str] = []
+    if val is not None:
+        copula = f"est{ctx.tense}"
+        parts.append(f"{copula.capitalize()} {val}.")
+    if weather is not None:
+        parts.append(f"{_weather_verb(weather).capitalize()}.")
     if not parts:
         return None
     return " ".join(parts)
@@ -1902,6 +1963,17 @@ def render_messages(
         sent = render_fn(msg, ctx)
         if sent is None:
             continue
+        # First downstream sentence consumes any deferred opening
+        # adverb from the preamble variation paths. "En la kuirejo
+        # estis Maria." → "Vespere, en la kuirejo estis Maria."
+        # If the sentence starts with a proper noun, keep its
+        # capitalization: "Vespere, Maria iris al la lago."
+        if ctx.opening_adverb is not None:
+            if _starts_with_proper_noun(sent):
+                sent = f"{ctx.opening_adverb}, {sent}"
+            else:
+                sent = f"{ctx.opening_adverb}, {sent[0].lower()}{sent[1:]}"
+            ctx.opening_adverb = None
         has_cause = (
             msg.cause_event_id is not None
             and msg.cause_event_id in ctx.rendered_event_ids)
