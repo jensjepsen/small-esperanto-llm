@@ -69,6 +69,8 @@
 {"name": "is_part", "vocabulary": ["yes", "no"], "applies_to": ["physical"], "scalar": true, "unmarked": "no", "derived": true}
 {"name": "koloro", "vocabulary": ["ruĝa", "blua", "verda", "flava", "blanka", "nigra", "bruna", "griza", "oranĝa"], "applies_to": ["physical"], "scalar": true, "adjectival": true, "always_relevant": true, "samples_per_instance": true}
 {"name": "grasp_capable", "vocabulary": ["yes"], "applies_to": ["inanimate"], "scalar": true}
+{"name": "warms_when_on", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
+{"name": "cools_when_on", "vocabulary": ["yes"], "applies_to": ["physical"], "scalar": true}
 {"name": "see_capable", "vocabulary": ["yes"], "applies_to": ["inanimate"], "scalar": true}
 {"name": "hear_capable", "vocabulary": ["yes"], "applies_to": ["inanimate"], "scalar": true}
 {"name": "smell_capable", "vocabulary": ["yes"], "applies_to": ["inanimate"], "scalar": true}

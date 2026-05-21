@@ -2241,6 +2241,35 @@ location_lit_by_active_lamp = derive(
     name="location_lit_by_active_lamp",
 )
 
+
+# A location's temperature is shaped by what's active inside it.
+# Active warmer (varmilo, kameno, forno) → varma. Active cooler
+# (fridujo) → malvarma. Same shape as location_lit_by_active_lamp;
+# the room's temperature slot competes via scalar-first-write-wins,
+# so these derivations must precede `physical_has_temperature` (the
+# default "everything is varma") in RUNTIME_DERIVATIONS to win.
+# Without precedence, the default fires first and these get skipped.
+location_warm_via_active_warmer = derive(
+    when=entity(type="location") & bind(LWL := var("L")),
+    given=[
+        rel("samloke", a=LWL, b=bind(LWD := var("D"))),
+        entity(power_state="aktiva", warms_when_on="yes") & bind(LWD),
+    ],
+    implies=property(LWL, "temperature", "varma"),
+    name="location_warm_via_active_warmer",
+)
+
+
+location_cold_via_active_cooler = derive(
+    when=entity(type="location") & bind(LCL := var("L")),
+    given=[
+        rel("samloke", a=LCL, b=bind(LCD := var("D"))),
+        entity(power_state="aktiva", cools_when_on="yes") & bind(LCD),
+    ],
+    implies=property(LCL, "temperature", "malvarma"),
+    name="location_cold_via_active_cooler",
+)
+
 # Mirror semantics: a room is dark iff no active lamp is co-located
 # with it (under the same samloke closure). Without the matching
 # update, a `sur`-mounted lamp would make the room luma via the lit
@@ -2934,6 +2963,8 @@ DEFAULT_DSL_DERIVATIONS = [
     # a varies=true slot, so the rule is RUNTIME-only and removed from
     # the bake list. The runtime list below carries it.
     location_lit_by_active_lamp,
+    location_warm_via_active_warmer,
+    location_cold_via_active_cooler,
     indoor_dark_without_active_lamp,
     agent_illuminated,
     vehicle_powered_from_active_motoro,
@@ -3029,6 +3060,8 @@ RUNTIME_DERIVATIONS = [
     # lamp wins over outdoor_dark_at_night (first-write-wins on the
     # scalar lit_state) — a torch in a park at night lights it.
     location_lit_by_active_lamp,
+    location_warm_via_active_warmer,
+    location_cold_via_active_cooler,
     outdoor_luma_during_day,
     outdoor_dark_at_night,
     indoor_dark_without_active_lamp,
