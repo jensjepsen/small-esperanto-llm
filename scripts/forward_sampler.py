@@ -416,10 +416,15 @@ def _inject_underused_concepts(trace, scene_id: str, lex, rng,
     # the O(concepts × entities) any() scan in the per-lemma loop.
     in_scene = {ent.concept_lemma for ent in trace.entities.values()}
 
+    # Concept-index gives the physical-type pool directly (includes
+    # all physical subtypes — artifact, animal, person, substance,
+    # natural_object, etc.). Filter person/body-part/scene after
+    # the index lookup since those exclusions are concept-property-
+    # specific rather than type-pure.
+    physical_lemmas = lex.concept_index.concepts_matching("physical")
     candidates: list[tuple[str, int]] = []
-    for lemma, c in lex.concepts.items():
-        if not lex.types.is_subtype(c.entity_type, "physical"):
-            continue
+    for lemma in physical_lemmas:
+        c = lex.concepts[lemma]
         if c.properties.get("is_part") == ["yes"]:
             continue
         if c.entity_type == "person":
