@@ -1027,6 +1027,13 @@ def regress_for_goal(
                     r, t, lex, set(t.entities.keys()),
                     action=action, role_name=r.name)
                 if extra_eid is None:
+                    # Optional roles (flugi.instrument, manĝi.instrument,
+                    # veturi.instrument when no vehicle fits the scene)
+                    # are allowed to stay unspawned — the verb's
+                    # precondition machinery handles unbound optionals
+                    # by branching on OR or treating them vacuously.
+                    if getattr(r, "optional", False):
+                        continue
                     last_loop_reason = (
                         f"relation_extra_role_spawn_failed:"
                         f"{verb_lemma}.{r.name}@{scene_lemma}")
@@ -1164,6 +1171,10 @@ def regress_for_goal(
                     r, t, lex, set(t.entities.keys()),
                     action=action, role_name=r.name)
                 if extra_eid is None:
+                    # Optional roles can stay unspawned (see comment
+                    # in the non-altruistic path above).
+                    if getattr(r, "optional", False):
+                        continue
                     last_loop_reason = (
                         f"altruistic_extra_role_spawn_failed:"
                         f"{verb_lemma}.{r.name}@{scene_lemma}")
