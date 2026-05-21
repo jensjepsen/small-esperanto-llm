@@ -76,16 +76,25 @@ def _has_relation(
     return False
 
 
-def _pc_holds(pc, roles, trace, derived, lex) -> bool:
+def _pc_holds(pc, roles, trace, derived, lex, *,
+               _in_or: bool = False) -> bool:
     """Evaluate a single precondition against the current trace +
     derived state with the given role bindings. Recursive over
     OrPrecondition.
 
     Semantics aligned to the engine's behavior:
       - Unbound roles in a positive RelationPrecondition →
-        vacuous (the precondition only fires when the role is
-        bound; matches the planner's
-        `_ground_facts_from_template` skip-on-None).
+        vacuous AT TOP LEVEL (the precondition only fires when
+        the role is bound; manĝi's `havi(agent, instrument)`
+        precondition is skipped when cutlery isn't bound).
+        Inside OR alternatives (`_in_or=True`) the unbound role
+        flips this to False instead: an alternative branch that
+        references unbound roles can't be satisfied, and the OR
+        should fall through to other branches. Without this,
+        flugi's `OR(locomotion=fly, en(agent, instrument))`
+        with an unbound instrument trivially satisfies the OR
+        via the vacuous second branch — every animate "flies"
+        even without wings or a vehicle.
       - Property reads consult `_entity_property_values` (the
         union of `trace.property_at(eid, slot, pos)`,
         `ent.properties`, and `derived.properties`) — catches
@@ -96,14 +105,17 @@ def _pc_holds(pc, roles, trace, derived, lex) -> bool:
       - Negative preconditions (NotPropertyPrecondition,
         NotRelationPrecondition) treat unbound roles as
         vacuously-passing (you can't violate a constraint on a
-        role you didn't bind).
+        role you didn't bind). Same semantics inside OR — a
+        not-relation alternative with unbound role is "this
+        branch doesn't constrain anything" rather than "this
+        branch is impossible".
       - Unknown precondition kinds vacuously hold (forward-
         compat for new shapes).
     """
     if isinstance(pc, RelationPrecondition):
         eids = tuple(roles.get(r) for r in pc.roles)
         if any(e is None for e in eids):
-            return True   # unbound role — vacuous
+            return False if _in_or else True
         return _has_relation(pc.rel, eids, trace, derived, lex)
     if isinstance(pc, IfPropertyPrecondition):
         eid = roles.get(pc.role)
@@ -151,7 +163,8 @@ def _pc_holds(pc, roles, trace, derived, lex) -> bool:
             return True   # unbound — vacuous
         return not _has_relation(pc.rel, eids, trace, derived, lex)
     if isinstance(pc, OrPrecondition):
-        return any(_pc_holds(alt, roles, trace, derived, lex)
+        return any(_pc_holds(alt, roles, trace, derived, lex,
+                              _in_or=True)
                    for alt in pc.alternatives)
     return True   # unknown kind — vacuous
 
