@@ -97,6 +97,14 @@ class PropertySlot(_Frozen):
     # entities whose derivation hasn't fired (e.g. `is_part` on
     # entities that aren't currently a `havas_parton` parto).
     derived: bool = False
+    # Bypass the renderer's relevance gate. Adjectives normally
+    # surface only for slots that some event in the trace touches —
+    # otherwise "fragila pomo" appearing when nobody acts on the
+    # apple's integrity is noise. `always_relevant=True` opts a
+    # slot OUT of that gate: purely-visual or cosmetic dimensions
+    # like color surface freely whenever the entity is referenced,
+    # because they're descriptive rather than action-relevant.
+    always_relevant: bool = False
     # Optional sampling weights aligned 1:1 with `vocabulary`. When
     # set, `_randomize_state` uses `rng.choices(vocabulary, weights)`
     # instead of uniform `rng.choice`. Lets the world bias toward

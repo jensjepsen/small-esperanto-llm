@@ -344,7 +344,12 @@ def _pick_adjective(
             continue
         # Relevance gate: no event in this trace touches this slot on
         # this entity, so the adjective is narratively orphaned.
-        if relevant_slots is not None and slot_name not in relevant_slots:
+        # Slots flagged `always_relevant: true` (color, eventually
+        # other purely-visual dimensions) opt out — they're
+        # descriptive rather than action-relevant.
+        if (relevant_slots is not None
+                and slot_name not in relevant_slots
+                and not getattr(slot_def, "always_relevant", False)):
             continue
         value = values[0]
         # Skip unmarked / default values — saying "fortika lampo" or
