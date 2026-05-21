@@ -3429,6 +3429,7 @@ def _infra_prespawn(action, role_map, trace, lex, derivations, resolver,
         if ("rel", pc.rel, _canon_rel(pc.rel, eids, sym)) in facts:
             continue
         # Find a producer verb whose synthesized adds include this relation.
+        producer_found = False
         for prod_verb, entry in rule_effects.items():
             chose = None
             for relation, role_args in entry.get("adds", []):
@@ -3469,7 +3470,285 @@ def _infra_prespawn(action, role_map, trace, lex, derivations, resolver,
             _infra_prespawn(
                 prod_action, prod_role_map, trace, lex, derivations,
                 resolver, rule_effects, derivable_slots, depth - 1)
+            producer_found = True
             break  # one producer per precondition
+
+        # Fallback: relations produced ONLY by derivations (not by
+        # any causal rule's add_relation). scias_lokon is the
+        # canonical example — it's derived from scias via
+        # make_scias_lokon_derivations, never emitted from a rule.
+        # Without this fallback, the planner's infra walk stops at
+        # the first such precondition and downstream perception /
+        # illumination infrastructure (lamp spawning, etc.) never
+        # gets pre-built, so perception-dependent goals (vestita,
+        # kasti, montri) fail with fwd_initial_h_inf.
+        if not producer_found:
+            _infra_prespawn_via_derivation_rel(
+                pc.rel, eids, trace, lex, derivations, resolver,
+                rule_effects, derivable_slots, depth - 1)
+
+
+def _infra_prespawn_via_derivation_rel(
+    rel_name, eids, trace, lex, derivations, resolver,
+    rule_effects, derivable_slots, depth,
+):
+    """For a relation pre that has no rule_effects producer, find
+    a DERIVATION that produces it (RelationImplication in `implies`),
+    bind its target vars to `eids`, and walk its `given` clauses:
+      - each EntityPattern+Bind → spawn supporting entity (or pick
+        one already in trace) and ensure its derivable properties.
+      - each RelPattern → treat as a sub-RelationPrecondition,
+        recurse through rule_effects + this same fallback.
+
+    Bounded by `depth`. The recursion bottoms out at facts already
+    present in state, or at a derivation we've already explored.
+    """
+    if depth <= 0:
+        return
+    from ..dsl.implications import RelationImplication
+    from ..dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern, RelPattern, Var,
+    )
+    sym = _symmetric_relations(lex)
+    for d in derivations:
+        # Match by implies(relation_name).
+        implies_match = None
+        for imp in d.implies:
+            if isinstance(imp, RelationImplication) and imp.name == rel_name:
+                implies_match = imp
+                break
+        if implies_match is None:
+            continue
+        # Bind derivation's target vars (from implies.args) to eids.
+        var_bindings: dict = {}
+        for arg, eid in zip(implies_match.args, eids):
+            if isinstance(arg, Var):
+                var_bindings[arg] = eid
+        # Also bind the derivation's `when` var if it's an
+        # entity-bound Var. Many derivations use
+        # `entity(...) & bind(VAR)` in `when` to introduce the
+        # target; that VAR matches one of the implies args.
+        _walk_for_when_var_binding(d.when, var_bindings)
+
+        # Walk d.given.
+        for given in d.given:
+            _walk_given_for_infra(
+                given, var_bindings, trace, lex, derivations,
+                resolver, rule_effects, derivable_slots, depth - 1)
+        # One derivation per relation — taking all of them would
+        # spawn redundant infrastructure.
+        return
+
+
+def _walk_for_when_var_binding(pat, var_bindings):
+    """Best-effort: walk `when` for any AndPattern(EntityPattern,
+    BindPattern). If the bound var is already in var_bindings,
+    nothing to do (the var was set from implies args). Otherwise
+    leave it alone — the walker only spawns entities when the var
+    isn't already bound to a known eid."""
+    from ..dsl.patterns import AndPattern
+    if isinstance(pat, AndPattern):
+        _walk_for_when_var_binding(pat.left, var_bindings)
+        _walk_for_when_var_binding(pat.right, var_bindings)
+
+
+def _walk_given_for_infra(
+    pat, var_bindings, trace, lex, derivations, resolver,
+    rule_effects, derivable_slots, depth,
+):
+    """Recursive walk of a derivation's given clause. Handles:
+      - AndPattern: descend on both sides.
+      - RelPattern: treat as a sub-precondition. If args can be
+        resolved against var_bindings to a fully-bound tuple, look
+        up the producer (rule_effects first, then derivations) and
+        recurse. Unbound args are skipped — the derivation may
+        match multiple bindings; we follow only the path the goal
+        constrains.
+      - EntityPattern+Bind: spawn supporting entity for the bound
+        var (if unbound) or check its derivable properties (if
+        bound to an existing entity).
+    """
+    if depth <= 0:
+        return
+    from ..dsl.patterns import (
+        AndPattern, BindPattern, EntityPattern, RelPattern, Var,
+    )
+    if isinstance(pat, AndPattern):
+        # Common case: EntityPattern(constraints) & bind(Var).
+        if (isinstance(pat.left, EntityPattern)
+                and isinstance(pat.right, BindPattern)):
+            ep, bv = pat.left, pat.right.target
+            _handle_ep_bind(
+                ep, bv, var_bindings, trace, lex, derivations,
+                resolver, rule_effects, derivable_slots, depth)
+            return
+        if (isinstance(pat.right, EntityPattern)
+                and isinstance(pat.left, BindPattern)):
+            ep, bv = pat.right, pat.left.target
+            _handle_ep_bind(
+                ep, bv, var_bindings, trace, lex, derivations,
+                resolver, rule_effects, derivable_slots, depth)
+            return
+        _walk_given_for_infra(
+            pat.left, var_bindings, trace, lex, derivations, resolver,
+            rule_effects, derivable_slots, depth)
+        _walk_given_for_infra(
+            pat.right, var_bindings, trace, lex, derivations, resolver,
+            rule_effects, derivable_slots, depth)
+        return
+    if isinstance(pat, RelPattern):
+        # Sub-relation precondition. Resolve args.
+        args_list: list = []
+        for arg_name, arg_pat in pat.arg_patterns.items():
+            resolved = _resolve_arg_var(arg_pat, var_bindings)
+            args_list.append(resolved)
+        # Descend into arg_patterns to find nested EntityPattern+Bind.
+        for arg_pat in pat.arg_patterns.values():
+            _walk_given_for_infra(
+                arg_pat, var_bindings, trace, lex, derivations,
+                resolver, rule_effects, derivable_slots, depth)
+        # If all args are resolved, recurse via the same
+        # rule_effects + derivation lookup as the outer infra
+        # pre-spawn.
+        if all(isinstance(a, str) for a in args_list):
+            from ..schemas import RelationPrecondition
+            from ..dsl.implications import RelationImplication
+            sym = _symmetric_relations(lex)
+            derived = _cached_compute_derived_state(
+                trace, derivations, lex)
+            facts = _state_facts(trace, derived, lex)
+            if ("rel", pat.relation,
+                    _canon_rel(pat.relation, tuple(args_list), sym)) in facts:
+                return
+            # Try rule_effects producer.
+            for prod_verb, entry in rule_effects.items():
+                for relation, role_args in entry.get("adds", []):
+                    if relation != pat.relation:
+                        continue
+                    prod_action = lex.actions.get(prod_verb)
+                    if prod_action is None:
+                        continue
+                    prod_role_map: dict = {}
+                    for arg_eid, prod_role in zip(args_list, role_args):
+                        if isinstance(prod_role, str):
+                            prod_role_map[prod_role] = arg_eid
+                    # Fill missing producer roles.
+                    derived_now = _cached_compute_derived_state(
+                        trace, derivations, lex)
+                    exclude = set(prod_role_map.values())
+                    for rs in prod_action.roles:
+                        if rs.name in prod_role_map:
+                            continue
+                        if getattr(rs, "optional", False):
+                            continue
+                        filler = _find_role_filler(
+                            rs, trace, lex, derived=derived_now,
+                            exclude=exclude, action=prod_action,
+                            role_name=rs.name)
+                        if filler is None:
+                            filler = resolver(
+                                rs, trace, lex, exclude,
+                                action=prod_action, role_name=rs.name)
+                        if filler is not None:
+                            prod_role_map[rs.name] = filler
+                            exclude.add(filler)
+                    _infra_prespawn(
+                        prod_action, prod_role_map, trace, lex,
+                        derivations, resolver, rule_effects,
+                        derivable_slots, depth - 1)
+                    return
+            # Fall through to derivation producer.
+            _infra_prespawn_via_derivation_rel(
+                pat.relation, tuple(args_list), trace, lex,
+                derivations, resolver, rule_effects, derivable_slots,
+                depth - 1)
+        return
+
+
+def _resolve_arg_var(arg_pat, var_bindings):
+    """Resolve a RelPattern arg to an eid (string) if the var is
+    bound, or to the original pattern otherwise."""
+    from ..dsl.patterns import BindPattern, Var
+    if isinstance(arg_pat, Var):
+        return var_bindings.get(arg_pat, arg_pat)
+    if isinstance(arg_pat, BindPattern):
+        return var_bindings.get(arg_pat.target, arg_pat)
+    if isinstance(arg_pat, str):
+        return arg_pat
+    return arg_pat
+
+
+def _handle_ep_bind(
+    ep, bv, var_bindings, trace, lex, derivations, resolver,
+    rule_effects, derivable_slots, depth,
+):
+    """Spawn or verify the entity bound by an EntityPattern+Bind
+    inside a derivation's given. Mirrors the per-EP logic in
+    `_spawn_for_derivation` but recursive on derivable properties."""
+    constraints = ep.constraints
+    type_ = constraints.get("type", "physical")
+    props: dict = {}
+    for k, v in constraints.items():
+        if k in ("type", "concept", "has_suffix"):
+            continue
+        if isinstance(v, str):
+            props[k] = [v]
+    # Already bound to a known eid? Just ensure its derivable props.
+    if bv in var_bindings:
+        eid = var_bindings[bv]
+        ent = trace.entities.get(eid)
+        if ent is None:
+            return
+        for slot, vals in props.items():
+            if slot in derivable_slots and vals:
+                _ensure_prop_reachable(
+                    eid, slot, vals[0], trace, lex, derivations,
+                    resolver, rule_effects, derivable_slots, depth - 1)
+        return
+    # Match an existing entity or spawn a fresh one.
+    matched_eid = None
+    for other_eid, other_ent in trace.entities.items():
+        if not lex.types.is_subtype(other_ent.entity_type, type_):
+            continue
+        ok = True
+        for slot, vals in props.items():
+            if slot in derivable_slots:
+                continue
+            cvals = other_ent.properties.get(slot, [])
+            if not (set(vals) & set(cvals)):
+                ok = False
+                break
+        if ok:
+            matched_eid = other_eid
+            break
+    if matched_eid is None:
+        class _SynthRole:
+            def __init__(self, t, p):
+                self.type = t
+                self.properties = p
+                self.name = "<infra>"
+        synth = _SynthRole(type_, props)
+        filler = resolver(synth, trace, lex, set(),
+                            action=None, role_name=None)
+        if filler is None:
+            return
+        # Force varies-slot values declared in the EntityPattern.
+        ent = trace.entities.get(filler)
+        if ent is not None:
+            for slot, vals in props.items():
+                if not vals:
+                    continue
+                slot_def = lex.slots.get(slot)
+                if slot_def is not None and slot_def.varies:
+                    ent.set_property(slot, vals[0])
+        matched_eid = filler
+    var_bindings[bv] = matched_eid
+    # Recurse on derivable props of the now-bound entity.
+    for slot, vals in props.items():
+        if slot in derivable_slots and vals:
+            _ensure_prop_reachable(
+                matched_eid, slot, vals[0], trace, lex, derivations,
+                resolver, rule_effects, derivable_slots, depth - 1)
 
 
 def _spawn_for_derivation(d, eid, trace, lex, derivations, resolver,
@@ -3743,6 +4022,74 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
         _infra_prespawn(
             action, role_map, trace, lex, derivations, resolver,
             rule_effects, derivable_slots, depth=6)
+        return
+    if goal[0] == "relation":
+        # Relation goal — symmetric to the event_fire branch but
+        # the producer is unknown until we find it via rule_effects
+        # (e.g. surmeti → vestita) or via a derivation producer
+        # (samloke chains). Without this branch, drives like
+        # `relation_drive vestita admiralo ringo` and
+        # `relation_drive havi person item` never trigger the
+        # infra-prespawn that puts a lamp in a dark room or a
+        # vehicle in a scene with a `veturi` chain.
+        _, rel_name, args = goal
+        # Try rule_effects producers (surmeti adds vestita, preni
+        # adds havi, iri/eniri's rule cascades add samloke/en, etc.).
+        derived_now = _cached_compute_derived_state(
+            trace, derivations, lex)
+        for prod_verb, entry in rule_effects.items():
+            chose = None
+            for relation, role_args in entry.get("adds", []):
+                if relation != rel_name:
+                    continue
+                # Skip marker-templated role-args (<lookup>, <list>);
+                # those can't be cleanly mapped to goal args.
+                if any(isinstance(a, tuple) for a in role_args):
+                    continue
+                if len(role_args) != len(args):
+                    continue
+                prod_action = lex.actions.get(prod_verb)
+                if prod_action is None:
+                    continue
+                chose = (prod_action, role_args)
+                break
+            if chose is None:
+                continue
+            prod_action, role_args = chose
+            # Bind producer's roles from the goal's args (positional).
+            role_map: dict = {}
+            for arg_eid, prod_role in zip(args, role_args):
+                if not isinstance(prod_role, str):
+                    continue
+                if isinstance(arg_eid, str) and arg_eid in trace.entities:
+                    role_map[prod_role] = arg_eid
+            # Fill missing producer roles via the resolver. Optional
+            # roles stay unbound (matches the role-binding logic
+            # elsewhere in the planner / sampler).
+            exclude = set(role_map.values())
+            for role_spec in prod_action.roles:
+                if role_spec.name in role_map:
+                    continue
+                if getattr(role_spec, "optional", False):
+                    continue
+                if getattr(role_spec, "kind", "single") == "list":
+                    continue
+                filler = _find_role_filler(
+                    role_spec, trace, lex, derived=derived_now,
+                    exclude=exclude, action=prod_action,
+                    role_name=role_spec.name)
+                if filler is None:
+                    filler = resolver(
+                        role_spec, trace, lex, exclude,
+                        action=prod_action, role_name=role_spec.name)
+                if filler is not None:
+                    role_map[role_spec.name] = filler
+                    exclude.add(filler)
+            # Recurse: ensure the producer is itself plannable.
+            _infra_prespawn(
+                prod_action, role_map, trace, lex, derivations,
+                resolver, rule_effects, derivable_slots, depth=6)
+            return
         return
     if goal[0] != "property":
         return
