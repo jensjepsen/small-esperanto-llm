@@ -684,6 +684,22 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
     # mentions only happen when the message produces text.
     if rel.relation not in ("havi", "sur", "en", "apud"):
         return None
+    # Held-item en suppression. When the contained entity is held by
+    # an actor (havi(?, X) somewhere in trace state), its asserted
+    # `en` is stale w.r.t. narrative — the item travels with its
+    # carrier. Rendering "Banano troviĝos en salono" while a
+    # parrot owns the banana and flies elsewhere reads as a false
+    # claim. The havi relation itself ("La papago posedas la
+    # bananon") and the carrier's movements implicitly communicate
+    # the item's location; the en rendering would only confuse.
+    # Cheap check: scan trace.relations for any havi pair with this
+    # eid as theme. Covers both setup-asserted havi (pre-staged
+    # ownership) and event-added havi (preni cascade).
+    if rel.relation == "en":
+        contained_eid = rel.args[0]
+        for r in ctx.trace.relations:
+            if r.relation == "havi" and len(r.args) == 2 and r.args[1] == contained_eid:
+                return None
     a_form = ctx.name_for(a)
     ctx.note_mention(a)
     if rel.relation == "havi":
