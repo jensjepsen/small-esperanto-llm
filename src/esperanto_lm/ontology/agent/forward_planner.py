@@ -1338,6 +1338,17 @@ def _ground_derivations(
                 pool = set(entity_idx.entities_of_concept(concept_))
             else:
                 pool = set(trace.entities.keys())
+            # Property constraints from EntityPattern conjuncts
+            # (e.g. `entity(liquid_holder="yes") & bind(C)`) restrict
+            # the binding domain to entities that actually carry the
+            # property. Without this filter the var iterates over
+            # all matching-type entities and the property goes in as
+            # a runtime `pres` check — generating cubic pseudo-actions
+            # that mostly never fire. For havi_via_liquid_container
+            # specifically, on a 19-entity scene the unfiltered cube
+            # is 19³ = 6859 candidates vs ~2×2×3 = 12 with the filter.
+            for slot, val in _props:
+                pool &= entity_idx.matches_constraints({slot: val})
             # NotPattern exclusions: each is a literal constraint
             # dict that `matches_constraints` resolves to a bitmap
             # to subtract. The matcher previously walked per-entity
@@ -2761,6 +2772,30 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 role_origin.append(("role", role_spec))
                 continue
             cand = cands_for_type(role_spec.type)
+            # Pre-filter by role.properties: a theme with
+            # `state_of_matter: solida` shouldn't enumerate likva
+            # entities only to fail the property pres in the combo
+            # loop. The combo loop still applies these as pres facts
+            # for the relaxed graph; this is purely a candidate-pool
+            # narrowing. Multi-valued role props (OR semantics) keep
+            # any entity matching at least one allowed value.
+            role_props = getattr(role_spec, "properties", None) or {}
+            if cand and role_props:
+                filtered = cand
+                for slot, allowed in role_props.items():
+                    if not allowed:
+                        continue
+                    if isinstance(allowed, (list, tuple)) and len(allowed) > 1:
+                        keep = set()
+                        for v in allowed:
+                            keep |= entity_idx.matches_constraints({slot: v})
+                        filtered = [e for e in filtered if e in keep]
+                    else:
+                        v = (allowed[0] if isinstance(allowed, (list, tuple))
+                             else allowed)
+                        keep = entity_idx.matches_constraints({slot: v})
+                        filtered = [e for e in filtered if e in keep]
+                cand = filtered
             if not cand:
                 ok = False
                 break

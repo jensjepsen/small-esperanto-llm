@@ -2628,6 +2628,33 @@ havi_implies_samloke_with_carried = derive(
 )
 
 
+# Carrying a liquid_holder confers possession of its contents. A
+# planner that has the agent grasp a glaso containing akvo can then
+# satisfy `havi(actor, akvo)` for trinki/verŝi/plenigi without ever
+# planning `preni(actor, akvo)` directly — which the schema now
+# forbids via `state_of_matter: solida` constraints on preni/porti/
+# teni/doni/meti themes. Schema-side, liquids only live `en`
+# liquid_holders, so this is the only feasible chain.
+#
+# Stops at one level: havi(A, glaso) ∧ en(akvo, glaso) → havi(A, akvo)
+# doesn't recurse, because akvo isn't a liquid_holder. The
+# pattern's `liquid_holder=yes` guard on the container is what
+# keeps it finite.
+havi_via_liquid_container = derive(
+    when=rel("havi",
+             owner=bind(HVCO := var("O")),
+             theme=(entity(liquid_holder="yes") & bind(HVCC := var("C")))),
+    given=[
+        rel("en",
+            contained=(entity(state_of_matter="likva") &
+                       bind(HVCL := var("L"))),
+            container=HVCC),
+    ],
+    implies=relation("havi", HVCO, HVCL),
+    name="havi_via_liquid_container",
+)
+
+
 # `effective_en(X, L)` — the location where X is for narrative/query
 # purposes. For most entities this equals their asserted `en`. For
 # HELD items, this is the carrier's current `en` — so a basket
@@ -3015,6 +3042,7 @@ DEFAULT_DSL_DERIVATIONS = [
     samloke_propagates_through_location_parts,
     en_implies_samloke_with_container,
     havi_implies_samloke_with_carried,
+    havi_via_liquid_container,
     held_item_effective_en_via_carrier,
     asserted_en_implies_effective_en,
     sur_implies_samloke_with_supporter,
@@ -3111,6 +3139,7 @@ RUNTIME_DERIVATIONS = [
     samloke_propagates_through_location_parts,
     en_implies_samloke_with_container,
     havi_implies_samloke_with_carried,
+    havi_via_liquid_container,
     held_item_effective_en_via_carrier,
     asserted_en_implies_effective_en,
     sur_implies_samloke_with_supporter,

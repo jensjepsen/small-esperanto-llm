@@ -9,9 +9,9 @@
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained_pattern": {"category": "meblo"}, "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained_pattern": {"property": {"readability": "legebla"}}, "relation": "en"}
 {"container_pattern": {"entity_type": "location"}, "contained": "animate", "relation": "en"}
-{"container": "kuirejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
-{"container": "manĝejo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
-{"container": "salono", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "kuirejo", "contained_pattern": {"property": {"edibility": "manĝebla", "state_of_matter": "solida"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "manĝejo", "contained_pattern": {"property": {"edibility": "manĝebla", "state_of_matter": "solida"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "salono", "contained_pattern": {"property": {"edibility": "manĝebla", "state_of_matter": "solida"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "tablo", "contained_pattern": {"property": {"edibility": "manĝebla", "state_of_matter": "solida"}, "entity_type": "substance"}, "relation": "sur"}
 {"container": "tablo", "contained": "glaso", "relation": "sur"}
 {"container": "tablo", "contained": "botelo", "relation": "sur"}
@@ -24,7 +24,7 @@
 {"container": "breto", "contained": "najlo", "relation": "sur"}
 {"container": "glaso", "contained_pattern": {"property": {"state_of_matter": "likva"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "botelo", "contained_pattern": {"property": {"state_of_matter": "likva"}, "entity_type": "substance"}, "relation": "en"}
-{"container": "korbo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "korbo", "contained_pattern": {"property": {"edibility": "manĝebla", "state_of_matter": "solida"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "kuirejo", "contained": "tranĉilo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained_pattern": {"category": "ujo"}, "relation": "en"}
 {"container": "laborejo", "contained": "tranĉilo", "relation": "en"}
@@ -33,11 +33,10 @@
 {"container": "laborejo", "contained": "najlo", "relation": "en"}
 {"container": "laborejo", "contained": "breto", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "ekstera"}}, "contained_pattern": {"category": "planto"}, "relation": "en"}
-{"container": "ĝardeno", "contained": "akvo", "relation": "en"}
 {"container": "oficejo", "contained": "tranĉilo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "papero", "relation": "en"}
 {"container_pattern": {"category": "surfaco"}, "contained": "papero", "relation": "sur"}
-{"container": "restoracio", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "restoracio", "contained_pattern": {"property": {"edibility": "manĝebla", "state_of_matter": "solida"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "parko", "contained": "seĝo", "relation": "en"}
 {"container": "lito", "contained": "kuseno", "relation": "sur"}
 {"container": "lito", "contained": "matraco", "relation": "sur"}
@@ -99,8 +98,8 @@
 {"container": "banĉambro", "contained": "lavabo", "relation": "en"}
 {"container": "banĉambro", "contained": "klozeto", "relation": "en"}
 {"container": "banĉambro", "contained": "dentobroso", "relation": "en"}
-{"container": "banĉambro", "contained": "dentopasto", "relation": "en"}
-{"container": "banĉambro", "contained": "ŝampuo", "relation": "en"}
+{"container": "banĉambro", "contained": "tubo", "relation": "en"}
+{"container": "banĉambro", "contained": "botelo", "relation": "en"}
 {"container": "banĉambro", "contained": "sapo", "relation": "en"}
 {"container": "banĉambro", "contained": "spegulo", "relation": "en"}
 {"container": "banĉambro", "contained": "lavilo", "relation": "en"}
@@ -127,7 +126,6 @@
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "enciklopedio", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "markilo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "gumo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "inko", "relation": "en"}
 {"container_pattern": {"category": "surfaco"}, "contained": "kajero", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "markilo", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "gumo", "relation": "sur"}
@@ -182,22 +180,10 @@
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "ŝtuparo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "divano", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "bretaro", "relation": "en"}
-{"container": "fridujo", "contained_pattern": {"property": {"edibility": "manĝebla"}, "entity_type": "substance"}, "relation": "en"}
+{"container": "fridujo", "contained_pattern": {"property": {"edibility": "manĝebla", "state_of_matter": "solida"}, "entity_type": "substance"}, "relation": "en"}
 {"container": "fridujo", "contained": "glacio", "relation": "en"}
 {"container": "lavmaŝino", "contained_pattern": {"category": "vestaĵo"}, "relation": "en"}
 {"container_pattern": {"category": "surfaco"}, "contained": "telefono", "relation": "sur"}
-{"container": "kuirejo", "contained": "koktelo", "relation": "en"}
-{"container": "kuirejo", "contained": "ŝampano", "relation": "en"}
-{"container": "kuirejo", "contained": "brando", "relation": "en"}
-{"container": "kuirejo", "contained": "jogurto", "relation": "en"}
-{"container": "kuirejo", "contained": "supo", "relation": "en"}
-{"container": "kuirejo", "contained": "mielo", "relation": "en"}
-{"container": "kuirejo", "contained": "olivoleo", "relation": "en"}
-{"container": "kuirejo", "contained": "vinagaro", "relation": "en"}
-{"container": "fridujo", "contained": "jogurto", "relation": "en"}
-{"container": "fridujo", "contained": "supo", "relation": "en"}
-{"container": "fridujo", "contained": "mielo", "relation": "en"}
-{"container": "fridujo", "contained": "ŝampano", "relation": "en"}
 {"container": "oficejo", "contained": "komputilo", "relation": "en"}
 {"container": "oficejo", "contained": "klavaro", "relation": "en"}
 {"container": "oficejo", "contained": "ekrano", "relation": "en"}
@@ -255,18 +241,10 @@
 {"container_pattern": {"category": "surfaco"}, "contained": "statuo", "relation": "sur"}
 {"container_pattern": {"category": "surfaco"}, "contained": "pentraĵo", "relation": "sur"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "lipruĝo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "kremo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "parfumo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "ungopolurilo", "relation": "en"}
-{"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "losiono", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "razilo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "odoraĵo", "relation": "en"}
 {"container_pattern": {"property": {"indoor_outdoor": "interna"}}, "contained": "fardilo", "relation": "en"}
 {"container": "banĉambro", "contained": "lipruĝo", "relation": "en"}
-{"container": "banĉambro", "contained": "kremo", "relation": "en"}
-{"container": "banĉambro", "contained": "parfumo", "relation": "en"}
-{"container": "banĉambro", "contained": "ungopolurilo", "relation": "en"}
-{"container": "banĉambro", "contained": "losiono", "relation": "en"}
 {"container": "banĉambro", "contained": "razilo", "relation": "en"}
 {"container": "banĉambro", "contained": "odoraĵo", "relation": "en"}
 {"container": "banĉambro", "contained": "fardilo", "relation": "en"}

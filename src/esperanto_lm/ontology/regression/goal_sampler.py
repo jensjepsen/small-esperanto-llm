@@ -316,7 +316,23 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
     if not allowed_containers:
         _bail(f"construct_no_en_containment:{theme_concept}")
         return None
-    locations = [l for l in locations if l in allowed_containers]
+    direct_locations = {l for l in locations if l in allowed_containers}
+    # Indirect: locations that hold some intermediate container that
+    # itself holds theme. Liquids only fit `en` liquid_holders (line 86),
+    # so kafo/supo/buljono have no DIRECT location and need this hop.
+    # `_place_respecting_containment` materializes the intermediate at
+    # spawn time — we just need to admit such scenes here.
+    indirect_locations: set[str] = set()
+    for intermediate in allowed_containers:
+        for parent, rel in containers_for(
+                intermediate, containment_idx, lex):
+            if rel != "en":
+                continue
+            if parent not in locations:
+                continue
+            indirect_locations.add(parent)
+    valid_locations = direct_locations | indirect_locations
+    locations = [l for l in locations if l in valid_locations]
     if not locations:
         _bail(f"construct_no_compatible_scene:{theme_concept}")
         return None
