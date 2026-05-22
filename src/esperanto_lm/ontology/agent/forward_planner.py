@@ -2772,18 +2772,36 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 role_origin.append(("role", role_spec))
                 continue
             cand = cands_for_type(role_spec.type)
-            # Pre-filter by role.properties: a theme with
-            # `state_of_matter: solida` shouldn't enumerate likva
-            # entities only to fail the property pres in the combo
-            # loop. The combo loop still applies these as pres facts
-            # for the relaxed graph; this is purely a candidate-pool
-            # narrowing. Multi-valued role props (OR semantics) keep
-            # any entity matching at least one allowed value.
+            # Pre-filter by role.properties on IMMUTABLE slots only.
+            # Pruning by mutable/derivable slots is unsound: vidi's
+            # agent role requires `illuminated: yes`, which is derived
+            # from a lit lampo — a virino without an initial
+            # `illuminated` property would be dropped here, killing
+            # vidi grounding entirely and breaking every downstream
+            # chain that needs `scias_lokon` via vidi. The combo loop
+            # still applies these props as pres facts so the relaxed
+            # graph reasons about reachability through the prop's
+            # producer.
+            #
+            # Immutable check: slot has no derivation producing it
+            # AND its definition isn't marked `varies: true`. Such
+            # slots (state_of_matter, liquid_holder, grasp_capable,
+            # functional_signature, …) are fixed at concept-load
+            # time, so an entity that doesn't currently carry the
+            # required value never will.
             role_props = getattr(role_spec, "properties", None) or {}
             if cand and role_props:
+                derivable = getattr(
+                    lex.concept_index, "derivable", {}) or {}
                 filtered = cand
                 for slot, allowed in role_props.items():
                     if not allowed:
+                        continue
+                    if slot in derivable:
+                        continue
+                    slot_def = lex.slots.get(slot)
+                    if slot_def is None or getattr(
+                            slot_def, "varies", False):
                         continue
                     if isinstance(allowed, (list, tuple)) and len(allowed) > 1:
                         keep = set()
