@@ -690,20 +690,54 @@ class SceneBuilder:
         contradicts the in-hand reading. Without this drop the
         realizer's lazy-mention pass leaks the prior placement into
         the prose mid-narrative ("Mikael has the apples, but they're
-        on a table he just left")."""
+        on a table he just left").
+
+        Containment-aware: if the theme lives inside a non-location
+        container (akvo en glaso, pomo en korbo), the havi is
+        redirected to the outermost portable ancestor. The
+        `havi_via_liquid_container` derivation then provides
+        havi(owner, theme) without dropping the en(theme, container)
+        fact — narrative coherence wins over "person directly holds
+        liquid", which is awkward when the wine still lives in a
+        glass."""
         if self._failed:
             return self
         theme_eid = self._resolve(theme_slot)
         if theme_eid is None:
             self._fail()
             return self
+        # Walk up containment to outermost non-location ancestor.
+        target = theme_eid
+        seen = {target}
+        while True:
+            parent = next(
+                (r.args[1] for r in self.t.relations
+                 if r.relation in ("en", "sur") and len(r.args) == 2
+                 and r.args[0] == target),
+                None)
+            if parent is None or parent in seen:
+                break
+            parent_ent = self.t.entities.get(parent)
+            if parent_ent is None or self.lex.types.is_subtype(
+                    parent_ent.entity_type, "location"):
+                break
+            target = parent
+            seen.add(parent)
+        theme_eid = target
         self.t.relations = [
             r for r in self.t.relations
             if not (r.relation in ("en", "sur")
                     and len(r.args) == 2
                     and r.args[0] == theme_eid)
         ]
-        return self.relation("havi", owner_slot, theme_slot)
+        # Assert with the resolved eid directly — the slot may not
+        # exist for the resolved container, so bypass _resolve.
+        try:
+            self.t.assert_relation(
+                "havi", (self._resolve(owner_slot), theme_eid), self.lex)
+        except (KeyError, ValueError):
+            self._fail()
+        return self
 
     def _maybe_place_on(self, person_slot, *, probability, attribute):
         """Shared core for maybe_seat / maybe_recline. Picks a concept

@@ -320,16 +320,42 @@ def _inject_co_located_owner(
     """Bring an NPC owner alongside `item_eid`. First try existing
     co-located non-actor persons; if none qualify, spawn a fresh
     person into the item's container. On success, assert
-    havi(person, item) and drop the item's en/sur (havi means
+    havi(person, target) and drop the target's en/sur (havi means
     in-hand, so leaving stale physical placement would contradict
     the carrying interpretation — same as scene_builder's
     distribution flow).
+
+    Containment-aware target: walk the en/sur chain up from item_eid
+    and pick the outermost ancestor that's still havi-able (non-
+    location, schema-legal). Posessing a vino directly is odd when
+    it lives in a glaso — the glaso is what the person can hold.
+    Same logic for a pomo en korbo: bind ownership to the korbo,
+    not the pomo. Items already at the top (loose `en scene`)
+    remain the injection target.
 
     Schema legality is enforced by `assert_relation`: havi's
     arg_excludes / arg_not_part / arg_compare reject locations,
     body parts, nemovebla themes, and items heavier than the
     candidate owner's lift_capacity. Illegal pairs silently no-op.
     """
+    # Walk up en/sur chain to the outermost non-location ancestor.
+    target = item_eid
+    seen = {target}
+    while True:
+        parent = next(
+            (r.args[1] for r in trace.relations
+             if r.relation in ("en", "sur") and len(r.args) == 2
+             and r.args[0] == target),
+            None)
+        if parent is None or parent in seen:
+            break
+        parent_ent = trace.entities.get(parent)
+        if parent_ent is None or lex.types.is_subtype(
+                parent_ent.entity_type, "location"):
+            break
+        target = parent
+        seen.add(parent)
+    item_eid = target
     container = next(
         (r.args[1] for r in trace.relations
          if r.relation in ("en", "sur") and len(r.args) == 2
