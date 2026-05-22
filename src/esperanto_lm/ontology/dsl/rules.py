@@ -2274,6 +2274,56 @@ location_cold_via_active_cooler = derive(
     name="location_cold_via_active_cooler",
 )
 
+
+# Container temperature transitivity: contents inherit non-default
+# temperatures from their container. A glaso in a malvarma kitchen
+# cools down; a pano in a varmega forno gets hot. Multi-level
+# transitivity falls out of the fixed-point loop — pomo en glaso
+# en kuirejo (malvarma) → glaso malvarma → pomo malvarma over
+# successive cycles. Must precede `physical_has_temperature` so
+# the malvarma/varmega derived value wins first-write-wins over
+# the default `varma`.
+#
+# Only `en` (containment), not `sur` (surface contact): a book ON
+# a cold table doesn't fully cool through; an item INSIDE a cold
+# container shares its temperature. Same asymmetry as the en/sur
+# distinction elsewhere in the lex (en is "inside", sur is "on
+# top").
+#
+# Doesn't propagate `varma` — that's the unmarked default and
+# everything is varma by default already.
+content_cold_via_cold_container = derive(
+    when=entity(type="physical") & bind(CCCX := var("X")),
+    given=[
+        rel("en", contained=CCCX, container=bind(CCCL := var("L"))),
+        entity(temperature="malvarma") & bind(CCCL),
+    ],
+    implies=property(CCCX, "temperature", "malvarma"),
+    name="content_cold_via_cold_container",
+)
+
+
+content_hot_via_hot_container = derive(
+    when=entity(type="physical") & bind(CHCX := var("X")),
+    given=[
+        rel("en", contained=CHCX, container=bind(CHCL := var("L"))),
+        entity(temperature="varmega") & bind(CHCL),
+    ],
+    implies=property(CHCX, "temperature", "varmega"),
+    name="content_hot_via_hot_container",
+)
+
+
+content_boiling_via_boiling_container = derive(
+    when=entity(type="physical") & bind(CBCX := var("X")),
+    given=[
+        rel("en", contained=CBCX, container=bind(CBCL := var("L"))),
+        entity(temperature="bolanta") & bind(CBCL),
+    ],
+    implies=property(CBCX, "temperature", "bolanta"),
+    name="content_boiling_via_boiling_container",
+)
+
 # Mirror semantics: a room is dark iff no active lamp is co-located
 # with it (under the same samloke closure). Without the matching
 # update, a `sur`-mounted lamp would make the room luma via the lit
@@ -2948,9 +2998,14 @@ DEFAULT_DSL_DERIVATIONS = [
     # physical_has_temperature so first-write-wins on scalar
     # temperature gives us the active-appliance-derived value
     # (malvarma room when fridujo is on) rather than the bland
-    # `varma` default.
+    # `varma` default. Content propagation runs in the same band
+    # so a malvarma kitchen makes its glasses malvarma too,
+    # before the default `varma` locks in.
     location_warm_via_active_warmer,
     location_cold_via_active_cooler,
+    content_cold_via_cold_container,
+    content_hot_via_hot_container,
+    content_boiling_via_boiling_container,
     physical_has_temperature,
     physical_has_wetness,
     shared_container_means_samloke,
@@ -3071,6 +3126,9 @@ RUNTIME_DERIVATIONS = [
     location_lit_by_active_lamp,
     location_warm_via_active_warmer,
     location_cold_via_active_cooler,
+    content_cold_via_cold_container,
+    content_hot_via_hot_container,
+    content_boiling_via_boiling_container,
     outdoor_luma_during_day,
     outdoor_dark_at_night,
     indoor_dark_without_active_lamp,
