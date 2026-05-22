@@ -706,24 +706,8 @@ class SceneBuilder:
         if theme_eid is None:
             self._fail()
             return self
-        # Walk up containment to outermost non-location ancestor.
-        target = theme_eid
-        seen = {target}
-        while True:
-            parent = next(
-                (r.args[1] for r in self.t.relations
-                 if r.relation in ("en", "sur") and len(r.args) == 2
-                 and r.args[0] == target),
-                None)
-            if parent is None or parent in seen:
-                break
-            parent_ent = self.t.entities.get(parent)
-            if parent_ent is None or self.lex.types.is_subtype(
-                    parent_ent.entity_type, "location"):
-                break
-            target = parent
-            seen.add(parent)
-        theme_eid = target
+        from ..containment import outermost_portable_ancestor
+        theme_eid = outermost_portable_ancestor(theme_eid, self.t, self.lex)
         self.t.relations = [
             r for r in self.t.relations
             if not (r.relation in ("en", "sur")

@@ -338,24 +338,8 @@ def _inject_co_located_owner(
     body parts, nemovebla themes, and items heavier than the
     candidate owner's lift_capacity. Illegal pairs silently no-op.
     """
-    # Walk up en/sur chain to the outermost non-location ancestor.
-    target = item_eid
-    seen = {target}
-    while True:
-        parent = next(
-            (r.args[1] for r in trace.relations
-             if r.relation in ("en", "sur") and len(r.args) == 2
-             and r.args[0] == target),
-            None)
-        if parent is None or parent in seen:
-            break
-        parent_ent = trace.entities.get(parent)
-        if parent_ent is None or lex.types.is_subtype(
-                parent_ent.entity_type, "location"):
-            break
-        target = parent
-        seen.add(parent)
-    item_eid = target
+    from ..containment import outermost_portable_ancestor
+    item_eid = outermost_portable_ancestor(item_eid, trace, lex)
     container = next(
         (r.args[1] for r in trace.relations
          if r.relation in ("en", "sur") and len(r.args) == 2

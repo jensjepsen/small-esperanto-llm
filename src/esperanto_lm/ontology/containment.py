@@ -349,6 +349,43 @@ def _concept_matches_fact_contained(
     return False
 
 
+def outermost_portable_ancestor(
+    eid: str, trace, lex: Lexicon,
+) -> str:
+    """Walk the en/sur containment chain up from `eid` and return the
+    outermost ancestor that's still havi-able — i.e., not a location.
+
+    Used by the seeders when asserting havi(person, item) on an item
+    that lives inside something: a person can't directly possess a
+    likva substance when it's in a glaso, or a pomo when it's in a
+    korbo. The natural target of ownership is the holdable
+    container, with the `havi_via_liquid_container` derivation (and
+    the realizer's en/sur surfacing) propagating ownership of the
+    contained.
+
+    Falls back to `eid` itself when the item is at the top of the
+    chain (loose at scene level) or there's no chain at all. Cycle-
+    safe via a seen-set.
+    """
+    target = eid
+    seen = {target}
+    while True:
+        parent = next(
+            (r.args[1] for r in trace.relations
+             if r.relation in ("en", "sur") and len(r.args) == 2
+             and r.args[0] == target),
+            None)
+        if parent is None or parent in seen:
+            break
+        parent_ent = trace.entities.get(parent)
+        if parent_ent is None or lex.types.is_subtype(
+                parent_ent.entity_type, "location"):
+            break
+        target = parent
+        seen.add(parent)
+    return target
+
+
 def required_fact_violations(
     container_lemma: str, contained_lemma: str, relation: str,
     containment_index: dict[str, list[ContainmentFact]],

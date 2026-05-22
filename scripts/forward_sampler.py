@@ -624,6 +624,9 @@ def _prestate_rare_verb_preconds(t, scene_id: str, lex, rng) -> None:
     entry = rng.choices(weighted, weights=weights, k=1)[0]
     _verb, rel_name, _partner = entry
     actor_eid, partner_eid = pair_cache[entry]
+    if rel_name == "havi":
+        from esperanto_lm.ontology.containment import outermost_portable_ancestor
+        partner_eid = outermost_portable_ancestor(partner_eid, t, lex)
     try:
         t.assert_relation(rel_name, (actor_eid, partner_eid), lex)
     except Exception:
