@@ -256,11 +256,22 @@ def main():
                 all_samples.extend(samples)
         elapsed = time.time() - start
         total = fired + failed
+        total_scenes = fired + failed + no_sample
+        # plan-yield: fraction of *attempted* plans that produced a
+        # trace. Useful for catching planner regressions on
+        # individual drives.
+        # corpus-yield: fraction of *all scenes* that wound up as
+        # prose. The metric we actually target for corpus
+        # generation — a scene the seeder bails on (`no_sample`) is
+        # just as missed as one the planner failed on.
         yld = fired / total if total > 0 else 0.0
+        corpus_yld = (fired / total_scenes
+                      if total_scenes > 0 else 0.0)
         print(f"{sampler:>5}: fired={fired}, failed={failed}, "
-              f"no_sample={no_sample}, yield={yld:.1%}, "
+              f"no_sample={no_sample}, "
+              f"plan-yield={yld:.1%}, corpus-yield={corpus_yld:.1%}, "
               f"elapsed={elapsed:.1f}s "
-              f"({elapsed*1000/max(total,1):.0f}ms/scene)")
+              f"({elapsed*1000/max(total_scenes,1):.0f}ms/scene)")
         print(f"    top failures:")
         for k, v in all_failures.most_common(10):
             print(f"      {v}x {k}")
