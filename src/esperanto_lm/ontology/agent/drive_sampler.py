@@ -177,45 +177,6 @@ def augment_scene_for_drive(t, drive, lex, rng, scene_id):
     machinery."""
     kind = drive[0]
 
-    # Self-hunger: needs a manĝebla theme that the actor can havi.
-    if (kind == "self_slot"
-            and drive[2] == "hunger" and drive[3] == "sata"):
-        actor = drive[1]
-        # Already a food substance the actor can grab? Check trace.
-        from ..entity_index import entity_index_for
-        existing_food = list(entity_index_for(t, lex).entities_matching(
-            properties={"edibility": ["manĝebla"]}))
-        if not existing_food:
-            food_concepts = list(lex.concept_index.concepts_matching(
-                "substance", {"edibility": ["manĝebla"]}))
-            if food_concepts:
-                food = rng.choice(food_concepts)
-                food_id = food
-                if food_id not in t.entities:
-                    try:
-                        _add_entity_randomized(
-                            t, food, lex, rng, entity_id=food_id)
-                        t.assert_relation("en", (food_id, scene_id), lex)
-                        existing_food = [food_id]
-                    except (KeyError, ValueError):
-                        pass
-        # Ensure the actor has at least one of the food items, so
-        # manĝi's havi precondition is reachable without a preni step.
-        if existing_food:
-            food_id = existing_food[0]
-            already_owned = any(
-                r.relation == "havi" and r.args == (actor, food_id)
-                for r in t.relations)
-            if not already_owned:
-                # Move ownership: any prior owner gets the relation
-                # removed (havi is exclusive). Simplest: remove all
-                # existing havi for this food, assert actor's.
-                t.relations = [
-                    r for r in t.relations
-                    if not (r.relation == "havi" and r.args[1] == food_id)
-                ]
-                t.assert_relation("havi", (actor, food_id), lex)
-
     # Door-unlock: entity_slot drive over openness=malfermita on an
     # artifact whose seruro is locked. Ensure a ŝlosilo (key) is in
     # the scene and the actor has it.
