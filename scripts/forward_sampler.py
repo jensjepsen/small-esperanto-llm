@@ -157,7 +157,7 @@ class SamplerConfig:
 # =================== applicable-step enumeration ====================
 
 def _role_filler_candidates(role_spec, trace, lex, exclude,
-                            derived=None):
+                            derived=None, roles_so_far=None):
     """Yield entity ids whose entity_type and properties match the
     role spec. Skips ids in `exclude` (already filling another role
     of the same action). Pure check — no subgoaling.
@@ -176,6 +176,16 @@ def _role_filler_candidates(role_spec, trace, lex, exclude,
     power_state. The schema's intent is that absence = "doesn't
     model the slot" = no match.
 
+    `from_field` (fari.instrument's "crafted_with", any future
+    recipe-linked roles): when set AND the theme role is already
+    bound, restrict candidates to entities whose concept_lemma is
+    listed in `theme_concept.<from_field>`. Without this, fari's
+    instrument can bind to any in-scene artifact (a seruro,
+    pordo, …), producing "Pirato faros la buljonon per seruro"
+    instead of "per forno". The seeder honors from_field via
+    goal_sampler's construct path; the forward-sampler's
+    free-binding step needs the same constraint.
+
     Negative gating (e.g. "theme must NOT be currently a part") is
     expressed as a `NotPropertyPrecondition` on the action and
     enforced in `_action_preconds_satisfied`, NOT here.
@@ -192,11 +202,42 @@ def _role_filler_candidates(role_spec, trace, lex, exclude,
     where 40/50 entities are body parts / artifacts)."""
     idx = entity_index_for(trace, lex)
     pool = idx.entities_matching(role_type=role_spec.type)
+    # from_field restriction: when this role draws from the theme
+    # concept's recipe field (fari.instrument ← theme.crafted_with),
+    # narrow the pool to entities whose concept appears in that
+    # field. Only applies when the source role is already bound.
+    allowed_concepts: set | None = None
+    from_field = getattr(role_spec, "from_field", None)
+    if from_field and roles_so_far:
+        theme_eid = roles_so_far.get("theme")
+        if theme_eid is not None:
+            theme_ent = trace.entities.get(theme_eid)
+            if theme_ent is not None:
+                theme_concept = lex.concepts.get(theme_ent.concept_lemma)
+                if theme_concept is not None:
+                    field_vals = getattr(theme_concept, from_field, None)
+                    if field_vals is not None:
+                        # field_vals may be list[str] (crafted_with)
+                        # or list[ConceptPart] (parts) — normalize to
+                        # concept lemmas. Empty list = "no candidate
+                        # admitted" (sandwich-style suko with no
+                        # crafted_with → instrument should stay
+                        # unbound). Treating empty as "no restriction"
+                        # would let any artifact bind, surfacing
+                        # "faris sukon per la kameno".
+                        allowed_concepts = {
+                            v if isinstance(v, str)
+                            else getattr(v, "concept", None)
+                            for v in field_vals
+                        }
+                        allowed_concepts.discard(None)
     for eid in pool:
         if eid in exclude:
             continue
         ent = trace.entities.get(eid)
         if ent is None or ent.destroyed_at_event is not None:
+            continue
+        if allowed_concepts is not None and ent.concept_lemma not in allowed_concepts:
             continue
         if role_spec.properties:
             ok = True
@@ -253,7 +294,7 @@ def _bind_roles(action: Action, trace, lex, rng, max_per_action=8,
                 continue
             cands = list(_role_filler_candidates(
                 role_spec, trace, lex, exclude=set(roles.values()),
-                derived=derived))
+                derived=derived, roles_so_far=roles))
             if not cands:
                 # Optional roles (flugi.instrument, manĝi.instrument)
                 # may legitimately have no candidate in this scene.
