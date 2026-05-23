@@ -4815,11 +4815,22 @@ def plan_for_goal(
         # helpful are pushed with parent's h as a placeholder (lazy
         # h) and re-evaluated only when popped — saves ~90% of
         # heuristic calls.
+        # Pre-extract the verb lemmas in the current state's helpful
+        # set. Actions whose lemma isn't represented are unlikely to
+        # be on the optimal plan — skip them to keep per-state
+        # expansion cost down. Coarser than exact-binding filtering
+        # (which proved too aggressive); still cuts most of the long
+        # tail of irrelevant verbs (timi, ami, krii, …) without
+        # losing the planner's ability to find alternative role
+        # bindings of the right verb.
+        helpful_lemmas = {lemma for (lemma, _roles) in helpful}
         for ga in grounded:
             if (cur_mask & ga.pres_mask) != ga.pres_mask:
                 continue
             action = ga.action
             roles = ga.roles
+            if action.lemma not in helpful_lemmas:
+                continue
             add_mask, del_mask = _action_delta_mask(
                 action, roles, rule_effects, lex, table, cur_mask)
             if (goal[0] == "event_fire"
