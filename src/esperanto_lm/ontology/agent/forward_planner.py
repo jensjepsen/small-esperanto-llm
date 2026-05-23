@@ -1918,7 +1918,8 @@ def _compile_pseudos_for_mask(pseudos, table: FactTable, slot_vocab: dict):
 
 def _apply_delta_mask(state: int, add_mask: int, del_mask: int,
                      derivation_pseudos, slot_vocab: dict,
-                     table: FactTable) -> int:
+                     table: FactTable,
+                     asserted_mask: int = 0) -> int:
     """Bitmap variant of `_apply_delta`. Same semantics:
     apply dels, strip stale derived relations, apply scalar
     displacement on adds, apply adds, then re-derive to fixed point.
@@ -1927,6 +1928,14 @@ def _apply_delta_mask(state: int, add_mask: int, del_mask: int,
     call is the bottleneck _apply_delta was profiling at — here that
     cost becomes a couple of int ops, and the derivation worklist
     iterates fact IDs instead of hashing tuple keys.
+
+    `asserted_mask`: bitmap of bits set by action effects (not by
+    derivations) up to this point in the plan. The strip step
+    preserves these — a derivation that consumes havi and also
+    produces havi (`havi-via-liquid-container`) would otherwise
+    wipe ASSERTED havi facts from prior actions when re-firing on
+    a fresh havi add. Defaults to 0 for callers that don't track
+    asserted facts (the initial-state derivation pass).
     """
     new_state = state & ~del_mask
 
@@ -1938,7 +1947,12 @@ def _apply_delta_mask(state: int, add_mask: int, del_mask: int,
     strip_targets = _derived_strip_set(
         derivation_pseudos, set(del_tuples), set(add_tuples))
     if strip_targets:
-        new_state &= ~table.rel_mask(strip_targets)
+        # Only strip the DERIVED portion. Asserted facts (those in
+        # `asserted_mask`) survive the strip — they're truth via
+        # action effects, not via derivation, so they shouldn't be
+        # invalidated when a derivation re-fires.
+        strip_mask = table.rel_mask(strip_targets) & ~asserted_mask
+        new_state &= ~strip_mask
 
     # Scalar slot displacement: clear all known values for any scalar
     # (eid, slot) we're writing, then OR in the adds.
@@ -4662,9 +4676,18 @@ def plan_for_goal(
 
     initial_mask = _state_facts_mask(
         initial_trace, initial_derived, lex)
+    # Track which bits are ASSERTED (set by action effects, not by
+    # derivations). Used by `_apply_delta_mask` to preserve these
+    # through the strip-and-rederive cycle. Bits added later by
+    # action firings get OR'd in; bits removed by del_mask get
+    # AND-NOT'd out. The strip step then targets `~asserted_mask`
+    # only, so asserted facts survive even when a derivation chain
+    # (e.g. havi-via-liquid-container) would otherwise wipe them.
+    asserted_init = _state_facts_mask(initial_trace, None, lex)
     # Apply derivations to layer-0 to get full derived layer.
     initial_mask = _apply_delta_mask(
-        initial_mask, 0, 0, grounded_derivs, slot_vocab, table)
+        initial_mask, 0, 0, grounded_derivs, slot_vocab, table,
+        asserted_init)
     _rss_trace_log(_trace_plan_id, "after_initial_state",
                    _trace_drive_kind)
 
@@ -4704,14 +4727,15 @@ def plan_for_goal(
     anchor_h = initial_h
     anchor_helpful = initial_helpful
     anchor_plan: list = []
+    anchor_asserted = asserted_init
     ehc_visited: set = {initial_mask}
     expansions = 0
     while expansions < ehc_budget and anchor_h > 0:
         bfs: deque = deque(
-            [(anchor_mask, anchor_plan, anchor_helpful)])
+            [(anchor_mask, anchor_plan, anchor_helpful, anchor_asserted)])
         found = None
         while bfs and expansions < ehc_budget:
-            cur_mask, cur_plan, cur_helpful = bfs.popleft()
+            cur_mask, cur_plan, cur_helpful, cur_asserted = bfs.popleft()
             expansions += 1
             if len(cur_plan) >= max_plan_length:
                 continue
@@ -4737,9 +4761,10 @@ def plan_for_goal(
                     add_mask |= goal_bit
                 if add_mask == 0 and del_mask == 0:
                     continue
+                new_asserted = (cur_asserted & ~del_mask) | add_mask
                 new_mask = _apply_delta_mask(
                     cur_mask, add_mask, del_mask,
-                    grounded_derivs, slot_vocab, table)
+                    grounded_derivs, slot_vocab, table, new_asserted)
                 if new_mask == cur_mask or new_mask in ehc_visited:
                     continue
                 ehc_visited.add(new_mask)
@@ -4750,14 +4775,16 @@ def plan_for_goal(
                 if new_h >= _HEURISTIC_INF:
                     continue
                 if new_h < anchor_h:
-                    found = (new_mask, new_h, new_helpful, new_plan)
+                    found = (new_mask, new_h, new_helpful, new_plan,
+                             new_asserted)
                     break
-                bfs.append((new_mask, new_plan, new_helpful))
+                bfs.append((new_mask, new_plan, new_helpful, new_asserted))
             if found:
                 break
         if not found:
             break  # EHC plateau — drop to A*.
-        anchor_mask, anchor_h, anchor_helpful, anchor_plan = found
+        (anchor_mask, anchor_h, anchor_helpful, anchor_plan,
+            anchor_asserted) = found
     _rss_trace_log(_trace_plan_id, "after_ehc", _trace_drive_kind,
                    {"expansions": expansions, "anchor_h": anchor_h})
     if anchor_h == 0:
@@ -4769,17 +4796,20 @@ def plan_for_goal(
     # anchor's mask/h/helpful/plan replace the initial seed so we
     # don't redo the EHC progress.
     open_list: list = []
-    # (f, helpful_priority, tiebreak, g, h, plan, state_mask, helpful)
+    # (f, helpful_priority, tiebreak, g, h, plan, state_mask, helpful,
+    #  asserted_mask) — asserted_mask propagates separately so the
+    # strip step in `_apply_delta_mask` knows which bits are
+    # untouchable.
     heapq.heappush(open_list, (
         len(anchor_plan) + H_WEIGHT * anchor_h, 0, 0,
         len(anchor_plan), anchor_h,
-        anchor_plan, anchor_mask, anchor_helpful))
+        anchor_plan, anchor_mask, anchor_helpful, anchor_asserted))
     visited: dict = {anchor_mask: len(anchor_plan)}
     tiebreak = 1
 
     while open_list and expansions < max_states:
-        (f, _hp, _tie, g, h_cur, plan, cur_mask, helpful) = (
-            heapq.heappop(open_list))
+        (f, _hp, _tie, g, h_cur, plan, cur_mask, helpful,
+            cur_asserted) = heapq.heappop(open_list)
         if h_cur >= _HEURISTIC_INF:
             continue
         # Lazy h: helpful entries are pushed with real h; non-helpful
@@ -4795,7 +4825,8 @@ def plan_for_goal(
             if real_h > h_cur:
                 heapq.heappush(open_list, (
                     g + H_WEIGHT * real_h,
-                    1, tiebreak, g, real_h, plan, cur_mask, real_helpful))
+                    1, tiebreak, g, real_h, plan, cur_mask, real_helpful,
+                    cur_asserted))
                 tiebreak += 1
                 continue
             helpful = real_helpful
@@ -4838,9 +4869,10 @@ def plan_for_goal(
                 add_mask |= goal_bit
             if add_mask == 0 and del_mask == 0:
                 continue
+            new_asserted = (cur_asserted & ~del_mask) | add_mask
             new_mask = _apply_delta_mask(
                 cur_mask, add_mask, del_mask,
-                grounded_derivs, slot_vocab, table)
+                grounded_derivs, slot_vocab, table, new_asserted)
             if new_mask == cur_mask:
                 continue  # no-op event
             new_g = g + 1
@@ -4868,14 +4900,14 @@ def plan_for_goal(
                     0, tiebreak,
                     new_g, new_h,
                     plan + [(action.lemma, roles)],
-                    new_mask, new_helpful))
+                    new_mask, new_helpful, new_asserted))
             else:
                 heapq.heappush(open_list, (
                     new_g + H_WEIGHT * h_cur + noise,
                     1, tiebreak,
                     new_g, h_cur,
                     plan + [(action.lemma, roles)],
-                    new_mask, None))
+                    new_mask, None, new_asserted))
             tiebreak += 1
     _rss_trace_log(_trace_plan_id, "after_astar_unsolved",
                    _trace_drive_kind,
