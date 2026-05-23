@@ -337,7 +337,7 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
         _bail(f"construct_no_compatible_scene:{theme_concept}")
         return None
     goal_index = _cached_goal_index(lex, rules)
-    for _ in range(5):
+    for _ in range(15):
         scene_lemma = rng.choice(locations)
         t = Trace()
         _ensure_world(t, lex, rng)
