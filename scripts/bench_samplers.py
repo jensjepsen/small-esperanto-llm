@@ -145,7 +145,7 @@ def _run_batch(args):
                 plan = execute_drive(
                     drive, t, _LEX, _RULES, _DERIVATIONS,
                     scene_id=scene_id, rng=rng,
-                    max_states=int(os.environ.get("MAX_STATES", "2500")),
+                    max_states=int(os.environ.get("MAX_STATES", "6000")),
                     max_plan_length=int(
                         os.environ.get("MAX_PLAN_LENGTH", "16")),
                     spawn_budget=spawn_budget,
