@@ -439,6 +439,41 @@ def _worker_task(args):
         except Exception:
             continue
         chain = " → ".join(ev.action for ev in t.events)
+        # Serialize events + entities for downstream Q/A generation.
+        # Per-event: action, roles, property_changes. Tuple keys
+        # in property_changes become "eid|slot" strings for JSON.
+        events_ser = [
+            {
+                "action": ev.action,
+                "roles": {
+                    k: (list(v) if isinstance(v, (list, tuple)) else v)
+                    for k, v in ev.roles.items()
+                },
+                "property_changes": {
+                    f"{eid}|{slot}": val
+                    for (eid, slot), val in ev.property_changes.items()
+                },
+            }
+            for ev in t.events
+        ]
+        # Per-entity: concept lemma + initial properties. Skips
+        # the worldwide `mondo` singleton — not useful for Q/A.
+        entities_ser = [
+            {
+                "eid": eid,
+                "concept": ent.concept_lemma,
+                "type": ent.entity_type,
+                "properties": dict(ent.properties),
+            }
+            for eid, ent in t.entities.items()
+            if eid != "mondo"
+        ]
+        # Setup relations: snapshot of pre-engine state for "where
+        # was X at the start" Qs.
+        setup_rels_ser = [
+            {"relation": r.relation, "args": list(r.args)}
+            for r in (setup or ())
+        ]
         out.append({
             "status": "ok",
             "scene": scene_id,
@@ -446,6 +481,9 @@ def _worker_task(args):
             "drive_summary": _drive_summary(drive),
             "chain": chain,
             "n_events": len(t.events),
+            "events": events_ser,
+            "entities": entities_ser,
+            "setup_relations": setup_rels_ser,
             "prose": prose,
         })
 
