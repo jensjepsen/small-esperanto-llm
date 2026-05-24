@@ -123,7 +123,9 @@ def _q_intrinsic_property(rec: dict, rng: random.Random) -> list[dict]:
             name = _name(ent["eid"], entities)
             if slot == "koloro":
                 q = f"Kia estis la koloro de la {ent['concept']}?"
-                a = val + "a"  # adjective form
+                # koloro slot already stores the adjective form
+                # (ruĝa, blua, blanka …); do NOT add another -a.
+                a = val
             elif slot == "posture":
                 q = f"En kia pozicio estis la {ent['concept']}?"
                 a = val
@@ -267,14 +269,18 @@ def _q_state_change(rec: dict, rng: random.Random) -> list[dict]:
 
 
 def _q_location_at_start(rec: dict, rng: random.Random) -> list[dict]:
-    """"Where was X at the start?" — from setup_relations."""
+    """"Where was X at the start?" — from setup_relations. Includes
+    both `en` (in) and `sur` (on) placements so the model sees both
+    prepositions; `apud` (next to) likewise. Picks the preposition
+    based on the actual asserted relation."""
     setup = rec.get("setup_relations", [])
     if not setup:
         return []
     entities = {e["eid"]: e for e in rec["entities"]}
+    prep_for_rel = {"en": "En", "sur": "Sur", "apud": "Apud"}
     out = []
     for r in setup:
-        if r["relation"] != "en":
+        if r["relation"] not in prep_for_rel:
             continue
         if len(r["args"]) != 2:
             continue
@@ -287,9 +293,276 @@ def _q_location_at_start(rec: dict, rng: random.Random) -> list[dict]:
             continue
         if "_" in contained and contained != c_ent["concept"]:
             continue  # body part
+        prep = prep_for_rel[r["relation"]]
         out.append({
             "q": f"Kie estis la {c_ent['concept']} komence?",
-            "a": f"En la {co_ent['concept']}.",
+            "a": f"{prep} la {co_ent['concept']}.",
+        })
+    return out
+
+
+def _q_instrument_and_parts(rec: dict, rng: random.Random) -> list[dict]:
+    """For events with an instrument and/or parts, ask about the
+    tool used and/or the materials. Covers three shapes:
+
+      - instrument only (kuiri per forno): "Per kio X kuiris?"
+      - parts only (fari without crafted_with): "El kio oni faris la X?"
+      - both (fari per najlilo el ligno+najlo): combined Q/A.
+
+    Skips body-part instruments (mano, okulo) — only functional
+    tools (forno, martelo, ŝlosilo) read naturally."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    for ev in events:
+        agent = ev["roles"].get("agent")
+        if agent is None or isinstance(agent, list):
+            continue
+        agent_name = _name(agent, entities)
+
+        # Resolve instrument (if any, and if it's a real tool)
+        instr = ev["roles"].get("instrument")
+        instr_name = None
+        if instr and isinstance(instr, str):
+            instr_ent = entities.get(instr)
+            if instr_ent is not None:
+                if "_" in instr and instr != instr_ent["concept"]:
+                    instr = None  # body part
+                elif instr_ent["type"] not in ("artifact", "substance"):
+                    instr = None
+                else:
+                    instr_name = instr_ent["concept"]
+
+        # Resolve parts list (if any)
+        parts = ev["roles"].get("parts")
+        part_names: list[str] = []
+        if parts and isinstance(parts, list):
+            for p in parts:
+                p_ent = entities.get(p)
+                if p_ent is not None:
+                    part_names.append(p_ent["concept"])
+
+        if not instr_name and not part_names:
+            continue
+
+        # Theme for the question phrasing
+        theme = ev["roles"].get("theme")
+        theme_phrase = ""
+        if theme and isinstance(theme, str):
+            theme_ent = entities.get(theme)
+            if theme_ent is not None:
+                theme_phrase = f" la {_noun_acc(theme_ent['concept'])}"
+
+        verb = _past(ev["action"])
+
+        # Format parts as "el X kaj Y"
+        if part_names:
+            if len(part_names) == 1:
+                parts_phrase = part_names[0]
+            elif len(part_names) == 2:
+                parts_phrase = f"{part_names[0]} kaj {part_names[1]}"
+            else:
+                parts_phrase = (", ".join(part_names[:-1])
+                               + f", kaj {part_names[-1]}")
+
+        if instr_name and part_names:
+            # Both tool and materials
+            out.append({
+                "q": (f"Per kio kaj el kio {agent_name} "
+                      f"{verb}{theme_phrase}?"),
+                "a": f"Per {instr_name}, el {parts_phrase}.",
+            })
+            # Also split into individual questions
+            out.append({
+                "q": f"Per kio {agent_name} {verb}{theme_phrase}?",
+                "a": f"per {instr_name}",
+            })
+            out.append({
+                "q": f"El kio {agent_name} {verb}{theme_phrase}?",
+                "a": f"el {parts_phrase}",
+            })
+            # Count ingredients
+            n = len(part_names)
+            if n < len(CARDINALS_EO):
+                out.append({
+                    "q": (f"Kiom da ingrediencoj bezoniĝis por "
+                          f"{ev['action']}{theme_phrase}?"),
+                    "a": CARDINALS_EO[n],
+                })
+        elif instr_name:
+            # Tool only
+            out.append({
+                "q": f"Per kio {agent_name} {verb}{theme_phrase}?",
+                "a": f"per {instr_name}",
+            })
+        elif part_names:
+            # Materials only (e.g. sandviĉo without crafted_with)
+            out.append({
+                "q": f"El kio {agent_name} {verb}{theme_phrase}?",
+                "a": f"el {parts_phrase}",
+            })
+            n = len(part_names)
+            if n < len(CARDINALS_EO):
+                out.append({
+                    "q": (f"Kiom da ingrediencoj bezoniĝis por "
+                          f"{ev['action']}{theme_phrase}?"),
+                    "a": CARDINALS_EO[n],
+                })
+    return out
+
+
+def _q_count(rec: dict, rng: random.Random) -> list[dict]:
+    """For entities with count > 1, ask "Kiom da X estis?"."""
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    for ent in rec["entities"]:
+        if "_" in ent["eid"] and ent["eid"] != ent["concept"]:
+            continue
+        if ent["type"] in ("location", "abstract"):
+            continue
+        count_vals = ent["properties"].get("count")
+        if not count_vals:
+            continue
+        try:
+            n = int(count_vals[0])
+        except (ValueError, TypeError):
+            continue
+        if n <= 1 or n >= len(CARDINALS_EO):
+            continue
+        out.append({
+            "q": f"Kiom da {ent['concept']}j estis?",
+            "a": CARDINALS_EO[n],
+        })
+    return out
+
+
+def _q_why(rec: dict, rng: random.Random) -> list[dict]:
+    """Causal "Kial X-iĝis? Ĉar Y." from `event.caused_by`. Each
+    event that lists a causing event id gets a Q/A whose answer
+    points to the cause's verb (and optionally its theme)."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    by_id = {ev["id"]: ev for ev in events if "id" in ev}
+    entities = {e["eid"]: e for e in rec["entities"]}
+    skip_verbs = {"_wet", "aperi"}
+    out = []
+
+    def describe_short(ev):
+        a = ev["roles"].get("agent") or ev["roles"].get("theme")
+        if a is None:
+            return _past(ev["action"])
+        ent = entities.get(a) if isinstance(a, str) else None
+        if ent is None:
+            return _past(ev["action"])
+        name = _name(a, entities)
+        return f"{name} {_past(ev['action'])}"
+
+    for ev in events:
+        causes = ev.get("caused_by") or []
+        if not causes:
+            continue
+        if ev["action"] in skip_verbs:
+            continue
+        cause_id = causes[0]
+        cause = by_id.get(cause_id)
+        if cause is None or cause["action"] in skip_verbs:
+            continue
+        # Build "Kial <effect>? Ĉar <cause>."
+        effect_phrase = describe_short(ev)
+        cause_phrase = describe_short(cause)
+        if not effect_phrase or not cause_phrase:
+            continue
+        out.append({
+            "q": f"Kial {effect_phrase}?",
+            "a": f"Ĉar {cause_phrase}.",
+        })
+    return out
+
+
+def _q_category_count(rec: dict, rng: random.Random) -> list[dict]:
+    """Count entities by category: "Kiom da mebloj estis?" → "tri".
+    Groups non-part, non-location entities by their entity type,
+    emits a count Q/A for types with ≥2 members."""
+    part_eids = {
+        r["args"][1] for r in rec.get("setup_relations", [])
+        if r["relation"] == "havas_parton" and len(r["args"]) == 2
+    }
+    type_labels = {
+        "person": "personoj",
+        "animal": "bestoj",
+        "artifact": "mebloj",
+        "substance": "substancoj",
+    }
+    by_type: dict[str, int] = {}
+    for ent in rec["entities"]:
+        if ent["eid"] in part_eids or ent["eid"] == "mondo":
+            continue
+        if ent["type"] in ("location", "abstract"):
+            continue
+        if "_" in ent["eid"] and ent["eid"] != ent["concept"]:
+            continue
+        label = type_labels.get(ent["type"])
+        if label is None:
+            continue
+        count_vals = ent["properties"].get("count")
+        try:
+            n = int(count_vals[0]) if count_vals else 1
+        except (ValueError, TypeError):
+            n = 1
+        by_type[label] = by_type.get(label, 0) + n
+    out = []
+    for label, total in by_type.items():
+        if total < 2 or total >= len(CARDINALS_EO):
+            continue
+        out.append({
+            "q": f"Kiom da {label} estis en la sceno?",
+            "a": CARDINALS_EO[total],
+        })
+    return out
+
+
+def _q_ordering(rec: dict, rng: random.Random) -> list[dict]:
+    """Adjacent-pair "Kio okazis post X-ado?" questions over the
+    event chain. Limited to verbs whose past form reads naturally
+    (skipping intransitive _wet/pluvi/aperi cascade markers)."""
+    events = rec.get("events", [])
+    if len(events) < 2:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    skip_verbs = {"_wet", "pluvi", "aperi"}
+    out = []
+
+    def describe(ev):
+        a = ev["roles"].get("agent")
+        if a is None:
+            return _past(ev["action"])
+        agent_name = _name(a, entities)
+        theme = ev["roles"].get("theme")
+        if theme and isinstance(theme, str):
+            theme_ent = entities.get(theme)
+            if theme_ent is not None:
+                return (f"{agent_name} {_past(ev['action'])} "
+                        f"la {_noun_acc(theme_ent['concept'])}")
+        return f"{agent_name} {_past(ev['action'])}"
+
+    for i in range(len(events) - 1):
+        prev, nxt = events[i], events[i + 1]
+        if prev["action"] in skip_verbs or nxt["action"] in skip_verbs:
+            continue
+        # Build "Kio okazis post la X-ado de la Y?" — use the
+        # verb's noun form (action+o) so the question reads
+        # idiomatically.
+        prev_verb = prev["action"]
+        if prev_verb.endswith("i"):
+            prev_noun = prev_verb[:-1] + "ado"
+        else:
+            prev_noun = prev_verb + "ado"
+        out.append({
+            "q": f"Kio okazis post la {prev_noun}?",
+            "a": describe(nxt) + ".",
         })
     return out
 
@@ -301,6 +574,11 @@ GENERATORS = [
     _q_action_attribution,
     _q_state_change,
     _q_location_at_start,
+    _q_instrument_and_parts,
+    _q_count,
+    _q_category_count,
+    _q_ordering,
+    _q_why,
 ]
 
 

@@ -1,0 +1,204 @@
+"""Evaluate an SFT'd model on a hand-crafted ICL Q/A eval set.
+
+For each eval example: build the chat-template prompt the trainer
+used, generate up to a short cap, strip the <|end|> token, compare
+to the gold answer.
+
+Reports:
+  - overall accuracy (exact-match, case-insensitive, whitespace-
+    normalized)
+  - accuracy by question-template heuristic (color / state /
+    counting / etc.) — keyed by simple substrings in the question.
+
+Usage:
+    python scripts/eval_icl.py \\
+        --checkpoint runs/large/checkpoint-44000-causal-icl-sft/final \\
+        --eval data/causal_corpus/eval_handcrafted_v27.jsonl
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from collections import defaultdict
+from pathlib import Path
+
+import torch
+from transformers import (
+    AutoModelForCausalLM,
+    PreTrainedTokenizerFast,
+)
+
+from esperanto_lm.data import _morpheme_preprocess
+
+
+USER_TOKEN = "<|user|>"
+ASSISTANT_TOKEN = "<|assistant|>"
+END_TOKEN = "<|end|>"
+SPECIAL_TOKENS = (USER_TOKEN, ASSISTANT_TOKEN, END_TOKEN)
+
+
+def preprocess_chat(text: str) -> str:
+    """Mirror `train_sft.py:preprocess_and_tokenize`: split on chat
+    special tokens, morpheme-preprocess the content parts, rejoin
+    with spaces. Keeps the special tokens atomic in the tokenizer's
+    output."""
+    pat = "(" + "|".join(re.escape(t) for t in SPECIAL_TOKENS) + ")"
+    parts = re.split(pat, text)
+    out = []
+    for p in parts:
+        if p in SPECIAL_TOKENS:
+            out.append(p)
+        elif p.strip():
+            out.append(_morpheme_preprocess(p.strip()))
+        else:
+            out.append(p)
+    return " ".join(out)
+
+
+def detokenize_morphemes(tokens: list[str]) -> str:
+    """Reverse the morpheme tokenizer: `<w>` → space, concatenate
+    the rest. Mirrors the postprocess in `scripts/generate.py`."""
+    return "".join(" " if t == "<w>" else t for t in tokens)
+
+
+def normalize(s: str) -> str:
+    """Lenient match: case-fold, drop punctuation/spaces around words,
+    strip leading article `la`, strip trailing period."""
+    s = s.strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    # Remove spaces around punctuation: "ĝardeno ." → "ĝardeno."
+    s = re.sub(r"\s+([.,;:!?])", r"\1", s)
+    s = s.rstrip(".,;:!?")
+    # Drop a leading "la " article — model often emits it, gold
+    # sometimes doesn't (or vice versa) and it doesn't change
+    # semantic correctness.
+    if s.startswith("la "):
+        s = s[3:]
+    return s
+
+
+# Heuristic question-type tagger from the question text. Used to
+# break down accuracy by template.
+QUESTION_TAGS = [
+    ("color",      lambda q: "koloro" in q),
+    ("posture",    lambda q: "pozici" in q),
+    ("openness",   lambda q: "malfermita aŭ fermita" in q),
+    ("fullness",   lambda q: "plena aŭ malplena" in q),
+    ("lock_state", lambda q: "ŝlosita aŭ malŝlosita" in q),
+    ("power_state", lambda q: "aktiva aŭ neaktiva" in q),
+    ("cleanliness", lambda q: "pura aŭ malpura" in q),
+    ("first",      lambda q: "okazis unue" in q),
+    ("last",       lambda q: "okazis laste" in q or "laste en la rakonto" in q),
+    ("state_after", lambda q: "post kiam" in q.lower() or "post la " in q.lower()),
+    ("location_start", lambda q: "komence" in q),
+    ("count",      lambda q: "kiom" in q.lower()),
+    ("ordering",   lambda q: ("antaŭ" in q or "post la"
+                              in q or "post kio" in q.lower())),
+    ("instrument", lambda q: "per kio" in q.lower()),
+    ("who",        lambda q: q.lower().startswith("kiu")),
+    ("what",       lambda q: q.lower().startswith("kion")),
+    ("where",      lambda q: q.lower().startswith("kie")
+                              or q.lower().startswith("kien")),
+    ("why",        lambda q: q.lower().startswith("kial")),
+]
+
+
+def tag_question(q: str) -> str:
+    for name, pred in QUESTION_TAGS:
+        if pred(q):
+            return name
+    return "other"
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--checkpoint", type=str, required=True)
+    p.add_argument("--eval", type=Path, required=True)
+    p.add_argument("--tokenizer", type=str, default="tokenizer_morpheme")
+    p.add_argument("--max-new-tokens", type=int, default=32)
+    p.add_argument("--limit", type=int, default=0,
+                   help="0 = all examples")
+    args = p.parse_args()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Loading tokenizer + model from {args.checkpoint}…", flush=True)
+    tok = PreTrainedTokenizerFast.from_pretrained(args.checkpoint)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.checkpoint, torch_dtype=torch.float16
+    ).to(device).eval()
+
+    end_id = tok.convert_tokens_to_ids(END_TOKEN)
+    assert end_id is not None and end_id != tok.unk_token_id, \
+        f"<|end|> token not in tokenizer"
+
+    results: list[dict] = []
+    with open(args.eval) as f:
+        for i, line in enumerate(f):
+            if args.limit and i >= args.limit:
+                break
+            rec = json.loads(line)
+            user = rec["messages"][0]["content"]
+            gold = rec["messages"][1]["content"]
+            q = user.split("Demando:", 1)[-1].strip()
+
+            # Build the chat-template prompt the trainer used, then
+            # split-and-morpheme-preprocess: special tokens stay
+            # atomic, content gets `<w>`-boundary preprocessing.
+            prompt_text = preprocess_chat(
+                f"{USER_TOKEN} {user} {ASSISTANT_TOKEN}")
+            inputs = tok(
+                prompt_text, return_tensors="pt",
+                return_token_type_ids=False).to(device)
+            with torch.no_grad():
+                out = model.generate(
+                    **inputs,
+                    max_new_tokens=args.max_new_tokens,
+                    do_sample=False,
+                    eos_token_id=end_id,
+                    pad_token_id=tok.pad_token_id or end_id,
+                )
+            # Inverse-detokenize: convert ids → token strings, drop
+            # specials, replace <w> with spaces, concatenate.
+            prompt_len = inputs["input_ids"].shape[-1]
+            gen_ids = out[0][prompt_len:].tolist()
+            gen_toks = tok.convert_ids_to_tokens(gen_ids)
+            # Drop padding/eos/etc.; the assistant response ends at
+            # <|end|> or hits max_new_tokens.
+            cleaned: list[str] = []
+            for t in gen_toks:
+                if t == END_TOKEN:
+                    break
+                if t in ("<s>", "</s>", "<pad>", "<unk>",
+                         USER_TOKEN, ASSISTANT_TOKEN):
+                    continue
+                cleaned.append(t)
+            answer = detokenize_morphemes(cleaned).strip()
+
+            ok = normalize(answer) == normalize(gold)
+            results.append({
+                "tag": tag_question(q),
+                "q": q,
+                "gold": gold,
+                "pred": answer,
+                "ok": ok,
+            })
+            mark = "✓" if ok else "✗"
+            print(f"  {mark} [{results[-1]['tag']}] gold={gold!r} "
+                  f"pred={answer!r}", flush=True)
+
+    n = len(results)
+    n_ok = sum(1 for r in results if r["ok"])
+    print(f"\n=== Overall: {n_ok}/{n} = {n_ok/n:.1%} ===")
+
+    by_tag = defaultdict(lambda: [0, 0])
+    for r in results:
+        by_tag[r["tag"]][0] += 1
+        by_tag[r["tag"]][1] += int(r["ok"])
+    print("\nBy template:")
+    for tag, (total, ok) in sorted(by_tag.items(), key=lambda x: -x[1][0]):
+        print(f"  {tag:>16}: {ok}/{total} = {ok/total:.0%}")
+
+
+if __name__ == "__main__":
+    main()

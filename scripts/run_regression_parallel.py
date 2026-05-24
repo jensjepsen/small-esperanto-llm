@@ -444,11 +444,13 @@ def _worker_task(args):
         # in property_changes become "eid|slot" strings for JSON.
         events_ser = [
             {
+                "id": ev.id,
                 "action": ev.action,
                 "roles": {
                     k: (list(v) if isinstance(v, (list, tuple)) else v)
                     for k, v in ev.roles.items()
                 },
+                "caused_by": list(ev.caused_by),
                 "property_changes": {
                     f"{eid}|{slot}": val
                     for (eid, slot), val in ev.property_changes.items()

@@ -1469,11 +1469,47 @@ def _worker_task(args):
         except Exception:
             continue
         chain = " → ".join(e.action for e in artifact.trace.events)
+        # Rich fields for downstream ICL Q/A generation. Mirrors the
+        # regression sampler's schema so a single generator script
+        # (`generate_icl_from_traces.py`) consumes both pipelines.
+        events_ser = [
+            {
+                "id": ev.id,
+                "action": ev.action,
+                "roles": {
+                    k: (list(v) if isinstance(v, (list, tuple)) else v)
+                    for k, v in ev.roles.items()
+                },
+                "caused_by": list(ev.caused_by),
+                "property_changes": {
+                    f"{eid}|{slot}": val
+                    for (eid, slot), val in ev.property_changes.items()
+                },
+            }
+            for ev in artifact.trace.events
+        ]
+        entities_ser = [
+            {
+                "eid": eid,
+                "concept": ent.concept_lemma,
+                "type": ent.entity_type,
+                "properties": dict(ent.properties),
+            }
+            for eid, ent in artifact.trace.entities.items()
+            if eid != "mondo"
+        ]
+        setup_rels_ser = [
+            {"relation": r.relation, "args": list(r.args)}
+            for r in (setup_rels or ())
+        ]
         records.append({
             "status": "ok",
             "scene": scene_id,
             "chain": chain,
             "n_events": len(artifact.trace.events),
+            "events": events_ser,
+            "entities": entities_ser,
+            "setup_relations": setup_rels_ser,
             "prose": prose,
         })
     return records, skipped_no_seed, skipped_empty
