@@ -277,7 +277,25 @@ def _q_location_at_start(rec: dict, rng: random.Random) -> list[dict]:
     if not setup:
         return []
     entities = {e["eid"]: e for e in rec["entities"]}
+    # Vary the question shape by preposition so the model learns
+    # to answer "Sur kio...", "Apud kio...", "Ĉe kio..." as well
+    # as the default "Kie estis...".
     prep_for_rel = {"en": "En", "sur": "Sur", "apud": "Apud"}
+    q_shapes = {
+        "en": [
+            ("Kie estis la {x} komence?", "En la {y}."),
+            ("En kio estis la {x}?", "En la {y}."),
+        ],
+        "sur": [
+            ("Sur kio estis la {x}?", "Sur la {y}."),
+            ("Kie estis la {x} komence?", "Sur la {y}."),
+        ],
+        "apud": [
+            ("Apud kio estis la {x}?", "Apud la {y}."),
+            ("Ĉe kio estis la {x}?", "Ĉe la {y}."),
+            ("Kie estis la {x} komence?", "Apud la {y}."),
+        ],
+    }
     out = []
     for r in setup:
         if r["relation"] not in prep_for_rel:
@@ -293,10 +311,14 @@ def _q_location_at_start(rec: dict, rng: random.Random) -> list[dict]:
             continue
         if "_" in contained and contained != c_ent["concept"]:
             continue  # body part
-        prep = prep_for_rel[r["relation"]]
+        shapes = q_shapes.get(r["relation"], [])
+        shape = shapes[rng.randrange(len(shapes))] if shapes else None
+        if shape is None:
+            continue
+        q_tmpl, a_tmpl = shape
         out.append({
-            "q": f"Kie estis la {c_ent['concept']} komence?",
-            "a": f"{prep} la {co_ent['concept']}.",
+            "q": q_tmpl.format(x=c_ent["concept"], y=co_ent["concept"]),
+            "a": a_tmpl.format(x=c_ent["concept"], y=co_ent["concept"]),
         })
     return out
 
@@ -482,6 +504,206 @@ def _q_why(rec: dict, rng: random.Random) -> list[dict]:
     return out
 
 
+def _q_possession(rec: dict, rng: random.Random) -> list[dict]:
+    """Who had what at scene start: "Kiu havis la X-on?" → "Y."
+    and inverse "Kion Y havis?" → "la X-on." From havi in
+    setup_relations."""
+    setup = rec.get("setup_relations", [])
+    if not setup:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    for r in setup:
+        if r["relation"] != "havi" or len(r["args"]) != 2:
+            continue
+        owner_eid, item_eid = r["args"]
+        owner_ent = entities.get(owner_eid)
+        item_ent = entities.get(item_eid)
+        if owner_ent is None or item_ent is None:
+            continue
+        if "_" in item_eid and item_eid != item_ent["concept"]:
+            continue
+        owner_name = _name(owner_eid, entities)
+        item_name = item_ent["concept"]
+        # "Kiu havis la X-on?"
+        out.append({
+            "q": f"Kiu havis la {_noun_acc(item_name)}?",
+            "a": f"{owner_name}.",
+        })
+        # "Kion Y havis?"
+        if owner_ent["type"] == "person":
+            out.append({
+                "q": f"Kion {owner_name} havis?",
+                "a": f"la {_noun_acc(item_name)}.",
+            })
+    return out
+
+
+def _q_container_contents(rec: dict, rng: random.Random) -> list[dict]:
+    """What was inside a container: "Kio estis en la glaso?" → "akvo."
+    From en(content, container) in setup_relations where the
+    container is a non-location artifact (glaso, korbo, botelo)."""
+    setup = rec.get("setup_relations", [])
+    if not setup:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    for r in setup:
+        if r["relation"] != "en" or len(r["args"]) != 2:
+            continue
+        content_eid, container_eid = r["args"]
+        content_ent = entities.get(content_eid)
+        container_ent = entities.get(container_eid)
+        if content_ent is None or container_ent is None:
+            continue
+        # Only non-location containers (glaso, korbo, botelo, …)
+        if container_ent["type"] == "location":
+            continue
+        if "_" in content_eid and content_eid != content_ent["concept"]:
+            continue
+        out.append({
+            "q": f"Kio estis en la {container_ent['concept']}?",
+            "a": f"{content_ent['concept']}.",
+        })
+    return out
+
+
+def _q_existence(rec: dict, rng: random.Random, *,
+                  all_concepts: frozenset[str] | None = None,
+                  ) -> list[dict]:
+    """Boolean existence: "Ĉu estis X en la sceno?" → "Jes." / "Ne."
+    Generates both positive (entity IS in scene) and negative
+    (entity concept NOT in scene) so the model learns both answers.
+    Negative candidates drawn from `all_concepts` (the full corpus
+    concept pool) minus what's present in this trace — no hardcoded
+    list."""
+    part_eids = {
+        r["args"][1] for r in rec.get("setup_relations", [])
+        if r["relation"] == "havas_parton" and len(r["args"]) == 2
+    }
+    present: set[str] = set()
+    out = []
+    for ent in rec["entities"]:
+        if ent["eid"] in part_eids or ent["eid"] == "mondo":
+            continue
+        if ent["type"] in ("location", "abstract"):
+            continue
+        if "_" in ent["eid"] and ent["eid"] != ent["concept"]:
+            continue
+        present.add(ent["concept"])
+    def _yes(concept: str) -> str:
+        return rng.choice([
+            "Jes.",
+            "Jes, estis.",
+            f"Jes, estis {concept} en la sceno.",
+            f"Jes, {concept} estis en la sceno.",
+        ])
+
+    def _no(concept: str) -> str:
+        return rng.choice([
+            "Ne.",
+            "Ne, ne estis.",
+            f"Ne, ne estis {concept} en la sceno.",
+            f"Ne, {concept} ne estis en la sceno.",
+        ])
+
+    # Sample up to 2 positive
+    pos_list = list(present)
+    rng.shuffle(pos_list)
+    for concept in pos_list[:2]:
+        out.append({
+            "q": f"Ĉu estis {concept} en la sceno?",
+            "a": _yes(concept),
+        })
+    # Negative: concepts that exist in the corpus but not this trace
+    if all_concepts:
+        absent = list(all_concepts - present)
+        rng.shuffle(absent)
+        for concept in absent[:2]:
+            out.append({
+                "q": f"Ĉu estis {concept} en la sceno?",
+                "a": _no(concept),
+            })
+    return out
+
+
+def _q_movement(rec: dict, rng: random.Random) -> list[dict]:
+    """For movement events (iri, kuri, veni, eniri, flugi), ask
+    "Kien X iris?" → "Al la Y." Varies question shape: Kien,
+    Al kiu loko, Ĉe kiu loko."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    move_verbs = {"iri", "kuri", "veni", "eniri", "flugi"}
+    out = []
+    for ev in events:
+        if ev["action"] not in move_verbs:
+            continue
+        agent = ev["roles"].get("agent")
+        dest = ev["roles"].get("destination") or ev["roles"].get("theme")
+        if not agent or not dest or isinstance(dest, list):
+            continue
+        agent_ent = entities.get(agent)
+        dest_ent = entities.get(dest)
+        if agent_ent is None or dest_ent is None:
+            continue
+        if dest_ent["type"] != "location":
+            continue
+        agent_name = _name(agent, entities)
+        shapes = [
+            (f"Kien {agent_name} {_past(ev['action'])}?",
+             f"Al la {dest_ent['concept']}."),
+            (f"Al kiu loko {agent_name} {_past(ev['action'])}?",
+             f"Al la {dest_ent['concept']}."),
+        ]
+        q, a = shapes[rng.randrange(len(shapes))]
+        out.append({"q": q, "a": a})
+    return out
+
+
+def _q_recipient(rec: dict, rng: random.Random) -> list[dict]:
+    """For transfer events (doni, montri, instrui, rakonti), ask
+    "Al kiu X donis la Y?" → "Al Z." """
+    events = rec.get("events", [])
+    if not events:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    transfer_verbs = {"doni", "montri", "instrui", "rakonti",
+                      "demandi", "respondi"}
+    out = []
+    for ev in events:
+        if ev["action"] not in transfer_verbs:
+            continue
+        agent = ev["roles"].get("agent")
+        recipient = ev["roles"].get("recipient")
+        if not agent or not recipient:
+            continue
+        if isinstance(agent, list) or isinstance(recipient, list):
+            continue
+        agent_ent = entities.get(agent)
+        recip_ent = entities.get(recipient)
+        if agent_ent is None or recip_ent is None:
+            continue
+        agent_name = _name(agent, entities)
+        recip_name = _name(recipient, entities)
+        theme = ev["roles"].get("theme")
+        if theme and isinstance(theme, str):
+            theme_ent = entities.get(theme)
+            if theme_ent is not None:
+                out.append({
+                    "q": (f"Al kiu {agent_name} {_past(ev['action'])} "
+                          f"la {_noun_acc(theme_ent['concept'])}?"),
+                    "a": f"Al {recip_name}.",
+                })
+        else:
+            out.append({
+                "q": f"Al kiu {agent_name} {_past(ev['action'])}?",
+                "a": f"Al {recip_name}.",
+            })
+    return out
+
+
 def _q_category_count(rec: dict, rng: random.Random) -> list[dict]:
     """Count entities by category: "Kiom da mebloj estis?" → "tri".
     Groups non-part, non-location entities by their entity type,
@@ -521,6 +743,81 @@ def _q_category_count(rec: dict, rng: random.Random) -> list[dict]:
             "q": f"Kiom da {label} estis en la sceno?",
             "a": CARDINALS_EO[total],
         })
+    return out
+
+
+def _q_verb_count(rec: dict, rng: random.Random) -> list[dict]:
+    """Count how many times specific verbs fire in the chain.
+    "Kiom da fojoj la aganto prenis ion?" → "tri".
+    Also total event count and distinct-concept counts.
+    Produces higher numbers (5-15) than entity counts, balancing
+    the du/tri bias in the training distribution."""
+    events = rec.get("events", [])
+    if len(events) < 3:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    skip_verbs = {"_wet", "aperi", "pluvi"}
+
+    # Total meaningful events
+    meaningful = [e for e in events if e["action"] not in skip_verbs]
+    n_total = len(meaningful)
+    if 2 <= n_total < len(CARDINALS_EO):
+        shapes = [
+            f"Kiom da agoj okazis en la rakonto?",
+            f"Kiom da eventoj okazis entute?",
+        ]
+        out.append({
+            "q": shapes[rng.randrange(len(shapes))],
+            "a": CARDINALS_EO[n_total],
+        })
+
+    # Per-verb counts — any verb appearing ≥2 times is countable.
+    from collections import Counter
+    verb_counts = Counter(
+        e["action"] for e in events if e["action"] not in skip_verbs)
+    for verb, n in verb_counts.items():
+        if n < 2 or n >= len(CARDINALS_EO):
+            continue
+        shapes = [
+            f"Kiom da fojoj iu {_past(verb)} en la rakonto?",
+            f"Kiom da fojoj okazis {verb}?",
+        ]
+        out.append({
+            "q": shapes[rng.randrange(len(shapes))],
+            "a": CARDINALS_EO[n],
+        })
+
+    # Distinct concepts by type
+    part_eids = {
+        r["args"][1] for r in rec.get("setup_relations", [])
+        if r["relation"] == "havas_parton" and len(r["args"]) == 2
+    }
+    by_type: dict[str, set] = {}
+    for ent in rec["entities"]:
+        if ent["eid"] in part_eids or ent["eid"] == "mondo":
+            continue
+        if ent["type"] in ("location", "abstract"):
+            continue
+        if "_" in ent["eid"] and ent["eid"] != ent["concept"]:
+            continue
+        by_type.setdefault(ent["type"], set()).add(ent["concept"])
+    type_labels = {
+        "person": "malsamaj personoj",
+        "animal": "malsamaj bestoj",
+        "artifact": "malsamaj objektoj",
+        "substance": "malsamaj substancoj",
+    }
+    for etype, concepts in by_type.items():
+        n = len(concepts)
+        label = type_labels.get(etype)
+        if label is None or n < 2 or n >= len(CARDINALS_EO):
+            continue
+        out.append({
+            "q": f"Kiom da {label} estis en la sceno?",
+            "a": CARDINALS_EO[n],
+        })
+
     return out
 
 
@@ -577,6 +874,12 @@ GENERATORS = [
     _q_instrument_and_parts,
     _q_count,
     _q_category_count,
+    _q_possession,
+    _q_container_contents,
+    _q_existence,
+    _q_movement,
+    _q_recipient,
+    _q_verb_count,
     _q_ordering,
     _q_why,
 ]
@@ -584,13 +887,22 @@ GENERATORS = [
 
 def generate_qas_for_trace(
     rec: dict, rng: random.Random, max_per_trace: int = 4,
+    all_concepts: frozenset[str] | None = None,
 ) -> list[dict]:
     """Yield up to max_per_trace Q/A pairs sampled across generators.
     Skipping empty generators; sampled uniformly so question types
-    stay balanced."""
+    stay balanced.
+
+    `all_concepts`: the full set of concept lemmas across ALL traces
+    in the input file. Passed to generators that need a negative-
+    sampling pool (e.g. _q_existence picks concepts NOT in this
+    trace but known to exist in the corpus)."""
     candidates: list[dict] = []
     for gen in GENERATORS:
-        candidates.extend(gen(rec, rng))
+        if gen == _q_existence:
+            candidates.extend(gen(rec, rng, all_concepts=all_concepts))
+        else:
+            candidates.extend(gen(rec, rng))
     if not candidates:
         return []
     rng.shuffle(candidates)
@@ -627,6 +939,25 @@ def main():
     args = p.parse_args()
 
     rng = random.Random(args.seed)
+
+    # First pass: collect all concept lemmas across the corpus for
+    # negative-sampling in existence questions. Excludes body parts
+    # and locations — same filter as the per-trace generators.
+    all_concepts: set[str] = set()
+    with open(args.inp) as fin:
+        for line in fin:
+            rec = json.loads(line)
+            if rec.get("status") != "ok":
+                continue
+            for ent in rec.get("entities", []):
+                if ent["type"] in ("location", "abstract"):
+                    continue
+                if "_" in ent["eid"] and ent["eid"] != ent["concept"]:
+                    continue
+                all_concepts.add(ent["concept"])
+    all_concepts_frozen = frozenset(all_concepts)
+
+    # Second pass: generate Q/A.
     n_traces = 0
     n_qas = 0
     with open(args.inp) as fin, open(args.out, "w") as fout:
@@ -638,7 +969,8 @@ def main():
             if not prose:
                 continue
             qas = generate_qas_for_trace(
-                rec, rng, max_per_trace=args.max_per_trace)
+                rec, rng, max_per_trace=args.max_per_trace,
+                all_concepts=all_concepts_frozen)
             for qa in qas:
                 fout.write(json.dumps(
                     format_sft_record(prose, qa),
