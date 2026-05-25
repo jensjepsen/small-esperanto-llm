@@ -75,25 +75,39 @@ SKIP_VERBS: set[str] = set()  # populated lazily on first use
 
 
 def _load_skip_verbs() -> set[str]:
-    """Verbs to skip in Q/A generation: engine-internal markers
-    (not in lex.actions) and cascade-only reactive events."""
+    """Verbs to skip in Q/A generation: cascade-only reactive events
+    + agentless weather verbs (pluvi, neĝi) that dominate first/last
+    event answers."""
     from esperanto_lm.ontology import load_lexicon
     lex = load_lexicon()
-    return {
+    skip = {
         a.lemma for a in lex.actions.values()
         if getattr(a, "cascade_only", False)
     }
+    # Agentless weather verbs: no "agent" role → not useful for
+    # who/what Q/A and overrepresented in first/last events.
+    for a in lex.actions.values():
+        if not any(r.name == "agent" for r in a.roles):
+            skip.add(a.lemma)
+    return skip
 
 
 def _should_skip_verb(verb: str) -> bool:
     """True if verb is engine-internal or cascade-only."""
-    global SKIP_VERBS
+    global SKIP_VERBS, _ALL_ACTIONS
     if not SKIP_VERBS:
         SKIP_VERBS = _load_skip_verbs()
-    # Engine-internal markers start with _ or aren't real actions
+    if not _ALL_ACTIONS:
+        from esperanto_lm.ontology import load_lexicon
+        _ALL_ACTIONS = set(load_lexicon().actions.keys())
     if verb.startswith("_"):
         return True
+    if verb not in _ALL_ACTIONS:
+        return True
     return verb in SKIP_VERBS
+
+
+_ALL_ACTIONS: set[str] = set()
 
 
 def _past(verb: str) -> str:
@@ -219,14 +233,18 @@ def _q_first_last(rec: dict, rng: random.Random) -> list[dict]:
             theme_name = _name(theme, entities)
         return f"{agent_name} {_past(ev['action'])} {theme_name}"
 
+    first = next((e for e in events if not _should_skip_verb(e["action"])), None)
+    last = next((e for e in reversed(events) if not _should_skip_verb(e["action"])), None)
+    if first is None:
+        return []
     out.append({
         "q": "Kio okazis unue en la rakonto?",
-        "a": describe(events[0]) + ".",
+        "a": describe(first) + ".",
     })
-    if len(events) > 1:
+    if last is not None and last is not first:
         out.append({
             "q": "Kio okazis laste en la rakonto?",
-            "a": describe(events[-1]) + ".",
+            "a": describe(last) + ".",
         })
     return out
 
@@ -1067,7 +1085,9 @@ GENERATORS = [
     _q_recipient,
     # _q_verb_count — requires counting verb occurrences; not in prose.
     _q_ordering,
-    _q_why,
+    # _q_why — skipped: 95% of causal chains are pluvi→_wet,
+    # producing "Ĉar pluvis." mode collapse. Needs richer causal
+    # annotations in the engine before this template is useful.
 ]
 
 
