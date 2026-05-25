@@ -61,8 +61,7 @@ def _load_unmarked() -> dict[str, str]:
     """Load unmarked (default) slot values from the lexicon. The
     realizer doesn't surface these in prose — Q/A whose answer is
     the unmarked value trains the model to guess, not read."""
-    from esperanto_lm.ontology import load_lexicon
-    lex = load_lexicon()
+    lex = _get_lex()
     return {
         name: slot.unmarked
         for name, slot in lex.slots.items()
@@ -87,8 +86,7 @@ def _load_skip_verbs() -> set[str]:
     """Verbs to skip in Q/A generation: cascade-only reactive events
     + agentless weather verbs (pluvi, neĝi) that dominate first/last
     event answers."""
-    from esperanto_lm.ontology import load_lexicon
-    lex = load_lexicon()
+    lex = _get_lex()
     skip = {
         a.lemma for a in lex.actions.values()
         if getattr(a, "cascade_only", False)
@@ -107,8 +105,7 @@ def _should_skip_verb(verb: str) -> bool:
     if not SKIP_VERBS:
         SKIP_VERBS = _load_skip_verbs()
     if not _ALL_ACTIONS:
-        from esperanto_lm.ontology import load_lexicon
-        _ALL_ACTIONS = set(load_lexicon().actions.keys())
+        _ALL_ACTIONS = set(_get_lex().actions.keys())
     if verb.startswith("_"):
         return True
     if verb not in _ALL_ACTIONS:
@@ -637,8 +634,7 @@ _PERCEPTION_VERBS: set[str] | None = None
 
 
 def _load_perception_verbs() -> set[str]:
-    from esperanto_lm.ontology import load_lexicon
-    lex = load_lexicon()
+    lex = _get_lex()
     sensory = frozenset({"see_capable", "hear_capable", "smell_capable"})
     return {
         name for name, a in lex.actions.items()
@@ -671,35 +667,38 @@ def _q_enablement(rec: dict, rng: random.Random) -> list[dict]:
     if len(agentful) < 2:
         return []
 
+    # Pre-compute per-event: source keys (theme/dest) and target
+    # keys (theme/dest/instrument/parts) + agent, so the inner
+    # loop is set intersection instead of per-call dict walks.
+    src_keys = []
+    tgt_keys = []
+    agents = []
+    for ev in agentful:
+        sk = set()
+        t = ev["roles"].get("theme")
+        if isinstance(t, str): sk.add(t)
+        d = ev["roles"].get("destination")
+        if isinstance(d, str): sk.add(d)
+        src_keys.append(sk)
+        tk = set(sk)
+        inst = ev["roles"].get("instrument")
+        if isinstance(inst, str): tk.add(inst)
+        parts = ev["roles"].get("parts")
+        if isinstance(parts, list):
+            tk.update(p for p in parts if isinstance(p, str))
+        tgt_keys.append(tk)
+        agents.append(ev["roles"]["agent"])
+
     out = []
     for i, ev in enumerate(agentful[:-1]):
-        agent = ev["roles"]["agent"]
-        ev_theme = ev["roles"].get("theme")
-        ev_dest = ev["roles"].get("destination")
-        ev_keys = set()
-        if ev_theme and isinstance(ev_theme, str):
-            ev_keys.add(ev_theme)
-        if ev_dest and isinstance(ev_dest, str):
-            ev_keys.add(ev_dest)
-        if not ev_keys:
+        if not src_keys[i]:
             continue
-
-        def _target_eids(e):
-            out = set()
-            for k in ("theme", "destination", "instrument"):
-                v = e["roles"].get(k)
-                if isinstance(v, str):
-                    out.add(v)
-            parts = e["roles"].get("parts")
-            if isinstance(parts, list):
-                out.update(p for p in parts if isinstance(p, str))
-            return out
-
+        agent = agents[i]
         later = [
-            e for e in agentful[i + 1:]
-            if e["roles"].get("agent") == agent
-            and ev_keys & _target_eids(e)
-            and e["action"] != ev["action"]
+            agentful[j] for j in range(i + 1, len(agentful))
+            if agents[j] == agent
+            and src_keys[i] & tgt_keys[j]
+            and agentful[j]["action"] != ev["action"]
         ]
         if not later:
             continue
@@ -951,8 +950,7 @@ _MOVEMENT_VERBS: set[str] | None = None
 
 
 def _load_movement_verbs() -> set[str]:
-    from esperanto_lm.ontology import load_lexicon
-    lex = load_lexicon()
+    lex = _get_lex()
     return {
         name for name, a in lex.actions.items()
         if any(r.name == "destination" for r in a.roles)
@@ -1327,8 +1325,7 @@ _CONCEPT_CATEGORIES: dict[str, list[str]] = {}
 def _load_concept_categories() -> dict[str, list[str]]:
     """Load concept → category list from the lex. Used by coreference
     to map "la besto" → the concept that has category=besto."""
-    from esperanto_lm.ontology import load_lexicon
-    lex = load_lexicon()
+    lex = _get_lex()
     return {
         name: list(c.category)
         for name, c in lex.concepts.items()
@@ -1490,15 +1487,13 @@ def _q_negation(rec: dict, rng: random.Random) -> list[dict]:
     verbs_used = {e["action"] for e in agentful}
     global _ALL_ACTIONS
     if not _ALL_ACTIONS:
-        from esperanto_lm.ontology import load_lexicon
-        _ALL_ACTIONS = set(load_lexicon().actions.keys())
+        _ALL_ACTIONS = set(_get_lex().actions.keys())
     # Group actions by transitivity shape so the wrong verb takes the
     # same argument structure as the real one.
     _NEG_BY_SHAPE: dict[str, list[str]] = getattr(
         _q_negation, "_by_shape", {})
     if not _NEG_BY_SHAPE:
-        from esperanto_lm.ontology import load_lexicon
-        lex = load_lexicon()
+        lex = _get_lex()
         for name, a in lex.actions.items():
             if _should_skip_verb(name):
                 continue
@@ -1617,6 +1612,7 @@ def _q_entity_journey(rec: dict, rng: random.Random) -> list[dict]:
                         by_agent_entity.setdefault(
                             (agent, v), []).append(ev)
 
+    lex = _get_lex()
     out = []
     for (agent, eid), evts in by_agent_entity.items():
         unique_actions = []
@@ -1646,7 +1642,7 @@ def _q_entity_journey(rec: dict, rng: random.Random) -> list[dict]:
             if role_name == "theme":
                 descs.append(f"{_past(ev['action'])} ĝin")
             elif role_name is not None:
-                action_def = _get_lex().actions.get(ev["action"])
+                action_def = lex.actions.get(ev["action"])
                 prep = None
                 if action_def:
                     rd = next((r for r in action_def.roles
@@ -1691,9 +1687,8 @@ def _q_definition(rec: dict, rng: random.Random) -> list[dict]:
     if not raw_ents or not isinstance(raw_ents[0], dict):
         return []
     entities = {e["eid"]: e for e in raw_ents}
-    from esperanto_lm.ontology import load_lexicon
     from esperanto_lm.ontology.realize.plan import _build_definition
-    lex = load_lexicon()
+    lex = _get_lex()
     out = []
     for eid in defined:
         ent = entities.get(eid)
