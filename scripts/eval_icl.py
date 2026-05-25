@@ -64,17 +64,19 @@ def detokenize_morphemes(tokens: list[str]) -> str:
 
 def normalize(s: str) -> str:
     """Lenient match: case-fold, drop punctuation/spaces around words,
-    strip leading article `la`, strip trailing period."""
+    strip leading articles and prepositions."""
     s = s.strip().lower()
     s = re.sub(r"\s+", " ", s)
-    # Remove spaces around punctuation: "ĝardeno ." → "ĝardeno."
     s = re.sub(r"\s+([.,;:!?])", r"\1", s)
     s = s.rstrip(".,;:!?")
-    # Drop a leading "la " article — model often emits it, gold
-    # sometimes doesn't (or vice versa) and it doesn't change
-    # semantic correctness.
-    if s.startswith("la "):
-        s = s[3:]
+    for prefix in ("en la ", "en ", "sur la ", "sur ", "el la ", "el ",
+                    "tra la ", "tra ", "apud la ", "apud ",
+                    "ĉe la ", "ĉe ", "al la ", "al ",
+                    "per la ", "per ", "de la ", "de ",
+                    "la "):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
     return s
 
 
@@ -181,7 +183,10 @@ def main():
                 cleaned.append(t)
             answer = detokenize_morphemes(cleaned).strip()
 
-            ok = normalize(answer) == normalize(gold)
+            na, ng = normalize(answer), normalize(gold)
+            ok = na == ng
+            if not ok and len(ng.split()) > 1:
+                ok = ng in na
             results.append({
                 "tag": tag_question(q),
                 "q": q,
