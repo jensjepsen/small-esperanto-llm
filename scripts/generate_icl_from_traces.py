@@ -1024,6 +1024,125 @@ def _q_verb_count(rec: dict, rng: random.Random) -> list[dict]:
     return out
 
 
+def _q_multi_hop(rec: dict, rng: random.Random) -> list[dict]:
+    """Two-step reasoning: find an event's agent, then look up a
+    property of that agent from the scene.
+
+    "Kie estis la persono kiu prenis la glason?" — find preni(agent,
+    glaso) → agent=Dentisto → find en(Dentisto, kuirejo) → "En la
+    kuirejo."
+
+    Only fires when the agent's location is unambiguous in
+    setup_relations."""
+    events = rec.get("events", [])
+    setup = rec.get("setup_relations", [])
+    if not events or not setup:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+
+    # Build agent→location map from setup en-relations
+    agent_loc: dict[str, str] = {}
+    for r in setup:
+        if r["relation"] != "en" or len(r["args"]) != 2:
+            continue
+        contained, container = r["args"]
+        c_ent = entities.get(contained)
+        co_ent = entities.get(container)
+        if c_ent is None or co_ent is None:
+            continue
+        if c_ent["type"] not in ("person", "animal"):
+            continue
+        if co_ent["type"] != "location":
+            continue
+        agent_loc[contained] = container
+
+    out = []
+    for ev in events:
+        if _should_skip_verb(ev["action"]):
+            continue
+        agent = ev["roles"].get("agent")
+        theme = ev["roles"].get("theme")
+        if not agent or not theme or isinstance(theme, list):
+            continue
+        if agent not in agent_loc:
+            continue
+        agent_ent = entities.get(agent)
+        theme_ent = entities.get(theme)
+        loc_ent = entities.get(agent_loc[agent])
+        if agent_ent is None or theme_ent is None or loc_ent is None:
+            continue
+        if "_" in theme and theme != theme_ent["concept"]:
+            continue
+
+        q_shapes = [
+            (f"Kie estis la persono kiu {_past(ev['action'])} "
+             f"la {_noun_acc(theme_ent['concept'])}?",
+             f"En la {loc_ent['concept']}."),
+            (f"En kiu loko estis tiu kiu {_past(ev['action'])} "
+             f"la {_noun_acc(theme_ent['concept'])}?",
+             f"En la {loc_ent['concept']}."),
+        ]
+        q, a = q_shapes[rng.randrange(len(q_shapes))]
+        out.append({"q": q, "a": a})
+    return out
+
+
+_CONCEPT_CATEGORIES: dict[str, list[str]] = {}
+
+
+def _load_concept_categories() -> dict[str, list[str]]:
+    """Load concept → category list from the lex. Used by coreference
+    to map "la besto" → the concept that has category=besto."""
+    from esperanto_lm.ontology import load_lexicon
+    lex = load_lexicon()
+    return {
+        name: list(c.category)
+        for name, c in lex.concepts.items()
+        if c.category
+    }
+
+
+def _q_coreference(rec: dict, rng: random.Random) -> list[dict]:
+    """Alias resolution: the realizer refers to entities by category
+    aliases ("la besto" for ĉimpanzo, "la ujo" for glaso, "la
+    trinkaĵo" for kafo). Ask what the alias refers to.
+
+    "Kio estas 'la besto' en la rakonto?" → "ĉimpanzo."
+    "Kio estas 'la ujo' en la rakonto?" → "glaso."
+    """
+    global _CONCEPT_CATEGORIES
+    if not _CONCEPT_CATEGORIES:
+        _CONCEPT_CATEGORIES = _load_concept_categories()
+
+    entities = {e["eid"]: e for e in rec["entities"]}
+    part_eids = {
+        r["args"][1] for r in rec.get("setup_relations", [])
+        if r["relation"] == "havas_parton" and len(r["args"]) == 2
+    }
+    out = []
+    for ent in rec["entities"]:
+        if ent["eid"] in part_eids or ent["eid"] == "mondo":
+            continue
+        if ent["type"] in ("location", "abstract"):
+            continue
+        if "_" in ent["eid"] and ent["eid"] != ent["concept"]:
+            continue
+        concept = ent["concept"]
+        cats = _CONCEPT_CATEGORIES.get(concept, [])
+        if not cats:
+            continue
+        # Pick one category as the alias
+        alias = cats[0]
+        # Skip if alias == concept (no aliasing)
+        if alias == concept:
+            continue
+        out.append({
+            "q": f"Kio estas 'la {alias}' en la rakonto?",
+            "a": f"{concept}.",
+        })
+    return out
+
+
 def _q_ordering(rec: dict, rng: random.Random) -> list[dict]:
     """Adjacent-pair "Kio okazis post X-ado?" questions over the
     event chain. Limited to verbs whose past form reads naturally
@@ -1084,6 +1203,8 @@ GENERATORS = [
     _q_movement,
     _q_recipient,
     # _q_verb_count — requires counting verb occurrences; not in prose.
+    _q_multi_hop,
+    _q_coreference,
     _q_ordering,
     # _q_why — skipped: 95% of causal chains are pluvi→_wet,
     # producing "Ĉar pluvis." mode collapse. Needs richer causal
