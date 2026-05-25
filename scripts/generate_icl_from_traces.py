@@ -57,6 +57,45 @@ CARDINALS_EO = [
 ]
 
 
+def _load_unmarked() -> dict[str, str]:
+    """Load unmarked (default) slot values from the lexicon. The
+    realizer doesn't surface these in prose — Q/A whose answer is
+    the unmarked value trains the model to guess, not read."""
+    from esperanto_lm.ontology import load_lexicon
+    lex = load_lexicon()
+    return {
+        name: slot.unmarked
+        for name, slot in lex.slots.items()
+        if getattr(slot, "unmarked", None) is not None
+    }
+
+
+UNMARKED: dict[str, str] = {}  # populated lazily on first use
+SKIP_VERBS: set[str] = set()  # populated lazily on first use
+
+
+def _load_skip_verbs() -> set[str]:
+    """Verbs to skip in Q/A generation: engine-internal markers
+    (not in lex.actions) and cascade-only reactive events."""
+    from esperanto_lm.ontology import load_lexicon
+    lex = load_lexicon()
+    return {
+        a.lemma for a in lex.actions.values()
+        if getattr(a, "cascade_only", False)
+    }
+
+
+def _should_skip_verb(verb: str) -> bool:
+    """True if verb is engine-internal or cascade-only."""
+    global SKIP_VERBS
+    if not SKIP_VERBS:
+        SKIP_VERBS = _load_skip_verbs()
+    # Engine-internal markers start with _ or aren't real actions
+    if verb.startswith("_"):
+        return True
+    return verb in SKIP_VERBS
+
+
 def _past(verb: str) -> str:
     """Esperanto past-tense form. Strip infinitive -i, add -is.
     Naive — assumes regular verbs, which is all our action lemmas."""
@@ -105,6 +144,9 @@ def _q_intrinsic_property(rec: dict, rng: random.Random) -> list[dict]:
     posture, openness), emit a Q/A. Skips body parts (eid contains
     '_'-suffix substrings) to keep questions about top-level items.
     """
+    global UNMARKED
+    if not UNMARKED:
+        UNMARKED = _load_unmarked()
     entities = {e["eid"]: e for e in rec["entities"]}
     out = []
     interesting_slots = ["koloro", "posture", "openness",
@@ -120,6 +162,10 @@ def _q_intrinsic_property(rec: dict, rng: random.Random) -> list[dict]:
             if not vals:
                 continue
             val = vals[0]
+            # Skip unmarked (default) values — the realizer doesn't
+            # surface them in prose, so the model can't extract them.
+            if val == UNMARKED.get(slot):
+                continue
             name = _name(ent["eid"], entities)
             if slot == "koloro":
                 q = f"Kia estis la koloro de la {ent['concept']}?"
@@ -193,13 +239,9 @@ def _q_action_attribution(rec: dict, rng: random.Random) -> list[dict]:
         return []
     entities = {e["eid"]: e for e in rec["entities"]}
     out = []
-    interesting_verbs = {"preni", "doni", "manĝi", "trinki", "verŝi",
-                         "ĵeti", "malfermi", "fermi", "ŝlosi",
-                         "malŝlosi", "ŝalti", "malŝalti", "fari",
-                         "kuiri", "boli", "akvumi", "planti", "meti",
-                         "porti"}
+
     for ev in events:
-        if ev["action"] not in interesting_verbs:
+        if _should_skip_verb(ev["action"]):
             continue
         agent = ev["roles"].get("agent")
         theme = ev["roles"].get("theme")
@@ -225,6 +267,16 @@ def _q_action_attribution(rec: dict, rng: random.Random) -> list[dict]:
                 "q": f"Kion {agent_name} {_past(ev['action'])}?",
                 "a": "la " + _noun_acc(theme_ent["concept"]) + ".",
             })
+        # "What did Z do to the Y?" — verb extraction
+        if agent_ent["type"] == "person":
+            shapes = [
+                f"Kion {agent_name} faris al la {theme_ent['concept']}?",
+                f"Kion {agent_name} faris kun la {theme_ent['concept']}?",
+            ]
+            out.append({
+                "q": shapes[rng.randrange(len(shapes))],
+                "a": f"{_past(ev['action'])} ĝin.",
+            })
     return out
 
 
@@ -237,6 +289,8 @@ def _q_state_change(rec: dict, rng: random.Random) -> list[dict]:
     entities = {e["eid"]: e for e in rec["entities"]}
     out = []
     for ev in events:
+        if _should_skip_verb(ev["action"]):
+            continue
         if not ev.get("property_changes"):
             continue
         for key, new_val in ev["property_changes"].items():
@@ -469,7 +523,6 @@ def _q_why(rec: dict, rng: random.Random) -> list[dict]:
         return []
     by_id = {ev["id"]: ev for ev in events if "id" in ev}
     entities = {e["eid"]: e for e in rec["entities"]}
-    skip_verbs = {"_wet", "aperi"}
     out = []
 
     def describe_short(ev):
@@ -486,11 +539,11 @@ def _q_why(rec: dict, rng: random.Random) -> list[dict]:
         causes = ev.get("caused_by") or []
         if not causes:
             continue
-        if ev["action"] in skip_verbs:
+        if _should_skip_verb(ev["action"]):
             continue
         cause_id = causes[0]
         cause = by_id.get(cause_id)
-        if cause is None or cause["action"] in skip_verbs:
+        if cause is None or _should_skip_verb(cause["action"]):
             continue
         # Build "Kial <effect>? Ĉar <cause>."
         effect_phrase = describe_short(ev)
@@ -627,6 +680,139 @@ def _q_existence(rec: dict, rng: random.Random, *,
     return out
 
 
+def _passive_participle(verb: str) -> str:
+    """Esperanto passive past participle: stem + -ita.
+    manĝi → manĝita, preni → prenita, fermi → fermita."""
+    if verb.endswith("i"):
+        return verb[:-1] + "ita"
+    return verb + "ita"
+
+
+def _q_location_contents(rec: dict, rng: random.Random) -> list[dict]:
+    """What's at a location: "Kio troviĝas en la kuirejo?" → list of
+    entities. Trains the "Kio estas/troviĝas en X?" pattern that
+    maps to the wiki "Kio estas la ĉefurbo de X?" shape."""
+    setup = rec.get("setup_relations", [])
+    if not setup:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    part_eids = {
+        r["args"][1] for r in setup
+        if r["relation"] == "havas_parton" and len(r["args"]) == 2
+    }
+    # Group non-part, non-location entities by their container location
+    by_loc: dict[str, list[str]] = {}
+    for r in setup:
+        if r["relation"] != "en" or len(r["args"]) != 2:
+            continue
+        contained, container = r["args"]
+        if contained in part_eids:
+            continue
+        c_ent = entities.get(contained)
+        co_ent = entities.get(container)
+        if c_ent is None or co_ent is None:
+            continue
+        if c_ent["type"] in ("location", "abstract"):
+            continue
+        if co_ent["type"] != "location":
+            continue
+        if "_" in contained and contained != c_ent["concept"]:
+            continue
+        by_loc.setdefault(container, []).append(c_ent["concept"])
+    out = []
+    for loc_eid, concepts in by_loc.items():
+        if len(concepts) < 2:
+            continue
+        loc_ent = entities.get(loc_eid)
+        if loc_ent is None:
+            continue
+        items = sorted(set(concepts))[:5]
+        if len(items) == 1:
+            listing = items[0]
+        elif len(items) == 2:
+            listing = f"{items[0]} kaj {items[1]}"
+        else:
+            listing = ", ".join(items[:-1]) + f", kaj {items[-1]}"
+        q_shapes = [
+            f"Kio troviĝas en la {loc_ent['concept']}?",
+            f"Kio estas en la {loc_ent['concept']}?",
+        ]
+        out.append({
+            "q": q_shapes[rng.randrange(len(q_shapes))],
+            "a": listing + ".",
+        })
+    return out
+
+
+def _q_container_identity(rec: dict, rng: random.Random) -> list[dict]:
+    """Inverse of container_contents: "En kio estis la akvo?" → "en
+    la glaso." Trains extraction of the container from a content
+    entity."""
+    setup = rec.get("setup_relations", [])
+    if not setup:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    for r in setup:
+        if r["relation"] != "en" or len(r["args"]) != 2:
+            continue
+        contained, container = r["args"]
+        c_ent = entities.get(contained)
+        co_ent = entities.get(container)
+        if c_ent is None or co_ent is None:
+            continue
+        # Only non-location containers (glaso, korbo, botelo)
+        if co_ent["type"] == "location":
+            continue
+        if "_" in contained and contained != c_ent["concept"]:
+            continue
+        out.append({
+            "q": f"En kio estis la {c_ent['concept']}?",
+            "a": f"En la {co_ent['concept']}.",
+        })
+    return out
+
+
+def _q_consequence(rec: dict, rng: random.Random) -> list[dict]:
+    """What happened to a theme entity — active or passive voice.
+    Purely grammatical: derives answer from the verb, no hardcoded
+    consequence mappings.
+      active:  "Dentisto manĝis ĝin."
+      passive: "Ĝi estis manĝita."
+    """
+    events = rec.get("events", [])
+    if not events:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    for ev in events:
+        if _should_skip_verb(ev["action"]):
+            continue
+        agent = ev["roles"].get("agent")
+        theme = ev["roles"].get("theme")
+        if not theme or isinstance(theme, list):
+            continue
+        theme_ent = entities.get(theme)
+        if theme_ent is None:
+            continue
+        if "_" in theme and theme != theme_ent["concept"]:
+            continue
+        theme_name = theme_ent["concept"]
+        verb = ev["action"]
+
+        answers = []
+        if agent:
+            answers.append(f"{_name(agent, entities)} {_past(verb)} ĝin.")
+        answers.append(f"Ĝi estis {_passive_participle(verb)}.")
+
+        q = rng.choice([
+            f"Kio okazis al la {theme_name}?",
+            f"Kio okazis kun la {theme_name}?",
+        ])
+        out.append({"q": q, "a": rng.choice(answers)})
+    return out
+
+
 def _q_movement(rec: dict, rng: random.Random) -> list[dict]:
     """For movement events (iri, kuri, veni, eniri, flugi), ask
     "Kien X iris?" → "Al la Y." Varies question shape: Kien,
@@ -757,10 +943,9 @@ def _q_verb_count(rec: dict, rng: random.Random) -> list[dict]:
         return []
     entities = {e["eid"]: e for e in rec["entities"]}
     out = []
-    skip_verbs = {"_wet", "aperi", "pluvi"}
 
     # Total meaningful events
-    meaningful = [e for e in events if e["action"] not in skip_verbs]
+    meaningful = [e for e in events if not _should_skip_verb(e["action"])]
     n_total = len(meaningful)
     if 2 <= n_total < len(CARDINALS_EO):
         shapes = [
@@ -775,7 +960,7 @@ def _q_verb_count(rec: dict, rng: random.Random) -> list[dict]:
     # Per-verb counts — any verb appearing ≥2 times is countable.
     from collections import Counter
     verb_counts = Counter(
-        e["action"] for e in events if e["action"] not in skip_verbs)
+        e["action"] for e in events if not _should_skip_verb(e["action"]))
     for verb, n in verb_counts.items():
         if n < 2 or n >= len(CARDINALS_EO):
             continue
@@ -829,7 +1014,6 @@ def _q_ordering(rec: dict, rng: random.Random) -> list[dict]:
     if len(events) < 2:
         return []
     entities = {e["eid"]: e for e in rec["entities"]}
-    skip_verbs = {"_wet", "pluvi", "aperi"}
     out = []
 
     def describe(ev):
@@ -847,7 +1031,7 @@ def _q_ordering(rec: dict, rng: random.Random) -> list[dict]:
 
     for i in range(len(events) - 1):
         prev, nxt = events[i], events[i + 1]
-        if prev["action"] in skip_verbs or nxt["action"] in skip_verbs:
+        if _should_skip_verb(prev["action"]) or _should_skip_verb(nxt["action"]):
             continue
         # Build "Kio okazis post la X-ado de la Y?" — use the
         # verb's noun form (action+o) so the question reads
@@ -873,13 +1057,15 @@ GENERATORS = [
     _q_location_at_start,
     _q_instrument_and_parts,
     _q_count,
-    _q_category_count,
+    # _q_category_count — requires counting by type; not in prose.
+    _q_location_contents,
+    _q_container_identity,
+    _q_consequence,
     _q_possession,
     _q_container_contents,
-    _q_existence,
     _q_movement,
     _q_recipient,
-    _q_verb_count,
+    # _q_verb_count — requires counting verb occurrences; not in prose.
     _q_ordering,
     _q_why,
 ]
