@@ -123,10 +123,16 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading tokenizer + model from {args.checkpoint}…", flush=True)
-    tok = PreTrainedTokenizerFast.from_pretrained(args.checkpoint)
+    tok = PreTrainedTokenizerFast.from_pretrained(args.tokenizer)
+    # Add chat special tokens if not present (base tokenizer
+    # doesn't have them; SFT adds them at training time).
+    tok.add_special_tokens(
+        {"additional_special_tokens":
+         [USER_TOKEN, ASSISTANT_TOKEN, END_TOKEN]})
     model = AutoModelForCausalLM.from_pretrained(
         args.checkpoint, torch_dtype=torch.float16
     ).to(device).eval()
+    model.resize_token_embeddings(len(tok))
 
     end_id = tok.convert_tokens_to_ids(END_TOKEN)
     assert end_id is not None and end_id != tok.unk_token_id, \

@@ -345,7 +345,7 @@ def _worker_task(args):
                 plan = execute_drive(
                     drive, t, _LEX, _RULES, _DERIVATIONS,
                     scene_id=scene_id, rng=rng,
-                    max_states=int(os.environ.get("MAX_STATES", "1200")),
+                    max_states=int(os.environ.get("MAX_STATES", "8000")),
                     max_plan_length=int(
                         os.environ.get("MAX_PLAN_LENGTH", "16")))
             else:
@@ -433,15 +433,46 @@ def _worker_task(args):
                     run_dsl(t, _RULES, _DERIVATIONS, _LEX)
             # Forward planner: execute_drive already executed (and
             # may have appended a phase-2 followup plan).
+            defined_ents = set()
             prose = realize_trace(
                 t, _LEX, setup_relations=setup,
-                scene_location_id=scene_id, rng=rng)
+                scene_location_id=scene_id, rng=rng,
+                definition_p=0.3, defined_entities=defined_ents)
         except Exception:
             continue
         chain = " → ".join(ev.action for ev in t.events)
+
+        # --- Relation diffs: attribute each add/remove to an event ---
+        setup_set = {(r.relation, tuple(r.args)) for r in (setup or ())}
+        final_set = {(r.relation, tuple(r.args)) for r in t.relations}
+        added_rels = final_set - setup_set
+        removed_rels = setup_set - final_set
+        # Attribute to events by matching entity ids in roles.
+        per_event_rel_changes: dict[str, list[dict]] = {}
+        unattributed_adds = set(added_rels)
+        unattributed_rems = set(removed_rels)
+        for ev in t.events:
+            ev_eids = set()
+            for v in ev.roles.values():
+                if isinstance(v, str):
+                    ev_eids.add(v)
+                elif isinstance(v, (list, tuple)):
+                    ev_eids.update(x for x in v if isinstance(x, str))
+            changes = []
+            for rel, args in list(unattributed_adds):
+                if ev_eids & set(args):
+                    changes.append({"rel": rel, "args": list(args),
+                                    "added": True})
+                    unattributed_adds.discard((rel, args))
+            for rel, args in list(unattributed_rems):
+                if ev_eids & set(args):
+                    changes.append({"rel": rel, "args": list(args),
+                                    "added": False})
+                    unattributed_rems.discard((rel, args))
+            if changes:
+                per_event_rel_changes[ev.id] = changes
+
         # Serialize events + entities for downstream Q/A generation.
-        # Per-event: action, roles, property_changes. Tuple keys
-        # in property_changes become "eid|slot" strings for JSON.
         events_ser = [
             {
                 "id": ev.id,
@@ -455,37 +486,44 @@ def _worker_task(args):
                     f"{eid}|{slot}": val
                     for (eid, slot), val in ev.property_changes.items()
                 },
+                **({"relation_changes": per_event_rel_changes[ev.id]}
+                   if ev.id in per_event_rel_changes else {}),
             }
             for ev in t.events
         ]
-        # Per-entity: concept lemma + initial properties. Skips
-        # the worldwide `mondo` singleton — not useful for Q/A.
         entities_ser = [
             {
                 "eid": eid,
                 "concept": ent.concept_lemma,
                 "type": ent.entity_type,
                 "properties": dict(ent.properties),
+                **({"created_at_event": ent.created_at_event}
+                   if ent.created_at_event is not None else {}),
             }
             for eid, ent in t.entities.items()
             if eid != "mondo"
         ]
-        # Setup relations: snapshot of pre-engine state for "where
-        # was X at the start" Qs.
         setup_rels_ser = [
             {"relation": r.relation, "args": list(r.args)}
             for r in (setup or ())
+        ]
+        final_rels_ser = [
+            {"relation": r.relation, "args": list(r.args)}
+            for r in t.relations
         ]
         out.append({
             "status": "ok",
             "scene": scene_id,
             "drive": {"kind": kind, "spec": list(drive[1:])},
             "drive_summary": _drive_summary(drive),
+            "goal": _json_safe(list(drive)),
             "chain": chain,
             "n_events": len(t.events),
             "events": events_ser,
             "entities": entities_ser,
             "setup_relations": setup_rels_ser,
+            "final_relations": final_rels_ser,
+            "defined_entities": sorted(defined_ents),
             "prose": prose,
         })
 

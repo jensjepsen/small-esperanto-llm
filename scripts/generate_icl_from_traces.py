@@ -72,6 +72,15 @@ def _load_unmarked() -> dict[str, str]:
 
 UNMARKED: dict[str, str] = {}  # populated lazily on first use
 SKIP_VERBS: set[str] = set()  # populated lazily on first use
+_LEX = None
+
+
+def _get_lex():
+    global _LEX
+    if _LEX is None:
+        from esperanto_lm.ontology import load_lexicon
+        _LEX = load_lexicon()
+    return _LEX
 
 
 def _load_skip_verbs() -> set[str]:
@@ -575,6 +584,153 @@ def _q_why(rec: dict, rng: random.Random) -> list[dict]:
     return out
 
 
+_WHY_PROP_SKIP_SLOTS = frozenset({"count", "weather", "tempo_de_tago"})
+
+
+def _q_why_property(rec: dict, rng: random.Random) -> list[dict]:
+    """Property-change attribution: "Kial la X estas Y?" → "Ĉar Z V-is ĝin."
+    Every non-skip event with property_changes yields a question linking
+    the resulting state back to the action that caused it."""
+    global UNMARKED
+    if not UNMARKED:
+        UNMARKED = _load_unmarked()
+    events = rec.get("events", [])
+    if not events:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    for ev in events:
+        if _should_skip_verb(ev["action"]):
+            continue
+        if not ev.get("property_changes"):
+            continue
+        agent = ev["roles"].get("agent")
+        agent_name = _name(agent, entities) if agent else None
+        verb = ev["action"]
+        for key, new_val in ev["property_changes"].items():
+            if "|" not in key:
+                continue
+            eid, slot = key.split("|", 1)
+            if slot in _WHY_PROP_SKIP_SLOTS:
+                continue
+            if new_val == UNMARKED.get(slot):
+                continue
+            ent = entities.get(eid)
+            if ent is None:
+                continue
+            q = f"Kial la {ent['concept']} estas {new_val}?"
+            if agent_name:
+                theme = ev["roles"].get("theme")
+                if theme and isinstance(theme, str) and theme in entities:
+                    a = f"Ĉar {agent_name} {_past(verb)} la {_noun_acc(entities[theme]['concept'])}."
+                elif eid == ev["roles"].get("agent"):
+                    a = f"Ĉar {agent_name} {_past(verb)}."
+                else:
+                    a = f"Ĉar {agent_name} {_past(verb)} ĝin."
+            else:
+                a = f"Ĉar ĝi {_past(verb)}."
+            out.append({"q": q, "a": a})
+    return out
+
+
+_PERCEPTION_VERBS: set[str] | None = None
+
+
+def _load_perception_verbs() -> set[str]:
+    from esperanto_lm.ontology import load_lexicon
+    lex = load_lexicon()
+    sensory = frozenset({"see_capable", "hear_capable", "smell_capable"})
+    return {
+        name for name, a in lex.actions.items()
+        if any(r.name == "instrument" and sensory & (
+            getattr(r, "properties", {}) or {}).keys()
+            for r in a.roles)
+    }
+
+
+def _q_enablement(rec: dict, rng: random.Random) -> list[dict]:
+    """Purpose questions: "Kial X V-is?" → "Por V2-i la Z-on."
+    Pairs each non-perception action with a random later action by
+    the same agent. Randomized lookahead gives varying abstraction."""
+    global _PERCEPTION_VERBS
+    if _PERCEPTION_VERBS is None:
+        _PERCEPTION_VERBS = _load_perception_verbs()
+    events = rec.get("events", [])
+    if not events:
+        return []
+    raw_ents = rec.get("entities", [])
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    entities = {e["eid"]: e for e in raw_ents}
+    agentful = [
+        e for e in events
+        if e.get("roles", {}).get("agent")
+        and not _should_skip_verb(e["action"])
+        and e["action"] not in _PERCEPTION_VERBS
+    ]
+    if len(agentful) < 2:
+        return []
+
+    out = []
+    for i, ev in enumerate(agentful[:-1]):
+        agent = ev["roles"]["agent"]
+        ev_theme = ev["roles"].get("theme")
+        ev_dest = ev["roles"].get("destination")
+        ev_keys = set()
+        if ev_theme and isinstance(ev_theme, str):
+            ev_keys.add(ev_theme)
+        if ev_dest and isinstance(ev_dest, str):
+            ev_keys.add(ev_dest)
+        if not ev_keys:
+            continue
+
+        def _target_eids(e):
+            out = set()
+            for k in ("theme", "destination", "instrument"):
+                v = e["roles"].get(k)
+                if isinstance(v, str):
+                    out.add(v)
+            parts = e["roles"].get("parts")
+            if isinstance(parts, list):
+                out.update(p for p in parts if isinstance(p, str))
+            return out
+
+        later = [
+            e for e in agentful[i + 1:]
+            if e["roles"].get("agent") == agent
+            and ev_keys & _target_eids(e)
+            and e["action"] != ev["action"]
+        ]
+        if not later:
+            continue
+        target = rng.choice(later)
+        agent_name = _name(agent, entities)
+
+        theme = ev["roles"].get("theme")
+        if theme and isinstance(theme, str) and theme in entities:
+            q = (f"Kial {agent_name} {_past(ev['action'])} la "
+                 f"{_acc(entities[theme]['concept'])}?")
+        else:
+            dest = ev["roles"].get("destination")
+            if dest and dest in entities:
+                q = (f"Kial {agent_name} {_past(ev['action'])} al "
+                     f"la {entities[dest]['concept']}?")
+            else:
+                q = f"Kial {agent_name} {_past(ev['action'])}?"
+
+        tgt_theme = target["roles"].get("theme")
+        if tgt_theme and isinstance(tgt_theme, str) and tgt_theme in entities:
+            a = f"Por {target['action']} la {_acc(entities[tgt_theme]['concept'])}."
+        else:
+            tgt_dest = target["roles"].get("destination")
+            if tgt_dest and tgt_dest in entities:
+                a = f"Por {target['action']} al la {entities[tgt_dest]['concept']}."
+            else:
+                a = f"Por {target['action']}."
+        out.append({"q": q, "a": a})
+    return out
+
+
 def _q_possession(rec: dict, rng: random.Random) -> list[dict]:
     """Who had what at scene start: "Kiu havis la X-on?" → "Y."
     and inverse "Kion Y havis?" → "la X-on." From havi in
@@ -788,6 +944,84 @@ def _q_container_identity(rec: dict, rng: random.Random) -> list[dict]:
             "q": f"En kio estis la {c_ent['concept']}?",
             "a": f"En la {co_ent['concept']}.",
         })
+    return out
+
+
+_MOVEMENT_VERBS: set[str] | None = None
+
+
+def _load_movement_verbs() -> set[str]:
+    from esperanto_lm.ontology import load_lexicon
+    lex = load_lexicon()
+    return {
+        name for name, a in lex.actions.items()
+        if any(r.name == "destination" for r in a.roles)
+    }
+
+
+def _q_location_at_end(rec: dict, rng: random.Random) -> list[dict]:
+    """Where is entity X at the end of the trace? Tracks movement
+    events (verbs with a destination role) and asks about the agent's
+    final location when it differs from their starting position.
+    Also asks about static location relations (en/sur/apud) from
+    setup to get preposition diversity."""
+    global _MOVEMENT_VERBS
+    if _MOVEMENT_VERBS is None:
+        _MOVEMENT_VERBS = _load_movement_verbs()
+    events = rec.get("events", [])
+    raw_ents = rec.get("entities", [])
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    entities = {e["eid"]: e for e in raw_ents}
+    setup = rec.get("setup_relations", [])
+    if not setup:
+        return []
+
+    setup_loc: dict[str, tuple[str, str]] = {}
+    for r in setup:
+        if r["relation"] in ("en", "sur", "apud") and len(r["args"]) == 2:
+            setup_loc[r["args"][0]] = (r["relation"], r["args"][1])
+
+    final_loc: dict[str, tuple[str, str]] = dict(setup_loc)
+
+    for ev in events:
+        agent = ev.get("roles", {}).get("agent")
+        dest = ev.get("roles", {}).get("destination")
+        if agent and dest and ev["action"] in _MOVEMENT_VERBS:
+            final_loc[agent] = ("en", dest)
+
+    out = []
+    seen = set()
+    for eid, (prep, dest_eid) in final_loc.items():
+        ent = entities.get(eid)
+        dest_ent = entities.get(dest_eid)
+        if ent is None or dest_ent is None:
+            continue
+        if ent["type"] == "abstract":
+            continue
+        if "_" in eid and eid != ent["concept"]:
+            continue
+        concept = ent["concept"]
+        if concept in seen:
+            continue
+        seen.add(concept)
+        moved = setup_loc.get(eid) != (prep, dest_eid)
+        name = concept.capitalize() if ent["type"] == "person" else concept
+        if moved:
+            q = rng.choice([
+                f"Kie estas {name} fine de la rakonto?",
+                f"Kie troviĝas {name} fine?",
+            ])
+        else:
+            q = rng.choice([
+                f"Kie estas la {concept}?",
+                f"Kie troviĝas la {concept}?",
+            ])
+        surface_prep = prep
+        if prep == "apud":
+            surface_prep = rng.choice(["apud", "ĉe"])
+        a = f"{surface_prep.capitalize()} la {dest_ent['concept']}."
+        out.append({"q": q, "a": a})
     return out
 
 
@@ -1185,6 +1419,299 @@ def _q_ordering(rec: dict, rng: random.Random) -> list[dict]:
     return out
 
 
+def _q_agent_summary(rec: dict, rng: random.Random) -> list[dict]:
+    """What did X do? → multi-action summary listing the agent's
+    actions. Trains longer extractive answers."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    by_agent: dict[str, list[dict]] = {}
+    for ev in events:
+        if _should_skip_verb(ev["action"]):
+            continue
+        agent = ev.get("roles", {}).get("agent")
+        if agent:
+            by_agent.setdefault(agent, []).append(ev)
+    out = []
+    for agent, acts in by_agent.items():
+        if len(acts) < 2:
+            continue
+        agent_name = _name(agent, entities)
+        descs = []
+        for ev in acts[:4]:
+            theme = ev["roles"].get("theme")
+            if theme and isinstance(theme, str) and theme in entities:
+                descs.append(
+                    f"{_past(ev['action'])} la "
+                    f"{_noun_acc(entities[theme]['concept'])}")
+            else:
+                dest = ev["roles"].get("destination")
+                if dest and dest in entities:
+                    descs.append(
+                        f"{_past(ev['action'])} al la "
+                        f"{entities[dest]['concept']}")
+                else:
+                    descs.append(_past(ev["action"]))
+        if len(descs) == 1:
+            listing = descs[0]
+        elif len(descs) == 2:
+            listing = f"{descs[0]} kaj {descs[1]}"
+        else:
+            listing = ", ".join(descs[:-1]) + f", kaj {descs[-1]}"
+        q = rng.choice([
+            f"Kion faris {agent_name}?",
+            f"Kion {agent_name} faris en la rakonto?",
+        ])
+        a = f"{agent_name} {listing}."
+        out.append({"q": q, "a": a})
+    return out
+
+
+def _q_negation(rec: dict, rng: random.Random) -> list[dict]:
+    """Did X do Y to Z? → No, X did W to Z. Picks an action that
+    DID happen to an entity and asks about a different verb."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    raw_ents = rec.get("entities", [])
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    entities = {e["eid"]: e for e in raw_ents}
+    agentful = [
+        e for e in events
+        if e.get("roles", {}).get("agent")
+        and e.get("roles", {}).get("theme")
+        and not _should_skip_verb(e["action"])
+        and isinstance(e["roles"].get("theme"), str)
+    ]
+    if not agentful:
+        return []
+    verbs_used = {e["action"] for e in agentful}
+    global _ALL_ACTIONS
+    if not _ALL_ACTIONS:
+        from esperanto_lm.ontology import load_lexicon
+        _ALL_ACTIONS = set(load_lexicon().actions.keys())
+    # Group actions by transitivity shape so the wrong verb takes the
+    # same argument structure as the real one.
+    _NEG_BY_SHAPE: dict[str, list[str]] = getattr(
+        _q_negation, "_by_shape", {})
+    if not _NEG_BY_SHAPE:
+        from esperanto_lm.ontology import load_lexicon
+        lex = load_lexicon()
+        for name, a in lex.actions.items():
+            if _should_skip_verb(name):
+                continue
+            has_theme = any(r.name == "theme" for r in a.roles)
+            shape = "transitive" if has_theme else "intransitive"
+            _NEG_BY_SHAPE.setdefault(shape, []).append(name)
+        _q_negation._by_shape = _NEG_BY_SHAPE
+    out = []
+    for ev in agentful[:3]:
+        shape = "transitive"
+        candidates = [
+            v for v in _NEG_BY_SHAPE.get(shape, [])
+            if v not in verbs_used]
+        if not candidates:
+            continue
+        wrong_verb = rng.choice(candidates)
+        agent = ev["roles"]["agent"]
+        theme = ev["roles"]["theme"]
+        agent_name = _name(agent, entities)
+        theme_ent = entities.get(theme)
+        if theme_ent is None:
+            continue
+        theme_acc = _noun_acc(theme_ent["concept"])
+        q = f"Ĉu {agent_name} {_past(wrong_verb)} la {theme_acc}?"
+        a = f"Ne, {agent_name} {_past(ev['action'])} la {theme_acc}."
+        out.append({"q": q, "a": a})
+    return out
+
+
+def _q_multiple_choice(rec: dict, rng: random.Random) -> list[dict]:
+    """Did X verb the A, B, or C? → X verbed the B. Distractors are
+    other concepts from the same scene; count varies 1-3."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    raw_ents = rec.get("entities", [])
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    entities = {e["eid"]: e for e in raw_ents}
+    scene_concepts = [
+        e["concept"] for e in raw_ents
+        if e["type"] not in ("location", "abstract", "person")
+        and "_" not in e["eid"]]
+    if len(scene_concepts) < 2:
+        return []
+    agentful = [
+        e for e in events
+        if e.get("roles", {}).get("agent")
+        and isinstance(e["roles"].get("theme"), str)
+        and not _should_skip_verb(e["action"])
+    ]
+    out = []
+    for ev in agentful[:3]:
+        theme = ev["roles"]["theme"]
+        theme_ent = entities.get(theme)
+        if theme_ent is None:
+            continue
+        correct = theme_ent["concept"]
+        distractors = [c for c in scene_concepts if c != correct]
+        if not distractors:
+            continue
+        n_dist = min(rng.randint(1, 3), len(distractors))
+        picked = rng.sample(distractors, n_dist)
+        options = [correct] + picked
+        rng.shuffle(options)
+        agent_name = _name(ev["roles"]["agent"], entities)
+        acc_options = [_noun_acc(o) for o in options]
+        if len(acc_options) == 2:
+            option_str = f"{acc_options[0]} aŭ {acc_options[1]}"
+        else:
+            option_str = (", ".join(acc_options[:-1])
+                          + f", aŭ {acc_options[-1]}")
+        q = f"Ĉu {agent_name} {_past(ev['action'])} la {option_str}?"
+        a = f"{agent_name} {_past(ev['action'])} la {_noun_acc(correct)}."
+        out.append({"q": q, "a": a})
+    return out
+
+
+def _q_entity_journey(rec: dict, rng: random.Random) -> list[dict]:
+    """What did the agent do with/to entity X? Lists the sequence of
+    actions involving the entity across different roles (theme, then
+    instrument, etc.). Trains multi-step extraction."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    raw_ents = rec.get("entities", [])
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    entities = {e["eid"]: e for e in raw_ents}
+
+    global _PERCEPTION_VERBS
+    if _PERCEPTION_VERBS is None:
+        _PERCEPTION_VERBS = _load_perception_verbs()
+    by_agent_entity: dict[tuple[str, str], list[dict]] = {}
+    for ev in events:
+        if _should_skip_verb(ev["action"]):
+            continue
+        if ev["action"] in _PERCEPTION_VERBS:
+            continue
+        agent = ev.get("roles", {}).get("agent")
+        if not agent:
+            continue
+        for role, val in ev["roles"].items():
+            if role == "agent":
+                continue
+            if isinstance(val, str) and val in entities:
+                ent = entities[val]
+                if ent["type"] in ("location", "abstract", "person"):
+                    continue
+                if "_" in val and val != ent["concept"]:
+                    continue
+                by_agent_entity.setdefault((agent, val), []).append(ev)
+            elif isinstance(val, list):
+                for v in val:
+                    if isinstance(v, str) and v in entities:
+                        by_agent_entity.setdefault(
+                            (agent, v), []).append(ev)
+
+    out = []
+    for (agent, eid), evts in by_agent_entity.items():
+        unique_actions = []
+        seen = set()
+        for ev in evts:
+            if ev["action"] not in seen:
+                unique_actions.append(ev)
+                seen.add(ev["action"])
+        if len(unique_actions) < 2:
+            continue
+        agent_name = _name(agent, entities)
+        ent = entities[eid]
+        concept = ent["concept"]
+
+        descs = []
+        for ev in unique_actions[:4]:
+            role_name = None
+            for rn, rv in ev["roles"].items():
+                if rn == "agent":
+                    continue
+                if isinstance(rv, str) and rv == eid:
+                    role_name = rn
+                    break
+                if isinstance(rv, list) and eid in rv:
+                    role_name = rn
+                    break
+            if role_name == "theme":
+                descs.append(f"{_past(ev['action'])} ĝin")
+            elif role_name is not None:
+                action_def = _get_lex().actions.get(ev["action"])
+                prep = None
+                if action_def:
+                    rd = next((r for r in action_def.roles
+                               if r.name == role_name), None)
+                    if rd:
+                        prep = getattr(rd, "preposition", None)
+                theme_eid = ev["roles"].get("theme")
+                if (theme_eid and isinstance(theme_eid, str)
+                        and theme_eid in entities):
+                    theme_form = _noun_acc(entities[theme_eid]["concept"])
+                    if prep:
+                        descs.append(
+                            f"{_past(ev['action'])} la {theme_form} "
+                            f"{prep} ĝi")
+                    else:
+                        descs.append(
+                            f"{_past(ev['action'])} la {theme_form}")
+                else:
+                    descs.append(f"{_past(ev['action'])} ĝin")
+
+        if len(descs) == 2:
+            listing = f"{descs[0]} kaj {descs[1]}"
+        else:
+            listing = ", ".join(descs[:-1]) + f", kaj {descs[-1]}"
+
+        q = rng.choice([
+            f"Kion faris {agent_name} kun la {concept}?",
+            f"Kion {agent_name} faris al la {concept}?",
+        ])
+        a = f"{agent_name} {listing}."
+        out.append({"q": q, "a": a})
+    return out
+
+
+def _q_definition(rec: dict, rng: random.Random) -> list[dict]:
+    """What is X? → X estas Y. Only for entities that got a definition
+    sentence in the prose (tracked by defined_entities on the trace)."""
+    defined = rec.get("defined_entities", [])
+    if not defined:
+        return []
+    raw_ents = rec.get("entities", [])
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    entities = {e["eid"]: e for e in raw_ents}
+    from esperanto_lm.ontology import load_lexicon
+    from esperanto_lm.ontology.realize.plan import _build_definition
+    lex = load_lexicon()
+    out = []
+    for eid in defined:
+        ent = entities.get(eid)
+        if ent is None:
+            continue
+        defn = _build_definition(ent["concept"], lex)
+        if defn is None:
+            continue
+        concept = ent["concept"]
+        q = rng.choice([
+            f"Kio estas {concept}?",
+            f"Kio estas la {concept}?",
+        ])
+        a = defn
+        out.append({"q": q, "a": a})
+    return out
+
+
 # Registry of question generators.
 GENERATORS = [
     _q_intrinsic_property,
@@ -1206,6 +1733,14 @@ GENERATORS = [
     _q_multi_hop,
     _q_coreference,
     _q_ordering,
+    _q_why_property,
+    _q_location_at_end,
+    _q_enablement,
+    _q_agent_summary,
+    _q_negation,
+    _q_multiple_choice,
+    _q_entity_journey,
+    _q_definition,
     # _q_why — skipped: 95% of causal chains are pluvi→_wet,
     # producing "Ĉar pluvis." mode collapse. Needs richer causal
     # annotations in the engine before this template is useful.
@@ -1224,8 +1759,11 @@ def generate_qas_for_trace(
     in the input file. Passed to generators that need a negative-
     sampling pool (e.g. _q_existence picks concepts NOT in this
     trace but known to exist in the corpus)."""
+    is_planned = "drive" in rec
     candidates: list[dict] = []
     for gen in GENERATORS:
+        if gen == _q_enablement and not is_planned:
+            continue
         if gen == _q_existence:
             candidates.extend(gen(rec, rng, all_concepts=all_concepts))
         else:

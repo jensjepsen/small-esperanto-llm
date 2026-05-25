@@ -50,6 +50,8 @@ def realize_trace(
     rng: Optional[random.Random] = None,
     tense: Optional[str] = None,
     setup_relations: Optional[list[RelationAssertion]] = None,
+    definition_p: float = 0.0,
+    defined_entities: Optional[set] = None,
 ) -> str:
     """Render the full trace as a paragraph of Esperanto.
 
@@ -120,7 +122,9 @@ def realize_trace(
     messages = plan_messages(
         trace, lexicon,
         scene_location_id=scene_location_id,
-        setup_relations=setup_relations)
+        setup_relations=setup_relations,
+        definition_p=definition_p, rng=rng,
+        defined_entities=defined_entities)
     messages = aggregate_relations(messages)
     messages = aggregate_same_subject(messages, lexicon)
     messages = subordinate_creations(messages)

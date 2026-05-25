@@ -42,6 +42,7 @@ def _verb_metadata() -> dict:
 from .messages import (
     AppearanceMessage,
     CoordinatedMessage,
+    DefinitionMessage,
     DestructionMessage,
     EventMessage,
     GroupedRelationMessage,
@@ -1893,6 +1894,7 @@ _DISPATCH = {
     DestructionMessage: _render_destruction,
     CoordinatedMessage: _render_coordinated,
     SubordinatedMessage: _render_subordinated,
+    DefinitionMessage: lambda m, ctx: m.definition,
 }
 
 

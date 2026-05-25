@@ -156,56 +156,48 @@ class SamplerConfig:
 
 # =================== applicable-step enumeration ====================
 
+_ROLE_CONCEPTS_CACHE: dict[tuple, frozenset] = {}
+
+
 def _role_filler_candidates(role_spec, trace, lex, exclude,
                             derived=None, roles_so_far=None):
-    """Yield entity ids whose entity_type and properties match the
-    role spec. Skips ids in `exclude` (already filling another role
-    of the same action). Pure check — no subgoaling.
+    """Yield entity ids matching the role spec.
 
-    Property matching consults both `ent.properties` (instance
-    state from concept declarations and engine events) and
-    `derived.properties` (runtime derivation outputs like
-    `fragile_default_integrity_tuta` setting integrity=tuta on
-    fragile entities whose concept doesn't declare it). Either
-    source can satisfy the role's expected values; the union of
-    the two is checked against `expected_vals`.
+    Two-tier filtering:
+      1. Concept gate (cached): `concepts_matching_role` from the lex's
+         ConceptIndex. Handles type, immutable slots, derivable slots,
+         and varies declarations via bitmap intersection. O(1) per
+         entity (set membership test on concept_lemma).
+      2. Varies-slot check (per entity): only for role properties on
+         varies slots whose CURRENT value (not initial) matters. These
+         need `_entity_property_values` which reads event property_changes
+         and derived state.
 
-    `slot.unmarked` is NOT consulted as a fallback for absent
-    slots: that would phantom-match ŝalti(theme.power_state=
-    neaktiva) against a key whose concept doesn't model
-    power_state. The schema's intent is that absence = "doesn't
-    model the slot" = no match.
+    Eliminates ~90% of the per-entity property scanning that dominated
+    the profile (1M+ calls to `_entity_property_values`)."""
+    # Tier 1: concept-level gate. Cached on (role_type, properties).
+    props = role_spec.properties or {}
+    prop_key = frozenset(
+        (s, tuple(v) if v else None) for s, v in props.items())
+    cache_key = (role_spec.type, prop_key)
+    valid_concepts = _ROLE_CONCEPTS_CACHE.get(cache_key)
+    if valid_concepts is None:
+        valid_concepts = lex.concept_index.concepts_matching_role(role_spec)
+        _ROLE_CONCEPTS_CACHE[cache_key] = valid_concepts
 
-    `from_field` (fari.instrument's "crafted_with", any future
-    recipe-linked roles): when set AND the theme role is already
-    bound, restrict candidates to entities whose concept_lemma is
-    listed in `theme_concept.<from_field>`. Without this, fari's
-    instrument can bind to any in-scene artifact (a seruro,
-    pordo, …), producing "Pirato faros la buljonon per seruro"
-    instead of "per forno". The seeder honors from_field via
-    goal_sampler's construct path; the forward-sampler's
-    free-binding step needs the same constraint.
+    # Identify which role properties need per-entity current-state check.
+    varies_checks: list[tuple[str, list]] = []
+    for slot, expected_vals in props.items():
+        slot_def = lex.slots.get(slot)
+        if slot_def is None:
+            continue
+        if getattr(slot_def, "varies", False):
+            varies_checks.append((slot, expected_vals))
 
-    Negative gating (e.g. "theme must NOT be currently a part") is
-    expressed as a `NotPropertyPrecondition` on the action and
-    enforced in `_action_preconds_satisfied`, NOT here.
-
-    Fast path: the EntityIndex's type-keyed bitmap (re-cached on
-    `len(trace.entities)` change) narrows the scan to entities of
-    `role_spec.type` first, then we re-check role.properties with
-    derived-state awareness. The bitmap alone can't subset on
-    derivable slots (is_part, can_use_tools, illuminated, etc.) —
-    those flip at runtime via DSL derivations rather than living
-    statically on the entity — so we keep the per-entity property
-    check. Saves the 80%+ of entities whose type doesn't match the
-    role at all (e.g. searching for an `animate` agent in a scene
-    where 40/50 entities are body parts / artifacts)."""
     idx = entity_index_for(trace, lex)
     pool = idx.entities_matching(role_type=role_spec.type)
-    # from_field restriction: when this role draws from the theme
-    # concept's recipe field (fari.instrument ← theme.crafted_with),
-    # narrow the pool to entities whose concept appears in that
-    # field. Only applies when the source role is already bound.
+
+    # from_field restriction (fari.instrument ← theme.crafted_with).
     allowed_concepts: set | None = None
     from_field = getattr(role_spec, "from_field", None)
     if from_field and roles_so_far:
@@ -217,14 +209,6 @@ def _role_filler_candidates(role_spec, trace, lex, exclude,
                 if theme_concept is not None:
                     field_vals = getattr(theme_concept, from_field, None)
                     if field_vals is not None:
-                        # field_vals may be list[str] (crafted_with)
-                        # or list[ConceptPart] (parts) — normalize to
-                        # concept lemmas. Empty list = "no candidate
-                        # admitted" (sandwich-style suko with no
-                        # crafted_with → instrument should stay
-                        # unbound). Treating empty as "no restriction"
-                        # would let any artifact bind, surfacing
-                        # "faris sukon per la kameno".
                         allowed_concepts = {
                             v if isinstance(v, str)
                             else getattr(v, "concept", None)
@@ -237,11 +221,13 @@ def _role_filler_candidates(role_spec, trace, lex, exclude,
         ent = trace.entities.get(eid)
         if ent is None or ent.destroyed_at_event is not None:
             continue
+        if ent.concept_lemma not in valid_concepts:
+            continue
         if allowed_concepts is not None and ent.concept_lemma not in allowed_concepts:
             continue
-        if role_spec.properties:
+        if varies_checks:
             ok = True
-            for slot, expected_vals in role_spec.properties.items():
+            for slot, expected_vals in varies_checks:
                 actual_vals = _entity_property_values(
                     ent, slot, trace=trace, derived=derived, lex=lex)
                 if not any(v in actual_vals for v in expected_vals):
@@ -276,31 +262,43 @@ def _bind_roles(action: Action, trace, lex, rng, max_per_action=8,
         # currently groundable — skip.
         return []
 
+    # Pre-compute candidate pools per non-fp role. The pool depends
+    # on (role_spec, trace entities, derived state) but NOT on which
+    # entities fill other roles — the exclude set only removes already-
+    # bound eids at pick time. Computing once saves ~85% of
+    # _role_filler_candidates calls (the main bottleneck).
+    free_roles = [
+        r for r in action.roles
+        if r.name not in (fp_bindings[0] if fp_bindings else {})
+    ]
+    role_pools: dict[str, list[str]] = {}
+    for role_spec in free_roles:
+        if getattr(role_spec, "from_field", None):
+            continue
+        pool = list(_role_filler_candidates(
+            role_spec, trace, lex, exclude=set(), derived=derived))
+        role_pools[role_spec.name] = pool
+
     seen: set[tuple] = set()
     out = []
     attempts = 0
     while len(out) < max_per_action and attempts < max_per_action * 4:
         attempts += 1
-        # Pick a from-precondition binding (one tuple's worth of
-        # bound roles). When the action has no fp roles, this is
-        # `{}` and we proceed with full naive binding for every
-        # role.
         fp_binding = rng.choice(fp_bindings)
         roles: dict[str, str] = dict(fp_binding)
         ok = True
-        for role_spec in action.roles:
+        for role_spec in free_roles:
             if role_spec.name in roles:
-                # Already bound via fp coupling.
                 continue
-            cands = list(_role_filler_candidates(
-                role_spec, trace, lex, exclude=set(roles.values()),
-                derived=derived, roles_so_far=roles))
+            if getattr(role_spec, "from_field", None):
+                cands = list(_role_filler_candidates(
+                    role_spec, trace, lex, exclude=set(roles.values()),
+                    derived=derived, roles_so_far=roles))
+            else:
+                used = set(roles.values())
+                cands = [e for e in role_pools.get(role_spec.name, [])
+                         if e not in used]
             if not cands:
-                # Optional roles (flugi.instrument, manĝi.instrument)
-                # may legitimately have no candidate in this scene.
-                # Leave them unbound — _action_preconds_satisfied will
-                # treat a missing role binding as "this precondition
-                # branch doesn't apply" rather than failing.
                 if getattr(role_spec, "optional", False):
                     continue
                 ok = False
@@ -1462,16 +1460,48 @@ def _worker_task(args):
             skipped_empty += 1
             continue
         try:
+            defined_ents = set()
             prose = realize_trace(
                 artifact.trace, _WORKER_LEX,
                 setup_relations=setup_rels,
-                scene_location_id=scene_id, rng=rng)
+                scene_location_id=scene_id, rng=rng,
+                definition_p=0.3, defined_entities=defined_ents)
         except Exception:
             continue
         chain = " → ".join(e.action for e in artifact.trace.events)
         # Rich fields for downstream ICL Q/A generation. Mirrors the
         # regression sampler's schema so a single generator script
         # (`generate_icl_from_traces.py`) consumes both pipelines.
+        t = artifact.trace
+        # --- Relation diffs: attribute each add/remove to an event ---
+        setup_set = {(r.relation, tuple(r.args)) for r in (setup_rels or ())}
+        final_set = {(r.relation, tuple(r.args)) for r in t.relations}
+        added_rels = final_set - setup_set
+        removed_rels = setup_set - final_set
+        per_event_rel_changes: dict[str, list[dict]] = {}
+        unattributed_adds = set(added_rels)
+        unattributed_rems = set(removed_rels)
+        for ev in t.events:
+            ev_eids = set()
+            for v in ev.roles.values():
+                if isinstance(v, str):
+                    ev_eids.add(v)
+                elif isinstance(v, (list, tuple)):
+                    ev_eids.update(x for x in v if isinstance(x, str))
+            changes = []
+            for rel, args in list(unattributed_adds):
+                if ev_eids & set(args):
+                    changes.append({"rel": rel, "args": list(args),
+                                    "added": True})
+                    unattributed_adds.discard((rel, args))
+            for rel, args in list(unattributed_rems):
+                if ev_eids & set(args):
+                    changes.append({"rel": rel, "args": list(args),
+                                    "added": False})
+                    unattributed_rems.discard((rel, args))
+            if changes:
+                per_event_rel_changes[ev.id] = changes
+
         events_ser = [
             {
                 "id": ev.id,
@@ -1485,8 +1515,10 @@ def _worker_task(args):
                     f"{eid}|{slot}": val
                     for (eid, slot), val in ev.property_changes.items()
                 },
+                **({"relation_changes": per_event_rel_changes[ev.id]}
+                   if ev.id in per_event_rel_changes else {}),
             }
-            for ev in artifact.trace.events
+            for ev in t.events
         ]
         entities_ser = [
             {
@@ -1494,22 +1526,30 @@ def _worker_task(args):
                 "concept": ent.concept_lemma,
                 "type": ent.entity_type,
                 "properties": dict(ent.properties),
+                **({"created_at_event": ent.created_at_event}
+                   if ent.created_at_event is not None else {}),
             }
-            for eid, ent in artifact.trace.entities.items()
+            for eid, ent in t.entities.items()
             if eid != "mondo"
         ]
         setup_rels_ser = [
             {"relation": r.relation, "args": list(r.args)}
             for r in (setup_rels or ())
         ]
+        final_rels_ser = [
+            {"relation": r.relation, "args": list(r.args)}
+            for r in t.relations
+        ]
         records.append({
             "status": "ok",
             "scene": scene_id,
             "chain": chain,
-            "n_events": len(artifact.trace.events),
+            "n_events": len(t.events),
             "events": events_ser,
             "entities": entities_ser,
             "setup_relations": setup_rels_ser,
+            "final_relations": final_rels_ser,
+            "defined_entities": sorted(defined_ents),
             "prose": prose,
         })
     return records, skipped_no_seed, skipped_empty

@@ -749,7 +749,9 @@ def _place_respecting_containment(
         added_here = True
 
     def _try_relation(container_eid: str):
-        for rel in ("en", "sur"):
+        rels = ["en", "sur"]
+        rng.shuffle(rels)
+        for rel in rels:
             if t.is_relation_permitted(
                     rel, (eid, container_eid), lex):
                 return rel
@@ -807,7 +809,8 @@ def _place_respecting_containment(
     # recursive _place_respecting_containment call walks the artifact
     # up the containment graph (kaserolo → kuirejo → domo → apud
     # scene) so the artifact lands somewhere coherent.
-    for require_location in (True, False):
+    tier_order = (True, False) if rng.random() < 0.5 else (False, True)
+    for require_location in tier_order:
         for cont_lemma, _afforded_rel in containers_for(
                 concept_lemma, idx, lex):
             # Self-containment guard: containment.jsonl pattern entries

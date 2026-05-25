@@ -21,6 +21,7 @@ from ..loader import Lexicon
 from .messages import (
     AppearanceMessage,
     CoordinatedMessage,
+    DefinitionMessage,
     DestructionMessage,
     EntityQualityMessage,
     EventMessage,
@@ -40,6 +41,9 @@ def plan_messages(
     trace: Trace, lexicon: Lexicon, *,
     scene_location_id: Optional[str] = None,
     setup_relations: Optional[list[RelationAssertion]] = None,
+    definition_p: float = 0.0,
+    rng: Optional["random.Random"] = None,
+    defined_entities: Optional[set] = None,
 ) -> list[Message]:
     """Build the flat list of messages for a trace.
 
@@ -154,6 +158,28 @@ def plan_messages(
         anchor = _relation_anchor(rel, first_event_idx, trace)
         pre_event[anchor].append(RelationMessage(
             relation=rel, phase="setup"))
+
+    import random as _random
+    if definition_p > 0 and rng is not None:
+        for eid, ent in trace.entities.items():
+            if eid == "mondo" or eid not in referenced:
+                continue
+            if ent.created_at_event is not None:
+                continue
+            if ent.entity_type in ("location", "abstract", "person"):
+                continue
+            if "_" in eid and eid != ent.concept_lemma:
+                continue
+            if rng.random() >= definition_p:
+                continue
+            defn = _build_definition(ent.concept_lemma, lexicon)
+            if defn is None:
+                continue
+            anchor = first_event_idx.get(eid, 0)
+            pre_event[anchor].append(DefinitionMessage(
+                entity_id=eid, definition=defn, phase="setup"))
+            if defined_entities is not None:
+                defined_entities.add(eid)
 
     messages = []
     for idx, ev in enumerate(trace.events):
@@ -530,6 +556,31 @@ def _quality_grounding_messages(
             entity_id=eid, slot=slot_name, quality_lemma=quality))
         seen.add(eid)
     return out
+
+
+def _build_definition(concept_lemma: str, lexicon: Lexicon) -> Optional[str]:
+    """Build a definitional sentence from the concept's category and
+    parts. Returns None if no useful definition can be constructed."""
+    concept = lexicon.concepts.get(concept_lemma)
+    if concept is None:
+        return None
+    cats = getattr(concept, "category", []) or []
+    if not cats:
+        return None
+    cat = cats[0]
+    lemma = concept_lemma.capitalize()
+    parts = ([p.concept if hasattr(p, "concept") else str(p)
+              for p in (concept.parts or [])]
+             if concept.entity_type == "artifact" else [])
+    if parts:
+        if len(parts) == 1:
+            parts_str = parts[0]
+        elif len(parts) == 2:
+            parts_str = f"{parts[0]} kaj {parts[1]}"
+        else:
+            parts_str = ", ".join(parts[:-1]) + f", kaj {parts[-1]}"
+        return f"{lemma} estas {cat} farita el {parts_str}."
+    return f"{lemma} estas {cat}."
 
 
 # -------------------- helpers: synthetic grounding -------------------

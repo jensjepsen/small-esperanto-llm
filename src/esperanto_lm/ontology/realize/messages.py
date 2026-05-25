@@ -185,6 +185,17 @@ class GroupedRelationMessage(Message):
 
 
 @dataclass(kw_only=True)
+class DefinitionMessage(Message):
+    """'Tablo estas meblo.' — definitional sentence introducing an
+    entity's category (and optionally parts/material). Emitted
+    probabilistically on first mention; the `entity_id` is recorded
+    in a set on the render context so the trace serializer can flag
+    which entities got definitions for downstream Q/A generation."""
+    entity_id: str
+    definition: str
+
+
+@dataclass(kw_only=True)
 class SubordinatedMessage(Message):
     """`main, conjunction subordinate.` — one sentence with the
     subordinate clause tacked on after a comma.
