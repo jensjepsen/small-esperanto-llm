@@ -288,6 +288,10 @@
 {"container_pattern": {"category": "ĉambro"}, "contained": "seĝo", "relation": "en"}
 {"container_pattern": {"category": "ĉambro"}, "contained": "kuseno", "relation": "en"}
 {"container_pattern": {"category": "ĉambro"}, "contained": "tapiŝo", "relation": "en"}
-{"container": "planko", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sur"}
+{"container": "planko", "contained_pattern": {"category": "meblo"}, "relation": "sur"}
+{"container": "planko", "contained_pattern": {"category": "ludilo"}, "relation": "sur"}
+{"container": "planko", "contained": "tapiŝo", "relation": "sur"}
+{"container": "planko", "contained": "korbo", "relation": "sur"}
+{"container": "planko", "contained": "skatolo", "relation": "sur"}
 {"container": "planko", "contained_pattern": {"entity_type": "animal"}, "relation": "sur"}
 {"container": "plafono", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sub"}
