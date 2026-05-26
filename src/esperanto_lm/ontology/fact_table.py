@@ -35,13 +35,14 @@ from typing import Iterable
 class FactTable:
     """See module docstring."""
 
-    __slots__ = ("_t2i", "_i2t", "rel_name_mask", "scalar_slot_mask")
+    __slots__ = ("_t2i", "_i2t", "rel_name_mask", "scalar_slot_mask", "_trace")
 
     def __init__(self):
         self._t2i: dict = {}
         self._i2t: list = []
         self.rel_name_mask: dict = {}
         self.scalar_slot_mask: dict = {}
+        self._trace = None
 
     def id_for(self, fact: tuple) -> int:
         """Return the int ID for `fact`, allocating a new one if

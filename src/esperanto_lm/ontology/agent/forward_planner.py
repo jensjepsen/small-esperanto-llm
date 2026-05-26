@@ -413,6 +413,7 @@ def _compile_action_template(action, rule_effects, sym, forbid_rels=None):
       * `sym` — symmetric-relation frozenset, passed through so the
         per-combo path doesn't redo the lookup."""
     from ..schemas import (
+        CountDeltaEffect,
         IfPropertyPrecondition, MatchPrecondition,
         NotPropertyPrecondition, RelationPrecondition,
     )
@@ -448,7 +449,8 @@ def _compile_action_template(action, rule_effects, sym, forbid_rels=None):
             not_prop_pres.append((pc.role, pc.property, pc.value))
         # IfPropertyPrecondition / MatchPrecondition skipped in relaxed encoding.
     eff_props: list = [
-        (eff.target_role, eff.property, eff.value)
+        (eff.target_role, eff.property, eff.value,
+         eff.op if isinstance(eff, CountDeltaEffect) else None)
         for eff in action.effects]
     rule_adds_simple: list = []
     rule_adds_marker: list = []
@@ -499,7 +501,7 @@ class _CompiledAction:
     __slots__ = (
         "prop_pres", "not_prop_pres", "rel_pres_simple", "rel_pres_list",
         "eff_props", "rule_adds_simple", "rule_adds_marker", "sym",
-        "skip_filter", "concept_constraints")
+        "skip_filter", "concept_constraints", "trace")
 
     def __init__(self, prop_pres, rel_pres_simple, rel_pres_list,
                  eff_props, rule_adds_simple, rule_adds_marker, sym,
@@ -525,6 +527,7 @@ class _CompiledAction:
         # Empty for actions whose rules don't use the
         # has_concept_field + concept_models_slot_check pattern.
         self.concept_constraints = concept_constraints
+        self.trace = None
 
 
 def _ground_facts_from_template(tmpl, roles, facts):
@@ -568,9 +571,27 @@ def _ground_facts_from_template(tmpl, roles, facts):
             if not any(e is None for e in eids):
                 pres.add(("rel", rel, _canon_rel(rel, eids, sym)))
     # Schema-level effects.
-    for target_role, prop, value in tmpl.eff_props:
+    for eff_tuple in tmpl.eff_props:
+        target_role, prop, value = eff_tuple[0], eff_tuple[1], eff_tuple[2]
+        op = eff_tuple[3] if len(eff_tuple) > 3 else None
         eid = roles_get(target_role)
-        if eid is not None:
+        if eid is None:
+            continue
+        if op is not None and tmpl.trace is not None:
+            ent = tmpl.trace.entities.get(eid)
+            if ent is not None:
+                cur = ent.properties.get(prop, [])
+                try:
+                    cur_n = int(cur[0]) if cur else 1
+                except (ValueError, IndexError):
+                    cur_n = 1
+                if op == "subtract":
+                    for v in range(0, cur_n):
+                        effs.add(("prop", eid, prop, str(v)))
+                else:
+                    for v in range(cur_n + 1, 101):
+                        effs.add(("prop", eid, prop, str(v)))
+        else:
             effs.add(("prop", eid, prop, value))
     # Rule-add effects: simple (no markers) → direct substitution.
     for relation, role_arg_names in tmpl.rule_adds_simple:
@@ -1589,6 +1610,48 @@ def _compute_count_delta_qty(action, roles, goal, trace):
     return 1
 
 
+def _fixup_count_delta_qty(plan, goal, trace):
+    """Post-process plan: set quantity on the last step if it has
+    a CountDeltaEffect targeting the goal's count slot."""
+    if not plan:
+        return plan
+    from ..schemas import CountDeltaEffect
+    if goal[0] != "property" or goal[2] != "count":
+        return plan
+    last = plan[-1]
+    verb = last[0]
+    roles = last[1]
+    from .. import load_lexicon
+    # Can't load lex here — use the action name to check
+    # Just recompute qty from the last step
+    qty = _compute_count_delta_qty_by_name(verb, roles, goal, trace)
+    if qty != 1:
+        return plan[:-1] + [(verb, roles, qty)]
+    return plan
+
+
+def _compute_count_delta_qty_by_name(verb_lemma, roles, goal, trace):
+    """Like _compute_count_delta_qty but takes verb name, loads action."""
+    from ..schemas import CountDeltaEffect
+    if goal[0] != "property" or goal[2] != "count":
+        return 1
+    target_eid = goal[1]
+    try:
+        target_val = int(goal[3])
+    except (ValueError, IndexError):
+        return 1
+    ent = trace.entities.get(target_eid)
+    if ent is None:
+        return 1
+    cur = ent.properties.get("count", [])
+    try:
+        cur_val = int(cur[0]) if cur else 1
+    except (ValueError, IndexError):
+        return 1
+    delta = abs(cur_val - target_val)
+    return max(1, delta)
+
+
 def _action_delta_mask(action, roles, rule_effects, lex,
                        table: FactTable, state_mask: int):
     """Compute the (add_mask, del_mask) bitmap delta for firing
@@ -1617,12 +1680,47 @@ def _action_delta_mask(action, roles, rule_effects, lex,
     rel_name_mask = table.rel_name_mask
 
     # Schema-level effects.
+    from ..schemas import CountDeltaEffect as _CDE
     for eff in action.effects:
         eid = roles.get(eff.target_role)
         if eid is None:
             continue
-        add_mask |= 1 << id_for(
-            ("prop", eid, eff.property, eff.value))
+        if isinstance(eff, _CDE):
+            # Delta effect: add bits for all reachable count values.
+            # In the relaxed graph, a single application can reach any
+            # of them. The fact table may not have IDs for all values
+            # (only those seen during initial grounding); id_for
+            # returns a stable ID for new facts too.
+            cur = state_mask  # not used directly; read from grounding
+            # Emit the same range as _ground_action_facts.
+            trace = getattr(table, "_trace", None)
+            if trace is not None:
+                ent = trace.entities.get(eid)
+                if ent is not None:
+                    cur_vals = ent.properties.get(eff.property, [])
+                    try:
+                        cur_n = int(cur_vals[0]) if cur_vals else 1
+                    except (ValueError, IndexError):
+                        cur_n = 1
+                    if eff.op == "subtract":
+                        for v in range(0, cur_n):
+                            add_mask |= 1 << id_for(
+                                ("prop", eid, eff.property, str(v)))
+                    else:
+                        slot_def = lex.slots.get(eff.property)
+                        max_val = 100
+                        if slot_def and slot_def.vocabulary:
+                            try:
+                                max_val = max(
+                                    int(x) for x in slot_def.vocabulary)
+                            except ValueError:
+                                pass
+                        for v in range(cur_n + 1, max_val + 1):
+                            add_mask |= 1 << id_for(
+                                ("prop", eid, eff.property, str(v)))
+        else:
+            add_mask |= 1 << id_for(
+                ("prop", eid, eff.property, eff.value))
 
     # Rule-level effects, per-rule (cascade rules with wildcard pres
     # don't gate the main rule's effects).
@@ -2768,6 +2866,9 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
             object.__setattr__(lex, "_fwd_planner_action_tmpls", tmpl_cache)
         except Exception:
             pass
+    for _tmpl_v in tmpl_cache.values():
+        if isinstance(_tmpl_v, _CompiledAction):
+            _tmpl_v.trace = trace
     for action in lex.actions.values():
         if not action.roles:
             continue
@@ -4708,6 +4809,7 @@ def plan_for_goal(
     # `_apply_delta_mask` rebuilds the next state without allocating
     # a frozenset. See ../fact_table.py for the table.
     table = fact_table_for(initial_trace)
+    table._trace = initial_trace
     consumer_index = _build_consumer_index(
         grounded, grounded_derivs, table)
     _rss_trace_log(_trace_plan_id, "after_consumer_index",
@@ -4900,7 +5002,7 @@ def plan_for_goal(
             _rss_trace_log(_trace_plan_id, "exit_astar_solved",
                            _trace_drive_kind,
                            {"expansions": expansions})
-            return plan
+            return _fixup_count_delta_qty(plan, goal, initial_trace)
         expansions += 1
         if g >= max_plan_length:
             continue
@@ -4947,7 +5049,7 @@ def plan_for_goal(
             visited[new_mask] = new_g
             if new_mask & goal_bit:
                 qty = _compute_count_delta_qty(
-                    action, roles, goal, initial_trace)
+                    ga.action, roles, goal, initial_trace)
                 if qty != 1:
                     return plan + [(action.lemma, roles, qty)]
                 return plan + [(action.lemma, roles)]
@@ -5049,9 +5151,12 @@ def _goal_args_match_any_producer(goal, lex, rule_effects, trace) -> bool:
             return False
         # Walk all actions, look for one whose schema-level effect
         # matches and whose target role-spec admits this entity.
+        from ..schemas import CountDeltaEffect as _CDE2
         for action in lex.actions.values():
             for eff in action.effects:
-                if eff.property != slot or eff.value != value:
+                if eff.property != slot:
+                    continue
+                if eff.value != value and not isinstance(eff, _CDE2):
                     continue
                 role = next(
                     (r for r in action.roles
