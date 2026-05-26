@@ -187,6 +187,8 @@ def main():
             ok = na == ng
             if not ok and len(ng.split()) > 1:
                 ok = ng in na
+            if not ok and " estas " in na:
+                ok = na.split(" estas ", 1)[1] == ng
             results.append({
                 "tag": tag_question(q),
                 "q": q,
