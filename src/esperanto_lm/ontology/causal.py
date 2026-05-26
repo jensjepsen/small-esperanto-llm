@@ -217,8 +217,11 @@ def effect_changes(
     action = lexicon.actions.get(action_lemma)
     if action is None:
         return {}
+    from .schemas import CountDeltaEffect
     out: dict[tuple[str, str], Any] = {}
     for eff in action.effects:
+        if isinstance(eff, CountDeltaEffect):
+            continue
         tid = roles.get(eff.target_role)
         if tid is not None:
             out[(tid, eff.property)] = eff.value

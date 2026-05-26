@@ -86,6 +86,7 @@ def verb_postconditions(verb_lemma: str, rules: list, lex) -> list[VerbPostcondi
     out: list[VerbPostcondition] = []
 
     # 1. Direct action effects.
+    from ..schemas import CountDeltaEffect
     action = lex.actions.get(verb_lemma)
     if action is not None:
         for eff in action.effects:

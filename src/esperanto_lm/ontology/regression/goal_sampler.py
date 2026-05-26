@@ -662,6 +662,18 @@ def regress_for_goal(
                 all_goals.append((g, verbs))
         elif g[0] == "construct":
             all_goals.append((g, verbs))
+    # Count-delta goals: for verbs with CountDeltaEffect, add goals
+    # targeting random count values. The planner computes the quantity
+    # (current - target) at plan time.
+    from ..schemas import CountDeltaEffect
+    count_delta_verbs = []
+    for verb_lemma, action in lex.actions.items():
+        if any(isinstance(e, CountDeltaEffect) for e in action.effects):
+            count_delta_verbs.append(verb_lemma)
+    if count_delta_verbs:
+        target = str(rng.randint(1, 50))
+        all_goals.append(
+            (("property", "count", target), count_delta_verbs))
     if not all_goals:
         _bail("no_goals_in_index")
         return None
@@ -754,7 +766,9 @@ def regress_for_goal(
             _bail(f"no_effects:{verb_lemma}")
             return None
         eff = next((e for e in action.effects
-                    if e.property == slot and e.value == target_value),
+                    if e.property == slot and (
+                        e.value == target_value
+                        or isinstance(e, CountDeltaEffect))),
                    action.effects[0])
     else:
         # event_fire path — no slot/value/eff; we just need to fire
@@ -973,6 +987,16 @@ def regress_for_goal(
                         f"degenerate_target_drive:"
                         f"{target_ent.concept_lemma}.{eff.property}")
                     continue
+            if isinstance(eff, CountDeltaEffect):
+                try:
+                    gv = int(target_value)
+                    if eff.op == "subtract":
+                        initial = gv + rng.randint(1, max(1, 100 - gv))
+                    else:
+                        initial = max(0, gv - rng.randint(1, max(1, gv)))
+                    t.entities[target_eid].set_property("count", str(initial))
+                except (ValueError, KeyError):
+                    pass
             _ensure_obstacle_tools(t, lex, rng, scene_id)
             drive = ("entity_slot", actor_eid, target_eid,
                      slot, target_value)

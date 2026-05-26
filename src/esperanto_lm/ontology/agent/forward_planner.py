@@ -663,10 +663,9 @@ def _ground_action_facts(action, roles, lex, rule_effects, facts=None, trace=Non
         if eid is None:
             continue
         if isinstance(eff, CountDeltaEffect):
-            # In the relaxed (delete-free) graph, a count-delta effect
-            # can produce ANY count value below the current one. Emit
-            # all reachable values so h_FF sees them as achievable at
-            # cost 1. The actual search computes the specific quantity.
+            # In the relaxed graph, a count-delta effect can produce
+            # any count value reachable from the current one. Emit
+            # all reachable values so h_FF sees them at cost 1.
             if trace is not None:
                 ent = trace.entities.get(eid)
                 if ent is not None:
@@ -675,8 +674,19 @@ def _ground_action_facts(action, roles, lex, rule_effects, facts=None, trace=Non
                         cur_n = int(cur[0]) if cur else 1
                     except (ValueError, IndexError):
                         cur_n = 1
-                    for v in range(0, cur_n):
-                        effs.add(("prop", eid, eff.property, str(v)))
+                    slot_def = lex.slots.get(eff.property)
+                    max_val = 100
+                    if slot_def and slot_def.vocabulary:
+                        try:
+                            max_val = max(int(v) for v in slot_def.vocabulary)
+                        except ValueError:
+                            pass
+                    if eff.op == "subtract":
+                        for v in range(0, cur_n):
+                            effs.add(("prop", eid, eff.property, str(v)))
+                    else:
+                        for v in range(cur_n + 1, max_val + 1):
+                            effs.add(("prop", eid, eff.property, str(v)))
         else:
             effs.add(("prop", eid, eff.property, eff.value))
     # Rule-level effects: only 'adds' for the relaxed graph (delete
@@ -1545,6 +1555,38 @@ def _facts_for_lookup_cached(table, state_mask: int) -> frozenset:
         evict = _LOOKUP_CACHE_ORDER.pop(0)
         _LOOKUP_CACHE.pop(evict, None)
     return result
+
+
+def _compute_count_delta_qty(action, roles, goal, trace):
+    """Compute event.quantity for a CountDeltaEffect action that
+    achieves a count goal. Returns 1 if not applicable."""
+    from ..schemas import CountDeltaEffect
+    if goal[0] != "property" or goal[2] != "count":
+        return 1
+    target_eid = goal[1]
+    try:
+        target_val = int(goal[3])
+    except (ValueError, IndexError):
+        return 1
+    for eff in action.effects:
+        if not isinstance(eff, CountDeltaEffect):
+            continue
+        eid = roles.get(eff.target_role)
+        if eid != target_eid:
+            continue
+        ent = trace.entities.get(eid)
+        if ent is None:
+            return 1
+        cur = ent.properties.get(eff.property, [])
+        try:
+            cur_val = int(cur[0]) if cur else 1
+        except (ValueError, IndexError):
+            return 1
+        if eff.op == "subtract":
+            return max(1, cur_val - target_val)
+        else:
+            return max(1, target_val - cur_val)
+    return 1
 
 
 def _action_delta_mask(action, roles, rule_effects, lex,
@@ -2889,6 +2931,8 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                         filtered = [e for e in filtered if e in keep]
                 cand = filtered
             if not cand:
+                if getattr(role_spec, "optional", False):
+                    continue
                 ok = False
                 break
             per_role.append(cand)
@@ -4902,6 +4946,10 @@ def plan_for_goal(
                 continue
             visited[new_mask] = new_g
             if new_mask & goal_bit:
+                qty = _compute_count_delta_qty(
+                    action, roles, goal, initial_trace)
+                if qty != 1:
+                    return plan + [(action.lemma, roles, qty)]
                 return plan + [(action.lemma, roles)]
             key = (action.lemma, frozenset(
                 (k, tuple(v) if isinstance(v, list) else v)
@@ -5205,9 +5253,12 @@ def _goal_reachable_walk(
             return
         prop_visited.add((slot, value))
         # Direct action producers.
+        from ..schemas import CountDeltaEffect as _CDE
         for v2, a2 in lex.actions.items():
             for eff in a2.effects:
-                if eff.property == slot and eff.value == value:
+                if eff.property == slot and (
+                        eff.value == value
+                        or isinstance(eff, _CDE)):
                     _add_verb(v2)
                     break
         # Derivation producers — walk back.

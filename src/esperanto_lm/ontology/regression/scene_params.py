@@ -74,6 +74,7 @@ def apply_scene_parameters(
     trace, scene_id: str, away_id: str,
     action, role_eids: dict, lex, rng: random.Random,
     params: SceneParameters,
+    target_value: str | None = None,
 ) -> bool:
     """Materialize sampled parameters into the trace.
 
@@ -130,15 +131,26 @@ def apply_scene_parameters(
             return False
 
     # Effect-target non-target initial state.
+    from ..schemas import CountDeltaEffect
     if eff is not None:
         target_eid = role_eids.get(eff.target_role)
         if target_eid:
             slot_def = lex.slots.get(eff.property)
             if slot_def is not None and slot_def.vocabulary:
-                non_target = [v for v in slot_def.vocabulary if v != eff.value]
-                if non_target:
-                    trace.entities[target_eid].set_property(
-                        eff.property, rng.choice(non_target))
+                if isinstance(eff, CountDeltaEffect) and target_value:
+                    try:
+                        gv = int(target_value)
+                        surplus = rng.randint(1, max(1, 100 - gv))
+                        trace.entities[target_eid].set_property(
+                            eff.property, str(gv + surplus))
+                    except ValueError:
+                        pass
+                else:
+                    non_target = [v for v in slot_def.vocabulary
+                                  if v != eff.value]
+                    if non_target:
+                        trace.entities[target_eid].set_property(
+                            eff.property, rng.choice(non_target))
 
     if params.force_conditional_gates:
         _force_conditional_gates(trace, action, role_eids, lex, rng)
