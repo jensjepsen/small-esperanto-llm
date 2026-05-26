@@ -1214,6 +1214,7 @@ def _ground_derivations(
         if ent.entity_type == "inanimate"
     }
     exclude_base.add("mondo")
+    exclude_base |= trace._parts_index
     relevant_set = (
         frozenset(relevant_entities)
         if relevant_entities is not None else None)
