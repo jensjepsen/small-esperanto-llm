@@ -365,6 +365,17 @@ class Effect(_Frozen):
     value: str
 
 
+class CountDeltaEffect(Effect):
+    """Numeric state change: subtract `event.quantity` from the target
+    role's count property. Used by consumption/transfer verbs (manĝi,
+    doni, trinki) so the planner can reason about partial quantities.
+
+    The effect is: target.count -= event.quantity. Inherits target_role
+    and property from Effect; `value` is ignored at plan time (the
+    planner computes the result from current count - quantity)."""
+    op: str = "subtract"
+
+
 class RelationPrecondition(_Frozen):
     """A cross-role relation that must hold before the action is plannable.
 

@@ -24,6 +24,7 @@ from .schemas import (
     Concept,
     ContainmentFact,
     ContainmentPattern,
+    CountDeltaEffect,
     Effect,
     PersonName,
     PropertySlot,
@@ -562,6 +563,14 @@ def load_lexicon(
 
     actions: dict[str, Action] = {}
     for d in _read_jsonl(data_dir / "actions.jsonl"):
+        raw_effects = d.get("effects", [])
+        parsed_effects = []
+        for e in raw_effects:
+            if e.get("op"):
+                parsed_effects.append(CountDeltaEffect(**e))
+            else:
+                parsed_effects.append(Effect(**e))
+        d["effects"] = parsed_effects
         a = Action(**d)
         if a.lemma in actions:
             raise ValueError(f"duplicate action {a.lemma!r}")
