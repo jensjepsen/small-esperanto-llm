@@ -147,16 +147,16 @@ _ESPERANTO_TEN = {
 
 
 def int_to_esperanto(n: int) -> str:
-    """Render an integer 0-99 as an Esperanto numeral. Falls back to
-    the digit string for out-of-range values (shouldn't happen for
-    our corpus)."""
+    """Render an integer 0-100 as an Esperanto numeral."""
     if 0 <= n <= 9:
         return _ESPERANTO_DIGIT[n]
+    if n == 100:
+        return "cent"
     if 10 <= n <= 99:
         tens, ones = divmod(n, 10)
         if ones == 0:
             return _ESPERANTO_TEN[tens]
-        return _ESPERANTO_TEN[tens] + _ESPERANTO_DIGIT[ones]
+        return _ESPERANTO_TEN[tens] + " " + _ESPERANTO_DIGIT[ones]
     return str(n)
 
 
@@ -606,7 +606,8 @@ class _Ctx:
         `count_override` forces a specific count for the rendering
         — used by event rendering when the verb operates on N units
         of a stack (e.g. manĝi.quantity=2 → "du pomojn")."""
-        if (entity.entity_type != "person"
+        if (count_override is None or count_override <= 1) and (
+                entity.entity_type != "person"
                 and entity.id in self.mentioned
                 and self.last_nonperson == entity.id
                 and self.rng is not None
