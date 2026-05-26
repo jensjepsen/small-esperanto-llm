@@ -1008,8 +1008,12 @@ def regress_for_goal(
                       f"{verb_lemma}.{target_role_name}")
                 return None  # schema issue, not placement
             from .spawner import make_spawner
+            extra_roles = sum(
+                1 for r in action.roles
+                if r.name not in (actor_role_name, target_role_name)
+                and not getattr(r, "optional", False))
             setup_spawner = make_spawner(
-                scene_id, lex, rng, budget=1,
+                scene_id, lex, rng, budget=1 + extra_roles,
                 actor_eid=actor_eid, inject_owner_p=0.30)
             # inject_owner=False: see entity_slot branch above for
             # the parts-cascade × NPC-spawn entity-blowup hazard.
