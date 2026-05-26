@@ -587,7 +587,7 @@ def _ground_facts_from_template(tmpl, roles, facts):
     return pres, effs
 
 
-def _ground_action_facts(action, roles, lex, rule_effects, facts=None):
+def _ground_action_facts(action, roles, lex, rule_effects, facts=None, trace=None):
     """Return (precondition_facts, effect_facts) for a grounded
     action — both as sets of fact tuples. `rule_effects` is the
     `{verb: [(relation, role_arg_names)]}` index of rule-added
@@ -599,6 +599,7 @@ def _ground_action_facts(action, roles, lex, rule_effects, facts=None):
     `<lookup>` markers in adds (given-bound vars like fari's agent
     location). Without it, lookup-marked adds are skipped."""
     from ..schemas import (
+        CountDeltaEffect,
         IfPropertyPrecondition, MatchPrecondition, RelationPrecondition,
     )
     pres: set = set()
@@ -661,7 +662,23 @@ def _ground_action_facts(action, roles, lex, rule_effects, facts=None):
         eid = roles.get(eff.target_role)
         if eid is None:
             continue
-        effs.add(("prop", eid, eff.property, eff.value))
+        if isinstance(eff, CountDeltaEffect):
+            # In the relaxed (delete-free) graph, a count-delta effect
+            # can produce ANY count value below the current one. Emit
+            # all reachable values so h_FF sees them as achievable at
+            # cost 1. The actual search computes the specific quantity.
+            if trace is not None:
+                ent = trace.entities.get(eid)
+                if ent is not None:
+                    cur = ent.properties.get(eff.property, [])
+                    try:
+                        cur_n = int(cur[0]) if cur else 1
+                    except (ValueError, IndexError):
+                        cur_n = 1
+                    for v in range(0, cur_n):
+                        effs.add(("prop", eid, eff.property, str(v)))
+        else:
+            effs.add(("prop", eid, eff.property, eff.value))
     # Rule-level effects: only 'adds' for the relaxed graph (delete
     # relaxation). The fact-set incremental simulator uses the same
     # index but reads 'dels' too.
@@ -2971,7 +2988,8 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                         continue  # All effects forbidden — no-op grounding.
             else:
                 pres, effs = _ground_action_facts(
-                    action, roles, lex, rule_effects, facts=state_facts)
+                    action, roles, lex, rule_effects, facts=state_facts,
+                    trace=trace)
                 if not effs:
                     continue
                 effs = _filter_forbidden_effs(effs, trace, lex)
@@ -3102,7 +3120,8 @@ def _ground_constructable_actions(
             if instrument_eid is not None:
                 roles["instrument"] = instrument_eid
             pres, effs = _ground_action_facts(
-                fari, roles, lex, rule_effects, facts=state_facts)
+                fari, roles, lex, rule_effects, facts=state_facts,
+                trace=trace)
             if not effs:
                 continue
             effs = _filter_forbidden_effs(effs, trace, lex)
@@ -4547,7 +4566,8 @@ def plan_for_goal(
                     roles[r.name] = e
                 pres, effs = _ground_action_facts(
                     action_obj, roles, lex, rule_effects,
-                    facts=_state_facts(initial_trace, initial_derived, lex))
+                    facts=_state_facts(initial_trace, initial_derived, lex),
+                    trace=initial_trace)
                 effs = set(effs) | {event_fired_fact}
                 grounded.append((action_obj, roles, pres, effs))
 
