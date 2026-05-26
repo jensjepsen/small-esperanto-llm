@@ -952,23 +952,42 @@ def regress_for_goal(
                             eff.property, rng.choice(non_target))
             else:
                 from .spawner import make_spawner
+                # Count-delta goals: sometimes place the target in an
+                # away location so the planner chains locomotion +
+                # acquisition before consumption. Produces multi-step
+                # arithmetic narratives.
+                away_id = scene_id
+                if isinstance(eff, CountDeltaEffect) and rng.random() < 0.6:
+                    away_locs = [
+                        l for l in lex.concept_index.concepts_matching(
+                            "location")
+                        if l != scene_lemma
+                        and not getattr(lex.concepts.get(l),
+                                        "is_category_stub", False)]
+                    if away_locs:
+                        away_lemma = rng.choice(away_locs)
+                        try:
+                            _add_entity_randomized(
+                                t, away_lemma, lex, rng,
+                                entity_id=away_lemma)
+                            t.assert_relation(
+                                "apud", (away_lemma, scene_id), lex)
+                            away_id = away_lemma
+                        except (KeyError, ValueError):
+                            pass
+                extra_roles = sum(
+                    1 for r in action.roles
+                    if r.name not in (actor_role_name, eff.target_role)
+                    and not getattr(r, "optional", False))
                 setup_spawner = make_spawner(
-                    scene_id, lex, rng, budget=1,
+                    away_id, lex, rng, budget=1 + extra_roles,
                     actor_eid=actor_eid, inject_owner_p=0.30)
                 target_role_spec = next(
                     (r for r in action.roles
                      if r.name == eff.target_role), None)
                 if target_role_spec is None:
                     _bail(f"missing_target_role:{verb_lemma}.{eff.target_role}")
-                    return None  # schema issue, not placement
-                # inject_owner=False: skip NPC injection on the target
-                # spawn. Without this, large-parts concepts like
-                # submarŝipo (whose `_add_entity_randomized` cascades
-                # into a deep parts tree) combine with a freshly-spawned
-                # NPC owner to push scene size past ~150 entities, and
-                # the planner's O(entities^role_count) grounding hangs.
-                # Doni/peti chains still surface via instrument spawns
-                # (extras, which keep the default inject_owner_p=0.30).
+                    return None
                 target_eid = setup_spawner(
                     target_role_spec, t, lex,
                     set(t.entities.keys()),
