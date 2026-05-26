@@ -696,3 +696,4 @@
 {"lemma": "hamburgero", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "pano"}, {"concept": "viando"}, {"concept": "fromaĝo"}], "crafted_with": ["forno"]}
 {"lemma": "ketĉupo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "koloro": ["ruĝa"]}, "category": ["manĝaĵo"]}
 {"lemma": "majonezo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "koloro": ["blanka"]}, "category": ["manĝaĵo"]}
+{"lemma": "planko", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}

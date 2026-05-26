@@ -1882,6 +1882,20 @@ indoor_location_has_pordo = derive(
     name="indoor_location_has_pordo",
 )
 
+indoor_location_has_planko = derive(
+    when=entity(type="location", indoor_outdoor="interna")
+         & bind(ILPL := var("L")),
+    implies=part(ILPL, "planko"),
+    name="indoor_location_has_planko",
+)
+
+indoor_location_has_plafono = derive(
+    when=entity(type="location", indoor_outdoor="interna")
+         & bind(ILPF := var("L")),
+    implies=part(ILPF, "plafono"),
+    name="indoor_location_has_plafono",
+)
+
 
 # Tool-use capability. Any entity with hands (mano) can use tools.
 # Currently this picks up persons (persono.parts includes mano) and
@@ -3014,6 +3028,8 @@ DEFAULT_DSL_DERIVATIONS = [
     entity_in_water_from_water_body,
     person_has_human_parts,
     indoor_location_has_pordo,
+    indoor_location_has_planko,
+    indoor_location_has_plafono,
     has_hands_can_use_tools,
     animate_has_hunger,
     animate_has_thirst,
