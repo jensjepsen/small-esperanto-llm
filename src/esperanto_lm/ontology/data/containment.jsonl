@@ -283,3 +283,8 @@
 {"container": "tapiŝo", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sub"}
 {"container": "lito", "contained_pattern": {"entity_type": "animal"}, "relation": "sub"}
 {"container": "tablo", "contained_pattern": {"entity_type": "animal"}, "relation": "sub"}
+{"container_pattern": {"category": "ĉambro"}, "contained": "lito", "relation": "en"}
+{"container_pattern": {"category": "ĉambro"}, "contained": "sofo", "relation": "en"}
+{"container_pattern": {"category": "ĉambro"}, "contained": "seĝo", "relation": "en"}
+{"container_pattern": {"category": "ĉambro"}, "contained": "kuseno", "relation": "en"}
+{"container_pattern": {"category": "ĉambro"}, "contained": "tapiŝo", "relation": "en"}

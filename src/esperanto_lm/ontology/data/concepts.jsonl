@@ -2,12 +2,12 @@
 {"lemma": "viro", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
 {"lemma": "virino", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
 {"lemma": "ĝardeno", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}, {"concept": "tero"}]}
-{"lemma": "salono", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "oficejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "biblioteko", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "hospitalo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "restoracio", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "vendejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "salono", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "oficejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "biblioteko", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "hospitalo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "restoracio", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "vendejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
 {"lemma": "parko", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}, {"concept": "tero"}]}
 {"lemma": "pano", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "faruno"}, {"concept": "akvo"}], "crafted_with": ["forno"]}
 {"lemma": "pomo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["frukto"]}
@@ -247,8 +247,8 @@
 {"lemma": "rizo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "requires_cooking": ["yes"], "cooking_state": ["kruda"]}, "category": ["manĝaĵo"]}
 {"lemma": "supo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "constructable": ["yes"]}, "category": ["manĝaĵo"], "parts": [{"concept": "karoto"}, {"concept": "cepo"}, {"concept": "akvo"}], "crafted_with": ["forno", "kameno"]}
 {"lemma": "ŝafo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "vosto"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "haro"}], "category": ["besto"]}
-{"lemma": "domo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "ĉambro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "domo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "ĉambro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
 {"lemma": "koridoro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "balkono", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
 {"lemma": "etaĝo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
@@ -277,8 +277,8 @@
 {"lemma": "ŝinko", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["manĝaĵo"]}
 {"lemma": "limonado", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "presence": ["ĉeesta"], "state_of_matter": ["likva"], "transforms_on_spill": ["flako"], "constructable": ["yes"]}, "category": ["trinkaĵo"], "parts": [{"concept": "akvo"}, {"concept": "citrono"}]}
 {"lemma": "mento", "entity_type": "substance", "properties": {"water_state": ["soifa"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "planted_state": ["neplantita"], "edibility": ["manĝebla"], "integrity": ["tuta"]}, "category": ["planto"]}
-{"lemma": "kafejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "bakejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "kafejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "bakejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
 {"lemma": "preĝejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "arbaro", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}, "parts": [{"concept": "vojo"}, {"concept": "tero"}]}
 {"lemma": "anaso", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "flugilo"}, {"concept": "kapo"}, {"concept": "okulo"}], "category": ["birdo"]}
@@ -339,7 +339,7 @@
 {"lemma": "inko", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["likva"], "denseco": ["1.1"]}}
 {"lemma": "gumo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "count": ["1"]}, "category": ["ilo"]}
 {"lemma": "markilo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "functional_signature": ["skribi"]}, "category": ["ilo"]}
-{"lemma": "muzikejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "muzikejo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
 {"lemma": "violono", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
 {"lemma": "tamburo", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
 {"lemma": "harpo", "entity_type": "artifact", "properties": {"fragility": ["fragila"], "state_of_matter": ["solida"], "made_of": ["wood"], "emits_sound": ["yes"], "functional_signature": ["ludi"]}, "category": ["muzikilo"]}
@@ -544,10 +544,10 @@
 {"lemma": "reĝo", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["viro"]}
 {"lemma": "reĝino", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["virino"]}
 {"lemma": "pirato", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
-{"lemma": "kastelo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "palaco", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "kastelo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "palaco", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
 {"lemma": "fabriko", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "muzeo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "muzeo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
 {"lemma": "ondo", "entity_type": "natural_object", "properties": {"state_of_matter": ["likva"]}}
 {"lemma": "roko", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "ĉielarko", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
@@ -575,7 +575,7 @@
 {"lemma": "eksterterano", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
 {"lemma": "haveno", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
 {"lemma": "korto", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
-{"lemma": "butiko", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "butiko", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
 {"lemma": "marĉo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
 {"lemma": "rinocero", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "dorso"}], "category": ["besto"]}
 {"lemma": "hipopotamo", "entity_type": "animal", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "buŝo"}, {"concept": "dorso"}], "category": ["besto"]}
@@ -587,7 +587,7 @@
 {"lemma": "dentisto", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
 {"lemma": "direktoro", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
 {"lemma": "foiro", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
-{"lemma": "stacidomo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "stacidomo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
 {"lemma": "tombejo", "entity_type": "location", "properties": {"indoor_outdoor": ["ekstera"]}}
 {"lemma": "marbordo", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
 {"lemma": "aŭroro", "entity_type": "natural_object", "properties": {"state_of_matter": ["gasa"]}}
@@ -601,10 +601,10 @@
 {"lemma": "kosmonaŭto", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
 {"lemma": "polico", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
 {"lemma": "matroso", "entity_type": "person", "properties": {}, "parts": [{"concept": "piedo"}, {"concept": "mano"}, {"concept": "kapo"}, {"concept": "okulo"}, {"concept": "fingro"}, {"concept": "brako"}, {"concept": "dento"}, {"concept": "buŝo"}, {"concept": "nazo"}, {"concept": "orelo"}, {"concept": "dorso"}, {"concept": "haro"}], "category": ["persono"]}
-{"lemma": "laboratorio", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "teatro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "kazino", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
-{"lemma": "templo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
+{"lemma": "laboratorio", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "teatro", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "kazino", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
+{"lemma": "templo", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}, "category": ["ĉambro"]}
 {"lemma": "groto", "entity_type": "location", "properties": {"indoor_outdoor": ["interna"]}}
 {"lemma": "tajdo", "entity_type": "natural_object", "properties": {"state_of_matter": ["likva"]}}
 {"lemma": "riverbordo", "entity_type": "natural_object", "properties": {"state_of_matter": ["solida"]}}
