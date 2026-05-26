@@ -749,7 +749,7 @@ def _place_respecting_containment(
         added_here = True
 
     def _try_relation(container_eid: str):
-        rels = ["en", "sur"]
+        rels = ["en", "sur", "sub"]
         rng.shuffle(rels)
         for rel in rels:
             if t.is_relation_permitted(

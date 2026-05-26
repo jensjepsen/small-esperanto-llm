@@ -275,3 +275,11 @@
 {"container": "pistakarbo", "contained": "pistako", "relation": "sur"}
 {"container_pattern": {"property": {"is_vehicle": "yes"}}, "contained_pattern": {"entity_type": "animate"}, "relation": "en"}
 {"container_pattern": {"property": {"is_vehicle": "yes"}}, "contained_pattern": {"entity_type": "animate"}, "relation": "sur"}
+{"container": "lito", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sub"}
+{"container": "tablo", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sub"}
+{"container": "seĝo", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sub"}
+{"container": "sofo", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sub"}
+{"container": "kuseno", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sub"}
+{"container": "tapiŝo", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sub"}
+{"container": "lito", "contained_pattern": {"entity_type": "animal"}, "relation": "sub"}
+{"container": "tablo", "contained_pattern": {"entity_type": "animal"}, "relation": "sub"}

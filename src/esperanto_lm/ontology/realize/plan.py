@@ -1041,7 +1041,7 @@ def aggregate_relations(messages: list[Message]) -> list[Message]:
     for m in setup:
         if isinstance(m, RelationMessage):
             rel = m.relation
-            if rel.relation in ("en", "sur") and len(rel.args) == 2:
+            if rel.relation in ("en", "sur", "sub") and len(rel.args) == 2:
                 key = (rel.relation, rel.args[1])
                 if key not in buckets:
                     buckets[key] = []

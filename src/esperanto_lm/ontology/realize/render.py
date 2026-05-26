@@ -188,6 +188,12 @@ RELATION_TEMPLATES = {
         lambda a, b, t: f"Sur {b} est{t} {a}.",
         lambda a, b, t: f"{a} troviĝ{t} sur {b}.",
     ],
+    "sub": [
+        lambda a, b, t: f"{a} kuŝ{t} sub {b}.",
+        lambda a, b, t: f"Sub {b} kuŝ{t} {a}.",
+        lambda a, b, t: f"Sub {b} est{t} {a}.",
+        lambda a, b, t: f"{a} troviĝ{t} sub {b}.",
+    ],
     "havi": [
         lambda a, b_acc, t: f"{a} hav{t} {b_acc}.",
         lambda a, b_acc, t: f"{a} ten{t} {b_acc}.",
@@ -708,7 +714,7 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
     # caused first-reference pronominalization: "Ŝi estos en la
     # koridoro" before "Sara" had ever surfaced. Bail early so
     # mentions only happen when the message produces text.
-    if rel.relation not in ("havi", "sur", "en", "apud"):
+    if rel.relation not in ("havi", "sur", "sub", "en", "apud"):
         return None
     # Held-item positional suppression. When the contained/subject
     # entity is held by an actor (havi(?, X) somewhere in trace
@@ -726,7 +732,7 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
     # thing whose location is being claimed. For apud (symmetric)
     # we'd ideally check both args; in practice the realizer's apud
     # rendering always uses arg[0] as the subject so this is OK.
-    if rel.relation in ("en", "sur", "apud"):
+    if rel.relation in ("en", "sur", "sub", "apud"):
         subject_eid = rel.args[0]
         for r in ctx.trace.relations:
             if (r.relation == "havi" and len(r.args) == 2
@@ -754,6 +760,10 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
         else:
             template = _pick(ctx.rng, RELATION_TEMPLATES["sur"])
             sent = template(a_form, b_form, ctx.tense)
+    elif rel.relation == "sub":
+        b_form = ctx.name_for(b)
+        template = _pick(ctx.rng, RELATION_TEMPLATES["sub"])
+        sent = template(a_form, b_form, ctx.tense)
     elif rel.relation in ("en", "apud"):
         b_form = ctx.name_for(b)
         # If the contained has a derived posture other than the slot's
@@ -859,7 +869,7 @@ def _render_scias_tuple_as_ke_clause(
     ctx.note_mention(obj_ent)
     if mode == "question":
         copula = f"est{ctx.tense}"
-        if rel_type in ("en", "sur"):
+        if rel_type in ("en", "sur", "sub"):
             return f"kie {copula} {subj_form}"
         if rel_type == "havi":
             verb = "havis" if ctx.tense == "is" else "havas"
@@ -898,7 +908,7 @@ def _render_scias_tuple_as_quote_body(
         return s[0].upper() + s[1:] if s else s
 
     if mode == "question":
-        if rel_type in ("en", "sur"):
+        if rel_type in ("en", "sur", "sub"):
             return f"Kie estas {subj_form}?"
         if rel_type == "havi":
             return f"Kiu havas {to_accusative(subj_form)}?"
@@ -907,6 +917,8 @@ def _render_scias_tuple_as_quote_body(
         return f"{_cap(subj_form)} estas en {obj_form}."
     if rel_type == "sur":
         return f"{_cap(subj_form)} estas sur {obj_form}."
+    if rel_type == "sub":
+        return f"{_cap(subj_form)} estas sub {obj_form}."
     if rel_type == "havi":
         return f"{_cap(subj_form)} havas {to_accusative(obj_form)}."
     return None
@@ -1777,7 +1789,7 @@ def _render_grouped_relation(
     # banano is actually with its carrier elsewhere. Skipped for
     # `havi` (which IS the possession relation; we'd be suppressing
     # the very rendering that establishes ownership).
-    suppress_held = m.relation in ("en", "sur", "apud")
+    suppress_held = m.relation in ("en", "sur", "sub", "apud")
     held_set: set = set()
     if suppress_held:
         for r in ctx.trace.relations:
