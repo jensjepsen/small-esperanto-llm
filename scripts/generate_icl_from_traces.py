@@ -51,10 +51,26 @@ from pathlib import Path
 # Esperanto question/answer phrasings — kept compact; the SFT
 # trainer will tokenize these as ordinary text.
 
-CARDINALS_EO = [
-    "nul", "unu", "du", "tri", "kvar", "kvin",
-    "ses", "sep", "ok", "naŭ", "dek",
-]
+def _cardinal_eo(n: int) -> str:
+    if n == 0:
+        return "nul"
+    ones = ["", "unu", "du", "tri", "kvar", "kvin",
+            "ses", "sep", "ok", "naŭ"]
+    parts = []
+    if n >= 100:
+        h = n // 100
+        parts.append("cent" if h == 1 else ones[h] + "cent")
+        n %= 100
+    if n >= 10:
+        d = n // 10
+        parts.append("dek" if d == 1 else ones[d] + "dek")
+        n %= 10
+    if n > 0:
+        parts.append(ones[n])
+    return " ".join(parts)
+
+
+CARDINALS_EO = [_cardinal_eo(i) for i in range(101)]
 
 
 def _load_unmarked() -> dict[str, str]:

@@ -31,17 +31,23 @@ _CARDINALS = [
 
 
 def _cardinal_eo(n: int) -> str:
-    """Esperanto cardinal up to 20; composed `dudek tri`-style above
-    but capped at `cent` for the addendum's typical range."""
+    """Esperanto cardinal number in words."""
     if 0 <= n < len(_CARDINALS):
         return _CARDINALS[n]
-    if n < 100:
+    parts = []
+    if n >= 100:
+        h = n // 100
+        parts.append("cent" if h == 1 else f"{_CARDINALS[h]}cent")
+        n %= 100
+    if n >= 10:
         tens, units = divmod(n, 10)
-        head = _CARDINALS[tens * 1] if tens == 1 else f"{_CARDINALS[tens]}dek"
-        if units == 0:
-            return head
-        return f"{head} {_CARDINALS[units]}"
-    return str(n)  # surface as digits beyond the natural-language range
+        head = _CARDINALS[tens] if tens == 1 else f"{_CARDINALS[tens]}dek"
+        parts.append(head)
+        if units > 0:
+            parts.append(_CARDINALS[units])
+    elif n > 0:
+        parts.append(_CARDINALS[n])
+    return " ".join(parts) if parts else "nul"
 
 
 def _plural_form(noun: str) -> str:
