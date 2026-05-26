@@ -294,4 +294,6 @@
 {"container": "planko", "contained": "korbo", "relation": "sur"}
 {"container": "planko", "contained": "skatolo", "relation": "sur"}
 {"container": "planko", "contained_pattern": {"entity_type": "animal"}, "relation": "sur"}
-{"container": "plafono", "contained_pattern": {"entity_type": "artifact", "property": {"state_of_matter": "solida"}}, "relation": "sub"}
+{"container": "plafono", "contained": "lustro", "relation": "sub"}
+{"container": "plafono", "contained": "lampo", "relation": "sub"}
+{"container": "plafono", "contained": "lanterno", "relation": "sub"}

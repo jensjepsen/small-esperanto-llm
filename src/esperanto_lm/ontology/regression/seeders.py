@@ -767,24 +767,31 @@ def _place_respecting_containment(
             except (KeyError, ValueError):
                 pass
 
-    # Tier 2: any other in-trace entity (except `avoid`-listed ones,
-    # used by callers that want the concept to land in its natural
-    # habitat rather than fall back to the scene as a default
-    # container).
     avoid = avoid or frozenset()
-    for other_eid in list(t.entities.keys()):
-        if other_eid in (eid, preferred_id):
-            continue
-        if other_eid in avoid:
-            continue
-        rel = _try_relation(other_eid)
-        if rel is None:
-            continue
-        try:
-            t.assert_relation(rel, (eid, other_eid), lex)
-            return eid
-        except (KeyError, ValueError):
-            continue
+
+    def _try_tier2():
+        for other_eid in list(t.entities.keys()):
+            if other_eid in (eid, preferred_id):
+                continue
+            if other_eid in avoid:
+                continue
+            rel = _try_relation(other_eid)
+            if rel is None:
+                continue
+            try:
+                t.assert_relation(rel, (eid, other_eid), lex)
+                return eid
+            except (KeyError, ValueError):
+                continue
+        return None
+
+    # Randomize Tier 2 (existing entities) vs Tier 3 (materialize).
+    # Without this, room parts (planko, plafono) at Tier 2 always
+    # win over materializing a tablo/breto at Tier 3.
+    if rng.random() < 0.5:
+        result = _try_tier2()
+        if result is not None:
+            return result
 
     # Tier 3: materialize a container, then place inside.
     # Pre-filter at the lemma level (containers_for is broad — it
@@ -865,6 +872,11 @@ def _place_respecting_containment(
                 return eid
             except (KeyError, ValueError):
                 continue
+
+    # Tier 2 fallback: if we skipped Tier 2 earlier, try it now.
+    result = _try_tier2()
+    if result is not None:
+        return result
 
     # Tier 4: top-level location with no valid container of its own
     # (e.g. domo) → place as a sibling apud the scene. Only fires for

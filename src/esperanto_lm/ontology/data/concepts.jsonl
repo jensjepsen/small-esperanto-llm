@@ -626,7 +626,7 @@
 {"lemma": "papajo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"]}, "category": ["frukto"]}
 {"lemma": "pizo", "entity_type": "substance", "properties": {"edibility": ["manĝebla"], "integrity": ["tuta"], "presence": ["ĉeesta"], "state_of_matter": ["solida"], "water_state": ["soifa"], "planted_state": ["neplantita"], "koloro": ["verda"]}, "category": ["legomo", "planto"]}
 {"lemma": "tegmento", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}
-{"lemma": "plafono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"]}}
+{"lemma": "plafono", "entity_type": "artifact", "properties": {"fragility": ["fortika"], "state_of_matter": ["solida"], "imposes_pose": ["penda"]}}
 {"lemma": "akacio", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
 {"lemma": "baobabo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
 {"lemma": "figarbo", "entity_type": "substance", "properties": {"presence": ["ĉeesta"], "state_of_matter": ["solida"], "made_of": ["wood"], "planted_state": ["neplantita"], "imposes_pose": ["penda"]}, "category": ["planto", "arbo"]}
