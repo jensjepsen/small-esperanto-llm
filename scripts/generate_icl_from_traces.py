@@ -1766,15 +1766,32 @@ def generate_qas_for_trace(
     if not candidates:
         return []
     rng.shuffle(candidates)
+    # Stratify by interrogative to ensure type diversity.
+    by_type: dict[str, list[dict]] = {}
+    for qa in candidates:
+        first = qa["q"].split()[0].lower() if qa["q"].split() else "?"
+        by_type.setdefault(first, []).append(qa)
+    # Round-robin: one per type, then fill remaining slots.
     seen_qs: set = set()
     picked: list[dict] = []
-    for qa in candidates:
-        if qa["q"] in seen_qs:
-            continue
-        seen_qs.add(qa["q"])
-        picked.append(qa)
+    type_keys = list(by_type.keys())
+    rng.shuffle(type_keys)
+    for key in type_keys:
         if len(picked) >= max_per_trace:
             break
+        for qa in by_type[key]:
+            if qa["q"] not in seen_qs:
+                seen_qs.add(qa["q"])
+                picked.append(qa)
+                break
+    if len(picked) < max_per_trace:
+        for qa in candidates:
+            if qa["q"] in seen_qs:
+                continue
+            seen_qs.add(qa["q"])
+            picked.append(qa)
+            if len(picked) >= max_per_trace:
+                break
     return picked
 
 
