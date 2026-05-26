@@ -4937,7 +4937,8 @@ def plan_for_goal(
                 ehc_visited.add(new_mask)
                 new_plan = cur_plan + [(action.lemma, roles)]
                 if new_mask & goal_bit:
-                    return new_plan
+                    return _fixup_count_delta_qty(
+                        new_plan, goal, initial_trace)
                 new_h, new_helpful = heuristic_and_helpful(new_mask)
                 if new_h >= _HEURISTIC_INF:
                     continue
