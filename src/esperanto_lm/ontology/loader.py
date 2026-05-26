@@ -593,6 +593,8 @@ def load_lexicon(
                 raise ValueError(
                     f"action {a.lemma!r}: effect targets unknown role "
                     f"{eff.target_role!r}")
+            if isinstance(eff, CountDeltaEffect):
+                continue
             target_type = role_by_name[eff.target_role].type
             _validate_property_bundle(
                 owner=f"action:{a.lemma}.effect",
