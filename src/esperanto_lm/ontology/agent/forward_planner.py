@@ -586,10 +586,10 @@ def _ground_facts_from_template(tmpl, roles, facts):
                 except (ValueError, IndexError):
                     cur_n = 1
                 if op == "subtract":
-                    for v in range(0, cur_n):
+                    for v in range(max(0, cur_n - 20), cur_n):
                         effs.add(("prop", eid, prop, str(v)))
                 else:
-                    for v in range(cur_n + 1, 101):
+                    for v in range(cur_n + 1, min(cur_n + 21, 101)):
                         effs.add(("prop", eid, prop, str(v)))
         else:
             effs.add(("prop", eid, prop, value))
@@ -706,7 +706,7 @@ def _ground_action_facts(action, roles, lex, rule_effects, facts=None, trace=Non
                         for v in range(0, cur_n):
                             effs.add(("prop", eid, eff.property, str(v)))
                     else:
-                        for v in range(cur_n + 1, max_val + 1):
+                        for v in range(cur_n + 1, min(cur_n + 21, max_val + 1)):
                             effs.add(("prop", eid, eff.property, str(v)))
         else:
             effs.add(("prop", eid, eff.property, eff.value))
@@ -1715,7 +1715,7 @@ def _action_delta_mask(action, roles, rule_effects, lex,
                                     int(x) for x in slot_def.vocabulary)
                             except ValueError:
                                 pass
-                        for v in range(cur_n + 1, max_val + 1):
+                        for v in range(cur_n + 1, min(cur_n + 21, max_val + 1)):
                             add_mask |= 1 << id_for(
                                 ("prop", eid, eff.property, str(v)))
         else:
