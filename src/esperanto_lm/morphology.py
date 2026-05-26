@@ -180,6 +180,14 @@ def decompose_tagged(word: str) -> list[tuple[str, str]]:
     morphemes = decompose(word)
     if len(morphemes) == 1 and morphemes[0].lower() in DO_NOT_DECOMPOSE:
         return [(morphemes[0], "particle")]
+    # Correlatives + accusative/plural: kion → kio+n, kiujn → kiu+j+n
+    base = word.lower().rstrip("jn")
+    trail = word.lower()[len(base):]
+    if base in CORRELATIVES and trail:
+        result = [(base, "particle")]
+        for ch in trail:
+            result.append((ch, "ending"))
+        return result
 
     tagged = []
     for m in morphemes:
