@@ -77,6 +77,7 @@ def normalize(s: str) -> str:
         if s.startswith(prefix):
             s = s[len(prefix):]
             break
+    s = re.sub(r'\bla ', '', s).strip()
     s = re.sub(r'\b(\w+)ojn\b', r'\1oj', s)
     s = re.sub(r'\b(\w+)on\b', r'\1o', s)
     return s

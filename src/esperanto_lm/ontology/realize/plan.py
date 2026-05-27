@@ -229,6 +229,16 @@ def plan_messages(
             event=ev,
             cause_event_id=(ev.caused_by[0] if ev.caused_by else None),
             source_entity_id=source_by_event.get(ev.id)))
+        if rng is not None:
+            for (eid, slot), val in ev.property_changes.items():
+                slot_def = lexicon.slots.get(slot)
+                if (slot_def is not None
+                        and getattr(slot_def, "adjectival", False)
+                        and getattr(slot_def, "varies", False)
+                        and rng.random() < 0.5):
+                    messages.append(EntityQualityMessage(
+                        entity_id=eid, slot=slot,
+                        quality_lemma=val, phase="event"))
         for created in ev.creates:
             messages.append(AppearanceMessage(
                 entity_id=created.id, cause_event_id=ev.id))
@@ -864,26 +874,18 @@ def _destruction_messages_for_event(
 
 def aggregate_same_subject(
     messages: list[Message], lexicon: Lexicon,
+    rng=None,
 ) -> list[Message]:
     """Combine adjacent EventMessages that share a grammatical subject
-    into a `CoordinatedMessage`.
+    into a `CoordinatedMessage`, with random breaks for variety.
 
-    The causal-link requirement has been dropped — adjacent same-
-    subject events coordinate naturally in prose even without a
-    direct cause relation: "La hundo kuras kaj kaptas la pilkon"
-    reads better than two sentences regardless of whether the run
-    causes the catch.
-
-    Scope:
-      - Only combines EventMessage with EventMessage.
-      - Subjects must be identical (resolved from the verb's role
-        structure — agent if transitive, theme if intransitive).
-      - Subject must be resolvable (impersonals like `pluvi` never
-        aggregate — nothing to share between them).
-
-    State-change messages (RelationRemoved, DestructionMessage etc.)
-    are intentionally not aggregated yet — they're rendered as follow-
-    on clauses, not coordinated verb phrases.
+    When rng is provided, runs are randomly split at each event
+    boundary (40% break probability). This produces a mix of:
+      - Full coordination: "vidas kaj fermas kaj iras"
+      - Partial: "vidas kaj fermas. Li iras."
+      - All separate: "X vidas. Li fermas. La doktoro iras."
+    The renderer's pronoun/alias cycling handles back-references
+    naturally across the breaks.
     """
     if not messages:
         return messages
@@ -896,10 +898,6 @@ def aggregate_same_subject(
             out.append(m)
             i += 1
             continue
-        # Events with a kind="created" role (fari and any future
-        # construction verb) stay standalone — their role structure
-        # (created theme, list parts, optional instrument) is too
-        # rich to elide into a coordinated "faris X kaj Yis Z" phrase.
         if _has_created_role(m.event, lexicon):
             out.append(m)
             i += 1
@@ -923,9 +921,29 @@ def aggregate_same_subject(
             j += 1
 
         if len(run) >= 2:
-            out.append(CoordinatedMessage(
-                children=list(run),
-                cause_event_id=run[0].cause_event_id))
+            if rng is None:
+                out.append(CoordinatedMessage(
+                    children=list(run),
+                    cause_event_id=run[0].cause_event_id))
+            else:
+                chunk: list[EventMessage] = [run[0]]
+                for ev in run[1:]:
+                    if rng.random() < 0.4:
+                        if len(chunk) >= 2:
+                            out.append(CoordinatedMessage(
+                                children=list(chunk),
+                                cause_event_id=chunk[0].cause_event_id))
+                        else:
+                            out.append(chunk[0])
+                        chunk = [ev]
+                    else:
+                        chunk.append(ev)
+                if len(chunk) >= 2:
+                    out.append(CoordinatedMessage(
+                        children=list(chunk),
+                        cause_event_id=chunk[0].cause_event_id))
+                else:
+                    out.append(chunk[0])
             i = j
         else:
             out.append(m)

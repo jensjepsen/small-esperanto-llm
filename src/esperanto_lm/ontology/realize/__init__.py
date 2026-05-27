@@ -126,7 +126,7 @@ def realize_trace(
         definition_p=definition_p, rng=rng,
         defined_entities=defined_entities)
     messages = aggregate_relations(messages)
-    messages = aggregate_same_subject(messages, lexicon)
+    messages = aggregate_same_subject(messages, lexicon, rng=rng)
     messages = subordinate_creations(messages)
     prose = render_messages(
         messages, trace, lexicon,

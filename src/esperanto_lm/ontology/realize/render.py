@@ -672,23 +672,33 @@ class _Ctx:
 
 # =================== per-message renderers ==================
 
-def _render_entity_quality(m, ctx: _Ctx) -> Optional[str]:
-    """'La sofo estas malseka.' — predicative attribution. The
-    quality lemma is already in adjective form (Esperanto -a ending),
-    no inflection needed for predicative use (predicative adjective
-    stays in nominative singular form to match the singular subject).
+_POST_STATE_OPENERS = [
+    lambda t: f"Nun",
+    lambda t: f"Rezulte",
+    lambda t: f"Pro tio",
+    lambda t: None,
+]
 
-    When the (slot, quality_lemma) has a producing verb in the
-    lexicon's `state_verbs` index AND rng allows, contracts the
-    predicate to verbal form ("la pordo ŝlositas"). Stilted but
-    valid Esperanto and gives the model lexical variation."""
+
+def _render_entity_quality(m, ctx: _Ctx) -> Optional[str]:
+    """'La sofo estas malseka.' — predicative attribution.
+
+    Post-event state messages (phase="event") get varied openers
+    matching the narrative tense: "Nun la pordo estis fermita.",
+    "Rezulte la lampo estis aktiva.", or plain."""
     ent = ctx.trace.entities.get(m.entity_id)
     if ent is None:
         return None
     form = ctx.name_for(ent)
     ctx.note_mention(ent)
     predicate = _state_predicate(m.slot, m.quality_lemma, ctx)
-    return f"{form} {predicate}."
+    base = f"{form} {predicate}."
+    if getattr(m, "phase", "setup") == "event" and ctx.rng is not None:
+        opener_fn = ctx.rng.choice(_POST_STATE_OPENERS)
+        opener = opener_fn(ctx.tense)
+        if opener is not None:
+            return f"{opener} {base[0].lower()}{base[1:]}"
+    return base
 
 
 # Probability of contracting "estas X-ita" → "X-itas" when a verbal
