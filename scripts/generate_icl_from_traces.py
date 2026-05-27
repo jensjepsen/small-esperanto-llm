@@ -530,8 +530,18 @@ def _q_instrument_and_parts(rec: dict, rng: random.Random) -> list[dict]:
 
 
 def _q_count(rec: dict, rng: random.Random) -> list[dict]:
-    """For entities with count > 1, ask "Kiom da X estis?"."""
+    """For entities with count > 1, ask how many — plain, in a
+    location, or owned by someone."""
     entities = {e["eid"]: e for e in rec["entities"]}
+    setup_rels = rec.get("setup_relations", [])
+    loc_of = {}
+    owner_of = {}
+    for rel in setup_rels:
+        if rel["relation"] in ("en", "sur", "sub"):
+            loc_of.setdefault(rel["args"][0],
+                              (rel["relation"], rel["args"][1]))
+        elif rel["relation"] == "havi":
+            owner_of.setdefault(rel["args"][1], rel["args"][0])
     out = []
     for ent in rec["entities"]:
         if "_" in ent["eid"] and ent["eid"] != ent["concept"]:
@@ -547,10 +557,244 @@ def _q_count(rec: dict, rng: random.Random) -> list[dict]:
             continue
         if n <= 1 or n >= len(CARDINALS_EO):
             continue
+        concept = ent["concept"]
         out.append({
-            "q": f"Kiom da {ent['concept']}j estis?",
-            "a": CARDINALS_EO[n],
+            "q": f"Kiom da {concept}j estis?",
+            "a": _count_answer(n, concept, rng, "estis"),
         })
+        loc_info = loc_of.get(ent["eid"])
+        if loc_info:
+            prep, loc_eid = loc_info
+            if loc_eid in entities:
+                loc_name = entities[loc_eid]["concept"]
+                out.append({
+                    "q": f"Kiom da {concept}j estis {prep} la {loc_name}?",
+                    "a": _count_answer(n, concept, rng, "estis"),
+                })
+        owner_eid = owner_of.get(ent["eid"])
+        if owner_eid and owner_eid in entities:
+            owner_name = _entity_name(owner_eid, entities)
+            out.append({
+                "q": f"Kiom da {concept}j havis {owner_name}?",
+                "a": _count_answer(n, concept, rng, "estis"),
+            })
+    return out
+
+
+def _count_answer(n: int, concept: str, rng: random.Random,
+                  verb: str = "estis") -> str:
+    """Vary count answer format: bare number, with noun, or full sentence."""
+    num = CARDINALS_EO[n]
+    pl = f"{concept}j" if n > 1 else concept
+    choice = rng.randint(0, 2)
+    if choice == 0:
+        return num.capitalize()
+    elif choice == 1:
+        return f"{num.capitalize()} {pl}."
+    else:
+        return f"{verb.capitalize()} {num} {pl}."
+
+
+def _q_count_delta(rec: dict, rng: random.Random) -> list[dict]:
+    """Arithmetic Q/A from count changes: 'there were N, someone
+    ate/gave/drank M, how many remain?'"""
+    entities = {e["eid"]: e for e in rec["entities"]}
+    events = rec.get("events", [])
+    out = []
+    count_deltas: dict[str, list[tuple[str, str, int, int]]] = {}
+    for ev in events:
+        for k, v in ev.get("property_changes", {}).items():
+            if "|count" not in k:
+                continue
+            eid = k.split("|")[0]
+            try:
+                new_val = int(v)
+            except (ValueError, TypeError):
+                continue
+            count_deltas.setdefault(eid, []).append(
+                (ev["action"], eid, new_val))
+    for eid, changes in count_deltas.items():
+        ent = entities.get(eid)
+        if ent is None:
+            continue
+        concept = ent["concept"]
+        count_vals = ent["properties"].get("count")
+        if not count_vals:
+            continue
+        try:
+            initial = int(count_vals[0])
+        except (ValueError, TypeError):
+            continue
+        if initial <= 1:
+            continue
+        final = changes[-1][2]
+        delta = initial - final
+        if delta <= 0 or delta >= initial:
+            continue
+        if initial >= len(CARDINALS_EO) or final >= len(CARDINALS_EO):
+            continue
+        if delta >= len(CARDINALS_EO):
+            continue
+        lex = _get_lex()
+        agent_eid = None
+        verb = None
+        for ev in events:
+            if ev["action"] in ("manĝi", "trinki", "doni",
+                                "vendi", "aĉeti"):
+                theme = ev["roles"].get("theme")
+                if theme == eid:
+                    agent_eid = ev["roles"].get("agent")
+                    verb = ev["action"]
+                    break
+        if agent_eid is None or verb is None:
+            continue
+        agent_ent = entities.get(agent_eid)
+        if agent_ent and agent_ent.get("type") == "person":
+            agent_name = agent_eid.capitalize()
+        else:
+            agent_name = "la " + (
+                agent_ent["concept"] if agent_ent else agent_eid)
+        verb_past = {
+            "manĝi": "manĝis", "trinki": "trinkis",
+            "doni": "donis", "vendi": "vendis",
+            "aĉeti": "aĉetis",
+        }.get(verb, verb)
+        out.append({
+            "q": (f"Kiom da {concept}j restas post kiam"
+                  f" {agent_name} {verb_past}?"),
+            "a": _count_answer(final, concept, rng, "restas"),
+        })
+    return out
+
+
+def _entity_name(eid, entities):
+    ent = entities.get(eid)
+    if not ent:
+        return eid
+    if ent.get("type") == "person":
+        return eid.capitalize()
+    return "la " + ent["concept"]
+
+
+def _q_count_transfer(rec: dict, rng: random.Random) -> list[dict]:
+    """Transfer Q/A: after verbs that add havi to a non-agent role,
+    ask who has how many."""
+    from esperanto_lm.ontology.agent.forward_planner import (
+        _build_rule_effects_index, _RULE_EFFECTS_CACHE,
+    )
+    lex = _get_lex()
+    from esperanto_lm.ontology.dsl.rules import DEFAULT_DSL_RULES
+    re = _RULE_EFFECTS_CACHE.get(id(lex))
+    if re is None:
+        re = _build_rule_effects_index(DEFAULT_DSL_RULES, lex)
+        _RULE_EFFECTS_CACHE[id(lex)] = re
+    transfer_verbs = {}
+    for verb, entry in re.items():
+        for rule in entry.get("rules", []):
+            for rel, role_names in rule.get("adds", []):
+                if rel == "havi" and role_names[0] != "agent":
+                    transfer_verbs[verb] = role_names[0]
+    entities = {e["eid"]: e for e in rec["entities"]}
+    events = rec.get("events", [])
+    out = []
+    for ev in events:
+        if ev["action"] not in transfer_verbs:
+            continue
+        recip_role = transfer_verbs[ev["action"]]
+        agent = ev["roles"].get("agent")
+        recip = ev["roles"].get(recip_role)
+        theme = ev["roles"].get("theme")
+        if not all((agent, recip, theme)):
+            continue
+        ent = entities.get(theme)
+        if ent is None:
+            continue
+        count_vals = ent["properties"].get("count")
+        if not count_vals:
+            continue
+        try:
+            initial = int(count_vals[0])
+        except (ValueError, TypeError):
+            continue
+        if initial <= 1 or initial >= len(CARDINALS_EO):
+            continue
+        count_changes = []
+        for ev2 in events:
+            for k, v in ev2.get("property_changes", {}).items():
+                if theme in k and "count" in k:
+                    count_changes.append(int(v))
+        final = count_changes[-1] if count_changes else initial
+        if final < 0 or final >= len(CARDINALS_EO):
+            continue
+        transferred = initial - final
+        if transferred <= 0:
+            continue
+        concept = ent["concept"]
+        donor = _entity_name(agent, entities)
+        recipient = _entity_name(recip, entities)
+        if transferred >= len(CARDINALS_EO):
+            continue
+        verb_past = ev["action"].replace("i", "is", 1)
+        out.append({
+            "q": (f"Kiom da {concept}j havas {recipient}"
+                  f" post kiam {donor} {verb_past}?"),
+            "a": _count_answer(transferred, concept, rng, "havas"),
+        })
+        if final > 0:
+            out.append({
+                "q": (f"Kiom da {concept}j ankoraŭ havas {donor}"
+                      f" post kiam {donor} {verb_past}"
+                      f" al {recipient}?"),
+                "a": _count_answer(final, concept, rng, "havas"),
+            })
+    return out
+
+
+def _q_count_before(rec: dict, rng: random.Random) -> list[dict]:
+    """Temporal: 'how many X were there before Y happened?'
+    Answer is the initial count from the entity properties."""
+    entities = {e["eid"]: e for e in rec["entities"]}
+    events = rec.get("events", [])
+    out = []
+    seen = set()
+    for i, ev in enumerate(events):
+        for k, v in ev.get("property_changes", {}).items():
+            if "|count" not in k:
+                continue
+            eid = k.split("|")[0]
+            if eid in seen:
+                continue
+            seen.add(eid)
+            ent = entities.get(eid)
+            if ent is None:
+                continue
+            count_vals = ent["properties"].get("count")
+            if not count_vals:
+                continue
+            try:
+                initial = int(count_vals[0])
+            except (ValueError, TypeError):
+                continue
+            if initial <= 1 or initial >= len(CARDINALS_EO):
+                continue
+            concept = ent["concept"]
+            agent_eid = ev["roles"].get("agent")
+            verb = ev["action"]
+            if not agent_eid or verb == "_change":
+                for prev in reversed(events[:i]):
+                    if prev["roles"].get("theme") == eid and prev["action"] != "_change":
+                        agent_eid = prev["roles"].get("agent")
+                        verb = prev["action"]
+                        break
+            if not agent_eid:
+                continue
+            agent = _entity_name(agent_eid, entities)
+            verb_past = verb.replace("i", "is", 1)
+            out.append({
+                "q": (f"Kiom da {concept}j estis antaŭ ol"
+                      f" {agent} {verb_past}?"),
+                "a": _count_answer(initial, concept, rng, "estis"),
+            })
     return out
 
 
@@ -1732,6 +1976,9 @@ GENERATORS = [
     _q_location_at_start,
     _q_instrument_and_parts,
     _q_count,
+    _q_count_delta,
+    _q_count_transfer,
+    _q_count_before,
     # _q_category_count — requires counting by type; not in prose.
     _q_location_contents,
     _q_container_identity,
@@ -1758,18 +2005,28 @@ GENERATORS = [
 ]
 
 
+def _qa_type_key(q: str) -> str:
+    """Classify a question for balancing purposes."""
+    if "Kiom da" in q:
+        if "restas" in q: return "count_delta"
+        if "havas" in q: return "count_transfer"
+        if "antaŭ" in q: return "count_before"
+        return "count"
+    first = q.split()[0].lower() if q.split() else "?"
+    return first
+
+
 def generate_qas_for_trace(
     rec: dict, rng: random.Random, max_per_trace: int = 4,
     all_concepts: frozenset[str] | None = None,
+    type_counts: dict[str, int] | None = None,
 ) -> list[dict]:
     """Yield up to max_per_trace Q/A pairs sampled across generators.
-    Skipping empty generators; sampled uniformly so question types
-    stay balanced.
+    Selection weighted by inverse cumulative frequency so
+    underrepresented question types get boosted.
 
-    `all_concepts`: the full set of concept lemmas across ALL traces
-    in the input file. Passed to generators that need a negative-
-    sampling pool (e.g. _q_existence picks concepts NOT in this
-    trace but known to exist in the corpus)."""
+    `type_counts`: running counter of emitted Q/A types across all
+    traces. Updated in-place by this function."""
     is_planned = "drive" in rec
     candidates: list[dict] = []
     for gen in GENERATORS:
@@ -1781,33 +2038,36 @@ def generate_qas_for_trace(
             candidates.extend(gen(rec, rng))
     if not candidates:
         return []
-    rng.shuffle(candidates)
-    # Stratify by interrogative to ensure type diversity.
     by_type: dict[str, list[dict]] = {}
     for qa in candidates:
-        first = qa["q"].split()[0].lower() if qa["q"].split() else "?"
-        by_type.setdefault(first, []).append(qa)
-    # Round-robin: one per type, then fill remaining slots.
+        key = _qa_type_key(qa["q"])
+        by_type.setdefault(key, []).append(qa)
+    for qas in by_type.values():
+        rng.shuffle(qas)
     seen_qs: set = set()
     picked: list[dict] = []
-    type_keys = list(by_type.keys())
-    rng.shuffle(type_keys)
-    for key in type_keys:
-        if len(picked) >= max_per_trace:
-            break
-        for qa in by_type[key]:
+    while len(picked) < max_per_trace and by_type:
+        if type_counts is not None:
+            weights = [1.0 / (1 + type_counts.get(k, 0))
+                       for k in by_type]
+        else:
+            weights = [1.0] * len(by_type)
+        keys = list(by_type.keys())
+        chosen_key = rng.choices(keys, weights=weights, k=1)[0]
+        qas = by_type[chosen_key]
+        added = False
+        while qas:
+            qa = qas.pop()
             if qa["q"] not in seen_qs:
                 seen_qs.add(qa["q"])
                 picked.append(qa)
+                if type_counts is not None:
+                    type_counts[chosen_key] = (
+                        type_counts.get(chosen_key, 0) + 1)
+                added = True
                 break
-    if len(picked) < max_per_trace:
-        for qa in candidates:
-            if qa["q"] in seen_qs:
-                continue
-            seen_qs.add(qa["q"])
-            picked.append(qa)
-            if len(picked) >= max_per_trace:
-                break
+        if not added or not qas:
+            del by_type[chosen_key]
     return picked
 
 
@@ -1853,6 +2113,7 @@ def main():
     # Second pass: generate Q/A.
     n_traces = 0
     n_qas = 0
+    type_counts: dict[str, int] = {}
     with open(args.inp) as fin, open(args.out, "w") as fout:
         for line in fin:
             rec = json.loads(line)
@@ -1863,7 +2124,8 @@ def main():
                 continue
             qas = generate_qas_for_trace(
                 rec, rng, max_per_trace=args.max_per_trace,
-                all_concepts=all_concepts_frozen)
+                all_concepts=all_concepts_frozen,
+                type_counts=type_counts)
             for qa in qas:
                 fout.write(json.dumps(
                     format_sft_record(prose, qa),
