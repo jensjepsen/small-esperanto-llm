@@ -139,10 +139,24 @@ def apply_scene_parameters(
             if slot_def is not None and slot_def.vocabulary:
                 if isinstance(eff, CountDeltaEffect) and target_value:
                     try:
-                        gv = int(target_value)
-                        surplus = rng.randint(1, max(1, 100 - gv))
+                        ent = trace.entities.get(target_eid)
+                        concept = lex.concepts.get(
+                            ent.concept_lemma) if ent else None
+                        so = (concept.slot_overrides or {}).get(
+                            "count", {}) if concept and getattr(
+                                concept, "slot_overrides", None) else {}
+                        cv = so.get("vocabulary")
+                        if cv:
+                            max_count = int(cv[-1])
+                        else:
+                            cs = lex.slots.get("count")
+                            max_count = int(cs.vocabulary[-1]) if (
+                                cs and cs.vocabulary) else 20
+                        gv = min(int(target_value), max_count - 1)
+                        initial = min(max_count, gv + rng.randint(
+                            1, max(1, max_count - gv)))
                         trace.entities[target_eid].set_property(
-                            eff.property, str(gv + surplus))
+                            eff.property, str(initial))
                     except ValueError:
                         pass
                 else:

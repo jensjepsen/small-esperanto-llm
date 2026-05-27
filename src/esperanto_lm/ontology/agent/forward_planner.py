@@ -2789,6 +2789,9 @@ def _fp_tuple_pool(source_rel: str, trace, lex, rule_effects) -> list:
     return list(out)
 
 
+_GROUND_CAP = int(__import__("os").environ.get("MAX_GROUNDED", "50000"))
+
+
 def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     """All (action, roles, pres, effs) tuples for actions whose
     roles can be bound to current entities. Pure enumeration —
@@ -2824,11 +2827,13 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     # downstream.
     from ..entity_index import entity_index_for
     entity_idx = entity_index_for(trace, lex)
+    parts_index = trace._parts_index
     type_pool: dict = {}
     def cands_for_type(type_name):
         pool = type_pool.get(type_name)
         if pool is None:
-            pool = list(entity_idx.entities_matching(type_name))
+            pool = [eid for eid in entity_idx.entities_matching(type_name)
+                    if eid not in parts_index]
             type_pool[type_name] = pool
         return pool
     # Effect-meaningfulness lookup: the per-slot bitmap on
@@ -3150,6 +3155,8 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                 if rejected:
                     continue
             out.append((action, roles, pres, effs))
+            if len(out) > _GROUND_CAP:
+                return out
     return out
 
 
@@ -4685,8 +4692,11 @@ def plan_for_goal(
                     per_role.append(pool)
                     continue
                 # entity source: fall through to entity enumeration
+            _ef_parts = initial_trace._parts_index
             cand = []
             for eid, ent in initial_trace.entities.items():
+                if eid in _ef_parts:
+                    continue
                 if not lex.types.is_subtype(
                         ent.entity_type, role_spec.type):
                     continue
@@ -4715,6 +4725,14 @@ def plan_for_goal(
                     trace=initial_trace)
                 effs = set(effs) | {event_fired_fact}
                 grounded.append((action_obj, roles, pres, effs))
+                if len(grounded) > _max_grounded:
+                    break
+
+    if len(grounded) > _max_grounded:
+        _record_failure(
+            ("fwd_grounding_explosion", goal,
+             len(grounded), _max_grounded))
+        return None
 
     # Goal-aware filter: shrink the consumer set to only those that
     # could reach the goal in the relaxed graph. Walk back from the

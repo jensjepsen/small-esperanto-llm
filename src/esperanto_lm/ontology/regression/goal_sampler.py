@@ -671,7 +671,10 @@ def regress_for_goal(
         if any(isinstance(e, CountDeltaEffect) for e in action.effects):
             count_delta_verbs.append(verb_lemma)
     if count_delta_verbs:
-        target = str(rng.randint(1, 50))
+        count_slot = lex.slots.get("count")
+        count_max = int(count_slot.vocabulary[-1]) if (
+            count_slot and count_slot.vocabulary) else 20
+        target = str(rng.randint(1, count_max))
         all_goals.append(
             (("property", "count", target), count_delta_verbs))
     if not all_goals:
@@ -1008,12 +1011,27 @@ def regress_for_goal(
                     continue
             if isinstance(eff, CountDeltaEffect):
                 try:
-                    gv = int(target_value)
-                    if eff.op == "subtract":
-                        initial = gv + rng.randint(1, max(1, 100 - gv))
+                    concept = lex.concepts.get(
+                        target_ent.concept_lemma) if target_ent else None
+                    so = (concept.slot_overrides or {}).get(
+                        "count", {}) if concept and getattr(
+                            concept, "slot_overrides", None) else {}
+                    count_vocab = so.get("vocabulary")
+                    if count_vocab:
+                        max_count = int(count_vocab[-1])
                     else:
-                        initial = max(0, gv - rng.randint(1, max(1, gv)))
-                    t.entities[target_eid].set_property("count", str(initial))
+                        cs = lex.slots.get("count")
+                        max_count = int(cs.vocabulary[-1]) if (
+                            cs and cs.vocabulary) else 20
+                    gv = min(int(target_value), max_count - 1)
+                    if eff.op == "subtract":
+                        initial = min(max_count, gv + rng.randint(
+                            1, max(1, max_count - gv)))
+                    else:
+                        initial = max(0, gv - rng.randint(
+                            1, max(1, gv)))
+                    t.entities[target_eid].set_property(
+                        "count", str(initial))
                 except (ValueError, KeyError):
                     pass
             _ensure_obstacle_tools(t, lex, rng, scene_id)

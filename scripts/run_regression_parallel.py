@@ -326,6 +326,12 @@ def _worker_task(args):
     use_forward = os.environ.get("USE_BACKWARD") != "1"
     rng = random.Random(seed)
     out = []
+    import ctypes as _ctypes
+    try:
+        _libc = _ctypes.CDLL("libc.so.6")
+        _malloc_trim = _libc.malloc_trim
+    except (OSError, AttributeError):
+        _malloc_trim = None
 
     for _ in range(n_scenes):
         if use_forward:
@@ -526,6 +532,8 @@ def _worker_task(args):
             "defined_entities": sorted(defined_ents),
             "prose": prose,
         })
+        if _malloc_trim is not None:
+            _malloc_trim(0)
 
     return out
 
