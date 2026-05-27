@@ -486,6 +486,8 @@ def _inject_underused_concepts(trace, scene_id: str, lex, rng,
     for lemma, _count in bottom:
         if placed >= n:
             break
+        snapshot_eids = set(trace.entities.keys())
+        snapshot_rels = list(trace.relations)
         try:
             eid = _place_respecting_containment(
                 trace, lex, scene_id, lemma, rng,
@@ -494,6 +496,11 @@ def _inject_underused_concepts(trace, scene_id: str, lex, rng,
             eid = None
         if eid is not None:
             placed += 1
+        else:
+            for k in list(trace.entities.keys()):
+                if k not in snapshot_eids:
+                    del trace.entities[k]
+            trace.relations = snapshot_rels
     return placed
 
 
@@ -1210,11 +1217,67 @@ def _propose_goal(trace, lex, rng) -> Optional[Goal]:
     return None
 
 
+def _apply_rule_effects(action_name, roles, trace, lex, rule_effects):
+    """Apply relation adds/deletes from the rule_effects index
+    directly on the trace, replacing the full run_dsl call."""
+    entry = rule_effects.get(action_name)
+    if not entry:
+        return
+
+    def _resolve_arg(rn):
+        if isinstance(rn, tuple) and rn[0] == "<lookup>":
+            _, lookup_rel, lookup_args = rn
+            resolved = tuple(
+                roles.get(a) if a is not None else None
+                for a in lookup_args)
+            for r in trace.relations:
+                if r.relation != lookup_rel:
+                    continue
+                match = True
+                for i, v in enumerate(resolved):
+                    if v is not None and (i >= len(r.args) or r.args[i] != v):
+                        match = False
+                        break
+                if match:
+                    for i, v in enumerate(resolved):
+                        if v is None and i < len(r.args):
+                            return r.args[i]
+            return None
+        return roles.get(rn)
+
+    for rule in entry.get("rules", ()):
+        for rel, role_names in rule.get("dels", ()):
+            resolved = tuple(_resolve_arg(rn) for rn in role_names)
+            if any(isinstance(rn, tuple) for rn in role_names):
+                if None in resolved:
+                    continue
+                trace.relations = [
+                    r for r in trace.relations
+                    if not (r.relation == rel and r.args == resolved)]
+            else:
+                trace.relations = [
+                    r for r in trace.relations
+                    if not (r.relation == rel and all(
+                        v is None or (i < len(r.args) and r.args[i] == v)
+                        for i, v in enumerate(resolved)))]
+        for rel, role_names in rule.get("adds", ()):
+            resolved = tuple(_resolve_arg(rn) for rn in role_names)
+            if None in resolved:
+                continue
+            already = any(r.relation == rel and r.args == resolved
+                         for r in trace.relations)
+            if not already:
+                try:
+                    trace.assert_relation(rel, resolved, lex)
+                except (ValueError, KeyError):
+                    pass
+
+
 def fire_step(action_name, roles, trace, lex, rules, derivations,
-              reservoir, edges_out, history, decay_steps):
+              reservoir, edges_out, history, decay_steps,
+              rule_effects=None):
     """Execute one (action, roles) step: capture prior state, append
-    the event, run derivation closure, attribute causal edges, update
-    reservoir."""
+    the event, apply rule effects, update reservoir."""
     derived_before = compute_derived_state(trace, derivations, lex)
     prior_facts = _state_facts(trace, derived_before)
 
@@ -1223,7 +1286,10 @@ def fire_step(action_name, roles, trace, lex, rules, derivations,
         property_changes=effect_changes(action_name, roles, lex))
     trace.events.append(ev)
     trace._event_ids.add(ev.id)
-    run_dsl(trace, rules, derivations, lex)
+    if rule_effects is not None:
+        _apply_rule_effects(action_name, roles, trace, lex, rule_effects)
+    else:
+        run_dsl(trace, rules, derivations, lex)
 
     derived_after = compute_derived_state(trace, derivations, lex)
     after_facts = _state_facts(trace, derived_after)
@@ -1279,6 +1345,14 @@ def generate_trace(seed_factory: Callable[[], tuple[Trace, str]],
     goals: list[Goal] = []
     target_depth = (config.target_depth_dist or default_target_depth_dist)(rng)
 
+    from esperanto_lm.ontology.agent.forward_planner import (
+        _build_rule_effects_index, _RULE_EFFECTS_CACHE,
+    )
+    _rule_effects = _RULE_EFFECTS_CACHE.get(id(lex))
+    if _rule_effects is None:
+        _rule_effects = _build_rule_effects_index(rules, lex)
+        _RULE_EFFECTS_CACHE[id(lex)] = _rule_effects
+
     # NB: do NOT seed setup facts into the reservoir. The reservoir's
     # purpose is to flag "novel-effect-not-yet-consumed" so the
     # `cashes_reservoir` feature can reward picking a candidate whose
@@ -1329,13 +1403,10 @@ def generate_trace(seed_factory: Callable[[], tuple[Trace, str]],
             break
         action_name, roles = pick
         fire_step(action_name, roles, trace, lex, rules, derivations,
-                  reservoir, edges, history, config.reservoir_decay_steps)
+                  reservoir, edges, history, config.reservoir_decay_steps,
+                  rule_effects=_rule_effects)
         move_log.append("forward_step")
 
-    # Folder cross-trace freshness counter — every event this
-    # trace produced increments the (verb, theme_concept)
-    # histogram so the next trace from this worker sees these
-    # combos as "saturated" and pulls toward fresher ones.
     _update_cross_trace_histogram(trace)
 
     return TraceArtifact(

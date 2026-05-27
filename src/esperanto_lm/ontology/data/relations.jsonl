@@ -1,8 +1,8 @@
-{"name": "sur", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["contained", "container"], "inverse": null, "symmetric": false, "arg_excludes": [[], ["location"]]}
-{"name": "en", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["contained", "container"], "inverse": null, "symmetric": false}
+{"name": "sur", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["contained", "container"], "inverse": null, "symmetric": false, "arg_excludes": [[], ["location"]], "exclusive_per": [0]}
+{"name": "en", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["contained", "container"], "inverse": null, "symmetric": false, "exclusive_per": [0]}
 {"name": "havi", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["owner", "theme"], "inverse": null, "symmetric": false, "arg_excludes": [[], ["location", "person"]], "arg_not_part": [false, true], "arg_patterns": [null, {"not": {"entity": {"nemovebla": "yes"}}}], "arg_compare": [{"left_arg": 1, "left_property": "maso", "op": "<=", "right_arg": 0, "right_property": "lift_capacity"}]}
 {"name": "apud", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["subject", "neighbor"], "inverse": null, "symmetric": true}
-{"name": "portas", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["carrier", "theme"], "inverse": null, "symmetric": false}
+{"name": "portas", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["carrier", "theme"], "inverse": null, "symmetric": false, "exclusive_per": [1]}
 {"name": "samloke", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
 {"name": "scias_lokon", "arity": 2, "arg_types": ["animate", "physical"], "arg_names": ["knower", "located"], "inverse": null, "symmetric": false}
 {"name": "scias", "arity": 4, "arg_types": ["animate", "abstract", "physical", "physical"], "arg_names": ["knower", "rel_type", "subjekto", "objekto"], "arg_kinds": ["entity", "literal", "entity", "entity"], "inverse": null, "symmetric": false}
@@ -17,4 +17,4 @@
 {"name": "edzo", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
 {"name": "amiko", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
 {"name": "najbaro", "arity": 2, "arg_types": ["person", "person"], "arg_names": ["a", "b"], "inverse": null, "symmetric": true}
-{"name": "sub", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["contained", "container"], "inverse": null, "symmetric": false, "arg_excludes": [[], ["location"]]}
+{"name": "sub", "arity": 2, "arg_types": ["physical", "physical"], "arg_names": ["contained", "container"], "inverse": null, "symmetric": false, "arg_excludes": [[], ["location"]], "exclusive_per": [0]}

@@ -511,6 +511,13 @@ class Trace:
         reason = self.validate_relation(name, args, lexicon)
         if reason is not None:
             raise ValueError(reason)
+        rel_def = lexicon.relations.get(name)
+        if rel_def is not None and getattr(rel_def, "exclusive_per", None):
+            for pos in rel_def.exclusive_per:
+                val = args[pos]
+                self.relations = [
+                    r for r in self.relations
+                    if not (r.relation == name and r.args[pos] == val)]
         ra = RelationAssertion(relation=name, args=args)
         self.relations.append(ra)
         # Maintain the parts index for the arg_not_part check above.

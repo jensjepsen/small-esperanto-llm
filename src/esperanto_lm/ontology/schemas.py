@@ -294,6 +294,7 @@ class Relation(_Frozen):
     #                        responsible for any semantic check.
     # Empty/omitted = all entity. Length, when given, must equal arity.
     arg_kinds: list[str] = Field(default_factory=list)
+    exclusive_per: list[int] = Field(default_factory=list)
 
     model_config = ConfigDict(frozen=True, extra="forbid",
                               arbitrary_types_allowed=True)
