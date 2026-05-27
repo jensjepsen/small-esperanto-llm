@@ -226,19 +226,29 @@ class SceneBuilder:
         return self
 
     def _named_actor(self, slot, concept_pool, *, in_, name=None):
-        from ..sampler import _person_gender, _person_names
+        from ..sampler import spawn_entity
         if self._failed:
             return self
         if not concept_pool:
             self._fail()
             return self
-        name_pool = _person_names(self.lex)
         if name is None:
-            available = [n for n in name_pool if n not in self._used_names]
-            if not available:
+            concept = self.rng.choice(concept_pool)
+            try:
+                name = spawn_entity(
+                    self.t, concept, self.lex, self.rng,
+                    used_names=self._used_names)
+            except (KeyError, ValueError):
                 self._fail()
                 return self
-            name = self.rng.choice(available)
+            self.slots[slot] = name
+            loc = self.slots.get(in_)
+            if loc:
+                try:
+                    self.t.assert_relation("en", (name, loc), self.lex)
+                except (ValueError, KeyError):
+                    pass
+            return self
         # Filter the candidate concepts by the name's gender so the
         # picked concept's category-chain matches the name's
         # convention (Maria → virino-class). Sortal-neutral concepts

@@ -2902,10 +2902,11 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
         from ..schemas import (
             NotPropertyPrecondition as _NotPP,
             NotRelationPrecondition as _NotRP,
+            OrPrecondition as _OrP,
         )
         action_not_pres = [
             pc for pc in action.preconditions
-            if isinstance(pc, (_NotPP, _NotRP))]
+            if isinstance(pc, (_NotPP, _NotRP, _OrP))]
         # Group from_precondition roles by source relation; each group
         # enumerates from a shared pool of tuples (real scias from
         # trace + hypothetical producible by rule_effects), so the

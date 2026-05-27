@@ -64,17 +64,14 @@ def sample_scene(lex, rng, *, max_objects=4):
     # Concept choice for each name is filtered by the name's declared
     # gender (Maria → virino-class concepts, Petro → viro-class) so
     # the surface form aligns with the kin-derivation gender check.
-    from ..sampler import _person_gender
+    from ..sampler import spawn_entity
     n_persons = rng.choices([1, 2], weights=[2, 3], k=1)[0]
-    name_pool = _person_names(lex)
     persons: list[str] = []
-    for name in rng.sample(name_pool, min(n_persons, len(name_pool))):
-        gender = _person_gender(lex, name)
-        candidates = _person_concepts(lex, gender=gender)
-        if not candidates:
-            candidates = _person_concepts(lex)
+    used_names: set[str] = set()
+    for _ in range(n_persons):
+        candidates = _person_concepts(lex)
         concept = rng.choice(candidates)
-        _add_entity_randomized(t, concept, lex, rng, entity_id=name)
+        name = spawn_entity(t, concept, lex, rng, used_names=used_names)
         t.assert_relation("en", (name, scene), lex)
         persons.append(name)
 

@@ -129,48 +129,4 @@ def math_addendum(
     (`Du pomoj kaj tri oranĝoj — sume kvin fruktoj.`). Other types
     (mass comparison, height comparison) will plug in here as siblings.
     """
-    sentences: list[str] = []
-    bundle = _aggregate_by_category(trace, lex)
-    if bundle is not None:
-        cat, total, items = bundle
-        # Aggregation: "Du pomoj kaj tri oranĝoj — sume kvin fruktoj."
-        parts = [_number_phrase(n, lemma) for lemma, n in items]
-        if len(parts) == 1:
-            phrase = parts[0]
-        elif len(parts) == 2:
-            phrase = f"{parts[0]} kaj {parts[1]}"
-        else:
-            phrase = ", ".join(parts[:-1]) + f", kaj {parts[-1]}"
-        sentences.append(
-            f"{phrase[0].upper() + phrase[1:]} — sume "
-            f"{_number_phrase(total, cat)}."
-        )
-        # Subtraction: derive from the same bundle by removing one
-        # concept's contribution. "Se oni forprenas la N X-ojn,
-        # restas M Y-oj." Only emit when the bundle has exactly two
-        # distinct concepts (the math stays clean) and the rng
-        # consents — half the time we just leave the aggregation,
-        # half the time we extend with subtraction, so the corpus
-        # gets a mix of pure-sum and sum-with-followup.
-        if rng is None or rng.random() < 0.5:
-            # Pick one concept to remove. For 2-item bundles, the
-            # remaining is a single concept (so we name it). For 3+
-            # item bundles, the remaining is mixed, so we fall back
-            # to the parent category name.
-            idx = 0 if rng is None else rng.randrange(len(items))
-            removed_lemma, removed_n = items[idx]
-            remaining = total - removed_n
-            from .render import to_accusative
-            removed_acc = to_accusative(
-                "la " + _number_phrase(removed_n, removed_lemma))
-            if len(items) == 2:
-                kept_lemma, _kept_n = next(
-                    it for it in items if it[0] != removed_lemma)
-                remaining_phrase = _number_phrase(remaining, kept_lemma)
-            else:
-                remaining_phrase = _number_phrase(remaining, cat)
-            sentences.append(
-                f"Se oni forprenas {removed_acc}, restas "
-                f"{remaining_phrase}."
-            )
-    return " ".join(sentences)
+    return ""

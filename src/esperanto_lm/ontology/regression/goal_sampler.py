@@ -21,6 +21,7 @@ from typing import Optional
 
 from ..causal import Trace
 from ..dsl.rules import DEFAULT_DSL_DERIVATIONS, RUNTIME_DERIVATIONS
+from ..sampler import spawn_entity
 from .goals import build_goal_index
 
 # Both bake-time and runtime derivations need to be visible to the
@@ -342,15 +343,12 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
         t = Trace()
         _ensure_world(t, lex, rng)
         try:
-            _add_entity_randomized(t, scene_lemma, lex, rng,
-                                    entity_id=scene_lemma)
+            scene_id = _add_entity_randomized(t, scene_lemma, lex, rng,
+                                               entity_id=scene_lemma)
         except (KeyError, ValueError):
             continue
-        scene_id = scene_lemma
-        actor_eid = agent_concept
         try:
-            _add_entity_randomized(t, agent_concept, lex, rng,
-                                    entity_id=actor_eid)
+            actor_eid = spawn_entity(t, agent_concept, lex, rng)
             t.assert_relation("en", (actor_eid, scene_id), lex)
         except (KeyError, ValueError):
             continue
@@ -875,17 +873,8 @@ def regress_for_goal(
                 actor_eid = existing_actor_eid
             else:
                 # No in-scene person fit the agent role — spawn one.
-                actor_eid = agent_concept
-                suffix = 0
-                while actor_eid in t.entities:
-                    suffix += 1
-                    actor_eid = (
-                        f"{agent_concept}_actor"
-                        f"{suffix if suffix > 1 else ''}")
                 try:
-                    _add_entity_randomized(
-                        t, agent_concept, lex, rng,
-                        entity_id=actor_eid)
+                    actor_eid = spawn_entity(t, agent_concept, lex, rng)
                     t.assert_relation("en", (actor_eid, scene_id), lex)
                 except (KeyError, ValueError):
                     last_loop_reason = (
@@ -899,26 +888,17 @@ def regress_for_goal(
             t = Trace()
             _ensure_world(t, lex, rng)
             try:
-                _add_entity_randomized(t, scene_lemma, lex, rng,
-                                        entity_id=scene_lemma)
+                scene_id = _add_entity_randomized(t, scene_lemma, lex, rng,
+                                                   entity_id=scene_lemma)
             except (KeyError, ValueError):
                 last_loop_reason = f"scene_add_failed:{scene_lemma}"
                 continue
-            scene_id = scene_lemma
 
             if actor_is_scene:
                 actor_eid = scene_id
             else:
-                actor_eid = agent_concept
-            suffix = 0
-            while not actor_is_scene and actor_eid in t.entities:
-                suffix += 1
-                actor_eid = (
-                    f"{agent_concept}_actor{suffix if suffix > 1 else ''}")
-            if not actor_is_scene:
                 try:
-                    _add_entity_randomized(t, agent_concept, lex, rng,
-                                            entity_id=actor_eid)
+                    actor_eid = spawn_entity(t, agent_concept, lex, rng)
                     t.assert_relation("en", (actor_eid, scene_id), lex)
                 except (KeyError, ValueError):
                     last_loop_reason = (

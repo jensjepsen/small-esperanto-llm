@@ -132,12 +132,6 @@ def realize_trace(
         messages, trace, lexicon,
         scene_location_id=scene_location_id, rng=rng, tense=tense,
         derived=derived, setup_derived=setup_derived)
-    # Optional quantitative addendum — counts/aggregations derived
-    # from trace state. Empty string when no math fits.
-    from .math_addendum import math_addendum
-    addendum = math_addendum(trace, lexicon, rng=rng)
-    if addendum:
-        prose = f"{prose} {addendum}"
     return prose
 
 

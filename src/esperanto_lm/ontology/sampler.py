@@ -32,6 +32,59 @@ from .containment import (
 from .loader import Lexicon
 
 
+_WIKIDATA_NAMES: dict[str, list[str]] | None = None
+
+_NAMED_LOCATION_CONCEPTS = frozenset({"urbo", "vilaĝo"})
+
+
+def _load_wikidata_names():
+    global _WIKIDATA_NAMES
+    if _WIKIDATA_NAMES is not None:
+        return
+    import json
+    from pathlib import Path
+    data_dir = Path(__file__).parent / "data"
+    _WIKIDATA_NAMES = {}
+    for key in ("first_names", "last_names", "cities"):
+        path = data_dir / f"wikidata_{key}.json"
+        if path.exists():
+            _WIKIDATA_NAMES[key] = json.loads(path.read_text())
+        else:
+            _WIKIDATA_NAMES[key] = []
+
+
+def _generate_name(concept: str, entity_type: str,
+                   rng: random.Random) -> str | None:
+    """Generate a proper name for entity types that get one.
+    Returns None for types that use concept lemma as ID."""
+    _load_wikidata_names()
+    if entity_type == "person":
+        fn = _WIKIDATA_NAMES.get("first_names", [])
+        ln = _WIKIDATA_NAMES.get("last_names", [])
+        if fn and ln:
+            first = rng.choice(fn).lower().replace(" ", "_")
+            last = rng.choice(ln).lower().replace(" ", "_")
+            return f"{first}_{last}"
+        return rng.choice(["petro", "maria", "anna", "johano"])
+    if concept in _NAMED_LOCATION_CONCEPTS:
+        cities = _WIKIDATA_NAMES.get("cities", [])
+        if cities:
+            return rng.choice(cities).lower().replace(" ", "_")
+    return None
+
+
+def spawn_entity(trace, concept: str, lex, rng: random.Random,
+                 *, used_names: set | None = None) -> str:
+    """Create an entity with a proper name when appropriate.
+    Delegates to _add_entity_randomized which handles naming.
+    Returns the entity ID."""
+    eid = _add_entity_randomized(trace, concept, lex, rng,
+                                 entity_id=concept)
+    if used_names is not None:
+        used_names.add(eid)
+    return eid
+
+
 def _person_names(lex: Lexicon) -> list[str]:
     """Just the name strings, in declaration order. Backwards-compatible
     helper for callers that previously consumed the PERSON_NAMES
@@ -708,9 +761,10 @@ def sample_scene(
     n_persons = rng.choices([1, 2], weights=[3, 1], k=1)[0]
     persons: list[str] = []
     person_concepts = _person_concepts(lex)
-    for name in rng.sample(PERSON_NAMES, n_persons):
+    used_names: set[str] = set()
+    for _ in range(n_persons):
         concept = rng.choice(person_concepts)
-        _add_entity_randomized(t, concept, lex, rng, entity_id=name)
+        name = spawn_entity(t, concept, lex, rng, used_names=used_names)
         t.assert_relation("en", (name, scene), lex)
         persons.append(name)
 
@@ -944,8 +998,20 @@ def _add_entity_randomized(
     transient state on the new entity AND materializes its declared
     sub-entity parts (Concept.parts). Used for ALL entity additions
     in the sampler so scenes naturally satisfy diverse preconditions
-    and parts come along for the ride."""
+    and parts come along for the ride.
+
+    When entity_id matches the concept lemma, auto-generates a proper
+    name for types that support it (persons, cities)."""
+    if entity_id == concept:
+        concept_def = lex.concepts.get(concept)
+        entity_type = concept_def.entity_type if concept_def else ""
+        generated = _generate_name(concept, entity_type, rng)
+        if generated is not None:
+            while generated in trace.entities:
+                generated = _generate_name(concept, entity_type, rng)
+            entity_id = generated
     trace.add_entity(concept, lex, entity_id=entity_id)
+    return entity_id
     _randomize_state(trace.entities[entity_id], lex, rng)
     concept_def = lex.concepts.get(concept)
     if concept_def is None:

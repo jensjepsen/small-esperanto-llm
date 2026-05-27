@@ -63,6 +63,30 @@ PRONOUN_OF_NAME: dict[str, str] = {
     "elena": "ŝi", "lidia": "ŝi",
 }
 
+
+def _pronoun_for_person(entity_id: str, trace) -> str | None:
+    """Derive pronoun from entity gender. Falls back to PRONOUN_OF_NAME
+    for legacy names, then to 'li' as default."""
+    if entity_id in PRONOUN_OF_NAME:
+        return PRONOUN_OF_NAME[entity_id]
+    ent = trace.entities.get(entity_id) if trace else None
+    if ent is None:
+        return None
+    gender = ent.properties.get("gender")
+    if gender:
+        g = gender[0] if isinstance(gender, list) else gender
+        if g == "virino":
+            return "ŝi"
+    return "li"
+
+
+def _render_person_name(entity_id: str) -> str:
+    """Render person entity_id as a proper name.
+    'petro_silva' -> 'Petro Silva'."""
+    return " ".join(
+        "-".join(s.capitalize() for s in p.split("-"))
+        for p in entity_id.split("_"))
+
 PRONOUN_RATE = 0.55
 
 _PRONOUNS_BASE = {"li", "ŝi", "ĝi", "ili", "mi", "vi", "ni"}
@@ -228,13 +252,13 @@ def _pick_tense(rng: Optional[random.Random]) -> str:
 # =================== naming / article tracker ==================
 
 def _pronoun_unambiguous(name: str, trace: Trace) -> bool:
-    pronoun = PRONOUN_OF_NAME.get(name)
+    pronoun = _pronoun_for_person(name, trace)
     if pronoun is None:
         return False
     for eid, ent in trace.entities.items():
         if eid == name or ent.entity_type != "person":
             continue
-        if PRONOUN_OF_NAME.get(eid) == pronoun:
+        if _pronoun_for_person(eid, trace) == pronoun:
             return False
     return True
 
@@ -436,25 +460,33 @@ def _name_for(
         # specific noun. Also disallow reusing an alias across
         # entities: "la trinkaĵo" referring to teo AND akvo in the
         # same narrative is the confusion to avoid.
-        if (rng is not None
-                and entity.id in mentioned
-                and alias_history is not None
-                and not alias_history.get(entity.id)
-                and derived is not None
-                and rng.random() < ALIAS_RATE):
-            cats = list(derived.categories_for(entity.id))
-            taken = set().union(*alias_history.values()) if alias_history else set()
-            cats = [c for c in cats if c not in taken]
-            if cats:
-                chosen = rng.choice(cats)
-                alias_history.setdefault(entity.id, set()).add(chosen)
-                return f"la {chosen}"
-        if (rng is not None and trace is not None
-                and entity.id in mentioned
-                and _pronoun_unambiguous(name, trace)
-                and rng.random() < PRONOUN_RATE):
-            return PRONOUN_OF_NAME[name]
-        return name.capitalize()
+        if entity.id in mentioned and rng is not None:
+            r = rng.random()
+            if (r < ALIAS_RATE
+                    and alias_history is not None
+                    and not alias_history.get(entity.id)):
+                concept = entity.concept_lemma
+                taken = set().union(*alias_history.values()) if alias_history else set()
+                if concept not in taken:
+                    alias_history.setdefault(entity.id, set()).add(concept)
+                    return concept.capitalize()
+            elif (r < ALIAS_RATE + 0.25
+                    and "_" in name):
+                parts = name.split("_")
+                return rng.choice(parts).capitalize()
+            elif (trace is not None
+                    and _pronoun_unambiguous(name, trace)
+                    and r < ALIAS_RATE + 0.25 + PRONOUN_RATE):
+                pron = _pronoun_for_person(name, trace)
+                if pron:
+                    return pron
+        rendered = _render_person_name(name)
+        if entity.id not in mentioned and rng is not None:
+            if rng.random() < 0.5:
+                return f"{entity.concept_lemma.capitalize()} {rendered}"
+        return rendered
+    if entity.entity_type == "location" and entity.id != entity.concept_lemma:
+        return _render_person_name(entity.id)
     lemma = entity.concept_lemma
     # On back-references, sometimes substitute a direct-parent
     # category alias for the bare lemma — "la pomo" → "la frukto".
@@ -613,8 +645,12 @@ class _Ctx:
                 and self.rng is not None
                 and self.rng.random() < NONPERSON_PRONOUN_RATE):
             return "ĝin"
-        return to_accusative(self.name_for(
-            entity, count_override=count_override))
+        form = self.name_for(entity, count_override=count_override)
+        if entity.entity_type == "person" and "_" in entity.id:
+            if form in _PRONOUNS_BASE or form.endswith(("o", "oj")):
+                return to_accusative(form)
+            return form
+        return to_accusative(form)
 
     def mark_nonperson_mention(self, entity) -> None:
         """Call whenever a non-person entity is mentioned in rendered

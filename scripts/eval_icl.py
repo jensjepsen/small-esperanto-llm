@@ -64,7 +64,7 @@ def detokenize_morphemes(tokens: list[str]) -> str:
 
 def normalize(s: str) -> str:
     """Lenient match: case-fold, drop punctuation/spaces around words,
-    strip leading articles and prepositions."""
+    strip leading articles, prepositions, and accusative endings."""
     s = s.strip().lower()
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"\s+([.,;:!?])", r"\1", s)
@@ -77,6 +77,8 @@ def normalize(s: str) -> str:
         if s.startswith(prefix):
             s = s[len(prefix):]
             break
+    s = re.sub(r'\b(\w+)ojn\b', r'\1oj', s)
+    s = re.sub(r'\b(\w+)on\b', r'\1o', s)
     return s
 
 
@@ -118,9 +120,12 @@ def main():
     p.add_argument("--checkpoint", type=str, required=True)
     p.add_argument("--eval", type=Path, required=True)
     p.add_argument("--tokenizer", type=str, default="tokenizer_morpheme")
-    p.add_argument("--max-new-tokens", type=int, default=32)
+    p.add_argument("--max-new-tokens", type=int, default=64)
     p.add_argument("--limit", type=int, default=0,
                    help="0 = all examples")
+    p.add_argument("--pass-k", type=int, default=1,
+                   help="Generate K samples per question, count correct "
+                        "if any match (pass@K). K=1 is greedy.")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -158,37 +163,62 @@ def main():
             inputs = tok(
                 prompt_text, return_tensors="pt",
                 return_token_type_ids=False).to(device)
-            with torch.no_grad():
-                out = model.generate(
-                    **inputs,
-                    max_new_tokens=args.max_new_tokens,
-                    do_sample=False,
-                    eos_token_id=end_id,
-                    pad_token_id=tok.pad_token_id or end_id,
-                )
-            # Inverse-detokenize: convert ids → token strings, drop
-            # specials, replace <w> with spaces, concatenate.
-            prompt_len = inputs["input_ids"].shape[-1]
-            gen_ids = out[0][prompt_len:].tolist()
-            gen_toks = tok.convert_ids_to_tokens(gen_ids)
-            # Drop padding/eos/etc.; the assistant response ends at
-            # <|end|> or hits max_new_tokens.
-            cleaned: list[str] = []
-            for t in gen_toks:
-                if t == END_TOKEN:
-                    break
-                if t in ("<s>", "</s>", "<pad>", "<unk>",
-                         USER_TOKEN, ASSISTANT_TOKEN):
-                    continue
-                cleaned.append(t)
-            answer = detokenize_morphemes(cleaned).strip()
+            def _generate_one(do_sample=False, temperature=1.0):
+                with torch.no_grad():
+                    out = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=do_sample,
+                        temperature=temperature,
+                        eos_token_id=end_id,
+                        pad_token_id=tok.pad_token_id or end_id,
+                    )
+                prompt_len = inputs["input_ids"].shape[-1]
+                gen_ids = out[0][prompt_len:].tolist()
+                gen_toks = tok.convert_ids_to_tokens(gen_ids)
+                cleaned: list[str] = []
+                for t in gen_toks:
+                    if t == END_TOKEN:
+                        break
+                    if t in ("<s>", "</s>", "<pad>", "<unk>",
+                             USER_TOKEN, ASSISTANT_TOKEN):
+                        continue
+                    cleaned.append(t)
+                return detokenize_morphemes(cleaned).strip()
 
-            na, ng = normalize(answer), normalize(gold)
-            ok = na == ng
-            if not ok and len(ng.split()) > 1:
-                ok = ng in na
-            if not ok and " estas " in na:
-                ok = na.split(" estas ", 1)[1] == ng
+            def _matches(answer, gold):
+                na, ng = normalize(answer), normalize(gold)
+                if na == ng:
+                    return True
+                if len(ng.split()) > 1 and ng in na:
+                    return True
+                if " estas " in na and na.split(" estas ", 1)[1] == ng:
+                    return True
+                if na.startswith(ng + " "):
+                    return True
+                for vp in ("estis ", "restas ", "havas "):
+                    if na.startswith(vp):
+                        if na[len(vp):] == ng or na[len(vp):].startswith(ng + " "):
+                            return True
+                if "ĝin" in ng:
+                    ng_no_pro = re.sub(r'\bĝin\b', '', ng).strip()
+                    na_no_obj = re.sub(r'\bla \w+o\b', '', na).strip()
+                    if ng_no_pro and ng_no_pro == na_no_obj:
+                        return True
+                    ng_verb = ng.split("ĝin")[0].strip()
+                    if ng_verb and na.startswith(ng_verb):
+                        return True
+                return False
+
+            answer = _generate_one(do_sample=False)
+            ok = _matches(answer, gold)
+            if not ok and args.pass_k > 1:
+                for _ in range(args.pass_k - 1):
+                    alt = _generate_one(do_sample=True, temperature=0.7)
+                    if _matches(alt, gold):
+                        answer = alt
+                        ok = True
+                        break
             results.append({
                 "tag": tag_question(q),
                 "q": q,

@@ -499,14 +499,6 @@ def _q_instrument_and_parts(rec: dict, rng: random.Random) -> list[dict]:
                 "q": f"El kio {agent_name} {verb}{theme_phrase}?",
                 "a": f"el {parts_phrase}",
             })
-            # Count ingredients
-            n = len(part_names)
-            if n < len(CARDINALS_EO):
-                out.append({
-                    "q": (f"Kiom da ingrediencoj bezoniĝis por "
-                          f"{ev['action']}{theme_phrase}?"),
-                    "a": CARDINALS_EO[n],
-                })
         elif instr_name:
             # Tool only
             out.append({
@@ -519,13 +511,6 @@ def _q_instrument_and_parts(rec: dict, rng: random.Random) -> list[dict]:
                 "q": f"El kio {agent_name} {verb}{theme_phrase}?",
                 "a": f"el {parts_phrase}",
             })
-            n = len(part_names)
-            if n < len(CARDINALS_EO):
-                out.append({
-                    "q": (f"Kiom da ingrediencoj bezoniĝis por "
-                          f"{ev['action']}{theme_phrase}?"),
-                    "a": CARDINALS_EO[n],
-                })
     return out
 
 

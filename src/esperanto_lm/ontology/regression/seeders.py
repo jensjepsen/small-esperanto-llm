@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from ..causal import EntityInstance, Trace, effect_changes, make_event
 from ..dsl.introspect import _bind_var_in_pattern
+from ..sampler import spawn_entity
 from .scene_builder import SceneBuilder, scene
 
 
@@ -138,13 +139,8 @@ def regress_for_verb(verb_name, lex, rng):
             concept_lemma = rng.choices(candidates, weights=weights, k=1)[0]
         else:
             concept_lemma = rng.choice(candidates)
-        eid = concept_lemma
-        suffix = 0
-        while eid in t.entities:
-            suffix += 1
-            eid = f"{concept_lemma}_{role.name}{suffix if suffix > 1 else ''}"
         try:
-            _add_entity_randomized(t, concept_lemma, lex, rng, entity_id=eid)
+            eid = spawn_entity(t, concept_lemma, lex, rng)
         except (KeyError, ValueError):
             return None
         role_eids[role.name] = eid
@@ -741,11 +737,10 @@ def _place_respecting_containment(
         eid = existing_eid
         added_here = False
     else:
-        eid = concept_lemma
         if concept_lemma in t.entities:
+            eid = concept_lemma
             return concept_lemma
-        _add_entity_randomized(t, concept_lemma, lex, rng,
-                                entity_id=concept_lemma)
+        eid = spawn_entity(t, concept_lemma, lex, rng)
         added_here = True
 
     def _try_relation(container_eid: str):

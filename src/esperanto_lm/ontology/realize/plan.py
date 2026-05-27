@@ -166,13 +166,21 @@ def plan_messages(
                 continue
             if ent.created_at_event is not None:
                 continue
-            if ent.entity_type in ("location", "abstract", "person"):
+            if ent.entity_type == "abstract":
                 continue
-            if "_" in eid and eid != ent.concept_lemma:
+            is_named = eid != ent.concept_lemma
+            if not is_named and ent.entity_type == "location":
                 continue
-            if rng.random() >= definition_p:
+            if "_" in eid and not is_named:
                 continue
-            defn = _build_definition(ent.concept_lemma, lexicon)
+            if not is_named and rng.random() >= definition_p:
+                continue
+            if is_named and ent.entity_type in ("person", "location"):
+                from .render import _render_person_name
+                defn = (f"{_render_person_name(eid)} estas"
+                        f" {ent.concept_lemma}.")
+            else:
+                defn = _build_definition(ent.concept_lemma, lexicon)
             if defn is None:
                 continue
             anchor = first_event_idx.get(eid, 0)
@@ -180,6 +188,35 @@ def plan_messages(
                 entity_id=eid, definition=defn, phase="setup"))
             if defined_entities is not None:
                 defined_entities.add(eid)
+
+    # Emit initial state for entities with adjectival slots,
+    # even when the value is unmarked. Teaches the model to read
+    # explicit state from prose rather than reasoning by omission.
+    # Not limited to state-change entities — otherwise "state mention
+    # = change coming" becomes a predictable pattern.
+    if rng is not None:
+        for eid, ent in trace.entities.items():
+            if eid == "mondo" or eid not in referenced:
+                continue
+            if ent.created_at_event is not None:
+                continue
+            for slot, val in ent.properties.items():
+                slot_def = lexicon.slots.get(slot)
+                if slot_def is None or not getattr(slot_def, "adjectival", False):
+                    continue
+                if not getattr(slot_def, "varies", False):
+                    continue
+                if not val:
+                    continue
+                v = val[0] if isinstance(val, list) else val
+                if (eid, v) in seen_precond:
+                    continue
+                if rng.random() >= definition_p:
+                    continue
+                anchor = first_event_idx.get(eid, 0)
+                pre_event[anchor].append(EntityQualityMessage(
+                    entity_id=eid, slot=slot,
+                    quality_lemma=v, phase="setup"))
 
     messages = []
     for idx, ev in enumerate(trace.events):
