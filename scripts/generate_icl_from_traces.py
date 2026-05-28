@@ -45,6 +45,8 @@ from __future__ import annotations
 import argparse
 import json
 import random
+from collections import Counter
+from typing import Optional
 from pathlib import Path
 
 
@@ -2212,6 +2214,8 @@ def generate_qas_for_trace(
     rec: dict, rng: random.Random, max_per_trace: int = 4,
     all_concepts: frozenset[str] | None = None,
     type_counts: dict[str, int] | None = None,
+    skip_undisclosed: bool = True,
+    skip_counter: Optional["Counter[str]"] = None,
 ) -> list[dict]:
     """Yield up to max_per_trace Q/A pairs sampled across generators.
     Selection weighted by inverse cumulative frequency so
@@ -2220,7 +2224,16 @@ def generate_qas_for_trace(
     `type_counts`: running counter of emitted Q/A types across all
     traces. Updated in-place by this function. Each emitted Q/A is
     tagged with `disclosed: bool` reflecting whether the trace's
-    `sentence_facts` (when present) cover the Q/A's required facts."""
+    `sentence_facts` cover the Q/A's required facts.
+
+    `skip_undisclosed`: when True (default), Q/A pairs whose required
+    facts aren't disclosed in the trace's prose are dropped from the
+    candidate pool. The picker then samples from the remaining
+    grounded Q/A. When all candidates of a type are undisclosed, that
+    type effectively contributes nothing for this trace.
+
+    `skip_counter`: optional Counter that this function increments
+    (per-template) with the number of undisclosed Q/A skipped."""
     is_planned = "drive" in rec
     candidates: list[dict] = []
     for gen in GENERATORS:
@@ -2233,8 +2246,9 @@ def generate_qas_for_trace(
     if not candidates:
         return []
     disclosed_facts = _flatten_facts(rec.get("sentence_facts"))
+    have_facts = bool(disclosed_facts) or bool(rec.get("sentence_facts"))
     for qa in candidates:
-        if disclosed_facts:
+        if have_facts:
             qa["disclosed"] = _qa_disclosed(
                 qa.get("requires", []), disclosed_facts)
         else:
@@ -2259,14 +2273,26 @@ def generate_qas_for_trace(
         added = False
         while qas:
             qa = qas.pop()
-            if qa["q"] not in seen_qs:
-                seen_qs.add(qa["q"])
-                picked.append(qa)
-                if type_counts is not None:
-                    type_counts[chosen_key] = (
-                        type_counts.get(chosen_key, 0) + 1)
-                added = True
-                break
+            if qa["q"] in seen_qs:
+                continue
+            # In-loop disclosure filter: skip undisclosed candidates
+            # within this type and try the next one. The chosen type
+            # only gets dropped from `by_type` when its bucket runs
+            # out of candidates entirely — preserving the
+            # inverse-frequency weighting across types regardless of
+            # how many of a type's candidates happen to be disclosed.
+            if (skip_undisclosed and have_facts
+                    and qa["disclosed"] is False):
+                if skip_counter is not None:
+                    skip_counter[chosen_key] += 1
+                continue
+            seen_qs.add(qa["q"])
+            picked.append(qa)
+            if type_counts is not None:
+                type_counts[chosen_key] = (
+                    type_counts.get(chosen_key, 0) + 1)
+            added = True
+            break
         if not added or not qas:
             del by_type[chosen_key]
     return picked
@@ -2290,7 +2316,11 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--max-per-trace", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--keep-undisclosed", action="store_true",
+                   help="Don't drop Q/A whose required facts weren't "
+                        "disclosed in prose. Default is to skip them.")
     args = p.parse_args()
+    skip_undisclosed = not args.keep_undisclosed
 
     rng = random.Random(args.seed)
 
@@ -2312,7 +2342,6 @@ def main():
     all_concepts_frozen = frozenset(all_concepts)
 
     # Second pass: generate Q/A.
-    from collections import Counter
     n_traces = 0
     n_qas = 0
     n_with_requires = 0
@@ -2321,6 +2350,7 @@ def main():
     n_unknown_legacy = 0
     by_template_disclosed: dict[str, Counter] = {}
     type_counts: dict[str, int] = {}
+    skip_counter: Counter = Counter()
     with open(args.inp) as fin, open(args.out, "w") as fout:
         for line in fin:
             rec = json.loads(line)
@@ -2332,7 +2362,9 @@ def main():
             qas = generate_qas_for_trace(
                 rec, rng, max_per_trace=args.max_per_trace,
                 all_concepts=all_concepts_frozen,
-                type_counts=type_counts)
+                type_counts=type_counts,
+                skip_undisclosed=skip_undisclosed,
+                skip_counter=skip_counter)
             for qa in qas:
                 fout.write(json.dumps(
                     format_sft_record(prose, qa),
@@ -2360,6 +2392,11 @@ def main():
     print(f"  Undisclosed:           {n_undisclosed} "
           f"({100*n_undisclosed/max(n_qas,1):.1f}%)")
     print(f"  Unknown (no facts):    {n_unknown_legacy}")
+    skipped_total = sum(skip_counter.values())
+    if skip_undisclosed and skipped_total:
+        print(f"  Skipped (undisclosed): {skipped_total}")
+        for tpl in sorted(skip_counter, key=lambda k: -skip_counter[k]):
+            print(f"    {tpl:<22s} {skip_counter[tpl]}")
     if any(by_template_disclosed.values()):
         print()
         print(f"{'Template':<22s} {'Total':>7s} {'Tagged':>7s} "
