@@ -127,14 +127,30 @@ def past_tense(verb_lemma: str) -> str:
     return inflect(verb_lemma, "is")
 
 
+_SPECIFIER_PREPOSITIONS = frozenset({
+    "de", "en", "sur", "sub", "apud", "ĉe", "per", "el", "tra",
+})
+
+
 def to_accusative(noun_form: str) -> str:
     """Inflect a noun phrase for accusative. Multi-word phrases inflect
     every nominal/adjectival element: 'la fragila pomo' → 'la fragilan
     pomon', 'la du fragilaj pomoj' → 'la du fragilajn pomojn'. Articles
     ('la') and numerals ('tri', 'dek') stay invariant; pronouns and
-    -o/-oj/-a/-aj endings get -n."""
+    -o/-oj/-a/-aj endings get -n. Specifier prepositional phrases
+    (everything from `de`/`en`/`sur`/etc. onwards) stay nominative —
+    only the head noun takes -n: 'la libro de Petro' → 'la libron de
+    Petro'."""
     if " " in noun_form:
-        return " ".join(to_accusative(w) for w in noun_form.split(" "))
+        words = noun_form.split(" ")
+        head_end = len(words)
+        for i, w in enumerate(words):
+            if w in _SPECIFIER_PREPOSITIONS:
+                head_end = i
+                break
+        head = [to_accusative(w) for w in words[:head_end]]
+        tail = words[head_end:]
+        return " ".join(head + tail)
     if noun_form == "la":
         return noun_form
     if noun_form in _PRONOUNS_BASE:
@@ -433,6 +449,38 @@ def _inflect_adjective(adj: str, *, plural: bool) -> str:
     return adj + "j" if plural else adj
 
 
+_SPECIFIER_PROB = 0.3
+
+
+def _pick_specifier(
+    entity, *, trace, lexicon, in_progress: set[str], rng,
+) -> Optional[tuple[str, str]]:
+    """Find an active relation that lets us render this entity with a
+    specifier prepositional phrase. Returns (preposition, anchor_eid)
+    or None. `in_progress` guards against rendering loops in
+    symmetric relations and chained specifiers."""
+    if trace is None or lexicon is None or rng is None:
+        return None
+    candidates: list[tuple[str, str]] = []
+    for rel in trace.snapshot_relations():
+        rel_def = lexicon.relations.get(rel.relation)
+        if rel_def is None or not rel_def.specifier_of:
+            continue
+        head_pos, anchor_pos = rel_def.specifier_of
+        if head_pos >= len(rel.args) or anchor_pos >= len(rel.args):
+            continue
+        if rel.args[head_pos] != entity.id:
+            continue
+        anchor_eid = rel.args[anchor_pos]
+        if anchor_eid == entity.id or anchor_eid in in_progress:
+            continue
+        prep = rel_def.specifier_preposition or rel_def.name
+        candidates.append((prep, anchor_eid))
+    if not candidates:
+        return None
+    return rng.choice(candidates)
+
+
 def _name_for(
     entity, mentioned: set[str], *,
     scene_location_id: Optional[str] = None,
@@ -444,6 +492,7 @@ def _name_for(
     alias_history: Optional[dict[str, set[str]]] = None,
     derived=None,
     relevant_slots: Optional[set[str]] = None,
+    specifier_in_progress: Optional[set[str]] = None,
 ) -> str:
     if entity.entity_type == "person":
         name = entity.id
@@ -547,7 +596,26 @@ def _name_for(
             return f"la {numeral} {adj_part}{plural_lemma}"
         return f"{numeral} {adj_part}{plural_lemma}"
     adj_part = f"{adj} " if adj else ""
-    if entity.id == scene_location_id or entity.id in mentioned:
+    is_definite = (entity.id == scene_location_id
+                   or entity.id in mentioned)
+    if rng is not None and rng.random() < _SPECIFIER_PROB:
+        in_progress = (specifier_in_progress or set()) | {entity.id}
+        spec = _pick_specifier(
+            entity, trace=trace, lexicon=lexicon,
+            in_progress=in_progress, rng=rng)
+        if spec is not None:
+            prep, anchor_eid = spec
+            anchor_ent = trace.entities.get(anchor_eid) if trace else None
+            if anchor_ent is not None:
+                anchor_form = _name_for(
+                    anchor_ent, mentioned,
+                    scene_location_id=scene_location_id, rng=rng,
+                    trace=trace, lexicon=lexicon,
+                    adjective_history=adjective_history,
+                    alias_history=alias_history, derived=derived,
+                    specifier_in_progress=in_progress)
+                return f"la {adj_part}{lemma} {prep} {anchor_form}"
+    if is_definite:
         return f"la {adj_part}{lemma}"
     return f"{adj_part}{lemma}"
 
@@ -1286,6 +1354,61 @@ def _render_measurement_tail(ev, ctx) -> Optional[str]:
     return f"kaj eksci{ctx.tense} ke {theme_form} {copula} {value}"
 
 
+_PASSIVE_PROB = 0.08
+_PASSIVE_SKIP_ACTIONS = frozenset({
+    "fari", "peti", "rakonti", "demandi", "respondi", "instrui",
+    "krii", "voki", "flustri",
+})
+
+
+def _participle_passive(verb_lemma: str) -> str:
+    """tranĉi → tranĉita (passive past participle)."""
+    if verb_lemma.endswith("i"):
+        return verb_lemma[:-1] + "ita"
+    return verb_lemma + "ita"
+
+
+def _try_render_passive(ev: Event, ctx: _Ctx) -> Optional[str]:
+    """Render an event as passive: 'La pordo estis fermita de Petro.'
+    Returns None if the event isn't suitable. Skips creation/speech
+    acts; needs an explicit agent and theme."""
+    if ctx.rng is None or ctx.rng.random() >= _PASSIVE_PROB:
+        return None
+    if ev.action in _PASSIVE_SKIP_ACTIONS:
+        return None
+    action = ctx.lexicon.actions.get(ev.action)
+    if action is None:
+        return None
+    role_names = {r.name for r in action.roles}
+    if "agent" not in role_names or "theme" not in role_names:
+        return None
+    agent_id = ev.roles.get("agent")
+    theme_id = ev.roles.get("theme")
+    if not agent_id or not theme_id or isinstance(theme_id, list):
+        return None
+    agent_ent = ctx.trace.entity(agent_id)
+    theme_ent = ctx.trace.entity(theme_id)
+    if agent_ent is None or theme_ent is None:
+        return None
+    theme_form = ctx.name_for(theme_ent)
+    ctx.note_mention(theme_ent)
+    ctx.mark_nonperson_mention(theme_ent)
+    agent_form = ctx.name_for(agent_ent)
+    ctx.note_mention(agent_ent)
+    participle = _participle_passive(
+        _surface_verb_lemma(ev, ctx.trace, ctx.lexicon))
+    aux = "est" + ctx.tense
+    parts = [theme_form, aux, participle, "de", agent_form]
+    instr_id = ev.roles.get("instrument")
+    if instr_id:
+        instr_ent = ctx.trace.entity(instr_id)
+        if instr_ent is not None:
+            instr_form = ctx.name_for(instr_ent)
+            ctx.note_mention(instr_ent)
+            parts.extend(["per", instr_form])
+    return " ".join(parts) + "."
+
+
 def _render_event_phrase(
     ev: Event, ctx: _Ctx, *, drop_subject: bool,
     drop_theme: bool = False,
@@ -1296,7 +1419,14 @@ def _render_event_phrase(
     omits the direct object (used when a later coordinated child
     carries the same theme and will render it). `source_entity_id`
     appends "de <source>" after the theme — acquisition verbs use
-    this to name the previous owner without a separate clause."""
+    this to name the previous owner without a separate clause.
+
+    Standalone events (no drop_subject/drop_theme) with both agent and
+    theme have a small chance of rendering as passive."""
+    if not drop_subject and not drop_theme and source_entity_id is None:
+        passive = _try_render_passive(ev, ctx)
+        if passive is not None:
+            return passive
     action = ctx.lexicon.actions.get(ev.action)
     if action is None:
         return None

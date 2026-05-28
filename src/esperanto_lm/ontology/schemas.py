@@ -295,6 +295,16 @@ class Relation(_Frozen):
     # Empty/omitted = all entity. Length, when given, must equal arity.
     arg_kinds: list[str] = Field(default_factory=list)
     exclusive_per: list[int] = Field(default_factory=list)
+    # Noun-phrase specifier rendering: `[head_arg, anchor_arg]` arg
+    # positions when the relation can render as "<head-entity>
+    # <preposition> <anchor-entity>". Empty means the relation isn't
+    # specifier-suitable. The preposition comes from
+    # `specifier_preposition` (defaults to the relation name itself for
+    # spatial relations, "de" for genitive). E.g. havi `[1, 0]` with
+    # "de" → "la glaso de Petro" (render arg 1 = theme as head, arg 0
+    # = owner as anchor). en `[0, 1]` with "en" → "la akvo en la glaso".
+    specifier_of: list[int] = Field(default_factory=list)
+    specifier_preposition: Optional[str] = None
 
     model_config = ConfigDict(frozen=True, extra="forbid",
                               arbitrary_types_allowed=True)
