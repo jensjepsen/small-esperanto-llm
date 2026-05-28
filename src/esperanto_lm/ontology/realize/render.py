@@ -13,6 +13,7 @@ from typing import Optional
 
 from ..causal import Event, RelationAssertion, Trace
 from ..loader import Lexicon
+from .disclosure import Fact, RenderResult
 
 
 _VERB_META_CACHE: dict | None = None
@@ -454,14 +455,16 @@ _SPECIFIER_PROB = 0.3
 
 def _pick_specifier(
     entity, *, trace, lexicon, in_progress: set[str], rng,
-) -> Optional[tuple[str, str]]:
+    mentioned: set[str], scene_location_id: Optional[str],
+) -> Optional[tuple[str, str, str]]:
     """Find an active relation that lets us render this entity with a
-    specifier prepositional phrase. Returns (preposition, anchor_eid)
-    or None. `in_progress` guards against rendering loops in
-    symmetric relations and chained specifiers."""
+    specifier prepositional phrase. Returns (preposition, anchor_eid,
+    relation_name) or None. Anchor must already be known to the reader
+    (mentioned or scene location) so the specifier reads as anaphoric.
+    """
     if trace is None or lexicon is None or rng is None:
         return None
-    candidates: list[tuple[str, str]] = []
+    candidates: list[tuple[str, str, str]] = []
     for rel in trace.snapshot_relations():
         rel_def = lexicon.relations.get(rel.relation)
         if rel_def is None or not rel_def.specifier_of:
@@ -474,8 +477,10 @@ def _pick_specifier(
         anchor_eid = rel.args[anchor_pos]
         if anchor_eid == entity.id or anchor_eid in in_progress:
             continue
+        if anchor_eid != scene_location_id and anchor_eid not in mentioned:
+            continue
         prep = rel_def.specifier_preposition or rel_def.name
-        candidates.append((prep, anchor_eid))
+        candidates.append((prep, anchor_eid, rel.relation))
     if not candidates:
         return None
     return rng.choice(candidates)
@@ -493,6 +498,7 @@ def _name_for(
     derived=None,
     relevant_slots: Optional[set[str]] = None,
     specifier_in_progress: Optional[set[str]] = None,
+    note_fact=None,
 ) -> str:
     if entity.entity_type == "person":
         name = entity.id
@@ -602,9 +608,10 @@ def _name_for(
         in_progress = (specifier_in_progress or set()) | {entity.id}
         spec = _pick_specifier(
             entity, trace=trace, lexicon=lexicon,
-            in_progress=in_progress, rng=rng)
+            in_progress=in_progress, rng=rng,
+            mentioned=mentioned, scene_location_id=scene_location_id)
         if spec is not None:
-            prep, anchor_eid = spec
+            prep, anchor_eid, rel_name = spec
             anchor_ent = trace.entities.get(anchor_eid) if trace else None
             if anchor_ent is not None:
                 anchor_form = _name_for(
@@ -613,7 +620,18 @@ def _name_for(
                     trace=trace, lexicon=lexicon,
                     adjective_history=adjective_history,
                     alias_history=alias_history, derived=derived,
-                    specifier_in_progress=in_progress)
+                    specifier_in_progress=in_progress,
+                    note_fact=note_fact)
+                if note_fact is not None:
+                    rel_def = lexicon.relations.get(rel_name) if lexicon else None
+                    if rel_def is not None and rel_def.specifier_of:
+                        head_pos, anchor_pos = rel_def.specifier_of
+                        rel_args = [None, None]
+                        rel_args[head_pos] = entity.id
+                        rel_args[anchor_pos] = anchor_eid
+                        note_fact(Fact.make(
+                            "relation", rel=rel_name,
+                            args=tuple(rel_args)))
                 return f"la {adj_part}{lemma} {prep} {anchor_form}"
     if is_definite:
         return f"la {adj_part}{lemma}"
@@ -632,7 +650,8 @@ class _Ctx:
                  "scene_location_id", "rendered_event_ids",
                  "last_nonperson", "adjective_history",
                  "alias_history", "derived", "setup_derived",
-                 "relevant_slots", "opening_adverb")
+                 "relevant_slots", "opening_adverb",
+                 "_pending_facts")
 
     def __init__(self, trace, lexicon, *, scene_location_id, rng, tense,
                  derived=None, setup_derived=None):
@@ -682,6 +701,19 @@ class _Ctx:
         # None after first use so it doesn't echo onto later
         # sentences in the same trace.
         self.opening_adverb: Optional[str] = None
+        # Accumulator for disclosures made during the current message
+        # render. `render_messages` drains this after each message,
+        # binding the facts to the produced sentence. Helpers append
+        # via `note_fact`; nothing reads the accumulator directly.
+        self._pending_facts: list[Fact] = []
+
+    def note_fact(self, fact: Fact) -> None:
+        self._pending_facts.append(fact)
+
+    def drain_facts(self) -> list[Fact]:
+        facts = self._pending_facts
+        self._pending_facts = []
+        return facts
 
     def name_for(self, entity, *,
                  count_override: Optional[int] = None) -> str:
@@ -694,7 +726,8 @@ class _Ctx:
             adjective_history=self.adjective_history,
             alias_history=self.alias_history,
             derived=self.derived,
-            relevant_slots=self.relevant_slots.get(entity.id, frozenset()))
+            relevant_slots=self.relevant_slots.get(entity.id, frozenset()),
+            note_fact=self.note_fact)
 
     def theme_form(self, entity, *,
                    count_override: Optional[int] = None) -> str:
@@ -733,7 +766,13 @@ class _Ctx:
         """Record an entity as mentioned in rendered prose. Adds to
         the `mentioned` set for article/pronoun resolution AND
         updates the non-person salient slot for `ĝi`/`ĝin`
-        substitution."""
+        substitution. First mention also emits an `intro` fact —
+        downstream Q/A generators rely on this to filter questions to
+        entities the prose has actually introduced."""
+        if entity.id not in self.mentioned:
+            self.note_fact(Fact.make(
+                "intro", entity=entity.id,
+                concept=entity.concept_lemma))
         self.mentioned.add(entity.id)
         self.mark_nonperson_mention(entity)
 
@@ -760,6 +799,9 @@ def _render_entity_quality(m, ctx: _Ctx) -> Optional[str]:
     form = ctx.name_for(ent)
     ctx.note_mention(ent)
     predicate = _state_predicate(m.slot, m.quality_lemma, ctx)
+    ctx.note_fact(Fact.make(
+        "state", entity=m.entity_id, slot=m.slot or "",
+        value=m.quality_lemma, phase=getattr(m, "phase", "setup")))
     base = f"{form} {predicate}."
     if getattr(m, "phase", "setup") == "event" and ctx.rng is not None:
         opener_fn = ctx.rng.choice(_POST_STATE_OPENERS)
@@ -813,6 +855,8 @@ def _render_scene_grounding(m: SceneGroundingMessage, ctx: _Ctx) -> Optional[str
     scene_form = ctx.name_for(scene_ent)
     ctx.note_mention(scene_ent)
     template = _pick(ctx.rng, RELATION_TEMPLATES["en"])
+    ctx.note_fact(Fact.make(
+        "relation", rel="en", args=(m.entity_id, ctx.scene_location_id)))
     return template(ent_form, scene_form, ctx.tense)
 
 
@@ -901,6 +945,8 @@ def _render_relation(m: RelationMessage, ctx: _Ctx) -> Optional[str]:
     else:
         return None
     ctx.note_mention(b)
+    ctx.note_fact(Fact.make(
+        "relation", rel=rel.relation, args=tuple(rel.args)))
     return sent
 
 
@@ -933,6 +979,11 @@ def _render_event(m: EventMessage, ctx: _Ctx) -> Optional[str]:
         source_entity_id=m.source_entity_id)
     if sentence is None:
         return None
+    ctx.note_fact(Fact.make(
+        "event", event_id=m.event.id, action=m.event.action,
+        roles=tuple(sorted(
+            (k, tuple(v) if isinstance(v, list) else v)
+            for k, v in m.event.roles.items()))))
     return _append_precondition_clause(sentence, m.precondition, ctx)
 
 
@@ -1781,6 +1832,7 @@ def _render_appearance(m: AppearanceMessage, ctx: _Ctx) -> Optional[str]:
     form = ctx.name_for(ent)
     ctx.note_mention(ent)
     verb = inflect("aperi", ctx.tense)
+    ctx.note_fact(Fact.make("appearance", entity=m.entity_id))
     return f"{verb.capitalize()} {form}."
 
 
@@ -1803,6 +1855,8 @@ def _render_relation_removed(
     ctx.note_mention(owner)
     theme_form = to_accusative(ctx.name_for(theme))
     ctx.note_mention(theme)
+    ctx.note_fact(Fact.make(
+        "relation_removed", rel="havi", args=tuple(m.args)))
     return f"{owner_form} ne plu hav{ctx.tense} {theme_form}."
 
 
@@ -1822,6 +1876,7 @@ def _render_relation_added(
     ctx.note_mention(owner)
     theme_form = to_accusative(ctx.name_for(theme))
     ctx.note_mention(theme)
+    ctx.note_fact(Fact.make("relation", rel="havi", args=tuple(m.args)))
     return f"Nun {owner_form} hav{ctx.tense} {theme_form}."
 
 
@@ -1834,6 +1889,7 @@ def _render_destruction(
     form = ctx.name_for(ent)
     ctx.note_mention(ent)
     verb = inflect("malaperi", ctx.tense)
+    ctx.note_fact(Fact.make("destruction", entity=m.entity_id))
     return f"{form} {verb}."
 
 
@@ -1864,6 +1920,11 @@ def _render_coordinated(
         source_entity_id=first.source_entity_id)
     if first_sent is None:
         return None
+    ctx.note_fact(Fact.make(
+        "event", event_id=first.event.id, action=first.event.action,
+        roles=tuple(sorted(
+            (k, tuple(v) if isinstance(v, list) else v)
+            for k, v in first.event.roles.items()))))
     first_body = first_sent.rstrip(".")
     # Inline the first child's `ĉar` clause directly after its verb
     # phrase rather than waiting until the end of the coordinated
@@ -1889,6 +1950,11 @@ def _render_coordinated(
             source_entity_id=child.source_entity_id)
         if phrase is None:
             continue
+        ctx.note_fact(Fact.make(
+            "event", event_id=child.event.id, action=child.event.action,
+            roles=tuple(sorted(
+                (k, tuple(v) if isinstance(v, list) else v)
+                for k, v in child.event.roles.items()))))
         if isinstance(child, EventMessage) and child.precondition is not None:
             phrase = _append_precondition_clause(
                 phrase + ".", child.precondition, ctx).rstrip(".")
@@ -2007,7 +2073,18 @@ def _render_grouped_relation(
         list_str = f"{head}, kaj {contained_forms[-1]}"
 
     if m.relation == "havi":
+        for cid in m.contained_ids:
+            ctx.note_fact(Fact.make(
+                "relation", rel="havi", args=(m.container_id, cid)))
         return f"{container_form} hav{ctx.tense} {list_str}."
+
+    for cid in m.contained_ids:
+        if suppress_held and cid in held_set:
+            continue
+        if ctx.trace.entities.get(cid) is None:
+            continue
+        ctx.note_fact(Fact.make(
+            "relation", rel=m.relation, args=(cid, m.container_id)))
 
     prep = "En" if m.relation == "en" else "Sur"
     # Single-contained animates with a derived posture → use that
@@ -2071,6 +2148,12 @@ def _collect_rendered_event_ids(m: Message, out: set[str]) -> None:
 
 from .messages import EntityQualityMessage  # late import to avoid cycle
 
+
+def _render_definition(m: DefinitionMessage, ctx: _Ctx) -> Optional[str]:
+    ctx.note_fact(Fact.make("definition", entity=m.entity_id))
+    return m.definition
+
+
 _DISPATCH = {
     SceneGroundingMessage: _render_scene_grounding,
     EntityQualityMessage: _render_entity_quality,
@@ -2083,7 +2166,7 @@ _DISPATCH = {
     DestructionMessage: _render_destruction,
     CoordinatedMessage: _render_coordinated,
     SubordinatedMessage: _render_subordinated,
-    DefinitionMessage: lambda m, ctx: m.definition,
+    DefinitionMessage: _render_definition,
 }
 
 
@@ -2196,7 +2279,13 @@ def render_messages(
     tense: Optional[str] = None,
     derived=None,
     setup_derived=None,
-) -> str:
+) -> tuple[str, list[tuple[int, list[Fact]]]]:
+    """Render messages to prose and a per-sentence disclosure log.
+
+    Returns `(prose, sentence_facts)` where `sentence_facts` is a
+    list of `(sentence_index, [Fact, ...])` pairs — one entry per
+    rendered sentence (in prose order). Sentences with no disclosures
+    still get an entry with an empty fact list."""
     if tense is None:
         tense = _pick_tense(rng)
     ctx = _Ctx(trace, lexicon,
@@ -2204,14 +2293,11 @@ def render_messages(
                derived=derived, setup_derived=setup_derived)
 
     raw: list[tuple[str, bool]] = []   # (text, has_cause_in_prose)
-    # Trace-wide preamble from the `mondo` singleton (currently just
-    # tempo_de_tago). Appears once at the trace opening when the
-    # value is marked (mateno/vespero/nokto) — `tago` is the unmarked
-    # default and stays silent. cause=False since it's setting, not
-    # consequence.
+    sentence_facts: list[tuple[int, list[Fact]]] = []
     preamble = _render_world_preamble(ctx)
     if preamble is not None:
         raw.append((preamble, False))
+        sentence_facts.append((len(raw) - 1, ctx.drain_facts()))
 
     for msg in messages:
         render_fn = _DISPATCH.get(type(msg))
@@ -2219,12 +2305,8 @@ def render_messages(
             continue
         sent = render_fn(msg, ctx)
         if sent is None:
+            ctx.drain_facts()  # discard facts from an aborted render
             continue
-        # First downstream sentence consumes any deferred opening
-        # adverb from the preamble variation paths. "En la kuirejo
-        # estis Maria." → "Vespere, en la kuirejo estis Maria."
-        # If the sentence starts with a proper noun, keep its
-        # capitalization: "Vespere, Maria iris al la lago."
         if ctx.opening_adverb is not None:
             if _starts_with_proper_noun(sent):
                 sent = f"{ctx.opening_adverb}, {sent}"
@@ -2235,11 +2317,11 @@ def render_messages(
             msg.cause_event_id is not None
             and msg.cause_event_id in ctx.rendered_event_ids)
         raw.append((sent, has_cause))
-        # Track rendered events for connective causation lookups.
+        sentence_facts.append((len(raw) - 1, ctx.drain_facts()))
         _collect_rendered_event_ids(msg, ctx.rendered_event_ids)
 
     out = [
         _format_with_connective(s, caused, is_first=(i == 0), rng=rng)
         for i, (s, caused) in enumerate(raw)
     ]
-    return " ".join(out)
+    return " ".join(out), sentence_facts

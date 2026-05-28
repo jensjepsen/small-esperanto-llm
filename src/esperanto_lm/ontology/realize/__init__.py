@@ -52,8 +52,15 @@ def realize_trace(
     setup_relations: Optional[list[RelationAssertion]] = None,
     definition_p: float = 0.0,
     defined_entities: Optional[set] = None,
-) -> str:
+    return_facts: bool = False,
+):
     """Render the full trace as a paragraph of Esperanto.
+
+    Returns `str` (prose) by default. When `return_facts=True` returns
+    `(prose, sentence_facts)` where `sentence_facts` is a list of
+    `(sentence_index, [Fact, ...])` pairs — one entry per rendered
+    sentence in prose order. Used by Q/A generators to only ask
+    questions about propositions the prose actually disclosed.
 
     Same signature as the pre-rebuild version. Internally runs the
     plan → transform → render pipeline; `rng`, `tense`, and
@@ -128,10 +135,12 @@ def realize_trace(
     messages = aggregate_relations(messages)
     messages = aggregate_same_subject(messages, lexicon, rng=rng)
     messages = subordinate_creations(messages)
-    prose = render_messages(
+    prose, sentence_facts = render_messages(
         messages, trace, lexicon,
         scene_location_id=scene_location_id, rng=rng, tense=tense,
         derived=derived, setup_derived=setup_derived)
+    if return_facts:
+        return prose, sentence_facts
     return prose
 
 
