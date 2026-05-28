@@ -74,7 +74,7 @@ def main():
             print(f"  Q: {s['q']}")
             print(f"  A: {s['a']}")
             print(f"  Missing: {s['missing']}")
-            print(f"  Prose: {s['prose'][:350]}...")
+            print(f"  Prose: {s['prose']}")
             print()
 
 

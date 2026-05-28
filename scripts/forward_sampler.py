@@ -1532,11 +1532,12 @@ def _worker_task(args):
             continue
         try:
             defined_ents = set()
-            prose = realize_trace(
+            prose, sentence_facts = realize_trace(
                 artifact.trace, _WORKER_LEX,
                 setup_relations=setup_rels,
                 scene_location_id=scene_id, rng=rng,
-                definition_p=0.3, defined_entities=defined_ents)
+                definition_p=0.3, defined_entities=defined_ents,
+                return_facts=True)
         except Exception:
             continue
         chain = " → ".join(e.action for e in artifact.trace.events)
@@ -1622,6 +1623,10 @@ def _worker_task(args):
             "final_relations": final_rels_ser,
             "defined_entities": sorted(defined_ents),
             "prose": prose,
+            "sentence_facts": [
+                [sidx, [f.as_dict() for f in facts]]
+                for sidx, facts in sentence_facts
+            ],
         })
     return records, skipped_no_seed, skipped_empty
 

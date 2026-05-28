@@ -175,17 +175,39 @@ def plan_messages(
                 continue
             if not is_named and rng.random() >= definition_p:
                 continue
+            part_eids: list[str] = []
             if is_named and ent.entity_type in ("person", "location"):
                 from .render import _render_person_name
                 defn = (f"{_render_person_name(eid)} estas"
                         f" {ent.concept_lemma}.")
+                category = ent.concept_lemma
             else:
                 defn = _build_definition(ent.concept_lemma, lexicon)
+                concept = lexicon.concepts.get(ent.concept_lemma)
+                cats = getattr(concept, "category", None) if concept else None
+                category = cats[0] if cats else None
+                # The definition's "farita el X kaj Y" tail names parts
+                # at the CONCEPT level (e.g., "ligno kaj najlo"). The
+                # entity's actual part eids come from this trace's
+                # havas_parton(eid, ?) relations. Both align when an
+                # artifact has been assembled with the expected parts.
+                # The "farita el X kaj Y" tail names parts by CONCEPT
+                # (not entity ids), since most artifacts at setup don't
+                # have per-part entities in the trace. The disclosure
+                # fact uses concept lemmas, matching what the prose
+                # literally surfaces.
+                if (concept is not None
+                        and ent.entity_type == "artifact"
+                        and (concept.parts or [])):
+                    for p in concept.parts:
+                        cname = p.concept if hasattr(p, "concept") else str(p)
+                        part_eids.append(cname)
             if defn is None:
                 continue
             anchor = first_event_idx.get(eid, 0)
             pre_event[anchor].append(DefinitionMessage(
-                entity_id=eid, definition=defn, phase="setup"))
+                entity_id=eid, definition=defn, phase="setup",
+                category=category, parts=part_eids))
             if defined_entities is not None:
                 defined_entities.add(eid)
 

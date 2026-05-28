@@ -190,9 +190,17 @@ class DefinitionMessage(Message):
     entity's category (and optionally parts/material). Emitted
     probabilistically on first mention; the `entity_id` is recorded
     in a set on the render context so the trace serializer can flag
-    which entities got definitions for downstream Q/A generation."""
+    which entities got definitions for downstream Q/A generation.
+    `category` is the predicate noun used in the definition string;
+    the renderer emits a `category` fact from it so "X estas Y"
+    discloses the IS-A to downstream consumers. `parts` holds the
+    eids of any parts named in the "farita el X kaj Y" tail — used to
+    emit `havas_parton` relation facts for each part the prose
+    literally names."""
     entity_id: str
     definition: str
+    category: Optional[str] = None
+    parts: list[str] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)

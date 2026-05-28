@@ -608,6 +608,9 @@ def _name_for(
         adj_part = (
             f"{_inflect_adjective(adj, plural=True)} "
             if adj else "")
+        if note_fact is not None:
+            note_fact(Fact.make(
+                "count", entity=entity.id, value=count))
         if (not is_partial
                 and (entity.id == scene_location_id
                      or entity.id in mentioned)):
@@ -2158,6 +2161,13 @@ from .messages import EntityQualityMessage  # late import to avoid cycle
 
 def _render_definition(m: DefinitionMessage, ctx: _Ctx) -> Optional[str]:
     ctx.note_fact(Fact.make("definition", entity=m.entity_id))
+    if m.category is not None:
+        ctx.note_fact(Fact.make(
+            "category", entity=m.entity_id, value=m.category))
+    for part_eid in m.parts:
+        ctx.note_fact(Fact.make(
+            "relation", rel="havas_parton",
+            args=(m.entity_id, part_eid)))
     return m.definition
 
 

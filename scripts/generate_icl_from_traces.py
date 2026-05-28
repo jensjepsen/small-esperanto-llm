@@ -568,11 +568,11 @@ def _q_count(rec: dict, rng: random.Random) -> list[dict]:
         if n <= 1 or n >= len(CARDINALS_EO):
             continue
         concept = ent["concept"]
-        intro_pat = {"kind": "intro", "entity": ent["eid"]}
+        count_pat = {"kind": "count", "entity": ent["eid"], "value": n}
         out.append({
             "q": f"Kiom da {concept}j estis?",
             "a": _count_answer(n, concept, rng, "estis"),
-            "requires": [intro_pat],
+            "requires": [count_pat],
         })
         loc_info = loc_of.get(ent["eid"])
         if loc_info:
@@ -583,7 +583,7 @@ def _q_count(rec: dict, rng: random.Random) -> list[dict]:
                     "q": f"Kiom da {concept}j estis {prep} la {loc_name}?",
                     "a": _count_answer(n, concept, rng, "estis"),
                     "requires": [
-                        intro_pat,
+                        count_pat,
                         {"kind": "relation", "rel": prep,
                          "args[0]": ent["eid"], "args[1]": loc_eid},
                     ],
@@ -595,7 +595,7 @@ def _q_count(rec: dict, rng: random.Random) -> list[dict]:
                 "q": f"Kiom da {concept}j havis {owner_name}?",
                 "a": _count_answer(n, concept, rng, "estis"),
                 "requires": [
-                    intro_pat,
+                    count_pat,
                     {"kind": "relation", "rel": "havi",
                      "args[0]": owner_eid, "args[1]": ent["eid"]},
                 ],
@@ -688,7 +688,9 @@ def _q_count_delta(rec: dict, rng: random.Random) -> list[dict]:
                     and ev["roles"].get("agent") == agent_eid):
                 ev_id = ev["id"]
                 break
-        requires = [{"kind": "intro", "entity": eid}]
+        # Arithmetic: needs the initial count disclosed (for the model
+        # to subtract from) AND the change event narrated.
+        requires = [{"kind": "count", "entity": eid, "value": initial}]
         if ev_id is not None:
             requires.append({"kind": "event", "event_id": ev_id})
         out.append({
@@ -768,8 +770,9 @@ def _q_count_transfer(rec: dict, rng: random.Random) -> list[dict]:
         if transferred >= len(CARDINALS_EO):
             continue
         verb_past = ev["action"].replace("i", "is", 1)
+        # Needs the initial count in prose so the arithmetic is grounded.
         req = [
-            {"kind": "intro", "entity": theme},
+            {"kind": "count", "entity": theme, "value": initial},
             {"kind": "event", "event_id": ev["id"]},
         ]
         out.append({
@@ -836,7 +839,7 @@ def _q_count_before(rec: dict, rng: random.Random) -> list[dict]:
                       f" {agent} {verb_past}?"),
                 "a": _count_answer(initial, concept, rng, "estis"),
                 "requires": [
-                    {"kind": "intro", "entity": eid},
+                    {"kind": "count", "entity": eid, "value": initial},
                     {"kind": "event", "event_id": cause_ev["id"]},
                 ],
             })
