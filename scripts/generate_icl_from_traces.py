@@ -565,7 +565,7 @@ def _q_count(rec: dict, rng: random.Random) -> list[dict]:
             n = int(count_vals[0])
         except (ValueError, TypeError):
             continue
-        if n <= 1 or n >= len(CARDINALS_EO):
+        if n < 1 or n >= len(CARDINALS_EO):
             continue
         concept = ent["concept"]
         count_pat = {"kind": "count", "entity": ent["eid"], "value": n}

@@ -650,6 +650,15 @@ def _name_for(
                 return f"la {adj_part}{lemma} {prep} {anchor_form}"
     if is_definite:
         return f"la {adj_part}{lemma}"
+    # For first-mention singulars, 50% chance of explicit "unu" — both
+    # adds variation (matches Esperanto's optional one-determiner) and
+    # discloses count=1 so count-1 Q/A have a verifiable signal.
+    if (rng is not None and entity.entity_type != "person"
+            and not adj and rng.random() < 0.5):
+        if note_fact is not None:
+            note_fact(Fact.make(
+                "count", entity=entity.id, value=1))
+        return f"unu {lemma}"
     return f"{adj_part}{lemma}"
 
 
