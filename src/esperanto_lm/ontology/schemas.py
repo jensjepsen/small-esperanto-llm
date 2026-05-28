@@ -305,6 +305,12 @@ class Relation(_Frozen):
     # = owner as anchor). en `[0, 1]` with "en" → "la akvo en la glaso".
     specifier_of: list[int] = Field(default_factory=list)
     specifier_preposition: Optional[str] = None
+    # When set, the relation surfaces as a verb in propositional
+    # clauses ("ke X havas Y", "ke X portas Y"). When unset, the
+    # relation name is used as a preposition with copula esti
+    # ("ke X estas en Y", "ke X estas apud Y"). The value is the
+    # verb lemma (in -i form); the renderer conjugates by tense.
+    verb_form: Optional[str] = None
 
     model_config = ConfigDict(frozen=True, extra="forbid",
                               arbitrary_types_allowed=True)

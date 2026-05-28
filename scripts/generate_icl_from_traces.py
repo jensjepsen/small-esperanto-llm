@@ -228,7 +228,13 @@ def _q_intrinsic_property(rec: dict, rng: random.Random) -> list[dict]:
                 a = val
             else:
                 continue
-            out.append({"q": q, "a": a})
+            out.append({
+                "q": q, "a": a,
+                "requires": [{
+                    "kind": "state", "entity": ent["eid"],
+                    "slot": slot, "value": val,
+                }],
+            })
     return out
 
 
@@ -262,11 +268,13 @@ def _q_first_last(rec: dict, rng: random.Random) -> list[dict]:
     out.append({
         "q": "Kio okazis unue en la rakonto?",
         "a": describe(first) + ".",
+        "requires": [{"kind": "event", "event_id": first["id"]}],
     })
     if last is not None and last is not first:
         out.append({
             "q": "Kio okazis laste en la rakonto?",
             "a": describe(last) + ".",
+            "requires": [{"kind": "event", "event_id": last["id"]}],
         })
     return out
 
@@ -295,17 +303,20 @@ def _q_action_attribution(rec: dict, rng: random.Random) -> list[dict]:
             continue
         agent_name = _name(agent, entities)
         theme_name = _name(theme, entities)
+        ev_pattern = {"kind": "event", "event_id": ev["id"]}
         # "Who did X-i the Y?" (theme is accusative in Esperanto)
         out.append({
             "q": (f"Kiu {_past(ev['action'])} la "
                   f"{_noun_acc(theme_ent['concept'])}?"),
             "a": agent_name + ".",
+            "requires": [ev_pattern],
         })
         # "What did Z X-i?"
         if agent_ent["type"] == "person":
             out.append({
                 "q": f"Kion {agent_name} {_past(ev['action'])}?",
                 "a": "la " + _noun_acc(theme_ent["concept"]) + ".",
+                "requires": [ev_pattern],
             })
         # "What did Z do to the Y?" — verb extraction
         if agent_ent["type"] == "person":
@@ -316,6 +327,7 @@ def _q_action_attribution(rec: dict, rng: random.Random) -> list[dict]:
             out.append({
                 "q": shapes[rng.randrange(len(shapes))],
                 "a": f"{_past(ev['action'])} ĝin.",
+                "requires": [ev_pattern],
             })
     return out
 
@@ -358,7 +370,10 @@ def _q_state_change(rec: dict, rng: random.Random) -> list[dict]:
             else:
                 q = (f"Kio okazis al la {ent['concept']} post la "
                      f"ago?")
-            out.append({"q": q, "a": str(new_val)})
+            out.append({
+                "q": q, "a": str(new_val),
+                "requires": [{"kind": "event", "event_id": ev["id"]}],
+            })
     return out
 
 
@@ -413,6 +428,10 @@ def _q_location_at_start(rec: dict, rng: random.Random) -> list[dict]:
         out.append({
             "q": q_tmpl.format(x=c_ent["concept"], y=co_ent["concept"]),
             "a": a_tmpl.format(x=c_ent["concept"], y=co_ent["concept"]),
+            "requires": [{
+                "kind": "relation", "rel": r["relation"],
+                "args[0]": contained, "args[1]": container,
+            }],
         })
     return out
 
@@ -483,33 +502,39 @@ def _q_instrument_and_parts(rec: dict, rng: random.Random) -> list[dict]:
                 parts_phrase = (", ".join(part_names[:-1])
                                + f", kaj {part_names[-1]}")
 
+        ev_pattern = {"kind": "event", "event_id": ev["id"]}
         if instr_name and part_names:
             # Both tool and materials
             out.append({
                 "q": (f"Per kio kaj el kio {agent_name} "
                       f"{verb}{theme_phrase}?"),
                 "a": f"Per {instr_name}, el {parts_phrase}.",
+                "requires": [ev_pattern],
             })
             # Also split into individual questions
             out.append({
                 "q": f"Per kio {agent_name} {verb}{theme_phrase}?",
                 "a": f"per {instr_name}",
+                "requires": [ev_pattern],
             })
             out.append({
                 "q": f"El kio {agent_name} {verb}{theme_phrase}?",
                 "a": f"el {parts_phrase}",
+                "requires": [ev_pattern],
             })
         elif instr_name:
             # Tool only
             out.append({
                 "q": f"Per kio {agent_name} {verb}{theme_phrase}?",
                 "a": f"per {instr_name}",
+                "requires": [ev_pattern],
             })
         elif part_names:
             # Materials only (e.g. sandviĉo without crafted_with)
             out.append({
                 "q": f"El kio {agent_name} {verb}{theme_phrase}?",
                 "a": f"el {parts_phrase}",
+                "requires": [ev_pattern],
             })
     return out
 
@@ -543,9 +568,11 @@ def _q_count(rec: dict, rng: random.Random) -> list[dict]:
         if n <= 1 or n >= len(CARDINALS_EO):
             continue
         concept = ent["concept"]
+        intro_pat = {"kind": "intro", "entity": ent["eid"]}
         out.append({
             "q": f"Kiom da {concept}j estis?",
             "a": _count_answer(n, concept, rng, "estis"),
+            "requires": [intro_pat],
         })
         loc_info = loc_of.get(ent["eid"])
         if loc_info:
@@ -555,6 +582,11 @@ def _q_count(rec: dict, rng: random.Random) -> list[dict]:
                 out.append({
                     "q": f"Kiom da {concept}j estis {prep} la {loc_name}?",
                     "a": _count_answer(n, concept, rng, "estis"),
+                    "requires": [
+                        intro_pat,
+                        {"kind": "relation", "rel": prep,
+                         "args[0]": ent["eid"], "args[1]": loc_eid},
+                    ],
                 })
         owner_eid = owner_of.get(ent["eid"])
         if owner_eid and owner_eid in entities:
@@ -562,6 +594,11 @@ def _q_count(rec: dict, rng: random.Random) -> list[dict]:
             out.append({
                 "q": f"Kiom da {concept}j havis {owner_name}?",
                 "a": _count_answer(n, concept, rng, "estis"),
+                "requires": [
+                    intro_pat,
+                    {"kind": "relation", "rel": "havi",
+                     "args[0]": owner_eid, "args[1]": ent["eid"]},
+                ],
             })
     return out
 
@@ -644,10 +681,21 @@ def _q_count_delta(rec: dict, rng: random.Random) -> list[dict]:
             "doni": "donis", "vendi": "vendis",
             "aĉeti": "aĉetis",
         }.get(verb, verb)
+        ev_id = None
+        for ev in events:
+            if (ev["action"] == verb
+                    and ev["roles"].get("theme") == eid
+                    and ev["roles"].get("agent") == agent_eid):
+                ev_id = ev["id"]
+                break
+        requires = [{"kind": "intro", "entity": eid}]
+        if ev_id is not None:
+            requires.append({"kind": "event", "event_id": ev_id})
         out.append({
             "q": (f"Kiom da {concept}j restas post kiam"
                   f" {agent_name} {verb_past}?"),
             "a": _count_answer(final, concept, rng, "restas"),
+            "requires": requires,
         })
     return out
 
@@ -720,10 +768,15 @@ def _q_count_transfer(rec: dict, rng: random.Random) -> list[dict]:
         if transferred >= len(CARDINALS_EO):
             continue
         verb_past = ev["action"].replace("i", "is", 1)
+        req = [
+            {"kind": "intro", "entity": theme},
+            {"kind": "event", "event_id": ev["id"]},
+        ]
         out.append({
             "q": (f"Kiom da {concept}j havas {recipient}"
                   f" post kiam {donor} {verb_past}?"),
             "a": _count_answer(transferred, concept, rng, "havas"),
+            "requires": req,
         })
         if final > 0:
             out.append({
@@ -731,6 +784,7 @@ def _q_count_transfer(rec: dict, rng: random.Random) -> list[dict]:
                       f" post kiam {donor} {verb_past}"
                       f" al {recipient}?"),
                 "a": _count_answer(final, concept, rng, "havas"),
+                "requires": req,
             })
     return out
 
@@ -765,11 +819,13 @@ def _q_count_before(rec: dict, rng: random.Random) -> list[dict]:
             concept = ent["concept"]
             agent_eid = ev["roles"].get("agent")
             verb = ev["action"]
+            cause_ev = ev
             if not agent_eid or verb == "_change":
                 for prev in reversed(events[:i]):
                     if prev["roles"].get("theme") == eid and prev["action"] != "_change":
                         agent_eid = prev["roles"].get("agent")
                         verb = prev["action"]
+                        cause_ev = prev
                         break
             if not agent_eid:
                 continue
@@ -779,6 +835,10 @@ def _q_count_before(rec: dict, rng: random.Random) -> list[dict]:
                 "q": (f"Kiom da {concept}j estis antaŭ ol"
                       f" {agent} {verb_past}?"),
                 "a": _count_answer(initial, concept, rng, "estis"),
+                "requires": [
+                    {"kind": "intro", "entity": eid},
+                    {"kind": "event", "event_id": cause_ev["id"]},
+                ],
             })
     return out
 
@@ -822,6 +882,10 @@ def _q_why(rec: dict, rng: random.Random) -> list[dict]:
         out.append({
             "q": f"Kial {effect_phrase}?",
             "a": f"Ĉar {cause_phrase}.",
+            "requires": [
+                {"kind": "event", "event_id": ev["id"]},
+                {"kind": "event", "event_id": cause_id},
+            ],
         })
     return out
 
@@ -871,7 +935,10 @@ def _q_why_property(rec: dict, rng: random.Random) -> list[dict]:
                     a = f"Ĉar {agent_name} {_past(verb)} ĝin."
             else:
                 a = f"Ĉar ĝi {_past(verb)}."
-            out.append({"q": q, "a": a})
+            out.append({
+                "q": q, "a": a,
+                "requires": [{"kind": "event", "event_id": ev["id"]}],
+            })
     return out
 
 
@@ -971,7 +1038,13 @@ def _q_enablement(rec: dict, rng: random.Random) -> list[dict]:
                 a = f"Por {target['action']} al la {entities[tgt_dest]['concept']}."
             else:
                 a = f"Por {target['action']}."
-        out.append({"q": q, "a": a})
+        out.append({
+            "q": q, "a": a,
+            "requires": [
+                {"kind": "event", "event_id": ev["id"]},
+                {"kind": "event", "event_id": target["id"]},
+            ],
+        })
     return out
 
 
@@ -996,16 +1069,20 @@ def _q_possession(rec: dict, rng: random.Random) -> list[dict]:
             continue
         owner_name = _name(owner_eid, entities)
         item_name = item_ent["concept"]
+        havi_pat = {"kind": "relation", "rel": "havi",
+                    "args[0]": owner_eid, "args[1]": item_eid}
         # "Kiu havis la X-on?"
         out.append({
             "q": f"Kiu havis la {_noun_acc(item_name)}?",
             "a": f"{owner_name}.",
+            "requires": [havi_pat],
         })
         # "Kion Y havis?"
         if owner_ent["type"] == "person":
             out.append({
                 "q": f"Kion {owner_name} havis?",
                 "a": f"la {_noun_acc(item_name)}.",
+                "requires": [havi_pat],
             })
     return out
 
@@ -1035,6 +1112,10 @@ def _q_container_contents(rec: dict, rng: random.Random) -> list[dict]:
         out.append({
             "q": f"Kio estis en la {container_ent['concept']}?",
             "a": f"{content_ent['concept']}.",
+            "requires": [{
+                "kind": "relation", "rel": "en",
+                "args[0]": content_eid, "args[1]": container_eid,
+            }],
         })
     return out
 
@@ -1085,8 +1166,13 @@ def _q_existence(rec: dict, rng: random.Random, *,
         out.append({
             "q": f"Ĉu estis {concept} en la sceno?",
             "a": _yes(concept),
+            "requires": [{"kind": "intro", "concept": concept}],
         })
-    # Negative: concepts that exist in the corpus but not this trace
+    # Negative: concepts that exist in the corpus but not this trace.
+    # No requires pattern — the model defaults to "Ne" when it doesn't
+    # see the concept, which is the correct behavior. Always disclosed
+    # by absence (we're asserting an absence, which the prose's full
+    # set of intros lets the model verify).
     if all_concepts:
         absent = list(all_concepts - present)
         rng.shuffle(absent)
@@ -1094,6 +1180,7 @@ def _q_existence(rec: dict, rng: random.Random, *,
             out.append({
                 "q": f"Ĉu estis {concept} en la sceno?",
                 "a": _no(concept),
+                "requires": [],
             })
     return out
 
@@ -1136,21 +1223,30 @@ def _q_location_contents(rec: dict, rng: random.Random) -> list[dict]:
             continue
         if "_" in contained and contained != c_ent["concept"]:
             continue
-        by_loc.setdefault(container, []).append(c_ent["concept"])
+        by_loc.setdefault(container, []).append((contained, c_ent["concept"]))
     out = []
-    for loc_eid, concepts in by_loc.items():
-        if len(concepts) < 2:
+    for loc_eid, items in by_loc.items():
+        if len(items) < 2:
             continue
         loc_ent = entities.get(loc_eid)
         if loc_ent is None:
             continue
-        items = sorted(set(concepts))[:5]
-        if len(items) == 1:
-            listing = items[0]
-        elif len(items) == 2:
-            listing = f"{items[0]} kaj {items[1]}"
+        deduped = []
+        seen_c = set()
+        for eid, concept in items:
+            if concept in seen_c:
+                continue
+            seen_c.add(concept)
+            deduped.append((eid, concept))
+            if len(deduped) >= 5:
+                break
+        concepts_only = [c for _, c in deduped]
+        if len(concepts_only) == 1:
+            listing = concepts_only[0]
+        elif len(concepts_only) == 2:
+            listing = f"{concepts_only[0]} kaj {concepts_only[1]}"
         else:
-            listing = ", ".join(items[:-1]) + f", kaj {items[-1]}"
+            listing = ", ".join(concepts_only[:-1]) + f", kaj {concepts_only[-1]}"
         q_shapes = [
             f"Kio troviĝas en la {loc_ent['concept']}?",
             f"Kio estas en la {loc_ent['concept']}?",
@@ -1158,6 +1254,11 @@ def _q_location_contents(rec: dict, rng: random.Random) -> list[dict]:
         out.append({
             "q": q_shapes[rng.randrange(len(q_shapes))],
             "a": listing + ".",
+            "requires": [
+                {"kind": "relation", "rel": "en",
+                 "args[0]": eid, "args[1]": loc_eid}
+                for eid, _ in deduped
+            ],
         })
     return out
 
@@ -1187,6 +1288,10 @@ def _q_container_identity(rec: dict, rng: random.Random) -> list[dict]:
         out.append({
             "q": f"En kio estis la {c_ent['concept']}?",
             "a": f"En la {co_ent['concept']}.",
+            "requires": [{
+                "kind": "relation", "rel": "en",
+                "args[0]": contained, "args[1]": container,
+            }],
         })
     return out
 
@@ -1264,7 +1369,20 @@ def _q_location_at_end(rec: dict, rng: random.Random) -> list[dict]:
         if prep == "apud":
             surface_prep = rng.choice(["apud", "ĉe"])
         a = f"{surface_prep.capitalize()} la {dest_ent['concept']}."
-        out.append({"q": q, "a": a})
+        # Last position: from setup (literal relation in prose) OR
+        # established via a movement event (which is disclosed).
+        requires: list[dict] = []
+        if moved:
+            for ev in events:
+                if (ev.get("roles", {}).get("agent") == eid
+                        and ev.get("roles", {}).get("destination") == dest_eid
+                        and ev["action"] in _MOVEMENT_VERBS):
+                    requires.append({"kind": "event", "event_id": ev["id"]})
+                    break
+        else:
+            requires.append({"kind": "relation", "rel": prep,
+                             "args[0]": eid, "args[1]": dest_eid})
+        out.append({"q": q, "a": a, "requires": requires})
     return out
 
 
@@ -1304,7 +1422,10 @@ def _q_consequence(rec: dict, rng: random.Random) -> list[dict]:
             f"Kio okazis al la {theme_name}?",
             f"Kio okazis kun la {theme_name}?",
         ])
-        out.append({"q": q, "a": rng.choice(answers)})
+        out.append({
+            "q": q, "a": rng.choice(answers),
+            "requires": [{"kind": "event", "event_id": ev["id"]}],
+        })
     return out
 
 
@@ -1339,7 +1460,10 @@ def _q_movement(rec: dict, rng: random.Random) -> list[dict]:
              f"Al la {dest_ent['concept']}."),
         ]
         q, a = shapes[rng.randrange(len(shapes))]
-        out.append({"q": q, "a": a})
+        out.append({
+            "q": q, "a": a,
+            "requires": [{"kind": "event", "event_id": ev["id"]}],
+        })
     return out
 
 
@@ -1368,6 +1492,7 @@ def _q_recipient(rec: dict, rng: random.Random) -> list[dict]:
             continue
         agent_name = _name(agent, entities)
         recip_name = _name(recipient, entities)
+        ev_pat = {"kind": "event", "event_id": ev["id"]}
         theme = ev["roles"].get("theme")
         if theme and isinstance(theme, str):
             theme_ent = entities.get(theme)
@@ -1376,11 +1501,13 @@ def _q_recipient(rec: dict, rng: random.Random) -> list[dict]:
                     "q": (f"Al kiu {agent_name} {_past(ev['action'])} "
                           f"la {_noun_acc(theme_ent['concept'])}?"),
                     "a": f"Al {recip_name}.",
+                    "requires": [ev_pat],
                 })
         else:
             out.append({
                 "q": f"Al kiu {agent_name} {_past(ev['action'])}?",
                 "a": f"Al {recip_name}.",
+                "requires": [ev_pat],
             })
     return out
 
@@ -1560,7 +1687,14 @@ def _q_multi_hop(rec: dict, rng: random.Random) -> list[dict]:
              f"En la {loc_ent['concept']}."),
         ]
         q, a = q_shapes[rng.randrange(len(q_shapes))]
-        out.append({"q": q, "a": a})
+        out.append({
+            "q": q, "a": a,
+            "requires": [
+                {"kind": "event", "event_id": ev["id"]},
+                {"kind": "relation", "rel": "en",
+                 "args[0]": agent, "args[1]": agent_loc[agent]},
+            ],
+        })
     return out
 
 
@@ -1615,6 +1749,9 @@ def _q_coreference(rec: dict, rng: random.Random) -> list[dict]:
         out.append({
             "q": f"Kio estas 'la {alias}' en la rakonto?",
             "a": f"{concept}.",
+            "requires": [{
+                "kind": "category", "entity": ent["eid"], "value": alias,
+            }],
         })
     return out
 
@@ -1657,6 +1794,10 @@ def _q_ordering(rec: dict, rng: random.Random) -> list[dict]:
         out.append({
             "q": f"Kio okazis post la {prev_noun}?",
             "a": describe(nxt) + ".",
+            "requires": [
+                {"kind": "event", "event_id": prev["id"]},
+                {"kind": "event", "event_id": nxt["id"]},
+            ],
         })
     return out
 
@@ -1706,7 +1847,13 @@ def _q_agent_summary(rec: dict, rng: random.Random) -> list[dict]:
             f"Kion {agent_name} faris en la rakonto?",
         ])
         a = f"{agent_name} {listing}."
-        out.append({"q": q, "a": a})
+        out.append({
+            "q": q, "a": a,
+            "requires": [
+                {"kind": "event", "event_id": e["id"]}
+                for e in acts[:4]
+            ],
+        })
     return out
 
 
@@ -1764,7 +1911,10 @@ def _q_negation(rec: dict, rng: random.Random) -> list[dict]:
         theme_acc = _noun_acc(theme_ent["concept"])
         q = f"Ĉu {agent_name} {_past(wrong_verb)} la {theme_acc}?"
         a = f"Ne, {agent_name} {_past(ev['action'])} la {theme_acc}."
-        out.append({"q": q, "a": a})
+        out.append({
+            "q": q, "a": a,
+            "requires": [{"kind": "event", "event_id": ev["id"]}],
+        })
     return out
 
 
@@ -1813,7 +1963,10 @@ def _q_multiple_choice(rec: dict, rng: random.Random) -> list[dict]:
                           + f", aŭ {acc_options[-1]}")
         q = f"Ĉu {agent_name} {_past(ev['action'])} la {option_str}?"
         a = f"{agent_name} {_past(ev['action'])} la {_noun_acc(correct)}."
-        out.append({"q": q, "a": a})
+        out.append({
+            "q": q, "a": a,
+            "requires": [{"kind": "event", "event_id": ev["id"]}],
+        })
     return out
 
 
@@ -1918,7 +2071,13 @@ def _q_entity_journey(rec: dict, rng: random.Random) -> list[dict]:
             f"Kion {agent_name} faris al la {concept}?",
         ])
         a = f"{agent_name} {listing}."
-        out.append({"q": q, "a": a})
+        out.append({
+            "q": q, "a": a,
+            "requires": [
+                {"kind": "event", "event_id": e["id"]}
+                for e in unique_actions[:4]
+            ],
+        })
     return out
 
 
@@ -1948,7 +2107,10 @@ def _q_definition(rec: dict, rng: random.Random) -> list[dict]:
             f"Kio estas la {concept}?",
         ])
         a = defn
-        out.append({"q": q, "a": a})
+        out.append({
+            "q": q, "a": a,
+            "requires": [{"kind": "definition", "entity": eid}],
+        })
     return out
 
 
@@ -1990,6 +2152,48 @@ GENERATORS = [
 ]
 
 
+def _fact_matches(pattern: dict, fact: dict) -> bool:
+    """Pattern matches a fact when every key in pattern equals the
+    corresponding fact field. `args[N]` keys check positional args."""
+    for k, v in pattern.items():
+        if k.startswith("args[") and k.endswith("]"):
+            idx = int(k[5:-1])
+            args = fact.get("args", [])
+            if idx >= len(args) or args[idx] != v:
+                return False
+        elif k.startswith("roles."):
+            role = k[len("roles."):]
+            roles = dict(fact.get("roles", []))
+            if roles.get(role) != v:
+                return False
+        elif fact.get(k) != v:
+            return False
+    return True
+
+
+def _qa_disclosed(requires: list[dict], all_facts: list[dict]) -> bool:
+    """A Q/A is disclosed when every required-fact pattern is matched
+    by at least one fact in the trace's disclosure log."""
+    if not requires:
+        return True
+    for pat in requires:
+        if not any(_fact_matches(pat, f) for f in all_facts):
+            return False
+    return True
+
+
+def _flatten_facts(sentence_facts) -> list[dict]:
+    out = []
+    for entry in sentence_facts or ():
+        if isinstance(entry, list) and len(entry) == 2:
+            _, facts = entry
+        else:
+            facts = entry
+        for f in facts:
+            out.append(f)
+    return out
+
+
 def _qa_type_key(q: str) -> str:
     """Classify a question for balancing purposes."""
     if "Kiom da" in q:
@@ -2011,7 +2215,9 @@ def generate_qas_for_trace(
     underrepresented question types get boosted.
 
     `type_counts`: running counter of emitted Q/A types across all
-    traces. Updated in-place by this function."""
+    traces. Updated in-place by this function. Each emitted Q/A is
+    tagged with `disclosed: bool` reflecting whether the trace's
+    `sentence_facts` (when present) cover the Q/A's required facts."""
     is_planned = "drive" in rec
     candidates: list[dict] = []
     for gen in GENERATORS:
@@ -2023,6 +2229,13 @@ def generate_qas_for_trace(
             candidates.extend(gen(rec, rng))
     if not candidates:
         return []
+    disclosed_facts = _flatten_facts(rec.get("sentence_facts"))
+    for qa in candidates:
+        if disclosed_facts:
+            qa["disclosed"] = _qa_disclosed(
+                qa.get("requires", []), disclosed_facts)
+        else:
+            qa["disclosed"] = None  # unknown (legacy record without facts)
     by_type: dict[str, list[dict]] = {}
     for qa in candidates:
         key = _qa_type_key(qa["q"])
@@ -2096,8 +2309,14 @@ def main():
     all_concepts_frozen = frozenset(all_concepts)
 
     # Second pass: generate Q/A.
+    from collections import Counter
     n_traces = 0
     n_qas = 0
+    n_with_requires = 0
+    n_disclosed = 0
+    n_undisclosed = 0
+    n_unknown_legacy = 0
+    by_template_disclosed: dict[str, Counter] = {}
     type_counts: dict[str, int] = {}
     with open(args.inp) as fin, open(args.out, "w") as fout:
         for line in fin:
@@ -2116,8 +2335,42 @@ def main():
                     format_sft_record(prose, qa),
                     ensure_ascii=False) + "\n")
                 n_qas += 1
+                tpl = _qa_type_key(qa["q"])
+                bucket = by_template_disclosed.setdefault(tpl, Counter())
+                bucket["total"] += 1
+                if qa.get("requires"):
+                    n_with_requires += 1
+                    bucket["tagged"] += 1
+                if qa.get("disclosed") is True:
+                    n_disclosed += 1
+                    bucket["disclosed"] += 1
+                elif qa.get("disclosed") is False:
+                    n_undisclosed += 1
+                    bucket["undisclosed"] += 1
+                else:
+                    n_unknown_legacy += 1
             n_traces += 1
     print(f"Wrote {n_qas} Q/A pairs from {n_traces} traces to {args.out}")
+    print(f"  Tagged with requires:  {n_with_requires}")
+    print(f"  Disclosed:             {n_disclosed} "
+          f"({100*n_disclosed/max(n_qas,1):.1f}%)")
+    print(f"  Undisclosed:           {n_undisclosed} "
+          f"({100*n_undisclosed/max(n_qas,1):.1f}%)")
+    print(f"  Unknown (no facts):    {n_unknown_legacy}")
+    if any(by_template_disclosed.values()):
+        print()
+        print(f"{'Template':<22s} {'Total':>7s} {'Tagged':>7s} "
+              f"{'Disc':>7s} {'Undisc':>7s} {'%Undisc':>8s}")
+        print("-" * 65)
+        for tpl in sorted(by_template_disclosed,
+                          key=lambda k: -by_template_disclosed[k]["total"]):
+            c = by_template_disclosed[tpl]
+            tagged = c.get("tagged", 0)
+            disc = c.get("disclosed", 0)
+            undisc = c.get("undisclosed", 0)
+            pct = 100 * undisc / max(disc + undisc, 1) if (disc + undisc) else 0
+            print(f"{tpl:<22s} {c['total']:>7d} {tagged:>7d} "
+                  f"{disc:>7d} {undisc:>7d} {pct:>7.1f}%")
 
 
 if __name__ == "__main__":

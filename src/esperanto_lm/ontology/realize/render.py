@@ -367,6 +367,7 @@ def _pick_adjective(
     history: Optional[dict[str, set[str]]] = None,
     relevant_slots: Optional[set[str]] = None,
     derived=None,
+    note_fact=None,
 ) -> Optional[str]:
     """Return a slot value to render attributively for `entity`, or None.
 
@@ -440,6 +441,10 @@ def _pick_adjective(
     slot, value = rng.choice(pool)
     if history is not None:
         history.setdefault(entity.id, set()).add(slot)
+    if note_fact is not None:
+        note_fact(Fact.make(
+            "state", entity=entity.id, slot=slot, value=value,
+            phase="attributive"))
     return value
 
 
@@ -524,6 +529,9 @@ def _name_for(
                 taken = set().union(*alias_history.values()) if alias_history else set()
                 if concept not in taken:
                     alias_history.setdefault(entity.id, set()).add(concept)
+                    if note_fact is not None:
+                        note_fact(Fact.make(
+                            "category", entity=entity.id, value=concept))
                     return concept.capitalize()
             elif (r < ALIAS_RATE + 0.25
                     and "_" in name):
@@ -566,6 +574,9 @@ def _name_for(
             chosen = rng.choice(aliases)
             alias_history.setdefault(entity.id, set()).add(chosen)
             lemma = chosen
+            if note_fact is not None:
+                note_fact(Fact.make(
+                    "category", entity=entity.id, value=chosen))
     # `count_override` is set by event-rendering for consumption /
     # transfer verbs that operate on N units of a stack: "Maria manĝis
     # du pomojn" when Maria's stack of 5 is being decremented by 2.
@@ -589,7 +600,8 @@ def _name_for(
     # persons inside `_pick_adjective`.
     adj = _pick_adjective(
         entity, lexicon=lexicon, rng=rng, history=adjective_history,
-        relevant_slots=relevant_slots, derived=derived)
+        relevant_slots=relevant_slots, derived=derived,
+        note_fact=note_fact)
     if count > 1:
         plural_lemma = to_plural(lemma)
         numeral = int_to_esperanto(count)
@@ -1033,24 +1045,22 @@ def _render_scias_tuple_as_ke_clause(
         return None
     obj_form = ctx.name_for(obj_ent)
     ctx.note_mention(obj_ent)
-    if mode == "question":
-        copula = f"est{ctx.tense}"
-        if rel_type in ("en", "sur", "sub"):
-            return f"kie {copula} {subj_form}"
-        if rel_type == "havi":
-            verb = "havis" if ctx.tense == "is" else "havas"
-            return f"kiu {verb} {to_accusative(subj_form)}"
+    rel_def = ctx.lexicon.relations.get(rel_type) if ctx.lexicon else None
+    if rel_def is None:
         return None
-    if rel_type == "en":
+    if mode == "question":
+        if rel_def.verb_form is not None:
+            verb = inflect(rel_def.verb_form, ctx.tense)
+            return f"kiu {verb} {to_accusative(subj_form)}"
         copula = f"est{ctx.tense}"
-        return f"ke {subj_form} {copula} en {obj_form}"
-    if rel_type == "sur":
-        copula = f"est{ctx.tense}"
-        return f"ke {subj_form} {copula} sur {obj_form}"
-    if rel_type == "havi":
-        verb = "havis" if ctx.tense == "is" else "havas"
+        return f"kie {copula} {subj_form}"
+    ctx.note_fact(Fact.make(
+        "relation", rel=rel_type, args=(subj_id, obj_id)))
+    if rel_def.verb_form is not None:
+        verb = inflect(rel_def.verb_form, ctx.tense)
         return f"ke {subj_form} {verb} {to_accusative(obj_form)}"
-    return None
+    copula = f"est{ctx.tense}"
+    return f"ke {subj_form} {copula} {rel_type} {obj_form}"
 
 
 def _render_scias_tuple_as_quote_body(
@@ -1073,21 +1083,18 @@ def _render_scias_tuple_as_quote_body(
     def _cap(s: str) -> str:
         return s[0].upper() + s[1:] if s else s
 
-    if mode == "question":
-        if rel_type in ("en", "sur", "sub"):
-            return f"Kie estas {subj_form}?"
-        if rel_type == "havi":
-            return f"Kiu havas {to_accusative(subj_form)}?"
+    rel_def = ctx.lexicon.relations.get(rel_type) if ctx.lexicon else None
+    if rel_def is None:
         return None
-    if rel_type == "en":
-        return f"{_cap(subj_form)} estas en {obj_form}."
-    if rel_type == "sur":
-        return f"{_cap(subj_form)} estas sur {obj_form}."
-    if rel_type == "sub":
-        return f"{_cap(subj_form)} estas sub {obj_form}."
-    if rel_type == "havi":
-        return f"{_cap(subj_form)} havas {to_accusative(obj_form)}."
-    return None
+    if mode == "question":
+        if rel_def.verb_form is not None:
+            return f"Kiu {inflect(rel_def.verb_form, 'as')} {to_accusative(subj_form)}?"
+        return f"Kie estas {subj_form}?"
+    ctx.note_fact(Fact.make(
+        "relation", rel=rel_type, args=(subj_id, obj_id)))
+    if rel_def.verb_form is not None:
+        return f"{_cap(subj_form)} {inflect(rel_def.verb_form, 'as')} {to_accusative(obj_form)}."
+    return f"{_cap(subj_form)} estas {rel_type} {obj_form}."
 
 
 def _render_peti_request_body(theme_ent, ctx: _Ctx) -> Optional[str]:

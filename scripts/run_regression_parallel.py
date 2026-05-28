@@ -440,10 +440,11 @@ def _worker_task(args):
             # Forward planner: execute_drive already executed (and
             # may have appended a phase-2 followup plan).
             defined_ents = set()
-            prose = realize_trace(
+            prose, sentence_facts = realize_trace(
                 t, _LEX, setup_relations=setup,
                 scene_location_id=scene_id, rng=rng,
-                definition_p=0.3, defined_entities=defined_ents)
+                definition_p=0.3, defined_entities=defined_ents,
+                return_facts=True)
         except Exception:
             continue
         chain = " → ".join(ev.action for ev in t.events)
@@ -531,6 +532,10 @@ def _worker_task(args):
             "final_relations": final_rels_ser,
             "defined_entities": sorted(defined_ents),
             "prose": prose,
+            "sentence_facts": [
+                [sidx, [f.as_dict() for f in facts]]
+                for sidx, facts in sentence_facts
+            ],
         })
         if _malloc_trim is not None:
             _malloc_trim(0)
