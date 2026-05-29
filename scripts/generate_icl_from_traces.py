@@ -153,15 +153,28 @@ def _noun_acc(noun: str) -> str:
 
 
 def _name(eid: str, entities: dict) -> str:
-    """Surface form for an entity: concept lemma. Capitalize for
-    person types (proper nouns). Falls back to eid."""
+    """Surface form for an entity used in Q/A questions and answers.
+
+    When the entity has a proper name (eid distinct from the concept
+    lemma, e.g., a Wikidata-spawned "petro_silva"), the realizer's
+    `_render_person_name` shared helper produces "Petro Silva". The
+    model then has to resolve aliases / pronouns the prose uses
+    ("la kuracisto", "li") back to the named entity — coref training
+    built into the answer choice.
+
+    Falls back to the capitalized concept for persons without proper
+    names ("kuracisto" → "Kuracisto"), and to the bare lemma for
+    non-persons."""
+    from esperanto_lm.ontology.realize.render import _render_person_name
     ent = entities.get(eid)
     if ent is None:
         return eid
-    lemma = ent["concept"]
+    concept = ent["concept"]
     if ent["type"] == "person":
-        return lemma.capitalize()
-    return lemma
+        if eid != concept:
+            return _render_person_name(eid)
+        return concept.capitalize()
+    return concept
 
 
 def _acc(noun: str) -> str:
@@ -674,7 +687,7 @@ def _q_count_delta(rec: dict, rng: random.Random) -> list[dict]:
             continue
         agent_ent = entities.get(agent_eid)
         if agent_ent and agent_ent.get("type") == "person":
-            agent_name = agent_eid.capitalize()
+            agent_name = _name(agent_eid, entities)
         else:
             agent_name = "la " + (
                 agent_ent["concept"] if agent_ent else agent_eid)
@@ -705,11 +718,13 @@ def _q_count_delta(rec: dict, rng: random.Random) -> list[dict]:
 
 
 def _entity_name(eid, entities):
+    """Like _name but prefixes non-persons with 'la' for use in
+    sentence positions where the article is needed."""
     ent = entities.get(eid)
     if not ent:
         return eid
     if ent.get("type") == "person":
-        return eid.capitalize()
+        return _name(eid, entities)
     return "la " + ent["concept"]
 
 
@@ -1359,7 +1374,7 @@ def _q_location_at_end(rec: dict, rng: random.Random) -> list[dict]:
             continue
         seen.add(concept)
         moved = setup_loc.get(eid) != (prep, dest_eid)
-        name = concept.capitalize() if ent["type"] == "person" else concept
+        name = _name(eid, entities) if ent["type"] == "person" else concept
         if moved:
             q = rng.choice([
                 f"Kie estas {name} fine de la rakonto?",
@@ -2295,12 +2310,7 @@ def _q_subject_from_copula(rec: dict, rng: random.Random) -> list[dict]:
             # distinct from concept lemma).
             if eid == ent["concept"]:
                 continue
-            # Derive the proper name from the eid the same way the
-            # realizer does ("petro_silva" → "Petro Silva"). Using
-            # `_name` here would return the concept lemma instead.
-            name = " ".join(
-                "-".join(s.capitalize() for s in p.split("-"))
-                for p in eid.split("_"))
+            name = _name(eid, entities)
             q = rng.choice([
                 f"Kiu estas {cat}?",
                 f"Kiu estas la {cat}?",
