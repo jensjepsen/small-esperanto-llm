@@ -2119,6 +2119,231 @@ def _q_definition(rec: dict, rng: random.Random) -> list[dict]:
     return out
 
 
+def _q_de_agent_from_passive(rec: dict, rng: random.Random) -> list[dict]:
+    """De-question for agent extraction: "De kiu estis V-ita la X?"
+    → "De AGENT." Works regardless of whether the prose rendered the
+    event actively or passively — the event fact + agent role is
+    enough."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    for ev in events:
+        if _should_skip_verb(ev["action"]):
+            continue
+        agent = ev["roles"].get("agent")
+        theme = ev["roles"].get("theme")
+        if not agent or not theme or isinstance(theme, list):
+            continue
+        agent_ent = entities.get(agent)
+        theme_ent = entities.get(theme)
+        if agent_ent is None or theme_ent is None:
+            continue
+        agent_name = _name(agent, entities)
+        participle = _passive_participle(ev["action"])
+        theme_concept = theme_ent["concept"]
+        q_shapes = [
+            f"De kiu estis {participle} la {theme_concept}?",
+            f"De kiu la {theme_concept} estis {participle}?",
+        ]
+        q = q_shapes[rng.randrange(len(q_shapes))]
+        a = rng.choice([
+            f"De {agent_name}.",
+            f"De {agent_name}.",
+            f"{agent_name}.",
+        ])
+        out.append({
+            "q": q, "a": a,
+            "requires": [{"kind": "event", "event_id": ev["id"]}],
+        })
+    return out
+
+
+def _q_de_parts_from_definition(rec: dict, rng: random.Random) -> list[dict]:
+    """De-question for parts extraction: "De kio estas farita la X?"
+    → "El A kaj B." Requires the entity to have been defined with a
+    parts tail ("farita el A kaj B"); the havas_parton facts emitted
+    by the definition renderer are the disclosure signal."""
+    defined = rec.get("defined_entities", [])
+    if not defined:
+        return []
+    raw_ents = rec.get("entities", [])
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    entities = {e["eid"]: e for e in raw_ents}
+    parts_by_eid: dict[str, list[str]] = {}
+    for sidx, facts in rec.get("sentence_facts", []) or []:
+        for f in facts:
+            if (f.get("kind") == "relation"
+                    and f.get("rel") == "havas_parton"
+                    and len(f.get("args", [])) == 2):
+                parts_by_eid.setdefault(f["args"][0], []).append(f["args"][1])
+    out = []
+    for eid in defined:
+        if eid not in parts_by_eid:
+            continue
+        ent = entities.get(eid)
+        if ent is None:
+            continue
+        concept = ent["concept"]
+        parts = parts_by_eid[eid]
+        if len(parts) == 1:
+            parts_str = parts[0]
+        elif len(parts) == 2:
+            parts_str = f"{parts[0]} kaj {parts[1]}"
+        else:
+            parts_str = ", ".join(parts[:-1]) + f", kaj {parts[-1]}"
+        q = rng.choice([
+            f"De kio estas farita la {concept}?",
+            f"El kio estas farita la {concept}?",
+        ])
+        a = f"El {parts_str}."
+        out.append({
+            "q": q, "a": a,
+            "requires": [
+                {"kind": "relation", "rel": "havas_parton",
+                 "args[0]": eid, "args[1]": p}
+                for p in parts
+            ],
+        })
+    return out
+
+
+def _q_de_owner_from_havi(rec: dict, rng: random.Random) -> list[dict]:
+    """De-question for possession: "De kiu estas la X?" / "Kies estas
+    la X?" → "De OWNER." Requires a havi relation fact for the entity
+    (either explicit "Y havis X" or specifier rendering "la X de Y")."""
+    raw_ents = rec.get("entities", [])
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    entities = {e["eid"]: e for e in raw_ents}
+    havi_pairs: dict[str, str] = {}
+    for sidx, facts in rec.get("sentence_facts", []) or []:
+        for f in facts:
+            if (f.get("kind") == "relation"
+                    and f.get("rel") == "havi"
+                    and len(f.get("args", [])) == 2):
+                havi_pairs[f["args"][1]] = f["args"][0]
+    out = []
+    for item_eid, owner_eid in havi_pairs.items():
+        item_ent = entities.get(item_eid)
+        owner_ent = entities.get(owner_eid)
+        if item_ent is None or owner_ent is None:
+            continue
+        if item_ent.get("type") == "person":
+            continue
+        if "_" in item_eid and item_eid != item_ent["concept"]:
+            continue  # body part
+        concept = item_ent["concept"]
+        owner_name = _name(owner_eid, entities)
+        q = rng.choice([
+            f"De kiu estas la {concept}?",
+            f"Kies estas la {concept}?",
+        ])
+        a = rng.choice([
+            f"De {owner_name}.",
+            f"{owner_name}.",
+        ])
+        out.append({
+            "q": q, "a": a,
+            "requires": [{
+                "kind": "relation", "rel": "havi",
+                "args[0]": owner_eid, "args[1]": item_eid,
+            }],
+        })
+    return out
+
+
+def _q_subject_from_copula(rec: dict, rng: random.Random) -> list[dict]:
+    """Inverse of definition: given prose "X estas Y", ask
+    "Kio estas Y?" → "X". Trains subject-from-copula extraction
+    needed for wiki-style "Parizo estas la ĉefurbo de Francio.
+    Kio estas la ĉefurbo de Francio? → Parizo."
+
+    Only fires when the category is uniquely held by one entity in
+    the trace (no other entity has the same category fact), so the
+    answer is unambiguous."""
+    defined = rec.get("defined_entities", [])
+    if not defined:
+        return []
+    raw_ents = rec.get("entities", [])
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    entities = {e["eid"]: e for e in raw_ents}
+    lex = _get_lex()
+    # Build map: category -> set of eids the category was claimed for
+    # by any rendered definition in this trace.
+    cat_to_eids: dict[str, set[str]] = {}
+    for sidx, facts in rec.get("sentence_facts", []) or []:
+        for f in facts:
+            if f.get("kind") == "category":
+                cat_to_eids.setdefault(f["value"], set()).add(f["entity"])
+    out = []
+    for eid in defined:
+        ent = entities.get(eid)
+        if ent is None:
+            continue
+        if ent.get("type") == "person":
+            # Named person: "Petro estas kuracisto" → "Kiu estas kuracisto?" → "Petro"
+            cat = ent["concept"]
+            if cat not in cat_to_eids or len(cat_to_eids[cat]) != 1:
+                continue
+            # Skip when the person has no proper name — the eid is
+            # just the concept lemma, so "Kiu estas gasto? Gasto." is
+            # tautological. Only fire for named individuals (eid
+            # distinct from concept lemma).
+            if eid == ent["concept"]:
+                continue
+            # Derive the proper name from the eid the same way the
+            # realizer does ("petro_silva" → "Petro Silva"). Using
+            # `_name` here would return the concept lemma instead.
+            name = " ".join(
+                "-".join(s.capitalize() for s in p.split("-"))
+                for p in eid.split("_"))
+            q = rng.choice([
+                f"Kiu estas {cat}?",
+                f"Kiu estas la {cat}?",
+                f"Kiu en la rakonto estas {cat}?",
+            ])
+            a = rng.choice([
+                f"{name}.",
+                f"{name} estas {cat}.",
+                f"La {cat} estas {name}.",
+            ])
+            out.append({
+                "q": q, "a": a,
+                "requires": [{"kind": "category", "entity": eid, "value": cat}],
+            })
+            continue
+        concept_def = lex.concepts.get(ent["concept"])
+        if concept_def is None:
+            continue
+        cats = getattr(concept_def, "category", None) or []
+        if not cats:
+            continue
+        cat = cats[0]
+        if cat not in cat_to_eids or len(cat_to_eids[cat]) != 1:
+            continue
+        # "Tablo estas meblo." → "Kio estas meblo?" → "Tablo"
+        concept = ent["concept"]
+        q = rng.choice([
+            f"Kio estas {cat}?",
+            f"Kio estas la {cat} en la rakonto?",
+            f"Kiu {cat} estas en la rakonto?",
+        ])
+        a = rng.choice([
+            f"{concept}.",
+            f"{concept} estas {cat}.",
+            f"La {cat} estas {concept}.",
+        ])
+        out.append({
+            "q": q, "a": a,
+            "requires": [{"kind": "category", "entity": eid, "value": cat}],
+        })
+    return out
+
+
 # Registry of question generators.
 GENERATORS = [
     _q_intrinsic_property,
@@ -2151,6 +2376,10 @@ GENERATORS = [
     _q_multiple_choice,
     _q_entity_journey,
     _q_definition,
+    _q_subject_from_copula,
+    _q_de_agent_from_passive,
+    _q_de_parts_from_definition,
+    _q_de_owner_from_havi,
     # _q_why — skipped: 95% of causal chains are pluvi→_wet,
     # producing "Ĉar pluvis." mode collapse. Needs richer causal
     # annotations in the engine before this template is useful.
@@ -2263,7 +2492,9 @@ def generate_qas_for_trace(
     picked: list[dict] = []
     while len(picked) < max_per_trace and by_type:
         if type_counts is not None:
-            weights = [1.0 / (1 + type_counts.get(k, 0))
+            # Square the inverse-frequency: rare types get pulled
+            # harder toward the front of the picking queue.
+            weights = [1.0 / (1 + type_counts.get(k, 0)) ** 2
                        for k in by_type]
         else:
             weights = [1.0] * len(by_type)
