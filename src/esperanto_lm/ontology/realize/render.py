@@ -1479,6 +1479,30 @@ def _try_render_passive(ev: Event, ctx: _Ctx) -> Optional[str]:
     return " ".join(parts) + "."
 
 
+def _semantic_role_eids(
+    ev: Event, action_spec, semantic_role: str,
+) -> list[str]:
+    """Return bound entity ids for all syntactic roles on
+    `action_spec` that share `semantic_role`. Preserves the schema's
+    declared role order. List-valued roles contribute their elements
+    in order. Used to surface "X, Y kaj Z" coordinated phrases when
+    a thematic role is split across multiple optional positions."""
+    if action_spec is None:
+        return []
+    out: list[str] = []
+    for role_spec in action_spec.roles:
+        if getattr(role_spec, "semantic_role", None) != semantic_role:
+            continue
+        val = ev.roles.get(role_spec.name)
+        if val is None:
+            continue
+        if isinstance(val, (list, tuple)):
+            out.extend(v for v in val if isinstance(v, str))
+        else:
+            out.append(val)
+    return out
+
+
 def _render_event_phrase(
     ev: Event, ctx: _Ctx, *, drop_subject: bool,
     drop_theme: bool = False,
@@ -1524,11 +1548,31 @@ def _render_event_phrase(
     if subject is None:
         return None
 
+    # Companion handling: when the event has a bound companion role
+    # AND we're rendering the subject, 50% chance of conjoining the
+    # companion into the subject ("Maria kaj Petro ludas") instead of
+    # the default kun-phrase ("Maria ludas kun Petro"). Both forms
+    # disclose the same fact; the conjoined form forces multi-name
+    # extraction at the subject position.
+    companion_id = ev.roles.get("companion") if subject_role_name == "agent" else None
+    companion_ent = (ctx.trace.entity(companion_id)
+                     if companion_id else None)
+    inline_companion = (
+        not drop_subject
+        and companion_ent is not None
+        and ctx.rng is not None
+        and ctx.rng.random() < 0.5)
+
     parts: list[str] = []
     if not drop_subject:
         subject_form = ctx.name_for(subject)
         ctx.note_mention(subject)
-        parts.append(subject_form)
+        if inline_companion:
+            companion_form = ctx.name_for(companion_ent)
+            ctx.note_mention(companion_ent)
+            parts.append(f"{subject_form} kaj {companion_form}")
+        else:
+            parts.append(subject_form)
     else:
         # Skip subject; but still mark as mentioned for downstream
         # anaphora consistency.
@@ -1685,10 +1729,33 @@ def _render_event_phrase(
                     _count_override = _ev_qty
                 else:
                     _count_override = None
-                parts.append(ctx.theme_form(
-                    theme, count_override=_count_override))
-                ctx.note_mention(theme)
-                ctx.mark_nonperson_mention(theme)
+                conjoined = _semantic_role_eids(ev, action, "theme")
+                if len(conjoined) >= 2:
+                    rendered_parts: list[str] = []
+                    for eid in conjoined:
+                        ent = ctx.trace.entity(eid)
+                        if ent is None:
+                            continue
+                        rendered_parts.append(ctx.theme_form(
+                            ent, count_override=_count_override))
+                        ctx.note_mention(ent)
+                        ctx.mark_nonperson_mention(ent)
+                    if len(rendered_parts) >= 2:
+                        if len(rendered_parts) == 2:
+                            parts.append(f"{rendered_parts[0]} kaj {rendered_parts[1]}")
+                        else:
+                            parts.append(", ".join(rendered_parts[:-1])
+                                         + f" kaj {rendered_parts[-1]}")
+                    else:
+                        parts.append(ctx.theme_form(
+                            theme, count_override=_count_override))
+                        ctx.note_mention(theme)
+                        ctx.mark_nonperson_mention(theme)
+                else:
+                    parts.append(ctx.theme_form(
+                        theme, count_override=_count_override))
+                    ctx.note_mention(theme)
+                    ctx.mark_nonperson_mention(theme)
                 if source_entity_id is not None:
                     source_ent = ctx.trace.entities.get(source_entity_id)
                     if source_ent is not None:
@@ -1706,11 +1773,17 @@ def _render_event_phrase(
     # the legacy hardcoded recipient/destination blocks below can
     # skip them.
     prep_handled_roles: set[str] = set()
+    if inline_companion:
+        # The companion was already emitted as a conjoined subject
+        # ("X kaj Y verb..."); skip the kun-phrase emission below.
+        prep_handled_roles.add("companion")
     action_spec = ctx.lexicon.actions.get(ev.action)
     if action_spec is not None:
         for role_spec in action_spec.roles:
             prep = getattr(role_spec, "preposition", None)
             if not prep:
+                continue
+            if role_spec.name in prep_handled_roles:
                 continue
             eid = ev.roles.get(role_spec.name)
             if not eid:

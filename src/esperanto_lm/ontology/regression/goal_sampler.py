@@ -897,10 +897,28 @@ def regress_for_goal(
             if actor_is_scene:
                 actor_eid = scene_id
             else:
-                try:
-                    actor_eid = spawn_entity(t, agent_concept, lex, rng)
-                    t.assert_relation("en", (actor_eid, scene_id), lex)
-                except (KeyError, ValueError):
+                # Try the goal's preferred agent_concept; if it can't
+                # be placed in this scene (entity-level constraint
+                # mismatch), fall back to other concepts in
+                # agent_candidates. The concept-level filter at line
+                # 853 only checks containment compatibility — entity
+                # properties like mass can still violate at placement.
+                placement_attempts = (
+                    [agent_concept]
+                    + [c for c in agent_candidates
+                       if c != agent_concept][:3])
+                actor_eid = None
+                for cand_concept in placement_attempts:
+                    try:
+                        actor_eid = spawn_entity(t, cand_concept, lex, rng)
+                        t.assert_relation(
+                            "en", (actor_eid, scene_id), lex)
+                        agent_concept = cand_concept
+                        break
+                    except (KeyError, ValueError):
+                        actor_eid = None
+                        continue
+                if actor_eid is None:
                     last_loop_reason = (
                         f"actor_placement_failed:"
                         f"{agent_concept}@{scene_lemma}")

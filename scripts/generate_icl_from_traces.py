@@ -319,13 +319,27 @@ def _q_action_attribution(rec: dict, rng: random.Random) -> list[dict]:
         agent_name = _name(agent, entities)
         theme_name = _name(theme, entities)
         ev_pattern = {"kind": "event", "event_id": ev["id"]}
-        # "Who did X-i the Y?" (theme is accusative in Esperanto)
-        out.append({
-            "q": (f"Kiu {_past(ev['action'])} la "
-                  f"{_noun_acc(theme_ent['concept'])}?"),
-            "a": agent_name + ".",
-            "requires": [ev_pattern],
-        })
+        # "Who did X-i the Y?" (theme is accusative in Esperanto).
+        # When the event has a companion, the joint answer "agent kaj
+        # companion" is also valid — both participated.
+        companion = ev["roles"].get("companion")
+        companion_ent = entities.get(companion) if companion else None
+        if companion_ent is not None:
+            companion_name = _name(companion, entities)
+            joint_agent = f"{agent_name} kaj {companion_name}"
+            out.append({
+                "q": (f"Kiu {_past(ev['action'])} la "
+                      f"{_noun_acc(theme_ent['concept'])}?"),
+                "a": joint_agent + ".",
+                "requires": [ev_pattern],
+            })
+        else:
+            out.append({
+                "q": (f"Kiu {_past(ev['action'])} la "
+                      f"{_noun_acc(theme_ent['concept'])}?"),
+                "a": agent_name + ".",
+                "requires": [ev_pattern],
+            })
         # "What did Z X-i?"
         if agent_ent["type"] == "person":
             out.append({
@@ -2134,6 +2148,44 @@ def _q_definition(rec: dict, rng: random.Random) -> list[dict]:
     return out
 
 
+def _q_companion(rec: dict, rng: random.Random) -> list[dict]:
+    """For events with a bound companion role: "Kun kiu X verbis?"
+    → "Kun Y." Trains kun-companion extraction; pairs with the joint
+    "X kaj Y" answer that _q_action_attribution now emits for the
+    same events."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    entities = {e["eid"]: e for e in rec["entities"]}
+    out = []
+    for ev in events:
+        if _should_skip_verb(ev["action"]):
+            continue
+        agent = ev["roles"].get("agent")
+        companion = ev["roles"].get("companion")
+        if not agent or not companion:
+            continue
+        agent_ent = entities.get(agent)
+        companion_ent = entities.get(companion)
+        if agent_ent is None or companion_ent is None:
+            continue
+        agent_name = _name(agent, entities)
+        companion_name = _name(companion, entities)
+        q = rng.choice([
+            f"Kun kiu {agent_name} {_past(ev['action'])}?",
+            f"Kun kiu {_past(ev['action'])} {agent_name}?",
+        ])
+        a = rng.choice([
+            f"Kun {companion_name}.",
+            f"{companion_name}.",
+        ])
+        out.append({
+            "q": q, "a": a,
+            "requires": [{"kind": "event", "event_id": ev["id"]}],
+        })
+    return out
+
+
 def _q_de_agent_from_passive(rec: dict, rng: random.Random) -> list[dict]:
     """De-question for agent extraction: "De kiu estis V-ita la X?"
     → "De AGENT." Works regardless of whether the prose rendered the
@@ -2390,6 +2442,7 @@ GENERATORS = [
     _q_de_agent_from_passive,
     _q_de_parts_from_definition,
     _q_de_owner_from_havi,
+    _q_companion,
     # _q_why — skipped: 95% of causal chains are pluvi→_wet,
     # producing "Ĉar pluvis." mode collapse. Needs richer causal
     # annotations in the engine before this template is useful.

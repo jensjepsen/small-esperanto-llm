@@ -2792,6 +2792,51 @@ def _fp_tuple_pool(source_rel: str, trace, lex, rule_effects) -> list:
 _GROUND_CAP = int(__import__("os").environ.get("MAX_GROUNDED", "50000"))
 
 
+class _RelationIndex:
+    """Per-relation per-position index of asserted + derived facts.
+
+    `partners(rel, pos, eid)` returns the set of `(other_pos, other_eid)`
+    pairs when `eid` sits at `pos` in `rel`. `eids_at(rel, pos)` returns
+    all entities seen at that position. O(1) lookups via prebuilt dicts;
+    mirrors the entity_index/concept_index style — build once per state
+    in `_ground_all_actions`, query many times during candidate
+    pre-pruning. Sources:
+      - `trace.relations` (asserted: en, sur, havi, havas_parton, ...)
+      - `derived.relations` (e.g. samloke, effective_en, scias_lokon —
+        the fixed-point closure the planner already computed)
+    Used by the binary-precondition pre-prune pass to restrict candidate
+    sets before the combo cross-product blows up. Generic over relation:
+    any binary RelationPrecondition gets pruning for free.
+    """
+    __slots__ = ("_idx",)
+
+    def __init__(self, trace, derived):
+        self._idx: dict[str, dict[int, dict[str, set]]] = {}
+        for r in trace.relations:
+            self._add(r.relation, tuple(r.args))
+        if derived is not None:
+            for rel, args in derived.relations:
+                self._add(rel, tuple(args))
+
+    def _add(self, rel, args):
+        rel_idx = self._idx.setdefault(rel, {})
+        for i, a in enumerate(args):
+            pos_idx = rel_idx.setdefault(i, {})
+            partners = pos_idx.setdefault(a, set())
+            for j, b in enumerate(args):
+                if i != j:
+                    partners.add((j, b))
+
+    def partners(self, rel, pos, eid):
+        return self._idx.get(rel, {}).get(pos, {}).get(eid, ())
+
+    def eids_at(self, rel, pos):
+        return self._idx.get(rel, {}).get(pos, {}).keys()
+
+    def has_relation(self, rel):
+        return rel in self._idx
+
+
 def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     """All (action, roles, pres, effs) tuples for actions whose
     roles can be bound to current entities. Pure enumeration —
@@ -2829,6 +2874,12 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     entity_idx = entity_index_for(trace, lex)
     parts_index = trace._parts_index
     type_pool: dict = {}
+    # Precondition pre-prune index: maps every (rel, position, eid) →
+    # set of (other_position, other_eid) partners across asserted +
+    # derived relations. Built once per state, used in the Pass-2
+    # role-binding pre-prune to drop candidates that can't satisfy
+    # any binary RelationPrecondition before the combo cross-product.
+    rel_index = _RelationIndex(trace, derived)
     def cands_for_type(type_name):
         pool = type_pool.get(type_name)
         if pool is None:
@@ -2951,6 +3002,13 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
         role_origin: list = []
         ok = True
         seen_fp: set = set()
+        # Semantic-role candidate sharing: roles sharing a `semantic_role`
+        # have identical type + properties + preconditions on the role
+        # itself (validated at lexicon load). Their filtered candidate
+        # set is therefore identical, so we compute it once per group
+        # and reuse — saves N× containment lookups when an action has N
+        # roles in the same group (vidi: 3, etc.).
+        sr_cand_cache: dict[str, list] = {}
         for role_spec in action.roles:
             # Coupled scalar role — handled as part of an fp group.
             if (role_spec.name in coupled_role_names
@@ -2992,6 +3050,21 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                     ok = False
                     break
                 per_role.append(pool)
+                role_origin.append(("role", role_spec))
+                continue
+            # Reuse previously-filtered candidates when a sibling role
+            # in the same semantic_role group already paid for the
+            # filtering. Saves redundant `cands_for_type` + property
+            # filtering for additional_theme_1/2 etc.
+            sem_role = getattr(role_spec, "semantic_role", None)
+            if sem_role is not None and sem_role in sr_cand_cache:
+                cand = sr_cand_cache[sem_role]
+                if not cand:
+                    if getattr(role_spec, "optional", False):
+                        continue
+                    ok = False
+                    break
+                per_role.append(cand)
                 role_origin.append(("role", role_spec))
                 continue
             cand = cands_for_type(role_spec.type)
@@ -3037,6 +3110,8 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
                         keep = entity_idx.matches_constraints({slot: v})
                         filtered = [e for e in filtered if e in keep]
                 cand = filtered
+            if sem_role is not None:
+                sr_cand_cache[sem_role] = cand
             if not cand:
                 if getattr(role_spec, "optional", False):
                     continue
@@ -3046,6 +3121,70 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
             role_origin.append(("role", role_spec))
         if not ok:
             continue
+        # Pass 2: precondition pre-prune. For each binary
+        # RelationPrecondition where we have an index entry AND both
+        # named roles ended up in per_role, restrict each role's
+        # candidates to entities that have at least one valid partner
+        # in the OTHER role's current candidates. Iterates a couple
+        # times to propagate pruning back-and-forth across roles
+        # that share preconditions. Drops most of the cross-product
+        # explosion when optional roles share preconditions with the
+        # primary role (vidi: samloke(agent, theme),
+        # samloke(agent, additional_theme_1), samloke(agent,
+        # additional_theme_2) — all three theme cands prune to the
+        # protagonist's room).
+        role_to_per_idx = {
+            role_origin[i][1].name: i
+            for i in range(len(role_origin))
+            if role_origin[i][0] == "role"
+        }
+        binary_preconds = [
+            pc for pc in (action.preconditions or ())
+            if (hasattr(pc, "kind") and pc.kind == "relation"
+                and len(getattr(pc, "roles", ())) == 2
+                and rel_index.has_relation(pc.rel))
+        ]
+        if binary_preconds:
+            for _ in range(3):
+                changed = False
+                for pc in binary_preconds:
+                    r0, r1 = pc.roles
+                    i0 = role_to_per_idx.get(r0)
+                    i1 = role_to_per_idx.get(r1)
+                    if i0 is None or i1 is None:
+                        continue
+                    cand0 = per_role[i0]
+                    cand1 = per_role[i1]
+                    if not cand0 or not cand1:
+                        continue
+                    set1 = set(cand1)
+                    pruned0 = [
+                        e for e in cand0
+                        if any(p[1] in set1
+                               for p in rel_index.partners(pc.rel, 0, e))
+                    ]
+                    set0 = set(pruned0)
+                    pruned1 = [
+                        e for e in cand1
+                        if any(p[1] in set0
+                               for p in rel_index.partners(pc.rel, 1, e))
+                    ] if pruned0 else []
+                    if len(pruned0) != len(cand0):
+                        per_role[i0] = pruned0
+                        changed = True
+                    if len(pruned1) != len(cand1):
+                        per_role[i1] = pruned1
+                        changed = True
+                if not changed:
+                    break
+            if any(not c for c in per_role):
+                # Pre-prune emptied a required role's candidates: this
+                # action grounding is infeasible. Optional roles whose
+                # candidates went empty would have been skipped during
+                # Pass 1 — at this point an empty per_role entry means
+                # the binary join admits no valid pair for a required
+                # role. Skip the combo enumeration entirely.
+                continue
         # Build per-effect target-role concept-validity sets once per
         # action — combo loop does O(1) lookup rather than dispatching
         # to concept_models_slot per combo.

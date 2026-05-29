@@ -519,9 +519,19 @@ def _run_causal_phase(
         for ev in list(trace.events):
             if ev.action != r.when.action:
                 continue
-            ctx = MatchContext(
-                trace=trace, lexicon=lexicon, derived=derived,
-                focus_event=ev)
+            # Semantic-role expansion: when the action declares
+            # multiple syntactic roles sharing a `semantic_role` (e.g.,
+            # vidi's theme + additional_theme_1 + additional_theme_2 all
+            # under semantic_role="theme"), fire the rule once per bound
+            # member by feeding it a shadow event with the canonical
+            # role rebound to each member's eid. Lets rules like
+            # `vidi_learns_en` propagate knowledge across all seen
+            # entities without per-role duplication.
+            shadow_events = _semantic_role_expand_event(ev, lexicon)
+            for shadow_ev in shadow_events:
+                ctx = MatchContext(
+                    trace=trace, lexicon=lexicon, derived=derived,
+                    focus_event=shadow_ev)
             # Materialize bindings before applying effects — effects
             # can mutate `trace.entities`/`trace.relations` (e.g.
             # create_entity, add_relation), which would crash the
@@ -532,33 +542,102 @@ def _run_causal_phase(
             # shared dict, so a bare `list(...)` would yield N refs to
             # the same (now-empty) dict. Compiled enums yield fresh
             # dicts already; the dict(b) is then redundant but cheap.
-            if compiled_enum is not None:
-                binding_iter = compiled_enum(ev, ctx)
-            else:
-                binding_iter = enumerate_bindings(r.when, r.given, ctx)
-            for bindings in [dict(b) for b in binding_iter]:
-                # List-valued bindings (variadic event roles like
-                # fari.parts) are unhashable in the dedup frozenset;
-                # tuple-coerce just for the key. EntityInstance values
-                # (compiled enum can resolve to instances when given
-                # clauses are present) are reduced to their .id since
-                # only the identity matters for dedup. The bindings
-                # dict itself keeps the original values so ForEach can
-                # mutate-iterate and effects can read attributes.
-                def _k(v):
-                    if isinstance(v, list):
-                        return tuple(_k(x) for x in v)
-                    if isinstance(v, EntityInstance):
-                        return v.id
-                    return v
-                key = (r.name, ev.id, frozenset(
-                    (k, _k(v)) for k, v in bindings.items()))
-                if key in fired_bindings:
-                    continue
-                fired_bindings.add(key)
-                if _apply_effects(r, bindings, trace, lexicon, counter, ev):
-                    changed = True
+                if compiled_enum is not None:
+                    binding_iter = compiled_enum(shadow_ev, ctx)
+                else:
+                    binding_iter = enumerate_bindings(r.when, r.given, ctx)
+                for bindings in [dict(b) for b in binding_iter]:
+                    def _k(v):
+                        if isinstance(v, list):
+                            return tuple(_k(x) for x in v)
+                        if isinstance(v, EntityInstance):
+                            return v.id
+                        return v
+                    # Key on the ORIGINAL event id and include the
+                    # shadow's distinguishing role bindings so each
+                    # semantic_role expansion fires once.
+                    key = (r.name, ev.id, frozenset(
+                        (k, _k(v)) for k, v in bindings.items()))
+                    if key in fired_bindings:
+                        continue
+                    fired_bindings.add(key)
+                    if _apply_effects(
+                            r, bindings, trace, lexicon, counter, ev):
+                        changed = True
     return changed
+
+
+def _semantic_role_expand_event(ev, lexicon):
+    """Yield shadow events covering each semantic_role expansion.
+
+    When the event's action declares multiple syntactic roles sharing
+    a `semantic_role`, this generates one shadow event per cross
+    product over the semantic_role members. The canonical role of
+    each group (the first declared role with that semantic_role)
+    receives the member's eid in the shadow event's `roles`. Rules
+    that bind only the canonical role see one firing per member.
+
+    When no semantic_role grouping applies, yields the original event
+    untouched (a single-element iteration)."""
+    action = lexicon.actions.get(ev.action) if lexicon else None
+    if action is None:
+        yield ev
+        return
+    # Group roles by semantic_role; pick canonical = first declared.
+    groups: dict[str, list[str]] = {}
+    canonical: dict[str, str] = {}
+    for rs in action.roles:
+        sr = getattr(rs, "semantic_role", None)
+        if sr is None:
+            continue
+        groups.setdefault(sr, []).append(rs.name)
+        canonical.setdefault(sr, rs.name)
+    if not groups:
+        yield ev
+        return
+    # Bound members per group, ordered.
+    bound_per_group: list[list[tuple[str, str]]] = []  # [(canonical_role, eid), ...]
+    for sr, role_names in groups.items():
+        members = []
+        for rn in role_names:
+            val = ev.roles.get(rn)
+            if val is None:
+                continue
+            members.append((canonical[sr], val))
+        if not members:
+            continue
+        bound_per_group.append(members)
+    if not bound_per_group:
+        yield ev
+        return
+    # Cross product across groups. For each combination, build a
+    # shadow event with the canonical role of each group set to the
+    # chosen member's eid. Non-canonical roles in the same group are
+    # removed so rules don't double-count.
+    from itertools import product
+    non_canonical = {
+        rn for role_names in groups.values()
+        for rn in role_names if rn != canonical[next(
+            sr for sr, rns in groups.items() if rn in rns)]
+    }
+    for combo in product(*bound_per_group):
+        new_roles = {
+            k: v for k, v in ev.roles.items()
+            if k not in non_canonical}
+        for canon_name, eid in combo:
+            new_roles[canon_name] = eid
+        # Identity shortcut: when the new_roles match the original,
+        # yield the original event so identity-sensitive consumers
+        # (e.g. event-id memoization) don't see a needless copy.
+        if new_roles == ev.roles:
+            yield ev
+        else:
+            yield Event(
+                id=ev.id, action=ev.action, roles=new_roles,
+                caused_by=ev.caused_by, creates=ev.creates,
+                property_changes=ev.property_changes,
+                trace_position=ev.trace_position,
+                quantity=getattr(ev, "quantity", 1))
 
 
 _UNSET = object()

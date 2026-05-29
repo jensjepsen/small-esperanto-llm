@@ -371,6 +371,21 @@ class RoleSpec(_Frozen):
     #   passage with preposition="tra" → "tra la pordo"
     # Default None: render as the verb's accusative complement.
     preposition: Optional[str] = None
+    # Semantic role: when two or more syntactic roles on the same action
+    # share a `semantic_role` value, they play the same thematic part
+    # in the event (e.g., vidi's `theme`, `additional_theme_1`, and
+    # `additional_theme_2` are all "thing being seen"). Consumers:
+    #   - Renderer: collects bound entities across the group and emits
+    #     a coordinated phrase ("la libron, la bukedon kaj la kombilon")
+    #     in place of each role's individual rendering.
+    #   - Rule engine: when a rule binds a role var, the binding loops
+    #     over all syntactic roles sharing the semantic_role, so
+    #     `vidi_learns_en` fires once per seen entity without per-role
+    #     rule duplication.
+    # Each role still appears in `ev.roles` as a separate single
+    # binding — only the binding-iteration and surface form treat the
+    # group as one.
+    semantic_role: Optional[str] = None
 
 
 class Effect(_Frozen):
