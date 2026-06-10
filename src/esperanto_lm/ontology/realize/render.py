@@ -67,7 +67,7 @@ PRONOUN_OF_NAME: dict[str, str] = {
 
 def _pronoun_for_person(entity_id: str, trace) -> str | None:
     """Derive pronoun from entity gender. Falls back to PRONOUN_OF_NAME
-    for legacy names, then to 'li' as default."""
+    for legacy names, then to KB-grounded `sekso`, then 'li' as default."""
     if entity_id in PRONOUN_OF_NAME:
         return PRONOUN_OF_NAME[entity_id]
     ent = trace.entities.get(entity_id) if trace else None
@@ -78,6 +78,13 @@ def _pronoun_for_person(entity_id: str, trace) -> str | None:
         g = gender[0] if isinstance(gender, list) else gender
         if g == "virino":
             return "ŝi"
+        return "li"
+    # KB-grounded fallback: persons sampled from YAGO carry
+    # schema:gender → sekso in `kb_facts`. YAGO labels are "ina" for
+    # yago:Female_gender, "vira" for yago:Male_gender.
+    kb_sekso = ent.kb_facts.get("sekso") if ent.kb_facts else None
+    if kb_sekso and kb_sekso[0].lower() == "ina":
+        return "ŝi"
     return "li"
 
 
@@ -543,13 +550,17 @@ def _name_for(
                 pron = _pronoun_for_person(name, trace)
                 if pron:
                     return pron
-        rendered = _render_person_name(name)
+        # KB-grounded entities carry their canonical EO label in
+        # `entity.name` — use it directly to preserve YAGO's exact
+        # casing and special characters (e.g. "Pío García-Escudero"
+        # rather than the slug-roundtripped capitalization).
+        rendered = entity.name or _render_person_name(name)
         if entity.id not in mentioned and rng is not None:
             if rng.random() < 0.5:
                 return f"{entity.concept_lemma.capitalize()} {rendered}"
         return rendered
     if entity.entity_type == "location" and entity.id != entity.concept_lemma:
-        return _render_person_name(entity.id)
+        return entity.name or _render_person_name(entity.id)
     lemma = entity.concept_lemma
     # On back-references, sometimes substitute a direct-parent
     # category alias for the bare lemma — "la pomo" → "la frukto".
@@ -1460,7 +1471,22 @@ def _try_render_passive(ev: Event, ctx: _Ctx) -> Optional[str]:
     theme_ent = ctx.trace.entity(theme_id)
     if agent_ent is None or theme_ent is None:
         return None
-    theme_form = ctx.name_for(theme_ent)
+    # Same count-override logic as the active path (see notes near
+    # `_count_override = _ev_qty` in `_render_event_phrase`): for
+    # consumption/transfer verbs the subject of the passive is the
+    # qty-many units operated on, NOT the source stack's full count.
+    # "La dek kvin kukoj estis donita de Nose" (15 kukos given) was
+    # the active-form fall-through; with the override, doni's qty=10
+    # renders as "La dek kukoj estis donita de Nose" — matching the
+    # actual transfer.
+    _ev_qty = getattr(ev, "quantity", 1)
+    _verb_meta = _verb_metadata()
+    if (ev.action in _verb_meta["consumption"]
+            or ev.action in _verb_meta["transfer"]):
+        _count_override = _ev_qty
+    else:
+        _count_override = None
+    theme_form = ctx.name_for(theme_ent, count_override=_count_override)
     ctx.note_mention(theme_ent)
     ctx.mark_nonperson_mention(theme_ent)
     agent_form = ctx.name_for(agent_ent)
@@ -1985,6 +2011,29 @@ def _render_destruction(
     return f"{form} {verb}."
 
 
+_PERCEPTION_VERBS_CACHE: dict = {}
+
+
+def _perception_verbs(lexicon) -> frozenset[str]:
+    """Verbs whose instrument carries a sensory capability
+    (see_capable, hear_capable, smell_capable) — i.e. perception
+    rather than deliberate action. Derived from the lexicon so adding
+    a new perception verb auto-extends the set."""
+    cached = _PERCEPTION_VERBS_CACHE.get(id(lexicon))
+    if cached is not None:
+        return cached
+    sensory = frozenset({"see_capable", "hear_capable", "smell_capable"})
+    out = {
+        name for name, a in lexicon.actions.items()
+        if any(r.name == "instrument" and sensory & set(
+            (getattr(r, "properties", {}) or {}).keys())
+            for r in a.roles)
+    }
+    out_fs = frozenset(out)
+    _PERCEPTION_VERBS_CACHE[id(lexicon)] = out_fs
+    return out_fs
+
+
 def _render_coordinated(
     m: CoordinatedMessage, ctx: _Ctx,
 ) -> Optional[str]:
@@ -2053,6 +2102,72 @@ def _render_coordinated(
         rest_bodies.append(phrase)
     if not rest_bodies:
         return first_body + "."
+    # Por-fusion: when the LAST child's role bindings include the
+    # theme/destination of some earlier child (enablement chain —
+    # "prenis la ŝlosilon kaj malŝlosis la pordon" actually means
+    # "took the key in order to unlock"), with probability POR_P
+    # replace the final "kaj" with "por" and convert that verb to
+    # infinitive. Reads more naturally and trains the model on
+    # purpose phrasings the eval expects.
+    POR_P = 0.35
+    last_event_msg = m.children[-1]
+    use_por = False
+    if (ctx.rng is not None
+            and isinstance(last_event_msg, EventMessage)
+            and len(rest_bodies) >= 1
+            and ctx.rng.random() < POR_P):
+        # Intransitives (fali/rompiĝi/aperi) describe involuntary
+        # state changes — "skulptaĵo falis por rompiĝi" reads as
+        # "fell in order to break" which is nonsense for inanimate
+        # subjects. Skip the por fusion when the final event's verb
+        # is intransitive; only deliberate transitive actions get
+        # purpose phrasing.
+        last_action_def = ctx.lexicon.actions.get(
+            last_event_msg.event.action)
+        if (last_action_def is not None
+                and getattr(last_action_def, "transitivity", None)
+                == "intransitive"):
+            return first_body + " kaj " + " kaj ".join(rest_bodies) + "."
+        # Perception verbs (vidi/aŭdi/flari) aren't deliberate
+        # enablers; "vidis por preni" reads as "saw in order to
+        # take" which is awkward. Exclude them — only deliberate
+        # action verbs flow theme into the purpose chain.
+        perception_verbs = _perception_verbs(ctx.lexicon)
+        prior_outputs: set = set()
+        for prior in m.children[:-1]:
+            if not isinstance(prior, EventMessage):
+                continue
+            if prior.event.action in perception_verbs:
+                continue
+            for r in ("theme", "destination"):
+                v = prior.event.roles.get(r)
+                if isinstance(v, str):
+                    prior_outputs.add(v)
+                elif isinstance(v, (list, tuple)):
+                    prior_outputs.update(v)
+        last_inputs: set = set()
+        for r in ("theme", "destination", "instrument", "parts"):
+            v = last_event_msg.event.roles.get(r)
+            if isinstance(v, str):
+                last_inputs.add(v)
+            elif isinstance(v, (list, tuple)):
+                last_inputs.update(v)
+        if prior_outputs & last_inputs:
+            # Convert the last phrase's tensed verb to infinitive
+            # using the event's action lemma (already infinitive form).
+            last_phrase = rest_bodies[-1]
+            head, _, tail = last_phrase.partition(" ")
+            if head:
+                rest_bodies[-1] = (
+                    last_event_msg.event.action
+                    + (" " + tail if tail else ""))
+                use_por = True
+    if use_por and len(rest_bodies) > 1:
+        # "X kaj Y kaj por Z" → "X kaj Y por Z"
+        return (first_body + " kaj " + " kaj ".join(rest_bodies[:-1])
+                + " por " + rest_bodies[-1] + ".")
+    if use_por:
+        return first_body + " por " + rest_bodies[-1] + "."
     return first_body + " kaj " + " kaj ".join(rest_bodies) + "."
 
 
@@ -2250,6 +2365,11 @@ def _render_definition(m: DefinitionMessage, ctx: _Ctx) -> Optional[str]:
         ctx.note_fact(Fact.make(
             "relation", rel="havas_parton",
             args=(m.entity_id, part_eid)))
+    # KB-grounded biography facts: one Fact per appended sentence so
+    # the Q/A picker can ask about each independently.
+    for prop, value in m.kb_facts:
+        ctx.note_fact(Fact.make(
+            "biography", entity=m.entity_id, prop=prop, value=value))
     return m.definition
 
 
