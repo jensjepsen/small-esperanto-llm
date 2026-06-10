@@ -90,6 +90,38 @@ def verb_postconditions(verb_lemma: str, rules: list, lex) -> list[VerbPostcondi
     action = lex.actions.get(verb_lemma)
     if action is not None:
         for eff in action.effects:
+            if isinstance(eff, CountDeltaEffect):
+                # CountDeltaEffect shifts the target's count by the
+                # event quantity — it doesn't write a fixed value, so
+                # the schema-level `eff.value` is a "0" placeholder
+                # inherited from Effect's slot. Reading it as a
+                # postcondition collapses every count-delta verb to
+                # `(property, count, "0")` in the goal index, so the
+                # sampler only ever sees count=0 goals. Expand to one
+                # postcondition per value in the slot's vocabulary so
+                # the index exposes the full reachable range. The
+                # seeder's per-concept `target_value` clamp keeps
+                # drives feasible when a concept's count vocab is
+                # narrower than the slot's global one.
+                slot_def = lex.slots.get(eff.property)
+                values = (list(slot_def.vocabulary)
+                          if slot_def and slot_def.vocabulary
+                          else [str(i) for i in range(1, 21)])
+                # Slot vocabularies for count typically start at "1"
+                # (a 1-of-X stack), but the goal "count=0" is the
+                # canonical "consume to depletion" target the old
+                # placeholder-based index produced. Keep it in the
+                # pool so subtract verbs can still drive "eat all".
+                if "0" not in values:
+                    values = ["0"] + values
+                for v in values:
+                    out.append(VerbPostcondition(
+                        kind="property", verb_lemma=verb_lemma,
+                        target_role=eff.target_role,
+                        slot=eff.property, value=v,
+                        relation=None, role_args=None,
+                    ))
+                continue
             out.append(VerbPostcondition(
                 kind="property", verb_lemma=verb_lemma,
                 target_role=eff.target_role,

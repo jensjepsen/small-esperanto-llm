@@ -37,6 +37,7 @@ from typing import Any, NamedTuple, Optional
 
 from ..causal import Trace
 from ..fact_table import FactTable, fact_table_for, iter_bits
+from ..schemas import CountDeltaEffect
 from .planner import (
     _FAILURE_REASON, _cached_compute_derived_state,
     _entity_has_asserted_scalar, _entity_property_values,
@@ -1610,24 +1611,104 @@ def _compute_count_delta_qty(action, roles, goal, trace):
     return 1
 
 
-def _fixup_count_delta_qty(plan, goal, trace):
-    """Post-process plan: set quantity on the last step if it has
-    a CountDeltaEffect targeting the goal's count slot."""
+def _fixup_count_delta_qty(plan, goal, trace, lex=None, rule_effects=None):
+    """Post-process plan: stamp the last step's quantity so the
+    engine's cumulative count arithmetic lands on the goal exactly.
+
+    The relaxed planner search treats CountDelta as "any reachable
+    value at cost 1" — fine as a heuristic. But the plan's events
+    still need explicit qtys at execute-time. Earlier this function
+    only stamped the LAST step against the INITIAL trace; for plans
+    where prior steps also reduce target_eid's count (a preceding
+    preni's TransferN partial-split, or an intermediate manĝi/doni/
+    aĉeti/vendi), the last step's qty was over-stamped by their
+    cumulative consumption — the engine then overshot the goal by
+    that amount. Full-transfer mode (qty >= source.count) masked
+    the error for gv=0 plans; partial-transfer plans (gv>0) saw
+    visible off-by-one in their final count.
+
+    Fix: walk the plan, sum the count reductions of prior steps on
+    target_eid (schema-derived via lex.actions + rule_effects's
+    `transfers` field, no per-verb whitelist), and subtract from
+    the last step's stamped qty so total consumption equals
+    |initial - target|. Unstamped intermediate steps default to
+    qty=1 (TransferN's no-explicit-qty behavior).
+
+    `lex` and `rule_effects` are the planner-context state needed
+    to identify count-reducing steps. When omitted (legacy / test
+    callers), falls back to last-step-only stamping — preserves
+    the original behavior on single-count-step plans."""
     if not plan:
         return plan
-    from ..schemas import CountDeltaEffect
     if goal[0] != "property" or goal[2] != "count":
         return plan
+    target_eid = goal[1]
+    try:
+        target_val = int(goal[3])
+    except (ValueError, IndexError):
+        return plan
+    ent = trace.entities.get(target_eid)
+    if ent is None:
+        return plan
+    try:
+        cur_val = int(ent.properties.get("count", [])[0]) if (
+            ent.properties.get("count")) else 1
+    except (ValueError, IndexError):
+        return plan
+    total_delta = abs(cur_val - target_val)
+    if total_delta == 0:
+        return plan
+
+    prior_consumed = 0
+    if lex is not None:
+        for step in plan[:-1]:
+            step_verb = step[0]
+            step_roles = step[1] if len(step) > 1 else {}
+            step_qty = step[2] if len(step) >= 3 else 1
+            if _step_reduces_count_on(
+                    step_verb, step_roles, target_eid,
+                    lex, rule_effects):
+                prior_consumed += step_qty
+
+    remaining = total_delta - prior_consumed
+    # If prior steps already reached (or overshot) the goal, the
+    # last step is redundant: the relaxed-graph search added it
+    # because preni's TransferN-driven count drop isn't represented
+    # as a CountDeltaEffect, so the bitmap doesn't see the goal as
+    # reached until a CountDelta verb is applied — but the engine's
+    # execution DID reach it via preni's partial-split. Drop the
+    # redundant tail step rather than stamping qty=0 (which would
+    # leave TransferN to materialize an empty count=0 sibling entity
+    # — noise in the trace).
+    if remaining <= 0:
+        return plan[:-1]
     last = plan[-1]
-    verb = last[0]
-    roles = last[1]
-    from .. import load_lexicon
-    # Can't load lex here — use the action name to check
-    # Just recompute qty from the last step
-    qty = _compute_count_delta_qty_by_name(verb, roles, goal, trace)
-    if qty != 1:
-        return plan[:-1] + [(verb, roles, qty)]
-    return plan
+    return plan[:-1] + [(last[0], last[1], remaining)]
+
+
+def _step_reduces_count_on(
+        verb_lemma, roles, target_eid, lex, rule_effects) -> bool:
+    """True iff firing `verb_lemma` with `roles` decrements
+    `target_eid`'s count. Two schema-derived sources:
+      1. action.effects has a `CountDeltaEffect(op=subtract)` on a
+         target_role bound to target_eid.
+      2. rule_effects[verb_lemma]["transfers"] records (src_role,
+         tgt_role) pairs from TransferN emissions; the source role
+         is what loses count in partial-split mode."""
+    action = lex.actions.get(verb_lemma) if lex is not None else None
+    if action is not None:
+        for eff in action.effects:
+            if (isinstance(eff, CountDeltaEffect)
+                    and eff.op == "subtract"
+                    and roles.get(eff.target_role) == target_eid):
+                return True
+    if rule_effects is not None:
+        entry = rule_effects.get(verb_lemma)
+        if entry is not None:
+            for src_role, _tgt_role in entry.get("transfers", ()):
+                if roles.get(src_role) == target_eid:
+                    return True
+    return False
 
 
 def _compute_count_delta_qty_by_name(verb_lemma, roles, goal, trace):
@@ -2389,6 +2470,14 @@ def _build_rule_effects_index(rules, lex=None) -> dict:
                     rule_adds.append(("havi", (tgt_role, src_role)))
                     entry["adds"].append(
                         ("havi", (tgt_role, src_role)))
+                    # Direct transfer record: callers that need "which
+                    # role loses count when this verb fires" read this
+                    # field instead of pattern-matching `("havi", ...)`
+                    # against `adds` (which would also match explicit
+                    # AddRelation("havi", ...) emissions and bake the
+                    # relation-name convention into their query).
+                    entry.setdefault("transfers", []).append(
+                        (src_role, tgt_role))
         if rule_adds or rule_dels:
             entry["rules"].append(
                 {"adds": rule_adds, "dels": rule_dels})
@@ -2808,10 +2897,16 @@ class _RelationIndex:
     sets before the combo cross-product blows up. Generic over relation:
     any binary RelationPrecondition gets pruning for free.
     """
-    __slots__ = ("_idx",)
+    __slots__ = ("_idx", "_symmetric")
 
-    def __init__(self, trace, derived):
+    def __init__(self, trace, derived, lex=None):
         self._idx: dict[str, dict[int, dict[str, set]]] = {}
+        self._symmetric: set = set()
+        if lex is not None:
+            for name, rel_def in lex.relations.items():
+                if (rel_def.arity == 2
+                        and getattr(rel_def, "symmetric", False)):
+                    self._symmetric.add(name)
         for r in trace.relations:
             self._add(r.relation, tuple(r.args))
         if derived is not None:
@@ -2826,6 +2921,17 @@ class _RelationIndex:
             for j, b in enumerate(args):
                 if i != j:
                     partners.add((j, b))
+        # Symmetric relations like samloke/apud: rule chains often
+        # derive only one direction. Mirror the args so pre-prune
+        # queries at either position see the other partner.
+        if rel in self._symmetric and len(args) == 2 and args[0] != args[1]:
+            mirror = (args[1], args[0])
+            for i, a in enumerate(mirror):
+                pos_idx = rel_idx.setdefault(i, {})
+                partners = pos_idx.setdefault(a, set())
+                for j, b in enumerate(mirror):
+                    if i != j:
+                        partners.add((j, b))
 
     def partners(self, rel, pos, eid):
         return self._idx.get(rel, {}).get(pos, {}).get(eid, ())
@@ -2879,7 +2985,7 @@ def _ground_all_actions(trace, lex, derived, rule_effects) -> list:
     # derived relations. Built once per state, used in the Pass-2
     # role-binding pre-prune to drop candidates that can't satisfy
     # any binary RelationPrecondition before the combo cross-product.
-    rel_index = _RelationIndex(trace, derived)
+    rel_index = _RelationIndex(trace, derived, lex)
     def cands_for_type(type_name):
         pool = type_pool.get(type_name)
         if pool is None:
@@ -3702,6 +3808,103 @@ def _heuristic_and_helpful(
     return h_ff, helpful
 
 
+def _explain_h_inf(
+    goal_fact_id: int, scratch: HeuristicScratch,
+    consumer_index, table, max_depth: int = 3,
+) -> str:
+    """Diagnose why the relaxed-graph heuristic returned INF for
+    `goal_fact_id`. Reads the cost dict left in `scratch` by the
+    most recent `_heuristic_and_helpful` call. Walks the goal's
+    consumer-graph: for every action whose effects produce the goal
+    fact, lists which of its preconditions remained unreached
+    (cost = INF). Recurses up to `max_depth` levels on the first
+    unreached pre per action to surface the deepest blocking fact.
+
+    Returns a multi-line string with one line per producer-action
+    of the goal, plus indented chains of unreached preconditions.
+    For bench/debug diagnostics only — does not run in normal
+    planning."""
+    cost = scratch.cost
+    _, all_consumers, cid_to_info, _ = consumer_index
+    INF = _HEURISTIC_INF
+    lines: list[str] = []
+    goal_repr = _fact_repr(goal_fact_id, table)
+    lines.append(f"goal: {goal_repr} (UNREACHED)")
+    # Find all actions whose effects include goal_fact_id.
+    producers_of_goal = []
+    for cid_, (verb, roles, pres, effs) in enumerate(cid_to_info):
+        if goal_fact_id in effs and verb is not None:
+            producers_of_goal.append((cid_, verb, roles, pres))
+    if not producers_of_goal:
+        lines.append("  no action/derivation produces this goal fact "
+                     "(missing producer or grounding pruned)")
+        return "\n".join(lines)
+    lines.append(f"  {len(producers_of_goal)} producer-action(s):")
+    for cid_, verb, roles, pres in producers_of_goal[:5]:
+        unmet = [p for p in pres if cost.get(p, INF) >= INF]
+        met = len(pres) - len(unmet)
+        role_str = ",".join(f"{k}={v}" for k, v in sorted(
+            roles.items())) if roles else "?"
+        lines.append(
+            f"    {verb}({role_str}) — pres {met}/{len(pres)} met, "
+            f"{len(unmet)} unreached:")
+        for fid in unmet[:4]:
+            lines.append(f"      ✗ {_fact_repr(fid, table)}")
+            _explain_unreached(fid, cost, consumer_index, table,
+                                depth=1, max_depth=max_depth,
+                                lines=lines)
+    return "\n".join(lines)
+
+
+def _explain_unreached(
+    fact_id: int, cost: dict, consumer_index, table,
+    depth: int, max_depth: int, lines: list,
+) -> None:
+    if depth >= max_depth:
+        return
+    _, all_consumers, cid_to_info, _ = consumer_index
+    INF = _HEURISTIC_INF
+    indent = "      " + "  " * depth
+    producers = [
+        (cid_, verb, roles, pres)
+        for cid_, (verb, roles, pres, effs) in enumerate(cid_to_info)
+        if fact_id in effs and verb is not None]
+    if not producers:
+        lines.append(f"{indent}↳ no producer")
+        return
+    cid_, verb, roles, pres = producers[0]
+    unmet = [p for p in pres if cost.get(p, INF) >= INF]
+    if not unmet:
+        lines.append(f"{indent}↳ {verb} all-met (?) — bug")
+        return
+    role_str = ",".join(f"{k}={v}" for k, v in sorted(
+        roles.items())) if roles else "?"
+    lines.append(
+        f"{indent}↳ via {verb}({role_str}); blocked on:")
+    for fid in unmet[:2]:
+        lines.append(f"{indent}  ✗ {_fact_repr(fid, table)}")
+        _explain_unreached(fid, cost, consumer_index, table,
+                            depth + 1, max_depth, lines)
+
+
+def _fact_repr(fact_id: int, table) -> str:
+    """Render an interned fact tuple as a human-readable string."""
+    try:
+        fact = table._i2t[fact_id]
+    except (IndexError, AttributeError):
+        return f"<fid:{fact_id}>"
+    tag = fact[0]
+    if tag == "prop":
+        _, eid, slot, value = fact
+        return f"prop({eid}.{slot}={value})"
+    if tag == "rel":
+        _, name, args = fact
+        return f"rel({name}{tuple(args)})"
+    if tag == "event_fired":
+        return f"event_fired({fact[1:]})"
+    return f"{tag}{fact[1:]}"
+
+
 # ---------- search ----------
 
 def _trace_signature(trace: Trace) -> tuple:
@@ -4450,12 +4653,21 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
     if target_ent is None:
         return
     derived_now = _cached_compute_derived_state(trace, derivations, lex)
+    from ..schemas import CountDeltaEffect as _CDE_PRESPAWN
     for action in lex.actions.values():
         # Does this action's effect spec match the goal?
         produces = False
         target_role_name = None
         for eff in action.effects:
-            if eff.property == slot and eff.value == value:
+            # CountDeltaEffect's `value` is a schema placeholder ("0")
+            # — it doesn't write a fixed value, it shifts the count
+            # by event.quantity. Match by slot + isinstance instead
+            # of by literal value, otherwise prespawn only fires for
+            # gv=0 goals and any other count target sees no producer
+            # → grounding pre-prune drops the verb → h_FF says INF.
+            if eff.property != slot:
+                continue
+            if eff.value == value or isinstance(eff, _CDE_PRESPAWN):
                 produces = True
                 target_role_name = eff.target_role
                 break
@@ -5030,6 +5242,15 @@ def plan_for_goal(
         # source through a locked container with no key in
         # reach), or the goal-aware backward filter dropped the
         # verb that would have produced the goal fact.
+        import os
+        if os.environ.get("ESPLLM_WHY_INF"):
+            import sys
+            explanation = _explain_h_inf(
+                goal_fact_id, _h_scratch, consumer_index, table,
+                max_depth=int(os.environ.get("ESPLLM_WHY_DEPTH", "5")))
+            sys.stderr.write(
+                f"\n[WHY_INF] goal={goal}\n{explanation}\n")
+            sys.stderr.flush()
         _record_failure(("fwd_initial_h_inf", goal))
         return None
     if max_states == 0:
@@ -5096,7 +5317,8 @@ def plan_for_goal(
                 new_plan = cur_plan + [(action.lemma, roles)]
                 if new_mask & goal_bit:
                     return _fixup_count_delta_qty(
-                        new_plan, goal, initial_trace)
+                        new_plan, goal, initial_trace,
+                        lex=lex, rule_effects=rule_effects)
                 new_h, new_helpful = heuristic_and_helpful(new_mask)
                 if new_h >= _HEURISTIC_INF:
                     continue
@@ -5161,7 +5383,9 @@ def plan_for_goal(
             _rss_trace_log(_trace_plan_id, "exit_astar_solved",
                            _trace_drive_kind,
                            {"expansions": expansions})
-            return _fixup_count_delta_qty(plan, goal, initial_trace)
+            return _fixup_count_delta_qty(
+                plan, goal, initial_trace,
+                lex=lex, rule_effects=rule_effects)
         expansions += 1
         if g >= max_plan_length:
             continue
@@ -5207,11 +5431,15 @@ def plan_for_goal(
                 continue
             visited[new_mask] = new_g
             if new_mask & goal_bit:
-                qty = _compute_count_delta_qty(
-                    ga.action, roles, goal, initial_trace)
-                if qty != 1:
-                    return plan + [(action.lemma, roles, qty)]
-                return plan + [(action.lemma, roles)]
+                # Route through _fixup_count_delta_qty (with lex +
+                # rule_effects) so the new step's qty accounts for
+                # earlier count-affecting plan steps too — single-
+                # step qty computation against initial_trace alone
+                # would overshoot on multi-step count chains.
+                return _fixup_count_delta_qty(
+                    plan + [(action.lemma, roles)],
+                    goal, initial_trace,
+                    lex=lex, rule_effects=rule_effects)
             key = (action.lemma, frozenset(
                 (k, tuple(v) if isinstance(v, list) else v)
                 for k, v in roles.items()))

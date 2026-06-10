@@ -314,6 +314,133 @@ def make_spawner(
     return resolver
 
 
+# Probability that a multi-count primary entity gets split into siblings.
+# Roll once per spawn; on hit, K is uniform in [2, min(4, N)] so we always
+# get an actual split (K=1 = no-op handled by the gate below).
+_SPLIT_P = 0.4
+
+
+def _maybe_split_count_into_stacks(
+    trace, lex, rng, scene_id, primary_ent, concept, *,
+    prefer_scene: bool, state: dict, budget: int,
+    inject_owner_for_siblings: bool = False,
+    actor_eid: Optional[str] = None,
+    min_primary_count: int = 1,
+) -> None:
+    """Distribute the primary entity's count across additional stacks
+    of the same concept, each placed independently via
+    `_place_respecting_containment` (so they may land in the scene OR
+    in sibling/natural-habitat containers depending on `prefer_scene`).
+
+    Roll `_SPLIT_P` to opt in. On hit, pick K ∈ [2, min(4, N)] siblings
+    (so the total stack count is K), randomly partition the original
+    count N into K positive parts, reassign the primary's count to
+    parts[0], and spawn siblings with the remaining parts.
+
+    `min_primary_count` floors parts[0]: when the drive's gv is
+    non-zero (subtract goal targeting gv > 0), the planner needs
+    `primary.count > gv` to keep the subtract path open. Caller passes
+    `gv+1`. The composition then starts with parts[0]=min_primary_count
+    and siblings at 1 each, distributing the remaining N - sum extras
+    randomly across all K parts. Falls through (no split) if N is too
+    small to honor the floor — N >= min_primary_count + (K-1).
+
+    `inject_owner_for_siblings=True`: after placing each sibling,
+    inject a co-located NPC owner via `_inject_co_located_owner`. This
+    turns siblings into viable sources the planner can engage with —
+    so a target.count goal can chain ricevi/doni events through the
+    sibling owners rather than only touching the primary. `actor_eid`
+    is excluded from the NPC pool when given.
+
+    Siblings are decoupled from the verb's role binding — they just
+    sit as background inventory of the same concept. The renderer
+    surfaces each stack's count separately, so the disclosure pipeline
+    feeds `_q_count`'s cross-stack aggregation naturally."""
+    from .seeders import _place_respecting_containment
+    count_vals = primary_ent.properties.get("count")
+    if not count_vals:
+        return
+    try:
+        N = int(count_vals[0])
+    except (ValueError, TypeError):
+        return
+    if N < 2:
+        return
+    if rng.random() >= _SPLIT_P:
+        return
+    K = rng.randint(2, min(4, N))
+    if K < 2:
+        return
+    # Honor the primary-count floor: parts[0] >= min_primary_count,
+    # siblings >= 1 each. Need N >= min_primary_count + (K-1) — if not,
+    # skip the split entirely so the seeder's chosen initial isn't
+    # clobbered below gv. Tried "shrink K until it fits" but that
+    # produces 1-sibling splits which are narratively unhelpful.
+    floor = max(1, min_primary_count)
+    if N < floor + (K - 1):
+        return
+    parts = [floor] + [1] * (K - 1)
+    # Distribute the remaining N - sum(parts) units randomly across
+    # all K parts (primary's slot can grow past the floor too).
+    extras = N - sum(parts)
+    for _ in range(extras):
+        parts[rng.randrange(K)] += 1
+    primary_ent.set_property("count", str(parts[0]))
+    primary_eid = primary_ent.id
+
+    # Walk en/sur ancestry to find an entity's top-level container
+    # (typically a location). Used by the scatter path to track which
+    # rooms prior siblings have already populated.
+    def _top_container(child_eid: str) -> str:
+        contained_by = {}
+        for r in trace.relations:
+            if r.relation in ("en", "sur") and len(r.args) == 2:
+                contained_by[r.args[0]] = r.args[1]
+        cur = child_eid
+        seen = {cur}
+        while cur in contained_by and contained_by[cur] not in seen:
+            cur = contained_by[cur]
+            seen.add(cur)
+        return cur
+
+    # Scatter case (`prefer_scene=False`): each sibling lands in a
+    # different room. Track the rooms already populated by primary +
+    # prior siblings; each new sibling's `avoid` excludes them so
+    # `_place_respecting_containment` finds (or creates) a fresh
+    # apud-scene room via Tier 2/3. Without this, the second sibling's
+    # Tier 2 reuses the first sibling's freshly-spawned container and
+    # they cluster.
+    if prefer_scene:
+        used_rooms = frozenset()
+    else:
+        used_rooms = frozenset({scene_id, _top_container(primary_eid)})
+
+    for c in parts[1:]:
+        if state["spawned"] >= budget:
+            break
+        if prefer_scene:
+            sib_avoid = None
+        else:
+            sib_avoid = used_rooms
+        sib_eid = _place_respecting_containment(
+            trace, lex, scene_id, concept, rng,
+            dedupe_concept=False,
+            preferred_id=scene_id if prefer_scene else None,
+            avoid=sib_avoid)
+        if sib_eid is None:
+            break
+        sib = trace.entities[sib_eid]
+        sib.set_property("count", str(c))
+        sib.sibling_of = primary_eid
+        if not prefer_scene:
+            used_rooms = used_rooms | {_top_container(sib_eid)}
+        if inject_owner_for_siblings:
+            _inject_co_located_owner(
+                trace, lex, rng, scene_id,
+                item_eid=sib_eid, actor_eid=actor_eid)
+        state["spawned"] += 1
+
+
 def _inject_co_located_owner(
     trace, lex, rng, scene_id, *, item_eid: str, actor_eid: Optional[str],
 ) -> None:

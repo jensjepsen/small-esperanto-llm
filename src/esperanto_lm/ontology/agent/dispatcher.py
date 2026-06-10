@@ -1,5 +1,28 @@
 """Drive → planner dispatch.
 
+================================================================
+*** plan_for_drive() IS THE BACKWARD-PLANNER ENTRY POINT. ***
+*** NOT USED AT RUNTIME. ***
+
+The forward planner (`agent/forward_planner.py:plan_for_goal`) is
+the production path. `execute_drive` (defined in this file) calls
+`plan_for_goal`, NOT `plan_for_drive`. See the note at the top of
+`agent/planner.py`.
+
+`plan_for_drive` remains in-tree only for `USE_BACKWARD=1` legacy
+runs. Adding a new drive kind here will NOT make it executable from
+`regress_for_goal` → `execute_drive`. New drive shapes must be
+representable in the forward planner's goal grammar
+(`_drive_to_goal_repr` in forward_planner.py) and its h_FF relaxed
+graph, or routed via seeder-level scene construction / the
+followup-loop chaining inside `execute_drive`.
+
+`execute_drive` IS used at runtime — it's the wrapper called by
+`run_regression_parallel.py` and lives in this file because it
+shares utilities with `plan_for_drive`, but its body uses the
+forward planner.
+================================================================
+
 `plan_for_drive(drive, ...)` is the single entry point: a drive tuple
 goes in, an action sequence comes out (or `None` if the planner can't
 satisfy it). Per-drive-kind dispatch routes to the right planner
@@ -45,9 +68,14 @@ def _dedupe_adjacent_steps(plan):
 def plan_for_drive(drive, t, lex, rules, derivations, *, max_depth=8,
                     rng=None, simulation_budget=5000,
                     entity_resolver=None):
-    """Dispatch one drive to the right planner entry. Returns the
-    plan or None. Computes derived state once. Doesn't fire — caller
-    is responsible for executing the plan against the trace.
+    """Dispatch one drive to the right BACKWARD-planner entry. NOT
+    USED AT RUNTIME — see the warning at the top of this file and at
+    the top of `agent/planner.py`. The runtime path is
+    `execute_drive` (below) → `plan_for_goal` (forward planner).
+
+    Returns the plan or None. Computes derived state once. Doesn't
+    fire — caller is responsible for executing the plan against the
+    trace.
 
     `rng` (optional): when given, the planner shuffles candidate verbs
     at each enumeration site so different runs surface different
@@ -157,7 +185,7 @@ def execute_drive(
     drive, t, lex, rules, derivations, *,
     scene_id, rng,
     max_states: int = 1200, max_plan_length: int = 16,
-    spawn_budget: int = 6, prefer_scene_p: float = 1.0,
+    spawn_budget: int = 6, prefer_scene_p: float = 0.6,
 ) -> Optional[list]:
     """Single runner: plan + execute the seeded drive into `t`, then
     with probability `FOLLOWUP_P` re-enter `regress_for_goal` on the

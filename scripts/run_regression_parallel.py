@@ -52,6 +52,8 @@ from pathlib import Path
 _LEX = None
 _RULES = None
 _DERIVATIONS = None
+_KB = None
+_KB_P = 0.0
 
 
 def _init_worker():
@@ -62,7 +64,13 @@ def _init_worker():
     Adds `src/` (for the esperanto_lm package) to sys.path. Needed
     when launched with `--no-project` (e.g. PyPy runs that skip the
     torch dependency), since uv doesn't auto-add the project's
-    source path in that mode."""
+    source path in that mode.
+
+    KB grounding (Phase 3-6 wiki integration) is opt-in via the
+    `KB_PATH` env var. When set, the worker also loads the YAGO EO
+    knowledge base; `KB_P` (default 0.3) controls per-spawn grounding
+    probability. The KB load is ~10s × workers so keep this off for
+    profiling runs that don't need wiki-grounded entities."""
     here = Path(__file__).parent
     sys.path.insert(0, str(here))
     sys.path.insert(0, str(here.parent / "src"))
@@ -70,10 +78,15 @@ def _init_worker():
     from esperanto_lm.ontology.dsl.rules import (
         DEFAULT_DSL_RULES, RUNTIME_DERIVATIONS,
     )
-    global _LEX, _RULES, _DERIVATIONS
+    global _LEX, _RULES, _DERIVATIONS, _KB, _KB_P
     _LEX = load_lexicon()
     _RULES = list(DEFAULT_DSL_RULES)
     _DERIVATIONS = list(RUNTIME_DERIVATIONS)
+    kb_path = os.environ.get("KB_PATH", "").strip()
+    if kb_path:
+        from esperanto_lm.ontology.wiki_kb import load_kb
+        _KB = load_kb(kb_path)
+        _KB_P = float(os.environ.get("KB_P", "0.3"))
 
 
 def _json_safe(value):
@@ -335,7 +348,8 @@ def _worker_task(args):
 
     for _ in range(n_scenes):
         if use_forward:
-            sample = regress_for_goal(_LEX, rng, _RULES)
+            sample = regress_for_goal(_LEX, rng, _RULES,
+                                       kb=_KB, kb_p=_KB_P)
         else:
             sample = sample_regression_scene(_LEX, rng, rules=_RULES)
         if sample is None:
@@ -456,8 +470,79 @@ def _worker_task(args):
         removed_rels = setup_set - final_set
         # Attribute to events by matching entity ids in roles.
         per_event_rel_changes: dict[str, list[dict]] = {}
+        # Index entity → its created_at_event (None for setup-present
+        # entities). Used to attribute newly-asserted relations to the
+        # event that actually produced them. Without this, walking
+        # events in order and picking the first whose roles include
+        # an arg attributes all transitive havi changes to whichever
+        # early event happens to mention the actor — for transfer
+        # chains, every TransferN-spawned sub-stash gets stamped onto
+        # the chain's first `montri` instead of the preni/vendi that
+        # created it.
+        entity_created_at = {
+            eid: ent.created_at_event
+            for eid, ent in t.entities.items()}
+
+        def _earliest_attributable(args):
+            """Lower bound on the event index at which this relation
+            could have been added: the LATEST `created_at_event`
+            across the relation's args (a relation can't predate the
+            entities it relates). None args (setup entities) don't
+            constrain — treat as 0."""
+            lb = 0
+            for a in args:
+                c = entity_created_at.get(a)
+                if c is not None and c > lb:
+                    lb = c
+            return lb
+
+        # Two-pass attribution. Pass 1 (causal): a relation whose args
+        # include a dynamically-created entity is attributed to the
+        # CREATING event — sub-stash entities and their havi relations
+        # both arrive in the same `run_dsl` pass, so the new-entity's
+        # `created_at_event` is the right index regardless of role-eid
+        # match. This is the only way to land TransferN's havi adds on
+        # the actual transfer event (preni/vendi) instead of letting
+        # them fall through to a later event whose roles happen to
+        # mention the new owner.
+        # Pass 2 (heuristic): remaining unattributed relations use the
+        # original role-eid intersection — covers relations between
+        # only setup-present entities (no `created_at` to anchor).
         unattributed_adds = set(added_rels)
         unattributed_rems = set(removed_rels)
+        per_event_rel_changes_lists: dict[str, list[dict]] = {}
+
+        def _append_change(ev, rel, args, added):
+            per_event_rel_changes_lists.setdefault(
+                ev.id, []).append(
+                {"rel": rel, "args": list(args), "added": added})
+
+        def _causal_event_idx(lb):
+            """Roll the synthetic-_change attribution back to the
+            user-visible event that caused the run_dsl pass. The
+            engine emits `_change` events as a side effect of count
+            mutations during another action's pass; the relation
+            additions belong to the source action's event, not the
+            housekeeping _change."""
+            idx = lb
+            while (idx > 0 and idx < len(t.events)
+                   and t.events[idx].action == "_change"):
+                idx -= 1
+            return idx
+
+        for rel, args in list(unattributed_adds):
+            lb = _earliest_attributable(args)
+            if lb > 0 and lb < len(t.events):
+                idx = _causal_event_idx(lb)
+                _append_change(t.events[idx], rel, args, True)
+                unattributed_adds.discard((rel, args))
+        for rel, args in list(unattributed_rems):
+            lb = _earliest_attributable(args)
+            if lb > 0 and lb < len(t.events):
+                idx = _causal_event_idx(lb)
+                _append_change(t.events[idx], rel, args, False)
+                unattributed_rems.discard((rel, args))
+
         for ev in t.events:
             ev_eids = set()
             for v in ev.roles.values():
@@ -465,19 +550,15 @@ def _worker_task(args):
                     ev_eids.add(v)
                 elif isinstance(v, (list, tuple)):
                     ev_eids.update(x for x in v if isinstance(x, str))
-            changes = []
             for rel, args in list(unattributed_adds):
                 if ev_eids & set(args):
-                    changes.append({"rel": rel, "args": list(args),
-                                    "added": True})
+                    _append_change(ev, rel, args, True)
                     unattributed_adds.discard((rel, args))
             for rel, args in list(unattributed_rems):
                 if ev_eids & set(args):
-                    changes.append({"rel": rel, "args": list(args),
-                                    "added": False})
+                    _append_change(ev, rel, args, False)
                     unattributed_rems.discard((rel, args))
-            if changes:
-                per_event_rel_changes[ev.id] = changes
+        per_event_rel_changes = per_event_rel_changes_lists
 
         # Serialize events + entities for downstream Q/A generation.
         events_ser = [
@@ -493,19 +574,49 @@ def _worker_task(args):
                     f"{eid}|{slot}": val
                     for (eid, slot), val in ev.property_changes.items()
                 },
+                # `quantity` is what TransferN / CountDelta act on at
+                # fire time — the realizer reads it for "vendis sep
+                # mandarinojn" prose. Without it serialized, Q-type
+                # generators fall back to `initial - final` (the
+                # TOTAL count drop across all events on the theme),
+                # which conflates the specific transfer's qty with
+                # the cumulative consumption in multi-step chains.
+                **({"quantity": ev.quantity}
+                   if ev.quantity != 1 else {}),
                 **({"relation_changes": per_event_rel_changes[ev.id]}
                    if ev.id in per_event_rel_changes else {}),
             }
             for ev in t.events
         ]
+        # Roll `created_at_event` back to the causal event (same
+        # rationale as `_causal_event_idx` above): the engine marks
+        # TransferN-spawned sub-stash entities at the synthetic
+        # `_change` index, but the entity becomes referenceable AS
+        # OF the user-visible source event (preni/vendi). Downstream
+        # consumers iterating positionally want entity-existence and
+        # havi-relation timelines to align — both should anchor on
+        # the causal event so a state snapshot at "just after vendi"
+        # sees both the new owner and the sub-stash.
+        def _causal_created_at(idx):
+            if idx is None:
+                return None
+            cur = idx
+            while (0 < cur < len(t.events)
+                   and t.events[cur].action == "_change"):
+                cur -= 1
+            return cur
+
         entities_ser = [
             {
                 "eid": eid,
                 "concept": ent.concept_lemma,
                 "type": ent.entity_type,
                 "properties": dict(ent.properties),
-                **({"created_at_event": ent.created_at_event}
+                **({"created_at_event": _causal_created_at(
+                        ent.created_at_event)}
                    if ent.created_at_event is not None else {}),
+                **({"sibling_of": ent.sibling_of}
+                   if ent.sibling_of is not None else {}),
             }
             for eid, ent in t.entities.items()
             if eid != "mondo"

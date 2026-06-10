@@ -692,6 +692,7 @@ def _place_respecting_containment(
     t, lex, scene_id, concept_lemma, rng, *, preferred_id=None,
     existing_eid: str | None = None,
     avoid: frozenset[str] | None = None,
+    dedupe_concept: bool = True,
     _depth: int = 0,
 ):
     """Place a `concept_lemma` instance under a container that
@@ -737,10 +738,20 @@ def _place_respecting_containment(
         eid = existing_eid
         added_here = False
     else:
-        if concept_lemma in t.entities:
+        if dedupe_concept and concept_lemma in t.entities:
             eid = concept_lemma
             return concept_lemma
-        eid = spawn_entity(t, concept_lemma, lex, rng)
+        if not dedupe_concept and concept_lemma in t.entities:
+            # Mint a unique suffixed eid (spawn_entity uses concept as
+            # the default entity_id and `add_entity` raises on collision).
+            candidate = f"{concept_lemma}_{rng.randint(1000, 9999)}"
+            while candidate in t.entities:
+                candidate = f"{concept_lemma}_{rng.randint(1000, 9999)}"
+            _add_entity_randomized(t, concept_lemma, lex, rng,
+                                   entity_id=candidate)
+            eid = candidate
+        else:
+            eid = spawn_entity(t, concept_lemma, lex, rng)
         added_here = True
 
     def _try_relation(container_eid: str):
@@ -763,6 +774,30 @@ def _place_respecting_containment(
                 pass
 
     avoid = avoid or frozenset()
+    # Transitive-closure expansion: a caller passing `avoid={scene_id}`
+    # is asking "don't place inside the scene". Without this, Tier 2
+    # happily picks an in-scene tablo (tablo isn't in avoid directly)
+    # and the placement transitively lands in scene anyway, defeating
+    # the avoidance. Walk `en`/`sur` ancestry from each in-trace
+    # entity; if any ancestor is in `avoid`, add the descendant too.
+    # Cheap: scene-sized en/sur graphs are small; computed once per
+    # call. Skipped when `avoid` is empty (the common case).
+    if avoid:
+        contained_by = {}
+        for r in t.relations:
+            if r.relation in ("en", "sur") and len(r.args) == 2:
+                contained_by[r.args[0]] = r.args[1]
+        expanded = set(avoid)
+        for descendant in list(t.entities.keys()):
+            cur = descendant
+            seen = set()
+            while cur in contained_by and cur not in seen:
+                seen.add(cur)
+                cur = contained_by[cur]
+                if cur in expanded:
+                    expanded.add(descendant)
+                    break
+        avoid = frozenset(expanded)
 
     def _try_tier2():
         for other_eid in list(t.entities.keys()):

@@ -1,5 +1,26 @@
 """Backward-chaining planner for the agent.
 
+================================================================
+*** NOT USED AT RUNTIME. ***
+
+The forward planner in `agent/forward_planner.py` (`plan_for_goal`)
+is the production path used by the regression sampler, bench, and
+SFT-trace pipeline. `execute_drive` calls `plan_for_goal`, not
+`plan_for_drive`.
+
+This backward chainer remains in-tree only for:
+  - the `USE_BACKWARD=1` env switch (legacy comparison runs)
+  - utility functions reused by the forward planner / sampler
+    (`_count_owned`, `_simulate_from_scratch`, `_step_to_event`)
+
+DO NOT add new drive kinds or planner primitives here expecting
+them to be reachable from `regress_for_goal` → `execute_drive`.
+New drive shapes must be representable in the forward planner's
+goal grammar (`_drive_to_goal_repr` in forward_planner.py) and its
+relaxed-graph heuristic, or routed via a different mechanism
+(seeder-level scene construction, followup-loop chaining, etc.).
+================================================================
+
 Given a drive (a tuple like `("self_slot", actor, "thirst", "satigita")`
 or `("possession", actor, item)`) the planner returns a sequence of
 actions whose execution would satisfy it. The planner is purely

@@ -244,6 +244,8 @@ def _spawn_constructable_setup(
 
 def _construct_goal_scene(lex, rng: random.Random, rules,
                           theme_concept: Optional[str] = None,
+                          *,
+                          kb=None, kb_p: float = 0.3,
                           ) -> Optional[tuple]:
     """Build a scene for a construction drive: materialize the actor +
     each part + (optional) instrument + a stub theme entity, then
@@ -338,19 +340,36 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
         _bail(f"construct_no_compatible_scene:{theme_concept}")
         return None
     goal_index = _cached_goal_index(lex, rules)
+    tried_locations: set = set()
     for _ in range(15):
-        scene_lemma = rng.choice(locations)
+        remaining = [l for l in locations if l not in tried_locations]
+        if not remaining:
+            break
+        scene_lemma = rng.choice(remaining)
+        tried_locations.add(scene_lemma)
         t = Trace()
         _ensure_world(t, lex, rng)
         try:
             scene_id = _add_entity_randomized(t, scene_lemma, lex, rng,
-                                               entity_id=scene_lemma)
+                                               entity_id=scene_lemma,
+                                               kb=kb, kb_p=kb_p)
         except (KeyError, ValueError):
             continue
-        try:
-            actor_eid = spawn_entity(t, agent_concept, lex, rng)
-            t.assert_relation("en", (actor_eid, scene_id), lex)
-        except (KeyError, ValueError):
+        placement_attempts = (
+            [agent_concept]
+            + [c for c in agent_candidates if c != agent_concept][:3])
+        actor_eid = None
+        for cand_concept in placement_attempts:
+            try:
+                actor_eid = spawn_entity(
+                    t, cand_concept, lex, rng,
+                    kb=kb, kb_p=kb_p)
+                t.assert_relation("en", (actor_eid, scene_id), lex)
+                break
+            except (KeyError, ValueError):
+                actor_eid = None
+                continue
+        if actor_eid is None:
             continue
         setup = _spawn_constructable_setup(
             t, scene_id, theme_concept, lex, rng, rules)
@@ -375,7 +394,7 @@ def _construct_goal_scene(lex, rng: random.Random, rules,
             bindings.append(("instrument", instrument_eid))
         drive = ("event_fire", actor_eid, "fari", tuple(bindings))
         from .spawner import make_spawner
-        spawner_for_check = make_spawner(scene_id, lex, rng, budget=6)
+        spawner_for_check = make_spawner(scene_id, lex, rng, budget=10)
         if not _drive_is_h_reachable(
                 t, drive, lex, rules, _ALL_DERIVATIONS,
                 entity_resolver=spawner_for_check):
@@ -587,6 +606,7 @@ def regress_for_goal(
     *,
     existing_trace=None,
     existing_scene_id: Optional[str] = None,
+    kb=None, kb_p: float = 0.3,
 ) -> Optional[tuple]:
     """Pick a goal, pick a verb from its producers, build a minimal
     trace, return (trace, scene_id, drive). The spawner — invoked by
@@ -641,13 +661,15 @@ def regress_for_goal(
             from .goals import DERIVED_ROLE
             _, rel_name, role_args = g
             if CREATED_ROLE in role_args or DERIVED_ROLE in role_args:
-                # event_fire drive: rule creates the related entity OR
-                # one arg is bound by the rule's `given` clause (e.g.
-                # mezuri's scias_propon slot derived from the
-                # instrument's mezuras). Either way, dispatch to
-                # event_fire and let the rule fill in the gap.
-                all_goals.append((g, verbs))
-            elif role_args[0] in ("agent", "recipient",
+                # event_fire drives with auto-created/derived targets
+                # (vidi, aŭdi, flari, krii, voki, ami, timi, ludi …)
+                # are NOT useful as top-level drives — the planner just
+                # picks any matching in-scene entity, producing 1-event
+                # plans without a narrative anchor. Skip them here;
+                # they still surface as planner subgoals when richer
+                # drives need them (preni needs vidi, etc.).
+                continue
+            if role_args[0] in ("agent", "recipient",
                                   "theme", "instrument"):
                 # Role-position dispatch — no per-relation whitelist.
                 # The seeder branches on role_args[0]:
@@ -682,7 +704,30 @@ def regress_for_goal(
     # (fari) so a single constructable carries the same weight as a
     # weakly-supported property goal — fine, plenty of property goals
     # have just one or two producers too.
-    weights = [len(verbs) for _, verbs in all_goals]
+    #
+    # Count-slot dampening: CountDeltaEffect verbs each contribute one
+    # postcondition per vocab value (so the index surfaces non-zero
+    # subtract goals). Without scaling, that's ~21 count goals × 5
+    # producers each = ~105 weight units for `count`, vs ~1-5 weight
+    # units for typical property slots — count would dominate the
+    # goal pool. Divide each count goal's weight by sqrt(vocab size):
+    # total count weight stays roughly one decimal-order above other
+    # high-coverage slots (cleanliness, wetness, integrity), so
+    # count drives surface frequently without crowding everything
+    # else out. Linear division by full vocab size collapses count
+    # to under-represented; no scaling gives ~10× domination.
+    import math
+    count_goal_count = sum(
+        1 for g, _ in all_goals
+        if g[0] == "property" and g[1] == "count")
+    count_divisor = (math.sqrt(count_goal_count)
+                     if count_goal_count > 1 else 1.0)
+    weights = []
+    for g, verbs in all_goals:
+        w = float(len(verbs))
+        if g[0] == "property" and g[1] == "count":
+            w = w / count_divisor
+        weights.append(w)
     chosen_goal, producers = rng.choices(
         all_goals, weights=weights, k=1)[0]
     if chosen_goal[0] == "construct":
@@ -732,7 +777,7 @@ def regress_for_goal(
             drive = ("event_fire", actor_eid, "fari", tuple(bindings))
             from .spawner import make_spawner
             spawner_for_check = make_spawner(
-                existing_scene_id, lex, rng, budget=6)
+                existing_scene_id, lex, rng, budget=10)
             if not _drive_is_h_reachable(
                     existing_trace, drive, lex, rules,
                     _ALL_DERIVATIONS,
@@ -744,7 +789,8 @@ def regress_for_goal(
             return existing_trace, existing_scene_id, drive
         # Fresh-scene mode (the original path).
         result = _construct_goal_scene(
-            lex, rng, rules, theme_concept=theme_concept)
+            lex, rng, rules, theme_concept=theme_concept,
+            kb=kb, kb_p=kb_p)
         return result
     verb_lemma = rng.choice(producers)
     action = lex.actions.get(verb_lemma)
@@ -874,7 +920,9 @@ def regress_for_goal(
             else:
                 # No in-scene person fit the agent role — spawn one.
                 try:
-                    actor_eid = spawn_entity(t, agent_concept, lex, rng)
+                    actor_eid = spawn_entity(
+                        t, agent_concept, lex, rng,
+                        kb=kb, kb_p=kb_p)
                     t.assert_relation("en", (actor_eid, scene_id), lex)
                 except (KeyError, ValueError):
                     last_loop_reason = (
@@ -888,8 +936,10 @@ def regress_for_goal(
             t = Trace()
             _ensure_world(t, lex, rng)
             try:
-                scene_id = _add_entity_randomized(t, scene_lemma, lex, rng,
-                                                   entity_id=scene_lemma)
+                scene_id = _add_entity_randomized(
+                    t, scene_lemma, lex, rng,
+                    entity_id=scene_lemma,
+                    kb=kb, kb_p=kb_p)
             except (KeyError, ValueError):
                 last_loop_reason = f"scene_add_failed:{scene_lemma}"
                 continue
@@ -910,7 +960,9 @@ def regress_for_goal(
                 actor_eid = None
                 for cand_concept in placement_attempts:
                     try:
-                        actor_eid = spawn_entity(t, cand_concept, lex, rng)
+                        actor_eid = spawn_entity(
+                            t, cand_concept, lex, rng,
+                            kb=kb, kb_p=kb_p)
                         t.assert_relation(
                             "en", (actor_eid, scene_id), lex)
                         agent_concept = cand_concept
@@ -924,6 +976,7 @@ def regress_for_goal(
                         f"{agent_concept}@{scene_lemma}")
                     continue
 
+        target_ent = None
         if chosen_goal[0] == "property":
             if eff.target_role == actor_role_name:
                 if _drive_target_unmeaningful(
@@ -1022,6 +1075,16 @@ def regress_for_goal(
                         max_count = int(cs.vocabulary[-1]) if (
                             cs and cs.vocabulary) else 20
                     gv = min(int(target_value), max_count - 1)
+                    # Rebind target_value so the drive emits the
+                    # feasible goal. Without this, the index-level
+                    # value (e.g. 15 from the global vocab) leaks into
+                    # the drive while initial caps at the concept's
+                    # max_count (also 15 for kroasanto), trivially
+                    # satisfying the goal → planner returns [] → the
+                    # harness mis-labels as failure. Clamping
+                    # `target_value` to match `gv` keeps the drive in
+                    # sync with what `initial` actually targets.
+                    target_value = str(gv)
                     if eff.op == "subtract":
                         initial = min(max_count, gv + rng.randint(
                             1, max(1, max_count - gv)))
@@ -1030,6 +1093,50 @@ def regress_for_goal(
                             1, max(1, gv)))
                     t.entities[target_eid].set_property(
                         "count", str(initial))
+                    # Now that the initial count is final, optionally
+                    # split it across additional sibling stacks. Done
+                    # here (after the count is settled) so the split's
+                    # parts aren't clobbered by this set_property.
+                    #
+                    # `prefer_scene=False`: each sibling stash lands in
+                    # its natural-habitat container (`avoid={scene_id}`
+                    # in `_place_respecting_containment`), so siblings
+                    # scatter into apud-the-scene sibling locations
+                    # instead of clustering in the scene. The primary
+                    # target_eid stays in scene (already placed); only
+                    # the splits scatter.
+                    #
+                    # `inject_owner_for_siblings=True`: each sibling
+                    # gets a fresh NPC owner. For add-direction count
+                    # drives, this turns siblings into sources the
+                    # planner can chain ricevi/aĉeti through, lifting
+                    # the primary target.count to its goal value across
+                    # multiple acquisition events — the arithmetic-
+                    # narrative trace shape. Inert for subtract-
+                    # direction (siblings stay as background; planner
+                    # only consumes the primary).
+                    # `min_primary_count=gv+1` for subtract goals: the
+                    # planner needs primary.count > gv to reach the goal
+                    # by emptying or partial-transferring out of primary.
+                    # Without the floor, the random split sometimes
+                    # drops primary's slot to gv (or below), trivially
+                    # satisfying the goal with no events — which the
+                    # harness misreports as failure. For add direction,
+                    # primary's count is low by design; the floor stays
+                    # at the default 1.
+                    if eff.op == "subtract":
+                        sib_floor = gv + 1
+                    else:
+                        sib_floor = 1
+                    from .spawner import _maybe_split_count_into_stacks
+                    _maybe_split_count_into_stacks(
+                        t, lex, rng, scene_id,
+                        t.entities[target_eid], target_ent.concept_lemma,
+                        prefer_scene=False,
+                        inject_owner_for_siblings=True,
+                        actor_eid=actor_eid,
+                        min_primary_count=sib_floor,
+                        state={"spawned": 0}, budget=3)
                 except (ValueError, KeyError):
                     pass
             _ensure_obstacle_tools(t, lex, rng, scene_id)
@@ -1037,14 +1144,18 @@ def regress_for_goal(
                      slot, target_value)
             from .spawner import make_spawner
             spawner_for_check = make_spawner(
-                scene_id, lex, rng, budget=6)
+                scene_id, lex, rng, budget=10)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
                     entity_resolver=spawner_for_check,
                     exclude_verbs=exclude_verbs_for_drive):
+                target_concept_lemma = (
+                    target_ent.concept_lemma
+                    if target_ent is not None else "?")
                 last_loop_reason = (
                     f"h_unreachable:entity_slot:"
-                    f"{verb_lemma}({agent_concept}.{slot}={target_value})"
+                    f"{verb_lemma}({agent_concept}->"
+                    f"{target_concept_lemma}.{slot}={target_value})"
                     f"@{scene_lemma}")
                 continue
             t._planner_exclude_verbs = exclude_verbs_for_drive
@@ -1161,7 +1272,7 @@ def regress_for_goal(
             # h_FF naturally because no locomotion verb grounds
             # for a land-only animal to reach a water body).
             spawner_for_check = make_spawner(
-                scene_id, lex, rng, budget=6)
+                scene_id, lex, rng, budget=10)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
                     entity_resolver=spawner_for_check,
@@ -1269,7 +1380,7 @@ def regress_for_goal(
             drive = ("altruistic_relation_drive", rel_name,
                      actor_eid, recipient_eid, target_eid)
             spawner_for_check = make_spawner(
-                scene_id, lex, rng, budget=6)
+                scene_id, lex, rng, budget=10)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
                     entity_resolver=spawner_for_check,
@@ -1310,20 +1421,29 @@ def regress_for_goal(
             # spawner could pick an obj whose only valid containers
             # aren't in the verb's dest pool, then waste a spawn
             # cycle before `is_relation_permitted` rejects.
-            from ..containment import containers_for, resolve_containment
+            from ..containment import (
+                containers_for, resolve_containment,
+                is_containment_relation)
             containment_idx = resolve_containment(lex)
             valid_dest_concepts = set(
                 lex.concept_index.concepts_matching_role(dest_role_spec))
             obj_candidates = list(
                 lex.concept_index.concepts_matching_role(obj_role_spec))
-            workable_objs = {
-                c for c in obj_candidates
-                if any(
-                    container in valid_dest_concepts
-                    for container, rel in containers_for(
-                        c, containment_idx, lex)
-                    if rel == rel_name)
-            }
+            # Peer relations (apud/kun/samloke) have no containment-
+            # graph entries, so the workable_pair filter would reject
+            # every candidate. Defer placement to the spawner — it can
+            # place both args under the scene and assert the relation.
+            if is_containment_relation(rel_name, containment_idx, lex):
+                workable_objs = {
+                    c for c in obj_candidates
+                    if any(
+                        container in valid_dest_concepts
+                        for container, rel in containers_for(
+                            c, containment_idx, lex)
+                        if rel == rel_name)
+                }
+            else:
+                workable_objs = set(obj_candidates)
             if not workable_objs:
                 last_loop_reason = (
                     f"place_no_workable_pair:{verb_lemma}:{rel_name}")
@@ -1397,7 +1517,7 @@ def regress_for_goal(
             drive = ("place_drive", rel_name,
                      actor_eid, obj_eid, dest_eid)
             spawner_for_check = make_spawner(
-                scene_id, lex, rng, budget=6)
+                scene_id, lex, rng, budget=10)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
                     entity_resolver=spawner_for_check,
@@ -1420,7 +1540,7 @@ def regress_for_goal(
                      ((actor_role_name, actor_eid),))
             from .spawner import make_spawner
             spawner_for_check = make_spawner(
-                scene_id, lex, rng, budget=6)
+                scene_id, lex, rng, budget=10)
             if not _drive_is_h_reachable(
                     t, drive, lex, rules, _ALL_DERIVATIONS,
                     entity_resolver=spawner_for_check,
