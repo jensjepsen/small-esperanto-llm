@@ -1592,8 +1592,18 @@ def _q_count_chain_funcall(rec: dict, rng: random.Random) -> list[dict]:
     up → plus) from the trace events that the prose surfaces."""
     entities = {e["eid"]: e for e in rec["entities"]}
     events = rec.get("events", [])
+    # Walk events in order; for each count change, attribute it to
+    # the most recent USER-VISIBLE event (not the synthetic `_change`
+    # that carries the property_change). The realizer's disclosure
+    # log records the source verb's event_id (preni/vendi/doni etc.),
+    # never the `_change` synthetic — without this attribution, the
+    # chain's `requires=event(_change.id)` never matches any
+    # disclosed fact and every chain Q gets filtered as undisclosed.
     by_eid: dict[str, list[tuple[str, str, int]]] = {}
+    last_user_event: dict | None = None
     for ev in events:
+        if ev.get("action") != "_change":
+            last_user_event = ev
         for k, v in ev.get("property_changes", {}).items():
             if "|count" not in k:
                 continue
@@ -1602,7 +1612,12 @@ def _q_count_chain_funcall(rec: dict, rng: random.Random) -> list[dict]:
                 new_val = int(v)
             except (ValueError, TypeError):
                 continue
-            by_eid.setdefault(eid, []).append((ev["id"], ev["action"], new_val))
+            src_ev = (last_user_event
+                      if ev.get("action") == "_change"
+                      and last_user_event is not None
+                      else ev)
+            by_eid.setdefault(eid, []).append(
+                (src_ev["id"], src_ev["action"], new_val))
 
     out = []
     for eid, changes in by_eid.items():
