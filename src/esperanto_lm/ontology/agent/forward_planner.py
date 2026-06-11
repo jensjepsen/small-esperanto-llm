@@ -4453,7 +4453,8 @@ def _ensure_prop_reachable(eid, slot, value, trace, lex, derivations,
             return
 
 
-def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
+def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver,
+                       exclude_verbs=None):
     """For each action whose effects could produce `goal`, ensure all
     role types have at least one matching entity. Missing roles are
     filled by calling `resolver`. Mirrors what the backward planner's
@@ -4593,6 +4594,14 @@ def _prespawn_for_goal(goal, trace, lex, rules, derivations, resolver):
         derived_now = _cached_compute_derived_state(
             trace, derivations, lex)
         for prod_verb, entry in rule_effects.items():
+            # Skip producers excluded by the seeder so the chosen
+            # producer (peti / aĉeti / etc.) gets its roles spawned,
+            # not preni's. Without this, the first-match-by-dict-
+            # order picks any havi-producer and fills only its roles
+            # — and the seeder-committed verb's roles (recipient for
+            # peti) remain unbound, so it can't ground at search time.
+            if exclude_verbs and prod_verb in exclude_verbs:
+                continue
             chose = None
             for relation, role_args in entry.get("adds", []):
                 if relation != rel_name:
@@ -4802,7 +4811,8 @@ def plan_for_goal(
 
     if entity_resolver is not None:
         _prespawn_for_goal(
-            goal, initial_trace, lex, rules, derivations, entity_resolver)
+            goal, initial_trace, lex, rules, derivations, entity_resolver,
+            exclude_verbs=exclude_verbs)
         # Re-derive after spawns may have added entities.
         initial_derived = _cached_compute_derived_state(
             initial_trace, derivations, lex)
@@ -4847,8 +4857,16 @@ def plan_for_goal(
             pass
     _rss_trace_log(_trace_plan_id, "after_ground_all", _trace_drive_kind,
                    {"n_grounded": len(grounded)})
-    if exclude_verbs:
-        grounded = [g for g in grounded if g[0].lemma not in exclude_verbs]
+    # `exclude_verbs` semantics: the seeder commits to one producer
+    # for the goal fact and lists the others here. Earlier we filtered
+    # them OUT of grounding entirely, which broke verbs whose own
+    # preconditions need an excluded producer as an enabler — peti
+    # needs havi(recipient, theme) which only preni/aĉeti/kapti can
+    # establish, all excluded. Instead we KEEP excluded verbs in
+    # grounding (so they can establish preconditions for the chosen
+    # producer) and mask their goal-fact-producing effect after
+    # goal_fact_id is known (below) so search termination still
+    # requires the chosen verb to be the goal producer.
     # Goal-aware action + derivation pruning. Walk backward from the
     # goal through action effects, rule-effects adds, preconditions,
     # AND derivation implications to find the verbs + derivations
@@ -5189,6 +5207,32 @@ def plan_for_goal(
                     "n_consumers": len(consumer_index[1])})
     goal_fact_id = table.id_for(goal_fact)
     goal_bit = 1 << goal_fact_id
+    # Mask the goal_fact out of excluded verbs' effects (see notes
+    # above). They keep all OTHER effects so they remain available
+    # for precondition-establishment, but search termination on
+    # `cur_mask & goal_bit` requires a non-excluded verb to fire it.
+    if exclude_verbs:
+        masked: list = []
+        for g in grounded:
+            if g.action.lemma not in exclude_verbs:
+                masked.append(g)
+                continue
+            if goal_fact not in g.effs:
+                masked.append(g)
+                continue
+            new_effs = g.effs - {goal_fact}
+            new_effs_fids = tuple(
+                f for f in g.effs_fids if f != goal_fact_id)
+            new_effs_mask = g.effs_mask & ~goal_bit
+            masked.append(g._replace(
+                effs=new_effs, effs_fids=new_effs_fids,
+                effs_mask=new_effs_mask))
+        grounded = masked
+        # Rebuild consumer_index against the masked grounded set so
+        # downstream heuristic + successor loops see the same view.
+        # `_h_scratch` is (re)allocated below from the updated index.
+        consumer_index = _build_consumer_index(
+            grounded, grounded_derivs, table)
     # Hoisted scratch for the ~1000 heuristic calls this plan
     # makes. Each call resets the scratch's dicts/lists in place
     # rather than allocating fresh — eliminates ~50 MB of

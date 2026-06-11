@@ -12,7 +12,9 @@ import random
 from typing import Optional
 
 from ..causal import Event, RelationAssertion, Trace
+from ..dsl.rules import DEFAULT_DSL_RULES
 from ..loader import Lexicon
+from ..schemas import CountDeltaEffect
 from .disclosure import Fact, RenderResult
 
 
@@ -31,7 +33,6 @@ def _verb_metadata() -> dict:
             acquisition_verbs, consumption_verbs,
             instrument_quantified_verbs, transfer_verbs,
         )
-        from ..dsl.rules import DEFAULT_DSL_RULES
         rules = list(DEFAULT_DSL_RULES)
         _VERB_META_CACHE = {
             "consumption": consumption_verbs(rules),
@@ -40,6 +41,46 @@ def _verb_metadata() -> dict:
             "instrument_quantified": instrument_quantified_verbs(rules),
         }
     return _VERB_META_CACHE
+
+
+def _quantity_governs_role(ev, role_name, ctx) -> bool:
+    """Does firing `ev` mutate the count of `role_name`'s bound entity?
+    Schema-only check (no verb-classification sets):
+      - `action.effects` for a direct `CountDeltaEffect` whose
+        target_role matches (covers doni/vendi/aĉeti/manĝi/trinki).
+      - `rule_effects[ev.action]["transfers"]` for a TransferN whose
+        source or target role matches (covers preni/peti/kapti — their
+        action.effects are empty; the count change is rule-mediated).
+    When True, the caller passes `ev.quantity` as `count_override`
+    so the prose surfaces "tri pomojn" / "per la tri moneroj" to
+    match the engine's TransferN arithmetic. When False (verbs that
+    don't quantify a stack — vidi, montri, sidi), `ev.quantity` is
+    a default 1 that would force singular even when the entity's
+    natural count is higher."""
+    lex = ctx.lexicon
+    action = lex.actions.get(ev.action) if lex else None
+    if action is not None:
+        for eff in action.effects:
+            if (isinstance(eff, CountDeltaEffect)
+                    and eff.target_role == role_name):
+                return True
+    # Lazy import: agent.forward_planner imports realize_trace via
+    # agent/__init__ during its load, so a top-level import here
+    # circles back to a partially-initialized realize module.
+    from ..agent.forward_planner import (
+        _RULE_EFFECTS_CACHE, _build_rule_effects_index,
+    )
+    re = _RULE_EFFECTS_CACHE.get(id(lex)) if lex else None
+    if re is None and lex is not None:
+        re = _build_rule_effects_index(DEFAULT_DSL_RULES, lex)
+        _RULE_EFFECTS_CACHE[id(lex)] = re
+    if re is not None:
+        entry = re.get(ev.action)
+        if entry:
+            for src_role, tgt_role in entry.get("transfers", ()):
+                if role_name in (src_role, tgt_role):
+                    return True
+    return False
 from .messages import (
     AppearanceMessage,
     CoordinatedMessage,
@@ -1120,14 +1161,24 @@ def _render_scias_tuple_as_quote_body(
     return f"{_cap(subj_form)} estas {rel_type} {obj_form}."
 
 
-def _render_peti_request_body(theme_ent, ctx: _Ctx) -> Optional[str]:
+def _render_peti_request_body(theme_ent, ctx: _Ctx,
+                              ev: Event = None) -> Optional[str]:
     """Standalone imperative request for `peti`. Returns "Donu al mi
     la libron." (give-me + accusative theme). Tense is invariant —
     Esperanto imperative uses the -u suffix regardless of the
-    surrounding narrative tense."""
+    surrounding narrative tense.
+
+    Honors the event's quantity for the imperative — request count
+    is what the speaker is asking for, not the source stack's total.
+    The `_quantity_governs_role` predicate gates the override on
+    structural grounds (does firing this event mutate theme's count?)
+    rather than a verb-name check."""
     if theme_ent is None:
         return None
-    theme_form = ctx.name_for(theme_ent)
+    count_override = (
+        ev.quantity if ev is not None
+        and _quantity_governs_role(ev, "theme", ctx) else None)
+    theme_form = ctx.name_for(theme_ent, count_override=count_override)
     return f"Donu al mi {to_accusative(theme_form)}."
 
 
@@ -1471,21 +1522,14 @@ def _try_render_passive(ev: Event, ctx: _Ctx) -> Optional[str]:
     theme_ent = ctx.trace.entity(theme_id)
     if agent_ent is None or theme_ent is None:
         return None
-    # Same count-override logic as the active path (see notes near
-    # `_count_override = _ev_qty` in `_render_event_phrase`): for
-    # consumption/transfer verbs the subject of the passive is the
-    # qty-many units operated on, NOT the source stack's full count.
-    # "La dek kvin kukoj estis donita de Nose" (15 kukos given) was
-    # the active-form fall-through; with the override, doni's qty=10
-    # renders as "La dek kukoj estis donita de Nose" — matching the
-    # actual transfer.
-    _ev_qty = getattr(ev, "quantity", 1)
-    _verb_meta = _verb_metadata()
-    if (ev.action in _verb_meta["consumption"]
-            or ev.action in _verb_meta["transfer"]):
-        _count_override = _ev_qty
-    else:
-        _count_override = None
+    # Subject of the passive is the qty-many units operated on, not
+    # the source stack's full count. Without the override, "La dek
+    # kvin kukoj estis donita de Nose" (15 kukos given) contradicted
+    # the actual doni qty=10; the predicate (does firing this event
+    # mutate theme's count?) gates the override structurally.
+    _count_override = (
+        ev.quantity if _quantity_governs_role(ev, "theme", ctx)
+        else None)
     theme_form = ctx.name_for(theme_ent, count_override=_count_override)
     ctx.note_mention(theme_ent)
     ctx.mark_nonperson_mention(theme_ent)
@@ -1632,7 +1676,8 @@ def _render_event_phrase(
             if (theme_ent_for_quote is not None
                     and ctx.rng is not None
                     and ctx.rng.random() < _DIRECT_QUOTE_PROB):
-                body = _render_peti_request_body(theme_ent_for_quote, ctx)
+                body = _render_peti_request_body(
+                    theme_ent_for_quote, ctx, ev=ev)
                 if body is not None:
                     style = ctx.rng.choice(_QUOTE_STYLES)
                     quote_phrase = _wrap_direct_quote(body, style)
@@ -1734,27 +1779,19 @@ def _render_event_phrase(
                     recipient_handled = True
                 parts.append(ke)
             else:
-                # Consumption verbs (rules using `consume_one`) and
-                # transfer verbs (rules using `transfer_n`) both render
-                # at the event's quantity — qty=1 forces singular even
-                # when the source stack has count > 1 ("Maria manĝis la
-                # pomon", "Anna prenis la piron de la pirarbo"), qty>1
+                # Render the theme at event.quantity when firing this
+                # event mutates theme.count (CountDeltaEffect or rule-
+                # mediated TransferN). qty=1 forces singular ("Maria
+                # manĝis la pomon", "Anna prenis la piron"), qty>1
                 # produces the plural numeral ("Maria prenis du pomojn").
-                # Without this, default qty=1 fell back to the entity's
-                # natural_count and rendered preni-from-stacked-source
+                # Without the override, default qty=1 fell back to the
+                # entity's natural count and rendered preni-from-stack
                 # as a collective ("prenis la tri pirojn") even when
-                # the engine's TransferN had only split off one unit —
-                # the prose contradicted the actual world-state. Both
-                # verb sets are derived from rule structure — see
-                # dsl/introspect.
-                _ev_qty = getattr(ev, "quantity", 1)
-                _verb_meta = _verb_metadata()
-                if ev.action in _verb_meta["consumption"]:
-                    _count_override = _ev_qty
-                elif ev.action in _verb_meta["transfer"]:
-                    _count_override = _ev_qty
-                else:
-                    _count_override = None
+                # TransferN had only split off one unit.
+                _count_override = (
+                    ev.quantity
+                    if _quantity_governs_role(ev, "theme", ctx)
+                    else None)
                 conjoined = _semantic_role_eids(ev, action, "theme")
                 if len(conjoined) >= 2:
                     rendered_parts: list[str] = []
@@ -1827,18 +1864,20 @@ def _render_event_phrase(
                     and eid == source_entity_id):
                 prep_handled_roles.add(role_spec.name)
                 continue
-            # instrument special: when the verb's rule transfers the
-            # instrument as one of the moved stacks (aĉeti's coins go
-            # to the seller, vendi's come from the buyer), match the
-            # instrument's count to ev.quantity so "per tri moneroj"
-            # mirrors "tri pomojn".
+            # instrument-as-transferred-stack: when the verb's rule
+            # moves the instrument (aĉeti's coins go to the seller,
+            # vendi's come from the buyer), `_quantity_governs_role`
+            # detects the TransferN on the instrument role and the
+            # override surfaces "per tri moneroj" mirroring the
+            # theme's "tri pomojn". Singular qty stays at no-override
+            # so the bare "per la monero" form (no "unu" prefix) is
+            # preserved.
             count_override = None
-            if role_spec.name == "instrument":
-                _ev_qty = getattr(ev, "quantity", 1)
-                _verb_meta = _verb_metadata()
-                if (ev.action in _verb_meta["instrument_quantified"]
-                        and _ev_qty > 1):
-                    count_override = _ev_qty
+            if (role_spec.name == "instrument"
+                    and ev.quantity > 1
+                    and _quantity_governs_role(
+                        ev, "instrument", ctx)):
+                count_override = ev.quantity
             parts.append(
                 f"{prep} {ctx.name_for(ent, count_override=count_override)}")
             ctx.note_mention(ent)
