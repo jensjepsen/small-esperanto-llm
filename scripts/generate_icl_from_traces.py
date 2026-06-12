@@ -754,8 +754,14 @@ def _q_action_attribution(rec: dict, rng: random.Random) -> list[dict]:
 
 
 def _q_state_change(rec: dict, rng: random.Random) -> list[dict]:
-    """Property-change questions: "After X did Y, what state was Z in?"
-    """
+    """Property-change questions: "After X did Y, what state is Z in?"
+
+    The eval expects bare property values ("malfermita", "pura") but
+    v72 trained mostly on funcall-format chains and started returning
+    event-shape answers ("post la malfermo") instead. Each (Q, A) pair
+    here surfaces the property VALUE as the answer in multiple shapes
+    so the model learns the state-as-answer pattern as a stable
+    template rather than improvising event-narration."""
     events = rec.get("events", [])
     if not events:
         return []
@@ -778,21 +784,44 @@ def _q_state_change(rec: dict, rng: random.Random) -> list[dict]:
                             "power_state", "cleanliness", "posture",
                             "wetness", "temperature", "presence"):
                 continue
+            val_str = str(new_val)
             verb = ev["action"]
             theme = ev["roles"].get("theme")
+            agent = ev["roles"].get("agent")
+            agent_name = _name(agent, entities) if agent else None
+            concept = ent["concept"]
             if theme and isinstance(theme, str):
                 theme_ent_pc = entities.get(theme)
                 if theme_ent_pc is None:
                     continue
                 theme_name = _noun_acc(theme_ent_pc["concept"])
-                q = (f"Post kiam la aganto {_past(verb)} la "
-                     f"{theme_name}, kia estis la stato de la "
-                     f"{ent['concept']}?")
+                act_phrase = f"{agent_name} {_past(verb)} la {theme_name}"
+                q_shapes = [
+                    f"Post kiam {act_phrase}, kia estas la {concept}?",
+                    f"Kia estas la {concept} post kiam {act_phrase}?",
+                    f"Post la ago, kia estas la stato de la {concept}?",
+                    f"Kia estas la stato de la {concept} nun?",
+                ]
             else:
-                q = (f"Kio okazis al la {ent['concept']} post la "
-                     f"ago?")
+                q_shapes = [
+                    f"Kia estas la {concept} post la ago?",
+                    f"Kio estas la stato de la {concept}?",
+                    f"Kia estas la {concept} nun?",
+                ]
+            # Answer shapes all lead with the property value. Bare value
+            # alone is the most direct training signal; the verb-anchored
+            # variants ("Estas pura.") teach the same predicate in a
+            # full-sentence context.
+            a_shapes = [
+                val_str,
+                f"{val_str.capitalize()}.",
+                f"Estas {val_str}.",
+                f"La {concept} estas {val_str}.",
+                f"La {concept} estas nun {val_str}.",
+            ]
             out.append({
-                "q": q, "a": str(new_val),
+                "q": rng.choice(q_shapes),
+                "a": rng.choice(a_shapes),
                 "requires": [{"kind": "event", "event_id": ev["id"]}],
             })
     return out
@@ -1158,6 +1187,152 @@ def _q_event_theme_count(rec: dict, rng: random.Random) -> list[dict]:
                     {"kind": "count", "entity": th_eid, "value": n},
                 ],
             })
+    return out
+
+
+def _q_count_arith_grounded(rec: dict, rng: random.Random) -> list[dict]:
+    """Noun-grounded arithmetic Q/A with maximally diverse surface
+    forms. Counters v73's failure mode where the model memorized
+    `restas tri krajonoj` and reused it for any question expecting
+    `tri` — because the existing `_q_count_delta` generator (correct
+    per-trace) emitted the same template phrasing many times across
+    the 30k corpus, the model overfit on that string and stopped
+    grounding the answer noun in the question's actual theme.
+
+    Mitigation has two parts:
+      1. Every answer here EXPLICITLY contains the theme's concept
+         noun, matching the question, so noun-recycling produces
+         wrong predictions instead of accidentally-correct ones.
+      2. The answer surface-form pool is large (~15 shapes including
+         bare cardinals, bare cardinal+noun, full sentences, "restas"
+         narratives, "havas nun" inventory framings, "Sume" totals)
+         so no single string accumulates the per-template overfit
+         pressure that "restas tri krajonoj" did.
+
+    Operates on the same count-delta events `_q_count_delta` reads
+    but emits a flatter, more direct Q/A shape — closer to the eval
+    gold answer format (bare cardinal or 'cardinal + noun') than the
+    multi-step CoT narratives the existing generator produces."""
+    entities = {e["eid"]: e for e in rec["entities"]}
+    events = rec.get("events", [])
+    out = []
+    count_deltas: dict = {}
+    for ev in events:
+        for k, v in ev.get("property_changes", {}).items():
+            if "|count" not in k:
+                continue
+            eid = k.split("|")[0]
+            try:
+                new_val = int(v)
+            except (ValueError, TypeError):
+                continue
+            count_deltas.setdefault(eid, []).append(
+                (ev["action"], eid, new_val))
+    for eid, changes in count_deltas.items():
+        ent = entities.get(eid)
+        if ent is None:
+            continue
+        concept = ent["concept"]
+        count_vals = ent["properties"].get("count")
+        if not count_vals:
+            continue
+        try:
+            initial = int(count_vals[0])
+        except (ValueError, TypeError):
+            continue
+        if initial <= 1:
+            continue
+        final = changes[-1][2]
+        delta = initial - final
+        if delta <= 0 or delta >= initial:
+            continue
+        if (initial >= len(CARDINALS_EO)
+                or final >= len(CARDINALS_EO)
+                or delta >= len(CARDINALS_EO)):
+            continue
+        lex = _get_lex()
+        consumption_verbs = lex.state_verbs.get(
+            ("presence", "manĝita"), ())
+        agent_eid = verb = ev_id = None
+        for ev in events:
+            if ev["action"] in consumption_verbs:
+                if ev["roles"].get("theme") == eid:
+                    agent_eid = ev["roles"].get("agent")
+                    verb = ev["action"]
+                    ev_id = ev["id"]
+                    break
+        if agent_eid is None or verb is None:
+            continue
+        agent_ent = entities.get(agent_eid)
+        if agent_ent and agent_ent.get("type") == "person":
+            agent_name = _name(agent_eid, entities)
+        else:
+            agent_name = "la " + (
+                agent_ent["concept"] if agent_ent else agent_eid)
+        verb_past = {
+            "manĝi": "manĝis", "trinki": "trinkis",
+            "doni": "donis", "vendi": "vendis",
+            "aĉeti": "aĉetis",
+        }.get(verb, verb)
+        requires = [
+            {"kind": "count", "entity": eid, "value": initial},
+        ]
+        if ev_id is not None:
+            requires.append({"kind": "event", "event_id": ev_id})
+        n_eo = _int_to_eo(initial)
+        m_eo = _int_to_eo(delta)
+        k_eo = _int_to_eo(final)
+        # Noun forms: theme MUST appear in the answer with correct
+        # number agreement. final==1 → singular, else plural.
+        if final == 1:
+            noun = concept
+            noun_n = concept + "n"
+        else:
+            noun = f"{concept}j"
+            noun_n = f"{concept}jn"
+        # Wide pool of answer shapes; each includes either the
+        # cardinal alone or cardinal + noun — both teach the eval-
+        # gold shape (eval gold answers in v31 are usually bare
+        # `tri`/`kvar` or `tri pomoj`).
+        a_shapes = [
+            # Bare cardinal (matches most eval gold answers exactly)
+            k_eo,
+            f"{k_eo.capitalize()}.",
+            # Cardinal + noun (still short, with theme grounding)
+            f"{k_eo} {noun}.",
+            f"{k_eo.capitalize()} {noun}.",
+            # Restas X Y forms
+            f"Restas {k_eo} {noun}.",
+            f"{k_eo.capitalize()} {noun} restas.",
+            # Inventory framings (where the noun is the subject)
+            f"{agent_name} havas nun {k_eo} {noun_n}.",
+            f"Restas {k_eo} {noun} ĉe {agent_name}.",
+            # Explicit equation
+            f"{n_eo} minus {m_eo} egalas {k_eo}.",
+            f"{n_eo} minus {m_eo} egalas {k_eo} {noun}.",
+            # Full narration (preserves cot variant)
+            f"{agent_name} {verb_past} {m_eo} {noun_n}, "
+            f"do restas {k_eo} {noun}.",
+            # Sum-framing
+            f"Sume {k_eo} {noun}.",
+            f"Entute {k_eo} {noun}.",
+            # Compact short form
+            f"{k_eo}.",
+        ]
+        # Q phrasing also varies to avoid question-template imprinting
+        q_shapes = [
+            f"Kiom da {concept}j restas?",
+            f"Kiom da {concept}j restas post tio?",
+            f"Kiom da {concept}j restas post kiam"
+            f" {agent_name} {verb_past}?",
+            f"Kiom da {concept}j havas {agent_name} nun?",
+            f"Kiom da {concept}j restas ĉe {agent_name}?",
+        ]
+        out.append({
+            "q": rng.choice(q_shapes),
+            "a": rng.choice(a_shapes),
+            "requires": requires,
+        })
     return out
 
 
@@ -1712,6 +1887,222 @@ def _q_multi_lemma_sum_funcall(rec: dict, rng: random.Random) -> list[dict]:
     return out
 
 
+def _q_why_multihop(rec: dict, rng: random.Random) -> list[dict]:
+    """Multi-hop causal chain: walk `caused_by` 2-3 hops backward
+    from a leaf effect and emit the ROOT cause + intermediate steps
+    as the answer. Single-hop `_q_why` already covers depth-1; this
+    drills the model to follow the chain back instead of stopping
+    at the nearest cause.
+
+    Answer shape: "Ĉar A, kaj antaŭ tio B, kaj antaŭ tio C."
+    Forces the model to articulate the temporal precedence
+    relationship — exactly the directional signal eval gold answers
+    test for ("ĉar la akvo estis malvarma" precedes "la infanoj ne
+    naĝis", and the model has to surface the root, not the
+    consequence)."""
+    events = rec.get("events", [])
+    if not events:
+        return []
+    by_id = {ev["id"]: ev for ev in events if "id" in ev}
+    entities = {e["eid"]: e for e in rec["entities"]}
+
+    def describe_short(ev):
+        a = ev["roles"].get("agent") or ev["roles"].get("theme")
+        if a is None or not isinstance(a, str):
+            return _past(ev["action"])
+        ent = entities.get(a)
+        if ent is None:
+            return _past(ev["action"])
+        return f"{_name(a, entities)} {_past(ev['action'])}"
+
+    def trace_chain(start_id, max_depth=3):
+        chain = []
+        cur = start_id
+        seen = set()
+        while cur in by_id and cur not in seen and len(chain) < max_depth:
+            seen.add(cur)
+            chain.append(by_id[cur])
+            causes = by_id[cur].get("caused_by") or []
+            if not causes:
+                break
+            cur = causes[0]
+        return chain
+
+    out = []
+    for ev in events:
+        if _should_skip_verb(ev["action"]):
+            continue
+        chain = trace_chain(ev["id"], max_depth=3)
+        if len(chain) < 3:
+            continue
+        if any(_should_skip_verb(c["action"]) for c in chain):
+            continue
+        effect = chain[0]
+        steps = [describe_short(c) for c in chain[1:]]
+        if not all(steps):
+            continue
+        # "Ĉar X, kaj antaŭ tio Y, kaj antaŭ tio Z." — explicit
+        # temporal-precedence chain so the model learns to UNWIND
+        # rather than answer with the most-recent visible cause.
+        joiner = ", kaj antaŭ tio "
+        out.append({
+            "q": f"Kial finfine {describe_short(effect)}?",
+            "a": "Ĉar " + joiner.join(steps) + ".",
+            "requires": [{"kind": "event", "event_id": c["id"]}
+                         for c in chain],
+        })
+    return out
+
+
+def _q_compare_count(rec: dict, rng: random.Random) -> list[dict]:
+    """Per-concept count comparison: when two or more entities of the
+    same concept are owned by different people (via `havi`), ask who
+    holds more. Uses count facts WITHOUT the funcall format — gives
+    the model a way to use the same numeric facts in a non-arithmetic
+    shape, so v72's funcall over-application doesn't crowd out plain
+    comparison Q/A."""
+    entities = {e["eid"]: e for e in rec["entities"]}
+    setup_rels = rec.get("setup_relations") or []
+    events = rec.get("events", [])
+
+    # Build havi state at end-of-trace by walking setup_relations +
+    # per-event relation_changes. Same logic as the count_transfer
+    # snapshot helper but only the final state matters here.
+    havi: dict = {}
+    counts: dict = {}
+    for r in setup_rels:
+        if isinstance(r, dict) and r.get("relation") == "havi":
+            args = r.get("args") or []
+            if len(args) == 2:
+                havi.setdefault(args[0], set()).add(args[1])
+    for eid, ent in entities.items():
+        c = ent.get("properties", {}).get("count")
+        if c:
+            try:
+                counts[eid] = int(c[0])
+            except (ValueError, TypeError):
+                pass
+    for ev in events:
+        for k, v in ev.get("property_changes", {}).items():
+            if "|count" not in k:
+                continue
+            eid_k = k.split("|", 1)[0]
+            try:
+                counts[eid_k] = int(v)
+            except (ValueError, TypeError):
+                pass
+        for r in ev.get("relation_changes", ()):
+            if not isinstance(r, dict):
+                continue
+            rel = r.get("rel") or r.get("relation")
+            if rel != "havi":
+                continue
+            args = r.get("args") or []
+            if len(args) != 2:
+                continue
+            owner, item = args
+            if r.get("added"):
+                havi.setdefault(owner, set()).add(item)
+            else:
+                havi.get(owner, set()).discard(item)
+
+    # owner → concept → total count
+    by_owner_concept: dict = {}
+    for owner, items in havi.items():
+        for item in items:
+            ent = entities.get(item)
+            if ent is None:
+                continue
+            concept = ent["concept"]
+            n = counts.get(item, 1)
+            by_owner_concept.setdefault(owner, {})[concept] = (
+                by_owner_concept.get(owner, {}).get(concept, 0) + n)
+
+    out = []
+    # For each concept that ≥2 owners hold, emit comparison.
+    concept_to_owners: dict = {}
+    for owner, by_c in by_owner_concept.items():
+        for concept, n in by_c.items():
+            concept_to_owners.setdefault(concept, []).append((owner, n))
+    for concept, owner_counts in concept_to_owners.items():
+        if len(owner_counts) < 2:
+            continue
+        owner_counts.sort(key=lambda x: -x[1])
+        top, top_n = owner_counts[0]
+        second, second_n = owner_counts[1]
+        if top_n == second_n:
+            continue
+        if top_n >= len(CARDINALS_EO) or second_n >= len(CARDINALS_EO):
+            continue
+        top_name = _name(top, entities)
+        second_name = _name(second, entities)
+        pl = f"{concept}j" if top_n != 1 else concept
+        out.append({
+            "q": f"Kiu havis pli da {concept}j, {top_name} aŭ {second_name}?",
+            "a": rng.choice([
+                f"{top_name} havis pli da {pl}.",
+                f"{top_name}.",
+                f"{top_name}, kiu havis {_int_to_eo(top_n)} {pl}.",
+            ]),
+            "requires": [
+                {"kind": "count", "entity": top, "value": top_n},
+                {"kind": "count", "entity": second, "value": second_n},
+            ],
+        })
+    return out
+
+
+def _q_distractor_existence(rec: dict, rng: random.Random,
+                            all_concepts: frozenset[str] | None = None,
+                            ) -> list[dict]:
+    """Discrimination: name K entities, one of which is NOT in the
+    scene; ask which is missing. Forces the model to attend to the
+    actual scene contents rather than reaching for the most-prototypical
+    concept. v72 has a strong "answer with a common concept" prior
+    (Jupyter→suno, Vieno→urbo) that this Q-type's negation directly
+    counters.
+
+    Negative candidates drawn from `all_concepts` (corpus-wide pool
+    threaded through main()'s dispatch, same plumbing as `_q_existence`)."""
+    raw_ents = rec.get("entities") or []
+    if not raw_ents or not isinstance(raw_ents[0], dict):
+        return []
+    present_concepts = {
+        e["concept"] for e in raw_ents
+        if e.get("type") not in ("location", "abstract", "inanimate")}
+    if len(present_concepts) < 3:
+        return []
+    pool = list(present_concepts)
+    if not pool:
+        return []
+    if not all_concepts:
+        return []
+    absent_pool = [c for c in all_concepts if c not in present_concepts]
+    if not absent_pool:
+        return []
+    out = []
+    n_questions = min(3, len(absent_pool))
+    chosen_absents = rng.sample(absent_pool, n_questions)
+    for absent in chosen_absents:
+        # Pick 2-3 present concepts as the distractors.
+        n_present = min(3, len(pool))
+        present_choices = rng.sample(pool, n_present)
+        choices = present_choices + [absent]
+        rng.shuffle(choices)
+        choices_str = ", ".join(choices)
+        out.append({
+            "q": f"Inter {choices_str}, kio NE estis en la scenejo?",
+            "a": rng.choice([
+                f"{absent.capitalize()}.",
+                f"La {absent} ne estis.",
+            ]),
+            # No event/count requires — disclosure is implicit (the
+            # other choices appear in the prose as scene entities).
+            "requires": [],
+        })
+    return out
+
+
 def _q_count_before(rec: dict, rng: random.Random) -> list[dict]:
     """Temporal: 'how many X were there before Y happened?'
     Answer is the initial count from the entity properties."""
@@ -1767,9 +2158,17 @@ def _q_count_before(rec: dict, rng: random.Random) -> list[dict]:
 
 
 def _q_why(rec: dict, rng: random.Random) -> list[dict]:
-    """Causal "Kial X-iĝis? Ĉar Y." from `event.caused_by`. Each
-    event that lists a causing event id gets a Q/A whose answer
-    points to the cause's verb (and optionally its theme)."""
+    """Causal "Kial X? Ĉar Y." Two answer shapes per (effect, cause):
+    one event-as-cause ("Ĉar Petro ŝlosis la pordon."), one state-as-
+    cause when the causing event's property_changes shifted a slot
+    that's still in effect at the asking event ("Ĉar la pordo estis
+    ŝlosita.").
+
+    State-as-cause matters because the eval has gold answers like
+    "ĉar la akvo estis malvarma" (because the water was cold) but
+    v72 was returning consequence-shape predictions ("ĉar la infanoj
+    ne volis naĝi" = because the kids didn't want to swim). The
+    direction is right when the answer NAMES the prior state."""
     events = rec.get("events", [])
     if not events:
         return []
@@ -1785,6 +2184,11 @@ def _q_why(rec: dict, rng: random.Random) -> list[dict]:
         if ent is None:
             return _past(ev["action"])
         name = _name(a, entities)
+        theme = ev["roles"].get("theme")
+        if theme and isinstance(theme, str) and theme in entities:
+            theme_phrase = _theme_phrase(ev, entities, case="acc")
+            if theme_phrase:
+                return f"{name} {_past(ev['action'])} {theme_phrase}"
         return f"{name} {_past(ev['action'])}"
 
     for ev in events:
@@ -1797,19 +2201,53 @@ def _q_why(rec: dict, rng: random.Random) -> list[dict]:
         cause = by_id.get(cause_id)
         if cause is None or _should_skip_verb(cause["action"]):
             continue
-        # Build "Kial <effect>? Ĉar <cause>."
         effect_phrase = describe_short(ev)
         cause_phrase = describe_short(cause)
         if not effect_phrase or not cause_phrase:
             continue
+        requires = [
+            {"kind": "event", "event_id": ev["id"]},
+            {"kind": "event", "event_id": cause_id},
+        ]
+        # Event-as-cause shape — vary the connector to teach all of
+        # ĉar / pro tio, ke / ĉar... unue as causal markers, not just
+        # one canonical phrasing.
         out.append({
             "q": f"Kial {effect_phrase}?",
-            "a": f"Ĉar {cause_phrase}.",
-            "requires": [
-                {"kind": "event", "event_id": ev["id"]},
-                {"kind": "event", "event_id": cause_id},
-            ],
+            "a": rng.choice([
+                f"Ĉar {cause_phrase}.",
+                f"Pro tio, ke {cause_phrase}.",
+                f"Ĉar unue {cause_phrase}.",
+            ]),
+            "requires": requires,
         })
+        # State-as-cause shape: if the cause event changed a property
+        # whose value is still in effect when `ev` fired, expose the
+        # resulting state as the answer. "Kial Petro ne povis eniri?
+        # Ĉar la pordo estis ŝlosita." (door's lock_state=ŝlosita came
+        # from a prior ŝlosi event.)
+        cause_changes = cause.get("property_changes") or {}
+        for key, new_val in cause_changes.items():
+            if "|" not in key:
+                continue
+            ce_eid, slot = key.split("|", 1)
+            ce_ent = entities.get(ce_eid)
+            if ce_ent is None:
+                continue
+            if slot not in ("openness", "fullness", "lock_state",
+                            "power_state", "cleanliness", "posture",
+                            "wetness", "temperature", "presence"):
+                continue
+            ce_concept = ce_ent["concept"]
+            out.append({
+                "q": f"Kial {effect_phrase}?",
+                "a": rng.choice([
+                    f"Ĉar la {ce_concept} estis {new_val}.",
+                    f"Pro tio, ke la {ce_concept} estis {new_val}.",
+                ]),
+                "requires": requires,
+            })
+            break  # one state-as-cause answer per event is enough
     return out
 
 
@@ -3899,6 +4337,10 @@ GENERATORS = [
     _q_count_chain_funcall,
     _q_multi_lemma_sum_funcall,
     _q_count_before,
+    _q_count_arith_grounded,
+    _q_why_multihop,
+    _q_compare_count,
+    _q_distractor_existence,
     # _q_category_count — requires counting by type; not in prose.
     _q_location_contents,
     _q_container_identity,
@@ -4144,7 +4586,7 @@ def generate_qas_for_trace(
     for gen in GENERATORS:
         if gen == _q_enablement and not is_planned:
             continue
-        if gen == _q_existence:
+        if gen in (_q_existence, _q_distractor_existence):
             candidates.extend(gen(rec, rng, all_concepts=all_concepts))
         else:
             candidates.extend(gen(rec, rng))
