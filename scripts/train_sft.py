@@ -79,6 +79,11 @@ def main():
                              "want format-learning without memorization.")
     parser.add_argument("--save-steps", type=int, default=500)
     parser.add_argument("--save-total-limit", type=int, default=3)
+    parser.add_argument(
+        "--lr-scheduler", type=str, default="cosine_with_min_lr",
+        choices=["cosine_with_min_lr", "constant",
+                 "constant_with_warmup", "linear", "cosine"])
+    parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--completion-only-loss", action="store_true",
                         help="Mask loss on the user-prompt tokens; only train "
                              "on the assistant response. Important when the "
@@ -90,6 +95,11 @@ def main():
                         help="Optional run name (default: auto from output-dir).")
     parser.add_argument("--wandb-tags", nargs="*", default=None,
                         help="Optional tags for the wandb run.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from the latest checkpoint in "
+                             "--output-dir. Useful when restarting "
+                             "after an OOM or to switch batch size "
+                             "without losing prior progress.")
     args = parser.parse_args()
 
     if args.output_dir:
@@ -210,9 +220,11 @@ def main():
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation,
         learning_rate=args.learning_rate,
-        lr_scheduler_type="cosine_with_min_lr",
-        lr_scheduler_kwargs={"min_lr_rate": 0.1},
-        warmup_steps=100,
+        lr_scheduler_type=args.lr_scheduler,
+        lr_scheduler_kwargs=(
+            {"min_lr_rate": 0.1}
+            if args.lr_scheduler == "cosine_with_min_lr" else {}),
+        warmup_steps=args.warmup_steps,
         weight_decay=0.01,
         fp16=not use_bf16 and torch.cuda.is_available(),
         bf16=use_bf16,
@@ -272,7 +284,7 @@ def main():
         data_collator=data_collator,
     )
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume or None)
 
     console.print("[bold green]Saving final model...")
     trainer.save_model(f"{output_dir}/final")

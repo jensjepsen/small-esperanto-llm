@@ -17,6 +17,17 @@ tokenizer/
 runs/
 results/
 wandb/
+models/
+mt/logs/
+mt/runs/
+mt/data/
+src/esperanto_lm/ontology/wiki_kb/data/
+
+# Local Claude config
+.claude/
+
+# Stray logs
+*.log
 
 # Local overrides
 uv.local.toml

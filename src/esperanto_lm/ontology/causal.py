@@ -97,6 +97,28 @@ class EntityInstance:
     properties: dict[str, list[str]] = field(default_factory=dict)
     created_at_event: Optional[int] = None
     destroyed_at_event: Optional[int] = None
+    # KB grounding (optional). When `qid` is set, this entity is anchored
+    # to a YAGO knowledge-base entry — its properties were sourced from
+    # the KB and its canonical EO label lives in `name`. Fabricated
+    # entities leave both None and the renderer fabricates a name.
+    qid: Optional[str] = None
+    name: Optional[str] = None
+    # KB-sourced facts attached at spawn time, keyed by ontology property
+    # name. Values are tuples of QIDs (entity refs) or bare strings
+    # (dates, demonyms). Stays empty for fabricated entities. The
+    # renderer and ICL generators read these to surface real-world
+    # facts about the entity; they do NOT enter the engine's
+    # property/event flow.
+    kb_facts: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # When set, this entity is an additional stack of the same concept
+    # alongside the primary identified by `sibling_of`. The spawner
+    # creates these via count-distribution to give scenes multiple
+    # stacks of e.g. pomo so the disclosure pipeline emits separate
+    # `count` facts that `_q_count` aggregates. The engine treats
+    # siblings as independent entities; this pointer is only consulted
+    # by the renderer's salience filter (to keep siblings visible when
+    # their primary is referenced) and downstream tooling.
+    sibling_of: Optional[str] = None
 
     def set_property(self, slot: str, value: str, scalar: bool = True) -> None:
         """Set scene-initial state. Do not call after engine starts."""
@@ -113,6 +135,9 @@ class EntityInstance:
         *,
         created_at_event: Optional[int] = None,
         extra_props: Optional[dict[str, list[str]]] = None,
+        qid: Optional[str] = None,
+        name: Optional[str] = None,
+        kb_facts: Optional[dict[str, tuple[str, ...]]] = None,
     ) -> "EntityInstance":
         """Canonical EntityInstance constructor. Copies the concept's
         on-disk properties, applies any `extra_props` overrides, and
@@ -147,6 +172,9 @@ class EntityInstance:
             entity_type=concept.entity_type,
             properties=props,
             created_at_event=created_at_event,
+            qid=qid,
+            name=name,
+            kb_facts=dict(kb_facts) if kb_facts else {},
         )
 
     def get_property(self, slot: str) -> list[str]:
@@ -336,13 +364,23 @@ class Trace:
     def add_entity(
         self, concept_lemma: str, lexicon: Lexicon,
         entity_id: str | None = None,
+        *,
+        qid: str | None = None,
+        name: str | None = None,
+        kb_facts: Optional[dict[str, tuple[str, ...]]] = None,
     ) -> EntityInstance:
+        """Materialize a concept as a new trace entity. `qid`, `name`,
+        and `kb_facts` carry KB-grounding info when the sampler picked
+        a real-world entity from the YAGO KB; they pass through to the
+        EntityInstance unchanged."""
         concept = lexicon.concept(concept_lemma)
         eid = entity_id or f"e{self._next_entity_id}"
         if eid in self.entities:
             raise ValueError(f"entity id {eid!r} already in trace")
         self._next_entity_id += 1
-        ent = EntityInstance.from_concept(concept, eid, lexicon)
+        ent = EntityInstance.from_concept(
+            concept, eid, lexicon,
+            qid=qid, name=name, kb_facts=kb_facts)
         self.entities[eid] = ent
         return ent
 

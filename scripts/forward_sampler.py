@@ -1447,7 +1447,9 @@ def goal_regression_seed(lex, rng):
     from esperanto_lm.ontology.regression.goal_sampler import (
         regress_for_goal)
     for _ in range(8):
-        sample = regress_for_goal(lex, rng, DEFAULT_DSL_RULES)
+        sample = regress_for_goal(
+            lex, rng, DEFAULT_DSL_RULES,
+            kb=_WORKER_KB, kb_p=_WORKER_KB_P)
         if sample is None:
             continue
         t, scene_id, _drive = sample
@@ -1476,12 +1478,20 @@ _WORKER_RULES = None
 _WORKER_DERIVS = None
 _WORKER_CONFIG = None
 _WORKER_SEED_FN = None
+_WORKER_KB = None
+_WORKER_KB_P = 0.0
 
 
 def _init_worker():
     """Per-worker init. Loads the lex + rules + derivations once and
     snapshots the SamplerConfig + seed factory passed via env vars.
-    Subsequent `_worker_task` calls reuse the loaded state."""
+    Subsequent `_worker_task` calls reuse the loaded state.
+
+    KB grounding (Phase 3-6 wiki integration) is opt-in via `KB_PATH`
+    env var. When set, the worker also loads the YAGO EO KB; `KB_P`
+    (default 0.3) controls per-spawn grounding probability inside
+    `regress_for_goal`. KB threading is identical to the regression
+    parallel runner — same env vars, same defaults."""
     import os as _os
     from pathlib import Path as _Path2
     here = _Path2(__file__).parent
@@ -1489,6 +1499,7 @@ def _init_worker():
     sys.path.insert(0, str(here.parent / "src"))
     global _WORKER_LEX, _WORKER_RULES, _WORKER_DERIVS
     global _WORKER_CONFIG, _WORKER_SEED_FN
+    global _WORKER_KB, _WORKER_KB_P
     _WORKER_LEX = load_lexicon()
     _WORKER_RULES = list(DEFAULT_DSL_RULES)
     _WORKER_DERIVS = list(RUNTIME_DERIVATIONS)
@@ -1496,6 +1507,11 @@ def _init_worker():
         max_trace_length=int(_os.environ.get("FWD_STEPS", "12")))
     _WORKER_SEED_FN = SEEDS[_os.environ.get(
         "FWD_SEED_FACTORY", "goal_regression")]
+    kb_path = _os.environ.get("KB_PATH", "").strip()
+    if kb_path:
+        from esperanto_lm.ontology.wiki_kb import load_kb
+        _WORKER_KB = load_kb(kb_path)
+        _WORKER_KB_P = float(_os.environ.get("KB_P", "0.3"))
 
 
 def _worker_task(args):

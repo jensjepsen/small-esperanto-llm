@@ -312,6 +312,57 @@ def containers_for(
     return out
 
 
+_CONTAINMENT_RELS_CACHE_ATTR = "_containment_relations_cache"
+
+
+def containment_relation_names(
+    containment_index: dict[str, list[ContainmentFact]],
+    lexicon: Lexicon,
+) -> frozenset[str]:
+    """All distinct relation names declared anywhere in
+    containment.jsonl (en, sur, sub, ...). Memoized per lexicon —
+    the set is stable for the lex's lifetime."""
+    cache = getattr(lexicon, _CONTAINMENT_RELS_CACHE_ATTR, None)
+    if cache is None:
+        cache = {
+            fact.relation
+            for facts in containment_index.values()
+            for fact in facts
+        }
+        try:
+            object.__setattr__(
+                lexicon, _CONTAINMENT_RELS_CACHE_ATTR, cache)
+        except Exception:
+            pass
+    return frozenset(cache)
+
+
+def is_containment_relation(
+    rel_name: str,
+    containment_index: dict[str, list[ContainmentFact]],
+    lexicon: Lexicon,
+) -> bool:
+    """True iff `rel_name` appears as a containment relation in any
+    row of containment.jsonl. Used to gate container-based pre-filters:
+    peer/non-spatial relations (apud, kun, samloke) return False and
+    should defer placement to the spawner instead of demanding a
+    container for one of the args. Memoized per lexicon — the relation
+    set depends only on (containment_index, lexicon)."""
+    cache = getattr(lexicon, _CONTAINMENT_RELS_CACHE_ATTR, None)
+    if cache is None:
+        cache = {
+            fact.relation
+            for facts in containment_index.values()
+            for fact in facts
+        }
+        try:
+            object.__setattr__(
+                lexicon, _CONTAINMENT_RELS_CACHE_ATTR, cache)
+        except Exception:
+            pass
+    return rel_name in cache
+
+
 def _concept_matches_fact_container(
     concept_lemma: str, fact: ContainmentFact,
     lexicon: Lexicon, parser: MorphParser,

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ..causal import Event, RelationAssertion, Trace
+from ..causal import Event, EntityInstance, RelationAssertion, Trace
 from ..loader import Lexicon
 from .messages import (
     AppearanceMessage,
@@ -33,6 +33,82 @@ from .messages import (
     SceneGroundingMessage,
     SubordinatedMessage,
 )
+
+
+# --------------------------- KB-fact intro templates ---------------------------
+
+# Probability of attaching ANY KB-fact sentences to a grounded entity's
+# definition. When fired, we sample 1–KB_INTRO_MAX_FACTS facts from the
+# entity's kb_facts to surface. Caps prevent every Mozart-grounded scene
+# from spilling 10 biography sentences.
+KB_INTRO_P = 0.7
+KB_INTRO_MAX_FACTS = 2
+
+# Per-property prose template. Receives `name` (entity label) and
+# `value` (already EO-resolved string). One template per property keeps
+# the model's pattern set small; ICL variety lives in the Q/A side.
+# Properties absent here are silently dropped — they don't disclose.
+_KB_BIO_TEMPLATES: dict[str, str] = {
+    # People — biography
+    "naskiĝloko":       "{name} naskiĝis en {value}",
+    "mortejo":          "{name} mortis en {value}",
+    "ŝtataneco":        "{name} estis civitano de {value}",
+    "parolas_lingvon":  "{name} parolis {value}",
+    "grava_verko":      "{name} verkis {value}",
+    "geedzo":           "{name} estis geedzo de {value}",
+    # People — dates (year-only for naturalness; strip the day part)
+    "naskiĝdato":       "{name} naskiĝis en la jaro {value}",
+    "mortdato":         "{name} mortis en la jaro {value}",
+    # Places — geography
+    "ĉefurbo":          "La ĉefurbo de {name} estas {value}",
+    "najbara":          "{name} estas najbara al {value}",
+    "loko":             "{name} situas en {value}",
+    "oficiala_lingvo":  "La oficiala lingvo de {name} estas {value}",
+    "loĝantaro":        "La loĝantaro de {name} estas {value}",
+    # Organizations / works
+    "fondinto":         "{name} estis fondita de {value}",
+    "verkinto":         "{name} estis verkita de {value}",
+    "reĝisoro":         "{name} estis reĝisorita de {value}",
+}
+
+
+def _kb_bio_facts(
+    ent: EntityInstance, name: str, rng: "random.Random",
+) -> list[tuple[str, str, str]]:
+    """Pick 0..KB_INTRO_MAX_FACTS biography sentences for `ent` from
+    its kb_facts. Returns (prop, sentence, value) triples — sentence
+    becomes prose, (prop, value) becomes a `biography` Fact.
+
+    Only fires for KB-grounded entities (`ent.kb_facts` non-empty).
+    Rolls `KB_INTRO_P` once per call; if it fails, returns []. Picks
+    distinct properties up to the cap. Date values get year-only
+    truncation to match the template wording."""
+    if not ent.kb_facts:
+        return []
+    if rng.random() >= KB_INTRO_P:
+        return []
+    candidates: list[tuple[str, str]] = []
+    for prop, vals in ent.kb_facts.items():
+        if prop not in _KB_BIO_TEMPLATES or not vals:
+            continue
+        value = vals[0]
+        # Drop values that still look like raw YAGO/Wikidata QIDs —
+        # the resolver couldn't find an EO label, so surfacing the
+        # QID literally would teach the model wrong tokens.
+        if value.startswith("yago:") or value.startswith("wd:"):
+            continue
+        if prop in ("naskiĝdato", "mortdato") and len(value) >= 4:
+            # YAGO dates are "YYYY-MM-DD"; surface just the year.
+            value = value[:4]
+        candidates.append((prop, value))
+    if not candidates:
+        return []
+    rng.shuffle(candidates)
+    out: list[tuple[str, str, str]] = []
+    for prop, value in candidates[:KB_INTRO_MAX_FACTS]:
+        sentence = _KB_BIO_TEMPLATES[prop].format(name=name, value=value)
+        out.append((prop, sentence, value))
+    return out
 
 
 # --------------------------- planning ---------------------------
@@ -115,14 +191,17 @@ def plan_messages(
     # `inlined_entities` then filters the generic quality-grounding
     # pass so we don't double-emit.
     seen_precond: set[tuple[str, str]] = set()
+    # Per-event inline-ĉar decision: for each event whose precondition
+    # we'd otherwise surface as a pre-event quality message, flip a
+    # coin. If "inline", attach precondition to EventMessage (renders
+    # as "X V-is Y ĉar Z estis W."), and SKIP the pre-event quality
+    # message for that entity-quality pair. Otherwise keep the pre-
+    # event message as before. Trains both surface forms.
+    inline_car_for_event: dict[str, tuple[str, str, str]] = {}
+    INLINE_CAR_P = 0.4
     for ev_id, (entity_id, slot, quality_lemma) in event_preconds.items():
         if entity_id not in referenced:
             continue
-        # Skip preconditions on entities that don't yet exist at scene
-        # init (construct stubs, mid-trace creations). Surfacing "the
-        # chair was clean" before the build sentence reads as the chair
-        # pre-existing; the construct verb's adjective rendering carries
-        # the initial state instead.
         ent = trace.entities.get(entity_id)
         if ent is not None and ent.created_at_event is not None:
             continue
@@ -130,6 +209,10 @@ def plan_messages(
         if key in seen_precond:
             continue
         seen_precond.add(key)
+        if rng is not None and rng.random() < INLINE_CAR_P:
+            inline_car_for_event[ev_id] = (
+                entity_id, slot, quality_lemma)
+            continue  # skip the pre-event quality message
         anchor = first_event_idx.get(entity_id, 0)
         pre_event[anchor].append(EntityQualityMessage(
             entity_id=entity_id, slot=slot,
@@ -176,10 +259,17 @@ def plan_messages(
             if not is_named and rng.random() >= definition_p:
                 continue
             part_eids: list[str] = []
+            kb_fact_pairs: list[tuple[str, str]] = []
             if is_named and ent.entity_type in ("person", "location"):
                 from .render import _render_person_name
-                defn = (f"{_render_person_name(eid)} estas"
-                        f" {ent.concept_lemma}.")
+                rendered_name = ent.name or _render_person_name(eid)
+                sentences = [f"{rendered_name} estas {ent.concept_lemma}."]
+                if ent.qid and ent.kb_facts and rng is not None:
+                    for prop, bio_sentence, value in _kb_bio_facts(
+                            ent, rendered_name, rng):
+                        sentences.append(bio_sentence + ".")
+                        kb_fact_pairs.append((prop, value))
+                defn = " ".join(sentences)
                 category = ent.concept_lemma
             else:
                 defn = _build_definition(ent.concept_lemma, lexicon)
@@ -207,7 +297,8 @@ def plan_messages(
             anchor = first_event_idx.get(eid, 0)
             pre_event[anchor].append(DefinitionMessage(
                 entity_id=eid, definition=defn, phase="setup",
-                category=category, parts=part_eids))
+                category=category, parts=part_eids,
+                kb_facts=kb_fact_pairs))
             if defined_entities is not None:
                 defined_entities.add(eid)
 
@@ -244,13 +335,14 @@ def plan_messages(
     for idx, ev in enumerate(trace.events):
         for m in pre_event[idx]:
             messages.append(m)
-        # Precondition is now surfaced as a pre-event quality message
-        # (above); don't also pass it to the EventMessage so the
-        # renderer doesn't emit a ĉar clause.
+        # Precondition surfaces either as a pre-event quality message
+        # OR as an inline ĉar clause on the EventMessage. The split is
+        # decided per (entity, quality) above via inline_car_for_event.
         messages.append(EventMessage(
             event=ev,
             cause_event_id=(ev.caused_by[0] if ev.caused_by else None),
-            source_entity_id=source_by_event.get(ev.id)))
+            source_entity_id=source_by_event.get(ev.id),
+            precondition=inline_car_for_event.get(ev.id)))
         if rng is not None:
             for (eid, slot), val in ev.property_changes.items():
                 slot_def = lexicon.slots.get(slot)
@@ -404,6 +496,23 @@ def _referenced_entity_ids(
             contained, container = r.args
             if contained in referenced and container not in referenced:
                 referenced.add(container)
+                added = True
+        if not added:
+            break
+    # Split-stack siblings: pull in any sibling whose primary is in
+    # the referenced set, and any primary whose sibling is. Created by
+    # the spawner's count-distribution path so disclosure surfaces
+    # each stack's count separately, feeding `_q_count` aggregation.
+    while True:
+        added = False
+        for eid, ent in trace.entities.items():
+            if ent.sibling_of is None:
+                continue
+            if ent.sibling_of in referenced and eid not in referenced:
+                referenced.add(eid)
+                added = True
+            elif eid in referenced and ent.sibling_of not in referenced:
+                referenced.add(ent.sibling_of)
                 added = True
         if not added:
             break

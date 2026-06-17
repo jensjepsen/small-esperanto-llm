@@ -74,12 +74,19 @@ def _generate_name(concept: str, entity_type: str,
 
 
 def spawn_entity(trace, concept: str, lex, rng: random.Random,
-                 *, used_names: set | None = None) -> str:
+                 *, used_names: set | None = None,
+                 kb=None, kb_p: float = 0.3) -> str:
     """Create an entity with a proper name when appropriate.
     Delegates to _add_entity_randomized which handles naming.
-    Returns the entity ID."""
+    Returns the entity ID.
+
+    When `kb` is provided, the entity may be KB-grounded (rolled at
+    `kb_p`): instead of fabricating a name, picks a real YAGO entity
+    of the matching concept. The resulting EntityInstance has its
+    `qid` and `name` fields set; nothing else changes."""
     eid = _add_entity_randomized(trace, concept, lex, rng,
-                                 entity_id=concept)
+                                 entity_id=concept,
+                                 kb=kb, kb_p=kb_p)
     if used_names is not None:
         used_names.add(eid)
     return eid
@@ -993,6 +1000,7 @@ def _emit_weather_events(trace: Trace, lex: Lexicon) -> None:
 def _add_entity_randomized(
     trace: Trace, concept: str, lex: Lexicon,
     rng: random.Random, *, entity_id: str,
+    kb=None, kb_p: float = 0.3,
 ):
     """Wrapper around `trace.add_entity` that immediately randomizes
     transient state on the new entity AND materializes its declared
@@ -1001,7 +1009,50 @@ def _add_entity_randomized(
     and parts come along for the ride.
 
     When entity_id matches the concept lemma, auto-generates a proper
-    name for types that support it (persons, cities)."""
+    name for types that support it (persons, cities).
+
+    When `kb` is provided AND a roll of `kb_p` succeeds AND the concept
+    has a KB-type mapping AND the KB has at least one candidate, the
+    entity is KB-grounded: its proper name comes from the canonical EO
+    label, and its EntityInstance carries the `qid` and `name`. Any
+    failure (no mapping, no candidate, roll lost) falls through to
+    fabrication — KB grounding is purely additive."""
+    qid: str | None = None
+    kb_name: str | None = None
+    kb_facts: dict[str, tuple[str, ...]] | None = None
+    if (entity_id == concept and kb is not None and rng.random() < kb_p):
+        # Local import: avoid pulling the KB adapter into modules that
+        # don't use it (the wiki_kb subpackage is opt-in).
+        from .wiki_kb.adapter import (
+            pick_grounded, all_ontology_properties_of, resolve_values)
+        picked = pick_grounded(kb, concept, rng, lex=lex)
+        if picked is not None:
+            qid, kb_name = picked
+            # Pull all KB-known ontology properties at spawn time and
+            # PRE-RESOLVE QID-shaped values to their EO labels. The
+            # engine ignores these facts; the renderer and ICL gens
+            # consume them as already-display-ready strings, so no
+            # downstream module needs the KB plumbed through to do a
+            # resolve. Single source of truth — anywhere downstream
+            # that reads "Paris's country" gets "Francio" because the
+            # sampler is the only place the resolution happens.
+            raw_facts = all_ontology_properties_of(kb, qid)
+            kb_facts = {
+                prop: resolve_values(kb, vals)
+                for prop, vals in raw_facts.items()
+            }
+            # Slugify the EO label into a trace-safe entity id, matching
+            # the lowercase+underscore convention used by `_generate_name`.
+            slug = kb_name.lower().replace(" ", "_")
+            # Strip anything that isn't a word char / underscore so
+            # things like "Real Madrid CF" → "real_madrid_cf" and
+            # "Antoine de Saint-Exupéry" → "antoine_de_saint-exupéry"
+            # stay legal. Collision handling below.
+            entity_id = slug
+            while entity_id in trace.entities:
+                # Suffix on collision; KB samples can pick the same
+                # label across calls (rare but possible with multi-pick).
+                entity_id = f"{slug}_{rng.randint(1000, 9999)}"
     if entity_id == concept:
         concept_def = lex.concepts.get(concept)
         entity_type = concept_def.entity_type if concept_def else ""
@@ -1010,12 +1061,12 @@ def _add_entity_randomized(
             while generated in trace.entities:
                 generated = _generate_name(concept, entity_type, rng)
             entity_id = generated
-    trace.add_entity(concept, lex, entity_id=entity_id)
-    return entity_id
+    trace.add_entity(concept, lex, entity_id=entity_id,
+                     qid=qid, name=kb_name, kb_facts=kb_facts)
     _randomize_state(trace.entities[entity_id], lex, rng)
     concept_def = lex.concepts.get(concept)
     if concept_def is None:
-        return
+        return entity_id
     for part_spec in concept_def.parts:
         part_id = f"{entity_id}_{part_spec.concept}"
         if part_id in trace.entities:
@@ -1026,6 +1077,7 @@ def _add_entity_randomized(
             trace, part_spec.concept, lex, rng, entity_id=part_id)
         trace.assert_relation(
             part_spec.relation, (entity_id, part_id), lex)
+    return entity_id
 
 
 # ----------------------- recipe chaining ----------------------------------

@@ -1172,6 +1172,52 @@ audi_learns_sur = rule(
     name="audi_learns_sur",
 )
 
+
+# Mirrors of *_learns_sur for `sub`. Without these, the actor never
+# learns the location of a sub-placed item (riparilo sub tablo,
+# tranĉilo sub something), blocking preni for any tool the spawner
+# placed via sub.
+vidi_learns_sub = rule(
+    when=event("vidi",
+               agent=bind(VSubA := var("A")),
+               theme=bind(VSubT := var("T"))),
+    given=[
+        rel("sub", contained=VSubT, container=bind(VSubL := var("L"))),
+    ],
+    then=[
+        add_relation("scias", VSubA, "sub", VSubT, VSubL),
+    ],
+    name="vidi_learns_sub",
+)
+
+
+flari_learns_sub = rule(
+    when=event("flari",
+               agent=bind(FSubA := var("A")),
+               theme=bind(FSubT := var("T"))),
+    given=[
+        rel("sub", contained=FSubT, container=bind(FSubL := var("L"))),
+    ],
+    then=[
+        add_relation("scias", FSubA, "sub", FSubT, FSubL),
+    ],
+    name="flari_learns_sub",
+)
+
+
+audi_learns_sub = rule(
+    when=event("aŭdi",
+               agent=bind(ASubA := var("A")),
+               theme=bind(ASubT := var("T"))),
+    given=[
+        rel("sub", contained=ASubT, container=bind(ASubL := var("L"))),
+    ],
+    then=[
+        add_relation("scias", ASubA, "sub", ASubT, ASubL),
+    ],
+    name="audi_learns_sub",
+)
+
 vidi_learns_havi_owner = rule(
     when=event("vidi",
                agent=bind(VHA := var("A")),
@@ -2794,6 +2840,17 @@ sur_implies_samloke_with_supporter = derive(
 )
 
 
+# Mirror for `sub`. A thing under a table is samloke with the table
+# (and via the chain, with whoever's in the room).
+sub_implies_samloke_with_supporter = derive(
+    when=rel("sub",
+             contained=bind(SubISA := var("A")),
+             container=bind(SubISB := var("B"))),
+    implies=relation("samloke", SubISA, SubISB),
+    name="sub_implies_samloke_with_supporter",
+)
+
+
 # Transitive samloke through nested `en`. Without this, the
 # planner can't reach a liquid pre-placed in a vessel: lakto en
 # botelo, botelo sur tablo, tablo en kuirejo → samloke(actor,
@@ -2850,6 +2907,23 @@ samloke_chains_through_sur = derive(
     ],
     implies=relation("samloke", SCSA, SCSC),
     name="samloke_chains_through_sur",
+)
+
+
+# Mirror for `sub`. A coin sub a tablo is samloke with whoever's en
+# the room — physical adjacency under should compose the same as on
+# or in. Without this, the spawner's `sub(riparilo, tablo)` placement
+# leaves the actor unable to plan preni(actor, riparilo) because
+# samloke(actor, riparilo) is never derived.
+samloke_chains_through_sub = derive(
+    when=rel("sub",
+             contained=bind(SCSubA := var("A")),
+             container=~entity(type="location") & bind(SCSubB := var("B"))),
+    given=[
+        rel("samloke", a=SCSubB, b=bind(SCSubC := var("C"))),
+    ],
+    implies=relation("samloke", SCSubA, SCSubC),
+    name="samloke_chains_through_sub",
 )
 
 
@@ -3062,8 +3136,10 @@ DEFAULT_DSL_DERIVATIONS = [
     held_item_effective_en_via_carrier,
     asserted_en_implies_effective_en,
     sur_implies_samloke_with_supporter,
+    sub_implies_samloke_with_supporter,
     samloke_chains_through_en,
     samloke_chains_through_sur,
+    samloke_chains_through_sub,
     host_lock_state_locked_from_seruro,
     host_lock_state_unlocked_from_seruro,
     host_lock_capable_from_seruro,
@@ -3159,8 +3235,10 @@ RUNTIME_DERIVATIONS = [
     held_item_effective_en_via_carrier,
     asserted_en_implies_effective_en,
     sur_implies_samloke_with_supporter,
+    sub_implies_samloke_with_supporter,
     samloke_chains_through_en,
     samloke_chains_through_sur,
+    samloke_chains_through_sub,
     host_lock_state_locked_from_seruro,
     host_lock_state_unlocked_from_seruro,
     host_openness_closed_from_pordo,
@@ -3217,6 +3295,9 @@ DEFAULT_DSL_RULES: list[Rule] = [
     vidi_learns_sur,
     flari_learns_sur,
     audi_learns_sur,
+    vidi_learns_sub,
+    flari_learns_sub,
+    audi_learns_sub,
     vidi_learns_havi_owner,
     rakonti_transfers_scias,
     demandi_extracts_scias,

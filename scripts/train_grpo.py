@@ -157,7 +157,7 @@ def parseable_rate(text: str, verifier=None) -> float:
     return clean / len(sents)
 
 
-_MATH_HASH_PATTERN = re.compile(r"####\s*(-?\d+(?:[.,]\d+)?)")
+_MATH_HASH_PATTERN = re.compile(r"#\s*#\s*#\s*#\s*(-?\d+(?:[.,]\d+)?)")
 _MATH_RESPONDO_PATTERN = re.compile(
     r"(?:respondo|rezulto|sumo|valoro|estas?|=)\s*[:=]?\s*(-?\d+(?:[.,]\d+)?)",
     re.IGNORECASE,
@@ -205,6 +205,20 @@ def math_close(generation: str, gold: str | None) -> float:
     rel_err = abs(ca - ga) / max(abs(ga), 1.0)
     import math as _math
     return _math.exp(-min(rel_err, 10.0))
+
+
+def math_exact(generation: str, gold: str | None) -> float:
+    """Binary reward: 1.0 if the extracted answer is exact, 0.0 otherwise.
+    No partial credit, no smooth decay. Use when smooth reward has been
+    gamed by partial-credit hacks (e.g. emitting near-misses to farm reward
+    without learning math)."""
+    if not gold:
+        return 0.0
+    ga = extract_math_answer(gold)
+    ca = extract_math_answer(generation)
+    if ga is None or ca is None:
+        return 0.0
+    return 1.0 if abs(ga - ca) < 1e-6 else 0.0
 
 
 def length_excess(text: str) -> float:
@@ -318,13 +332,34 @@ def _fill_nan_with_mean(values: list[float]) -> list[float]:
     return [fill if math.isnan(v) else v for v in values]
 
 
-def make_reward_components(max_gram=MAX_GRAM):
+def make_reward_components(max_gram=MAX_GRAM, math_only=False,
+                            math_smooth=False):
     """Return `(reward_funcs, reward_weights)` for GRPOTrainer.
 
     Each reward function returns a raw 0..1 score per completion. Weights
     carry the sign (penalties are negative). TRL logs each function under
     `rewards/<fn_name>` so the breakdown shows up in the step logs.
+
+    `math_only=True` strips every reward except a single math reward. Use
+    to isolate the numeric-correctness signal when the broader reward mix
+    has been gamed (the model emits look-like-math text that farms
+    presence/overlap/parseable without learning arithmetic).
+
+    `math_smooth=True` (only meaningful with math_only) uses the
+    `math_close` exp(-rel_err) smooth reward instead of `math_exact`.
+    Smooth gives gradient on near-misses — useful on hard problems where
+    the model never lands exactly so a binary reward stays at 0.
     """
+    if math_only:
+        score_fn = math_close if math_smooth else math_exact
+        name = "reward_math_smooth" if math_smooth else "reward_math_exact"
+        def _reward_math(prompts, completions, gold=None, **_):
+            n = len(completions)
+            refs = gold if gold is not None else [None] * n
+            texts = [demorph(c) for c in completions]
+            return [score_fn(t, r) for t, r in zip(texts, refs)]
+        _reward_math.__name__ = name
+        return [_reward_math], [1.0]
     verifier = Verifier(DEFAULT_CHECKS + [LexiconCheck(freq_threshold=3)])
     # Separate verifier so tautology pressure is weighted independently of
     # general grammar (different failure class — semantically-empty repetition
@@ -539,6 +574,14 @@ def main():
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--beta", type=float, default=0.04,
                         help="KL coefficient against reference policy")
+    parser.add_argument("--math-only", action="store_true",
+                        help="Strip all rewards except a single math reward. "
+                             "Use to isolate numeric correctness when the "
+                             "broader reward mix gets gamed.")
+    parser.add_argument("--math-smooth", action="store_true",
+                        help="With --math-only, use the smooth exp(-rel_err) "
+                             "reward instead of binary exact. Gives gradient "
+                             "on near-misses for hard problems.")
     parser.add_argument("--max-examples", type=int, default=0)
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Higher temp → more diversity per group → bigger "
@@ -637,7 +680,8 @@ def main():
     print(f"Dataset: {len(dataset)} prompts from [{srcs}] "
           f"(style={args.prompt_style}, presence={args.presence_target})", flush=True)
 
-    reward_funcs, reward_weights = make_reward_components()
+    reward_funcs, reward_weights = make_reward_components(
+        math_only=args.math_only, math_smooth=args.math_smooth)
 
     config = GRPOConfig(
         output_dir=args.output_dir,

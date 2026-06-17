@@ -196,11 +196,17 @@ class DefinitionMessage(Message):
     discloses the IS-A to downstream consumers. `parts` holds the
     eids of any parts named in the "farita el X kaj Y" tail — used to
     emit `havas_parton` relation facts for each part the prose
-    literally names."""
+    literally names.
+
+    `kb_facts` carries biographical / geographical facts for KB-grounded
+    entities — each (prop, value) pair becomes one appended sentence
+    AND one `biography` Fact at render time. Empty list for fabricated
+    entities."""
     entity_id: str
     definition: str
     category: Optional[str] = None
     parts: list[str] = field(default_factory=list)
+    kb_facts: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)

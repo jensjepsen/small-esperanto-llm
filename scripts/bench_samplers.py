@@ -277,8 +277,31 @@ def main():
             print(f"      {v}x {k}")
         if no_sample:
             print(f"    top no_sample reasons:")
-            for k, v in all_no_sample.most_common(10):
+            for k, v in all_no_sample.most_common(30):
                 print(f"      {v}x {k}")
+            kinds: Counter = Counter()
+            for k, v in all_no_sample.items():
+                kind = k.split(":", 1)[0]
+                kinds[kind] += v
+            print(f"    no_sample by kind:")
+            for k, v in kinds.most_common():
+                print(f"      {v}x {k}")
+            print(f"    no_sample by 2-level kind:")
+            subkinds: Counter = Counter()
+            for k, v in all_no_sample.items():
+                parts = k.split(":", 2)
+                key = ":".join(parts[:2]) if len(parts) >= 2 else parts[0]
+                subkinds[key] += v
+            for k, v in subkinds.most_common(20):
+                print(f"      {v}x {k}")
+            es_reasons = [
+                (k, v) for k, v in all_no_sample.items()
+                if k.startswith("h_unreachable:entity_slot")]
+            es_reasons.sort(key=lambda kv: -kv[1])
+            if es_reasons:
+                print(f"    all h_unreachable:entity_slot:")
+                for k, v in es_reasons:
+                    print(f"      {v}x {k}")
 
         if args.samples_out:
             path = args.samples_out

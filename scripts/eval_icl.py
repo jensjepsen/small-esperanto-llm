@@ -64,11 +64,14 @@ def detokenize_morphemes(tokens: list[str]) -> str:
 
 def normalize(s: str) -> str:
     """Lenient match: case-fold, drop punctuation/spaces around words,
-    strip leading articles, prepositions, and accusative endings."""
+    strip leading articles, prepositions, and accusative endings.
+    Causal-connector unification: "pro tio, ke X" and "pro tio ke X"
+    rewrite to "ĉar X" — both are standard Esperanto for "because X"."""
     s = s.strip().lower()
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"\s+([.,;:!?])", r"\1", s)
     s = s.rstrip(".,;:!?")
+    s = re.sub(r"^pro tio\s*,?\s*ke\s+", "ĉar ", s)
     for prefix in ("en la ", "en ", "sur la ", "sur ", "el la ", "el ",
                     "tra la ", "tra ", "apud la ", "apud ",
                     "ĉe la ", "ĉe ", "al la ", "al ",
@@ -83,9 +86,24 @@ def normalize(s: str) -> str:
     return s
 
 
+# Wiki-fact substrings: the eval's last block (idx 212-231) tests
+# pretraining knowledge — capitals, scientific facts, historical
+# dates. Detected by anchor terms in the question rather than index
+# range so the tagger stays robust to eval-file edits.
+_WIKI_ANCHORS = (
+    "ĉefurbo", "profesio de zamenhof", "naskiĝis ŝekspiro",
+    "naskiĝis einsteino", "konsistas akvo", "orbitas ĉirkaŭ la suno",
+    "plej granda surtera besto", "unua mondmilito",
+    "mortis mozarto", "amazona pluvarbo", "fluas la nilo",
+    "malkovris marie curie", "natura satelito de la tero",
+    "kreis linukson", "granda muro", "unue trinkis kafon",
+    "strukturon de dna", "plej granda planedo",
+)
+
 # Heuristic question-type tagger from the question text. Used to
 # break down accuracy by template.
 QUESTION_TAGS = [
+    ("wiki",       lambda q: any(a in q.lower() for a in _WIKI_ANCHORS)),
     ("color",      lambda q: "koloro" in q),
     ("posture",    lambda q: "pozici" in q),
     ("openness",   lambda q: "malfermita aŭ fermita" in q),
@@ -127,6 +145,13 @@ def main():
     p.add_argument("--pass-k", type=int, default=1,
                    help="Generate K samples per question, count correct "
                         "if any match (pass@K). K=1 is greedy.")
+    p.add_argument("--temperature", type=float, default=None,
+                   help="If set, override the greedy pass@1 with sampling "
+                        "at this temperature. pass@k retries still use 0.7.")
+    p.add_argument("--top-p", type=float, default=None,
+                   help="Nucleus sampling cutoff (only used when sampling).")
+    p.add_argument("--top-k", type=int, default=None,
+                   help="Top-k truncation (only used when sampling).")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -154,6 +179,9 @@ def main():
             rec = json.loads(line)
             user = rec["messages"][0]["content"]
             gold = rec["messages"][1]["content"]
+            accepted = rec.get("accepted_answers") or [gold]
+            if gold not in accepted:
+                accepted = [gold] + list(accepted)
             q = user.split("Demando:", 1)[-1].strip()
 
             # Build the chat-template prompt the trainer used, then
@@ -165,15 +193,20 @@ def main():
                 prompt_text, return_tensors="pt",
                 return_token_type_ids=False).to(device)
             def _generate_one(do_sample=False, temperature=1.0):
+                gen_kwargs = dict(
+                    max_new_tokens=args.max_new_tokens,
+                    do_sample=do_sample,
+                    temperature=temperature,
+                    eos_token_id=end_id,
+                    pad_token_id=tok.pad_token_id or end_id,
+                )
+                if do_sample:
+                    if args.top_p is not None:
+                        gen_kwargs["top_p"] = args.top_p
+                    if args.top_k is not None:
+                        gen_kwargs["top_k"] = args.top_k
                 with torch.no_grad():
-                    out = model.generate(
-                        **inputs,
-                        max_new_tokens=args.max_new_tokens,
-                        do_sample=do_sample,
-                        temperature=temperature,
-                        eos_token_id=end_id,
-                        pad_token_id=tok.pad_token_id or end_id,
-                    )
+                    out = model.generate(**inputs, **gen_kwargs)
                 prompt_len = inputs["input_ids"].shape[-1]
                 gen_ids = out[0][prompt_len:].tolist()
                 gen_toks = tok.convert_ids_to_tokens(gen_ids)
@@ -191,7 +224,81 @@ def main():
                 na, ng = normalize(answer), normalize(gold)
                 if na == ng:
                     return True
-                if len(ng.split()) > 1 and ng in na:
+                if (len(ng.split()) > 1
+                        and re.search(rf"\b{re.escape(ng)}\b", na)):
+                    return True
+                # Unit-less acceptance: gold "kvin kilogramoj" (number
+                # + unit), pred "kvin" — accept. The model gave the
+                # right count even without the unit. Same when gold
+                # has trailing acc-marker: "du horojn" vs pred "du".
+                if len(ng.split()) == 2 and " " not in na:
+                    gold_first = ng.split()[0]
+                    if gold_first == na:
+                        return True
+                # Single-word gold: accept if it appears in pred at a
+                # word boundary within the FIRST sentence, AND pred
+                # doesn't carry an inversion prefix. First-sentence
+                # restriction prevents matching the gold word inside
+                # an echo loop (e.g. model says "kvar fruktoj ." then
+                # regurgitates "se oni forprenas la tri fruktojn" from
+                # the prompt — the matcher would see "tri" and call
+                # it ✓).
+                na_first = na.split(".", 1)[0].strip()
+                # Arithmetic CoT shape ("A + B = C" or "A plus B egalas C"):
+                # the gold must appear in the RESULT (after the last
+                # "=" or "egalas"), not as an addend earlier in the
+                # equation. Without this, "tri pomoj + du oranĝoj =
+                # ses pomoj" gets ✓ for gold="tri" via the leading
+                # addend, even though the model's stated answer is
+                # "ses".
+                #
+                # For multi-clause chains ("8-3=5. 5-2=3. maria havas
+                # tri krajonojn."), check (a) the FINAL "= ..." in the
+                # whole prediction and (b) the FINAL sentence — the
+                # answer is usually in the last sentence as
+                # "X havas Y" or in the trailing equation.
+                arith_result = None
+                if " = " in na_first:
+                    arith_result = na_first.rsplit(" = ", 1)[1].strip()
+                elif " egalas " in na_first:
+                    arith_result = na_first.rsplit(" egalas ", 1)[1].strip()
+                if arith_result is not None:
+                    if (ng and " " not in ng
+                            and re.search(rf"\b{re.escape(ng)}\b",
+                                          arith_result)):
+                        return True
+                    # Multi-clause chain: scan the FINAL equation result.
+                    last_eq = max(na.rfind(" = "), na.rfind(" egalas "))
+                    if last_eq >= 0:
+                        sep_len = 3 if na.rfind(" = ") > na.rfind(" egalas ") else 8
+                        final_tail = na[last_eq + sep_len:].split(".", 1)[0].strip()
+                        if (ng and " " not in ng
+                                and re.search(rf"\b{re.escape(ng)}\b", final_tail)):
+                            return True
+                    # Final-sentence check: "maria havas tri krajonojn"
+                    # at the end of the chain, with gold "tri". Only the
+                    # tail AFTER a "= ..." / "havas ..." / "restas ..."
+                    # counts as the answer — front addends ("du etaĝoj +
+                    # tri etaĝoj = kvin etaĝoj") don't.
+                    sentences = [s.strip() for s in na.split(".") if s.strip()]
+                    if sentences and ng and " " not in ng:
+                        last = sentences[-1]
+                        # Strip prefix up to last answer-bearing keyword.
+                        tail = last
+                        for kw in (" = ", " egalas ", " havas ", " restas "):
+                            idx = tail.rfind(kw)
+                            if idx >= 0:
+                                tail = tail[idx + len(kw):]
+                        if (tail != last  # found at least one keyword
+                                and re.search(rf"\b{re.escape(ng)}\b", tail)):
+                            return True
+                    # Explicit reject for arith-shape answers — don't
+                    # fall through to lenient rules below.
+                    return False
+                if (ng and " " not in ng
+                        and not na.startswith("ne ,")
+                        and not na.startswith("ne ")
+                        and re.search(rf"\b{re.escape(ng)}\b", na_first)):
                     return True
                 if " estas " in na and na.split(" estas ", 1)[1] == ng:
                     return True
@@ -209,14 +316,28 @@ def main():
                     ng_verb = ng.split("ĝin")[0].strip()
                     if ng_verb and na.startswith(ng_verb):
                         return True
+                # Symmetric pronoun-resolution: pred uses "ĝin" where
+                # gold spells out the noun (e.g. pred "por malŝlosi ĝin"
+                # vs gold "por malŝlosi la kofron" — same fact).
+                if "ĝin" in na:
+                    na_verb = na.split("ĝin")[0].strip()
+                    if na_verb and ng.startswith(na_verb):
+                        return True
                 return False
 
-            answer = _generate_one(do_sample=False)
-            ok = _matches(answer, gold)
+            def _matches_any(pred):
+                return any(_matches(pred, g) for g in accepted)
+
+            if args.temperature is not None:
+                answer = _generate_one(
+                    do_sample=True, temperature=args.temperature)
+            else:
+                answer = _generate_one(do_sample=False)
+            ok = _matches_any(answer)
             if not ok and args.pass_k > 1:
                 for _ in range(args.pass_k - 1):
                     alt = _generate_one(do_sample=True, temperature=0.7)
-                    if _matches(alt, gold):
+                    if _matches_any(alt):
                         answer = alt
                         ok = True
                         break
