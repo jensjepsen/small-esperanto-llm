@@ -141,35 +141,50 @@ def main():
                     help="Path or name of the student's tokenizer for budget filtering")
     ap.add_argument("--chunk-size", type=int, default=1024,
                     help="Length-sort and write progress every N prompts")
+    ap.add_argument("--n-gens", type=int, default=1,
+                    help="Number of distinct LFM answers per prompt. >1 implies --sample.")
+    ap.add_argument("--sample", action="store_true",
+                    help="Use sampling (do_sample=True) for LFM. Required for n-gens > 1.")
+    ap.add_argument("--temperature", type=float, default=0.7)
+    ap.add_argument("--top-p", type=float, default=0.9)
     ap.add_argument("--out", default="mt/runs/distill_alpaca_lfm.jsonl")
     ap.add_argument("--hf-cache", default="/mnt/data/hf_cache")
     args = ap.parse_args()
 
+    if args.n_gens > 1 and not args.sample:
+        print(f"--n-gens={args.n_gens} forces --sample")
+        args.sample = True
+
     os.environ.setdefault("HF_HOME", args.hf_cache)
     from transformers import AutoModelForCausalLM, AutoTokenizer, MarianMTModel
 
-    # --- resume: scan existing output ---
+    # --- resume: scan existing output. With multi-gen, a prompt is "done" when
+    # all K gens have been written; otherwise we re-do the prompt fully. ---
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    done_indices: set[int] = set()
+    done_keys: set[tuple[int, int]] = set()
     if out_path.exists():
         with out_path.open() as f:
             for line in f:
                 try:
-                    done_indices.add(json.loads(line)["i"])
+                    r = json.loads(line)
+                    done_keys.add((r["i"], r.get("gen_idx", 0)))
                 except Exception:
                     pass
-        print(f"Resume: {len(done_indices)} rows already in {out_path}")
+        print(f"Resume: {len(done_keys)} rows already in {out_path}")
 
     # --- load source ---
     print(f"Loading {args.source} prompts (n={args.n}, skip={args.skip})…")
     en_questions = load_alpaca(args.n, args.skip)
     print(f"  {len(en_questions)} prompts after upstream filter")
-    todo_indices = [i for i in range(len(en_questions)) if i not in done_indices]
+    todo_indices = [
+        i for i in range(len(en_questions))
+        if sum(1 for g in range(args.n_gens) if (i, g) in done_keys) < args.n_gens
+    ]
     if not todo_indices:
         print("Nothing to do.")
         return
-    print(f"  {len(todo_indices)} new rows to process")
+    print(f"  {len(todo_indices)} prompts to process ({args.n_gens} gen{'s' if args.n_gens>1 else ''} each)")
 
     # --- load models ---
     print(f"Loading MT {args.mt_checkpoint} on cuda fp16…")
@@ -221,8 +236,10 @@ def main():
                 out[orig_i] = mt_tok.decode(seq)
         return [t if t is not None else "" for t in out]
 
-    def lfm_generate(prompts: list[str]) -> list[str]:
-        out: list[str | None] = [None] * len(prompts)
+    def lfm_generate(prompts: list[str]) -> list[list[str]]:
+        """Return per-prompt list of n_gens answers (length == args.n_gens)."""
+        K = args.n_gens
+        out: list[list[str] | None] = [None] * len(prompts)
         chat_prompts = [
             lfm_tok.apply_chat_template(
                 [{"role": "system", "content": PROSE_SYSTEM_PROMPT},
@@ -231,7 +248,10 @@ def main():
             )
             for p in prompts
         ]
-        batches = _sorted_batches(chat_prompts, args.lfm_batch_size)
+        # When sampling with batch_size B, num_return_sequences=K produces a
+        # tensor of shape (B*K, T). Smaller LFM batch to keep memory bounded.
+        eff_bs = max(1, args.lfm_batch_size // max(1, K))
+        batches = _sorted_batches(chat_prompts, eff_bs)
         for idx, batch in tqdm(batches, desc="LFM gen", leave=False):
             enc = lfm_tok(batch, return_tensors="pt", padding=True, truncation=False).to("cuda")
             with torch.no_grad():
@@ -239,14 +259,18 @@ def main():
                     input_ids=enc["input_ids"],
                     attention_mask=enc["attention_mask"],
                     max_new_tokens=args.lfm_max_new_tokens,
-                    do_sample=False,
+                    do_sample=args.sample,
+                    temperature=args.temperature if args.sample else 1.0,
+                    top_p=args.top_p if args.sample else 1.0,
+                    num_return_sequences=K,
                     pad_token_id=lfm_tok.pad_token_id,
                 )
             in_len = enc["input_ids"].shape[1]
             decoded = lfm_tok.batch_decode(gen[:, in_len:], skip_special_tokens=True)
-            for orig_i, txt in zip(idx, decoded):
-                out[orig_i] = txt
-        return [t if t is not None else "" for t in out]
+            # decoded has shape len(batch)*K; gens of batch[i] live at i*K..i*K+K
+            for i_in_batch, orig_i in enumerate(idx):
+                out[orig_i] = decoded[i_in_batch * K : (i_in_batch + 1) * K]
+        return [t if t is not None else [""] * K for t in out]
 
     # Process in chunks. Each chunk: length-sort across all 3 stages (so batches
     # are uniform-length), then write the whole chunk before moving on. Lets us
@@ -279,12 +303,15 @@ def main():
             q_pass = [j for j, m in enumerate(q_budget_mask) if not m]
             lfm_input = [keep_q_en[j] for j in q_pass]
 
-            # Pass 2: LFM on original EN (only rows that passed budget filter)
+            # Pass 2: LFM on original EN (only rows that passed budget filter).
+            # Returns per-prompt list of K answers; flatten to length P*K.
+            K = args.n_gens
             t0 = time.perf_counter()
-            a_en_kept = lfm_generate(lfm_input) if lfm_input else []
+            a_en_nested = lfm_generate(lfm_input) if lfm_input else []
+            a_en_kept = [a for gens in a_en_nested for a in gens]
             t_lfm_total += time.perf_counter() - t0
 
-            # Strip markdown + hedge filter
+            # Strip markdown + hedge filter (all K*P answers, flat)
             a_en_stripped = [strip_markdown(a)[: args.max_a_chars].strip() for a in a_en_kept]
             hedge_mask = [not s or bool(HEDGE_PATTERNS.search(s)) for s in a_en_stripped]
             a_to_translate = [(k, s) for k, s in enumerate(a_en_stripped) if not hedge_mask[k]]
@@ -299,50 +326,59 @@ def main():
             for (k, _), eo in zip(a_to_translate, a_eo_translated):
                 a_eo_out[k] = eo
 
-            # Final budget filter: total Q_EO + A_EO must fit in student
+            # Final budget filter: total Q_EO + A_EO must fit in student.
+            # Index k into flat arrays maps to (p_idx = k // K, gen_idx = k % K).
             budget_mask = []
             for k in range(len(a_eo_out)):
                 if hedge_mask[k]:
                     budget_mask.append(False)
                     continue
-                eo_idx = q_pass[k]
+                p_idx = k // K
+                eo_idx = q_pass[p_idx]
                 total = student_token_count(q_eo_keep[eo_idx]) + student_token_count(a_eo_out[k])
                 budget_mask.append(total > args.max_student_tokens)
 
-            # Reassemble all rows for this chunk and write in order
+            # Reassemble all rows for this chunk and write in order.
+            # For long/q-budget skips we write 1 row (gen_idx=0). For prompts
+            # that reached LFM we write K rows (one per gen).
             rows_to_write: list[dict] = []
-            # Track post-translation original positions
             for j, idx_in_chunk in enumerate(chunk_idx):
                 if long_mask[j]:
-                    rows_to_write.append({"i": idx_in_chunk, "skipped": True,
-                                          "reason": "q_too_long", "q_en": chunk_q_en[j]})
+                    rows_to_write.append({"i": idx_in_chunk, "gen_idx": 0,
+                                          "skipped": True, "reason": "q_too_long",
+                                          "q_en": chunk_q_en[j]})
                     continue
                 k_in_keep = keep_q_idx.index(j)
                 q_eo = q_eo_keep[k_in_keep]
                 if q_budget_mask[k_in_keep]:
-                    rows_to_write.append({"i": idx_in_chunk, "skipped": True,
-                                          "reason": "q_eo_too_long",
+                    rows_to_write.append({"i": idx_in_chunk, "gen_idx": 0,
+                                          "skipped": True, "reason": "q_eo_too_long",
                                           "q_en": chunk_q_en[j], "q_eo": q_eo})
                     continue
-                k_in_lfm = q_pass.index(k_in_keep)
-                a_en = a_en_kept[k_in_lfm]
-                a_en_clean = a_en_stripped[k_in_lfm]
-                if hedge_mask[k_in_lfm]:
-                    rows_to_write.append({"i": idx_in_chunk, "skipped": True,
-                                          "reason": "hedge_or_empty",
+                p_idx = q_pass.index(k_in_keep)
+                for g in range(K):
+                    flat = p_idx * K + g
+                    a_en = a_en_kept[flat]
+                    a_en_clean = a_en_stripped[flat]
+                    if hedge_mask[flat]:
+                        rows_to_write.append({"i": idx_in_chunk, "gen_idx": g,
+                                              "skipped": True, "reason": "hedge_or_empty",
+                                              "q_en": chunk_q_en[j], "q_eo": q_eo,
+                                              "a_en": a_en, "a_en_clean": a_en_clean})
+                        continue
+                    a_eo = a_eo_out[flat]
+                    if budget_mask[flat]:
+                        rows_to_write.append({"i": idx_in_chunk, "gen_idx": g,
+                                              "skipped": True, "reason": "total_too_long",
+                                              "q_en": chunk_q_en[j], "q_eo": q_eo,
+                                              "a_en": a_en, "a_en_clean": a_en_clean,
+                                              "a_eo": a_eo})
+                        continue
+                    rows_to_write.append({"i": idx_in_chunk, "gen_idx": g,
+                                          "skipped": False,
                                           "q_en": chunk_q_en[j], "q_eo": q_eo,
-                                          "a_en": a_en, "a_en_clean": a_en_clean})
-                    continue
-                a_eo = a_eo_out[k_in_lfm]
-                if budget_mask[k_in_lfm]:
-                    rows_to_write.append({"i": idx_in_chunk, "skipped": True,
-                                          "reason": "total_too_long",
-                                          "q_en": chunk_q_en[j], "q_eo": q_eo,
-                                          "a_en": a_en, "a_en_clean": a_en_clean, "a_eo": a_eo})
-                    continue
-                rows_to_write.append({"i": idx_in_chunk, "skipped": False,
-                                      "q_en": chunk_q_en[j], "q_eo": q_eo,
-                                      "a_en": a_en, "a_en_clean": a_en_clean, "a_eo": a_eo})
+                                          "a_en": a_en, "a_en_clean": a_en_clean,
+                                          "a_eo": a_eo})
 
             for r in rows_to_write:
                 fout.write(json.dumps(r, ensure_ascii=False) + "\n")
