@@ -88,10 +88,12 @@ def main():
         choices=["cosine_with_min_lr", "constant",
                  "constant_with_warmup", "linear", "cosine"])
     parser.add_argument("--warmup-steps", type=int, default=100)
-    parser.add_argument("--completion-only-loss", action="store_true",
-                        help="Mask loss on the user-prompt tokens; only train "
-                             "on the assistant response. Important when the "
-                             "prompt template is highly repetitive (e.g. NLI).")
+    parser.add_argument("--no-completion-loss", action="store_true",
+                        help="Disable completion-only loss. Default is to mask "
+                             "loss on user-prompt tokens so gradient flows "
+                             "only through the assistant response — matches "
+                             "the inference objective and stops the model "
+                             "wasting capacity learning to recite questions.")
     parser.add_argument("--wandb-project", default="jepsen/espllm",
                         help="`entity/project` for Weights & Biases. "
                              "Pass empty string to disable wandb logging.")
@@ -257,7 +259,7 @@ def main():
 
     base_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    if args.completion_only_loss:
+    if not args.no_completion_loss:
         assistant_id = tokenizer.convert_tokens_to_ids(ASSISTANT_TOKEN)
         if assistant_id is None or assistant_id == tokenizer.unk_token_id:
             raise RuntimeError(
