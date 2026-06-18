@@ -109,21 +109,48 @@ TOOL_RESPONSE_END = "<|tool_response_end|>"
 IM_END = "<|im_end|>"
 
 # LFM2.5's tool call syntax: [function_name(arg=value, ...)]
-TOOL_CALL_RE = re.compile(
-    r"\[\s*(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)\s*\("
-    r"(?P<args>[^\)]*)"
-    r"\)\s*\]"
-)
+# Expressions can themselves contain parens, e.g. expression="(48-3)*2".
+# Use a balanced-paren / quoted-string scan rather than a naive [^)]* regex.
+FUNCNAME_RE = re.compile(r"\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(")
 ARG_RE = re.compile(r'(?P<k>[a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"(?P<v>[^"]*)"')
 
 
 def parse_tool_call(text: str) -> tuple[str, dict] | None:
-    """Extract (name, kwargs) from the body between TOOL_CALL_START and TOOL_CALL_END."""
-    m = TOOL_CALL_RE.search(text)
+    """Extract (name, kwargs) from a `[name(k="v", ...)]` body.
+
+    Handles parens nested inside argument string literals, which a flat
+    [^)]* regex would mishandle.
+    """
+    m = FUNCNAME_RE.search(text)
     if not m:
         return None
-    name = m.group("name")
-    args = {k: v for k, v in ARG_RE.findall(m.group("args") or "")}
+    name = m.group(1)
+    # Walk from after `(` to the matching `)`, respecting "..." string literals.
+    i = m.end()
+    depth = 1
+    in_str = False
+    start = i
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            if ch == "\\" and i + 1 < len(text):
+                i += 2; continue
+            if ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+        i += 1
+    if depth != 0:
+        return None
+    args_str = text[start:i]
+    args = {k: v for k, v in ARG_RE.findall(args_str)}
     return name, args
 
 
@@ -158,7 +185,16 @@ def run_trace(model, tok, q: str, gold: str | None, max_turns: int,
     pad_id = tok.pad_token_id or tok.eos_token_id
     # Resolve stop ids for tool-call-end and im-end. These may multi-token,
     # so we'll detect them by string match on the decoded text.
-    messages = [{"role": "user", "content": q}]
+    messages = [
+        {"role": "system", "content": (
+            "You are a math problem solver with access to a calculator. "
+            "For ANY arithmetic — even simple addition or subtraction — call "
+            "the calculator tool instead of computing in your head. Solve the "
+            "problem in small steps, calling the calculator once per step. "
+            "After the final tool result, give a brief one-sentence answer."
+        )},
+        {"role": "user", "content": q},
+    ]
     tool_calls = []
 
     for turn in range(max_turns):
@@ -216,10 +252,12 @@ def run_trace(model, tok, q: str, gold: str | None, max_turns: int,
         # Hit max_turns without a final answer
         pass
 
-    # Extract a final numeric answer from the last assistant message
+    # Extract a final numeric answer from the last assistant message.
+    # Heuristic order: #### N > \boxed{N} > the last tool call's result
+    # (since the model usually delegates the final calc) > last currency
+    # number ($X) > last number anywhere.
     last_assist = next((m for m in reversed(messages) if m["role"] == "assistant"), None)
     final_text = last_assist["content"] if last_assist else ""
-    # Look for #### N first, then \boxed{N}, then last number
     final_num = None
     m = re.search(r"####\s*([-+]?\d[\d,]*\.?\d*)", final_text)
     if m:
@@ -228,6 +266,14 @@ def run_trace(model, tok, q: str, gold: str | None, max_turns: int,
         m = re.search(r"\\boxed\{\s*\$?\s*([-+]?\d[\d,]*\.?\d*)\s*\}", final_text)
         if m:
             final_num = m.group(1).replace(",", "").rstrip(".")
+    if final_num is None and tool_calls:
+        # The last tool call's result is usually the final numeric answer.
+        final_num = str(tool_calls[-1][1])
+    if final_num is None:
+        # Prefer currency-anchored numbers ($X) over bare numbers.
+        m = re.findall(r"\$\s*([-+]?\d[\d,]*\.?\d*)", final_text)
+        if m:
+            final_num = m[-1].replace(",", "").rstrip(".")
     if final_num is None:
         nums = re.findall(r"[-+]?\d[\d,]*\.?\d*", final_text)
         final_num = nums[-1].replace(",", "").rstrip(".") if nums else None
