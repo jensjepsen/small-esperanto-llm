@@ -373,7 +373,8 @@ def main():
     # see progress + resume mid-run, at small efficiency cost vs full-set sort.
     CHUNK = args.chunk_size
     t_start = time.perf_counter()
-    total_written = total_kept = total_skipped_long = total_skipped_hedge = total_skipped_budget = 0
+    total_written = total_kept = total_skipped_long = total_skipped_hedge = 0
+    total_skipped_wrong_en = total_skipped_wrong_eo = 0
     t_q_total = t_lfm_total = t_a_total = 0.0
     BUDGET_Q_ONLY = int(args.max_student_tokens * 0.7)   # leave at least 30% for answer
 
@@ -437,6 +438,22 @@ def main():
             for (k, _), eo in zip(a_to_translate, a_eo_translated):
                 a_eo_out[k] = eo
 
+            # GSM8K post-translation answer check: EN-correct gens can drift
+            # to a wrong final number after v5b en→eo. Re-extract from the
+            # latex-stripped EO and require it still matches gold; otherwise
+            # the student would learn a silently-wrong chain.
+            wrong_eo_mask = [False] * len(a_eo_out)
+            if args.gsm8k_filter:
+                for k in range(len(a_eo_out)):
+                    if hedge_mask[k] or wrong_mask[k]:
+                        continue
+                    p_idx = k // K
+                    j = keep_q_idx[q_pass[p_idx]]
+                    gold = en_gold[chunk_idx[j]]
+                    eo_pred = extract_final_number(strip_latex(a_eo_out[k]))
+                    if eo_pred is None or eo_pred != gold:
+                        wrong_eo_mask[k] = True
+
             # Final budget filter: total Q_EO + A_EO must fit in student.
             # Index k into flat arrays maps to (p_idx = k // K, gen_idx = k % K).
             budget_mask = []
@@ -485,6 +502,14 @@ def main():
                                               "gold": en_gold[idx_in_chunk]})
                         continue
                     a_eo = a_eo_out[flat]
+                    if args.gsm8k_filter and wrong_eo_mask[flat]:
+                        rows_to_write.append({"i": idx_in_chunk, "gen_idx": g,
+                                              "skipped": True, "reason": "wrong_answer_eo",
+                                              "q_en": chunk_q_en[j], "q_eo": q_eo,
+                                              "a_en": a_en, "a_en_clean": a_en_clean,
+                                              "a_eo": a_eo,
+                                              "gold": en_gold[idx_in_chunk]})
+                        continue
                     if budget_mask[flat]:
                         rows_to_write.append({"i": idx_in_chunk, "gen_idx": g,
                                               "skipped": True, "reason": "total_too_long",
@@ -507,6 +532,10 @@ def main():
                         total_skipped_long += 1
                     elif reason == "hedge_or_empty":
                         total_skipped_hedge += 1
+                    elif reason == "wrong_answer":
+                        total_skipped_wrong_en += 1
+                    elif reason == "wrong_answer_eo":
+                        total_skipped_wrong_eo += 1
                 else:
                     total_kept += 1
             fout.flush()
@@ -514,6 +543,8 @@ def main():
     dt = time.perf_counter() - t_start
     print(f"\nWrote {total_written} rows in {dt:.0f}s ({total_written/max(1,dt):.2f} rows/s)")
     print(f"  kept={total_kept}  skipped_too_long={total_skipped_long}  skipped_hedge={total_skipped_hedge}")
+    if args.gsm8k_filter:
+        print(f"  skipped_wrong_en={total_skipped_wrong_en}  skipped_wrong_eo={total_skipped_wrong_eo}")
     print(f"  per-stage wall time:")
     print(f"    Q  en→eo : {t_q_total:6.1f}s  ({t_q_total/dt*100:.0f}%)")
     print(f"    LFM gen  : {t_lfm_total:6.1f}s  ({t_lfm_total/dt*100:.0f}%)")
