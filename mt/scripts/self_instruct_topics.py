@@ -76,15 +76,78 @@ QUESTION_VARIANTS = [
 ]
 
 
-def load_topics(path: str | None, hf_spec: str | None) -> list[str]:
+_WIKI_BAD_PREFIXES = (
+    "List of ", "Lists of ", "Index of ", "Outline of ", "Timeline of ",
+    "Glossary of ", "Bibliography of ", "Comparison of ",
+)
+_WIKI_BAD_SUBSTRINGS = (
+    "(disambiguation)", "(album)", "(song)", "(film)", "(TV series)",
+    "(footballer)", "(rugby)", " season", " Wikipedia",
+)
+_WIKI_YEAR_RE = re.compile(r"^\d{3,4}(–\d{2,4})?( in .+)?$")
+
+
+def _wiki_quality(title: str) -> bool:
+    t = title.strip()
+    if not (5 <= len(t) <= 80):
+        return False
+    if any(t.startswith(p) for p in _WIKI_BAD_PREFIXES):
+        return False
+    if any(s in t for s in _WIKI_BAD_SUBSTRINGS):
+        return False
+    if _WIKI_YEAR_RE.match(t):  # "1923", "1923 in tennis", "1923–24"
+        return False
+    return True
+
+
+def load_topics_wikipedia(lang: str, n: int, pool_mult: int = 20,
+                          seed: int = 0) -> list[str]:
+    """Sample N quality-filtered article titles from wikimedia/wikipedia (streaming).
+
+    Reads pool_mult × n titles, applies _wiki_quality, then random-samples N.
+    pool_mult=20 means we look at ~20× as many candidates as we keep, which
+    gives enough survivors after filtering (typical pass-rate ~30-50%).
+    """
+    import random
+    from datasets import load_dataset
+    rng = random.Random(seed)
+    config = f"20231101.{lang}"  # latest snapshot HF mirrors
+    ds = load_dataset("wikimedia/wikipedia", config, split="train", streaming=True)
+    pool = []
+    target_pool = max(n * pool_mult, n + 100)
+    for row in ds:
+        title = row.get("title")
+        if not title:
+            continue
+        if _wiki_quality(title):
+            pool.append(title)
+        if len(pool) >= target_pool:
+            break
+    if len(pool) <= n:
+        return pool
+    return rng.sample(pool, n)
+
+
+def load_topics(path: str | None, hf_spec: str | None,
+                wiki_lang: str | None, n_wiki: int) -> list[str]:
+    if wiki_lang:
+        return load_topics_wikipedia(wiki_lang, n_wiki)
     if hf_spec:
         from datasets import load_dataset
-        # hf_spec = "namespace/dataset:split:field"
+        # hf_spec = "namespace/dataset[:config][:split][:field]"
+        # We split on ":" and assume that if the second token contains a "." it's
+        # a config name (Wikipedia-style "20231101.en"); otherwise it's the split.
         parts = hf_spec.split(":")
         name = parts[0]
-        split = parts[1] if len(parts) > 1 else "train"
-        field = parts[2] if len(parts) > 2 else "title"
-        ds = load_dataset(name, split=split)
+        if len(parts) >= 2 and ("." in parts[1] or parts[1].startswith("20")):
+            config = parts[1]
+            split = parts[2] if len(parts) > 2 else "train"
+            field = parts[3] if len(parts) > 3 else "title"
+            ds = load_dataset(name, config, split=split)
+        else:
+            split = parts[1] if len(parts) > 1 else "train"
+            field = parts[2] if len(parts) > 2 else "title"
+            ds = load_dataset(name, split=split)
         return [str(r[field]) for r in ds if r.get(field)]
     if path:
         topics = []
@@ -129,9 +192,13 @@ def main():
                     help="JSONL of topics (uses 'topic'/'title'/'name'/'label' field, "
                          "or one topic per line)")
     ap.add_argument("--topics-hf", type=str, default=None,
-                    help="HF dataset spec: 'namespace/dataset[:split[:field]]'")
+                    help="HF dataset spec: 'namespace/dataset[:config][:split][:field]'. "
+                         "Config is detected by a '.' or a leading year (e.g. '20231101.en').")
+    ap.add_argument("--topics-wiki", type=str, default=None,
+                    help="Sample article titles from wikimedia/wikipedia of the given "
+                         "language code (e.g. 'en', 'es'). Streams + quality-filters.")
     ap.add_argument("--n-topics", type=int, default=0,
-                    help="Cap topics processed (0 = all)")
+                    help="Cap topics processed (0 = all for file/HF; required for --topics-wiki)")
     ap.add_argument("--k", type=int, default=2,
                     help="Questions per topic")
     ap.add_argument("--temperature", type=float, default=0.85)
@@ -149,8 +216,10 @@ def main():
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
-    topics = load_topics(args.topics_file, args.topics_hf)
-    if args.n_topics:
+    if args.topics_wiki and not args.n_topics:
+        ap.error("--topics-wiki requires --n-topics N (it streams; we need a cap).")
+    topics = load_topics(args.topics_file, args.topics_hf, args.topics_wiki, args.n_topics)
+    if args.n_topics and not args.topics_wiki:
         topics = topics[: args.n_topics]
     print(f"Loaded {len(topics)} topics. K={args.k} → up to {len(topics)*args.k} questions.")
 
