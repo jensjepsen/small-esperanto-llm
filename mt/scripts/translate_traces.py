@@ -121,7 +121,11 @@ def main():
 
     print(f"Loading MT {args.mt_checkpoint}…")
     mt_tok = SPMTokenizer(args.mt_tokenizer)
-    mt_model = MarianMTModel.from_pretrained(args.mt_checkpoint).half().to("cuda").eval()
+    # eager attn avoids a transformers-5.x SDPA bug that crashes on short
+    # / single-token Marian batches with a device-side assert.
+    mt_model = MarianMTModel.from_pretrained(
+        args.mt_checkpoint, attn_implementation="eager"
+    ).half().to("cuda").eval()
     mt_model.generation_config.no_repeat_ngram_size = 5
 
     print(f"Loading student tokenizer {args.student_tokenizer}…")
@@ -135,7 +139,12 @@ def main():
 
     def mt_translate(texts, desc):
         out = [None] * len(texts)
-        for idx, chunk in tqdm(_sorted_batches(texts, args.mt_batch_size),
+        # Skip empties to avoid degenerate single-token batches; pad-out result.
+        nonempty = [(i, t) for i, t in enumerate(texts) if t.strip()]
+        if not nonempty:
+            return [""] * len(texts)
+        order_texts = [t for _, t in nonempty]
+        for idx, chunk in tqdm(_sorted_batches(order_texts, args.mt_batch_size),
                                desc=desc, leave=False):
             ids = [mt_tok.encode(t, lang="eo") for t in chunk]
             be = mt_tok.pad_batch(ids)
@@ -147,7 +156,7 @@ def main():
                     early_stopping=True, no_repeat_ngram_size=5,
                 )
             for orig_i, seq in zip(idx, gen):
-                out[orig_i] = mt_tok.decode(seq)
+                out[nonempty[orig_i][0]] = mt_tok.decode(seq)
         return [t if t is not None else "" for t in out]
 
     def clean_answer(a_en: str) -> str:
