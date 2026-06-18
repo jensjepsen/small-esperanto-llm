@@ -119,6 +119,19 @@ def strip_latex(text: str) -> str:
     return text
 
 
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def strip_think(text: str) -> str:
+    """Remove Qwen-style <think>...</think> reasoning blocks."""
+    return _THINK_RE.sub("", text).strip()
+
+
+def has_unclosed_think(text: str) -> bool:
+    """True if a <think> opens but never closes — Qwen ran out of token budget."""
+    return "<think>" in text and "</think>" not in text
+
+
 def strip_markdown(text: str) -> str:
     """Remove markdown + LaTeX + unicode math so v5b doesn't choke on it.
 
@@ -128,6 +141,8 @@ def strip_markdown(text: str) -> str:
     them. Strip/normalize so the en→eo translation, and later the
     student tokenizer, see plain prose with ASCII arithmetic.
     """
+    # Qwen-style <think>...</think> blocks → drop.
+    text = strip_think(text)
     # Unicode normalization first — fewer surprises downstream.
     text = normalize_unicode(text)
     # LaTeX next — must happen before bold/italic so we don't break \[ etc.
@@ -437,6 +452,7 @@ def main():
     t_start = time.perf_counter()
     total_written = total_kept = total_skipped_long = total_skipped_hedge = 0
     total_skipped_wrong_en = total_skipped_wrong_eo = 0
+    total_skipped_trunc = 0
     t_q_total = t_lfm_total = t_a_total = 0.0
     BUDGET_Q_ONLY = int(args.max_student_tokens * 0.7)   # leave at least 30% for answer
 
@@ -473,6 +489,10 @@ def main():
             # Strip markdown + hedge filter (all K*P answers, flat)
             a_en_stripped = [strip_markdown(a)[: args.max_a_chars].strip() for a in a_en_kept]
             hedge_mask = [not s or bool(HEDGE_PATTERNS.search(s)) for s in a_en_stripped]
+            # Truncation guard for thinking models (Qwen3): if <think> opened but
+            # never closed, the model ran out of token budget — reasoning is
+            # incomplete and the final answer block didn't fire. Drop.
+            trunc_mask = [has_unclosed_think(a) for a in a_en_kept]
 
             # GSM8K answer-correctness filter: drop gens whose extracted final number
             # doesn't match the gold. Uses gold from chunk_idx → q_pass → keep_q_idx mapping.
@@ -488,7 +508,8 @@ def main():
                     if pred is None or gold is None or pred != gold:
                         wrong_mask[flat] = True
             a_to_translate = [(k, s) for k, s in enumerate(a_en_stripped)
-                              if not hedge_mask[k] and not wrong_mask[k]]
+                              if not hedge_mask[k] and not wrong_mask[k]
+                              and not trunc_mask[k]]
 
             # Pass 3: A_EN -> A_EO
             t0 = time.perf_counter()
@@ -550,6 +571,12 @@ def main():
                     flat = p_idx * K + g
                     a_en = a_en_kept[flat]
                     a_en_clean = a_en_stripped[flat]
+                    if trunc_mask[flat]:
+                        rows_to_write.append({"i": idx_in_chunk, "gen_idx": g,
+                                              "skipped": True, "reason": "truncated_think",
+                                              "q_en": chunk_q_en[j], "q_eo": q_eo,
+                                              "a_en": a_en})
+                        continue
                     if hedge_mask[flat]:
                         rows_to_write.append({"i": idx_in_chunk, "gen_idx": g,
                                               "skipped": True, "reason": "hedge_or_empty",
@@ -594,6 +621,8 @@ def main():
                         total_skipped_long += 1
                     elif reason == "hedge_or_empty":
                         total_skipped_hedge += 1
+                    elif reason == "truncated_think":
+                        total_skipped_trunc += 1
                     elif reason == "wrong_answer":
                         total_skipped_wrong_en += 1
                     elif reason == "wrong_answer_eo":
@@ -604,7 +633,7 @@ def main():
 
     dt = time.perf_counter() - t_start
     print(f"\nWrote {total_written} rows in {dt:.0f}s ({total_written/max(1,dt):.2f} rows/s)")
-    print(f"  kept={total_kept}  skipped_too_long={total_skipped_long}  skipped_hedge={total_skipped_hedge}")
+    print(f"  kept={total_kept}  skipped_too_long={total_skipped_long}  skipped_hedge={total_skipped_hedge}  skipped_trunc={total_skipped_trunc}")
     if args.gsm8k_filter:
         print(f"  skipped_wrong_en={total_skipped_wrong_en}  skipped_wrong_eo={total_skipped_wrong_eo}")
     print(f"  per-stage wall time:")
