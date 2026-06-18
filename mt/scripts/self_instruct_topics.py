@@ -136,8 +136,8 @@ def main():
                     help="Questions per topic")
     ap.add_argument("--temperature", type=float, default=0.85)
     ap.add_argument("--top-p", type=float, default=0.95)
-    ap.add_argument("--max-new-tokens", type=int, default=60)
-    ap.add_argument("--batch-size", type=int, default=64)
+    ap.add_argument("--max-new-tokens", type=int, default=48)
+    ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--dedupe-jaccard", type=float, default=0.7,
                     help="Drop questions whose normalized-word Jaccard with any "
                          "kept question exceeds this. 1.0 = no dedupe.")
