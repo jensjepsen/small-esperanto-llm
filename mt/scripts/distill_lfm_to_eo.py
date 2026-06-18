@@ -222,6 +222,21 @@ def load_gsm8k(n: int, skip: int, split: str = "train") -> tuple[list[str], list
     return questions, golds
 
 
+def load_self_instruct(path: str, n: int, skip: int) -> list[str]:
+    """Read EN questions from a self_instruct_topics.py output JSONL."""
+    rows = []
+    with open(path) as f:
+        for line in f:
+            try:
+                rows.append(json.loads(line)["question"].strip())
+            except (json.JSONDecodeError, KeyError):
+                continue
+    rows = rows[skip:]
+    if n:
+        rows = rows[:n]
+    return rows
+
+
 _NUM_RE = re.compile(r"[-+]?\d[\d,]*\.?\d*")
 
 
@@ -248,7 +263,11 @@ def main():
     ap.add_argument("--lfm-model", default="LiquidAI/LFM2.5-350M")
     ap.add_argument("--mt-checkpoint", default="/mnt/data/espllm/runs/mt/eneo_v5b/final")
     ap.add_argument("--mt-tokenizer", default="mt/data/tokenizer/spm_eneo_32k.model")
-    ap.add_argument("--source", default="alpaca", choices=["alpaca", "gsm8k"])
+    ap.add_argument("--source", default="alpaca",
+                    choices=["alpaca", "gsm8k", "self_instruct"])
+    ap.add_argument("--self-instruct-path", type=str, default=None,
+                    help="Required when --source self_instruct: path to a JSONL "
+                         "from mt/scripts/self_instruct_topics.py")
     ap.add_argument("--n", type=int, default=1000)
     ap.add_argument("--skip", type=int, default=0, help="Skip first N prompts in source dataset")
     ap.add_argument("--gsm8k-filter", action="store_true",
@@ -310,6 +329,11 @@ def main():
         en_gold = [None] * len(en_questions)
     elif args.source == "gsm8k":
         en_questions, en_gold = load_gsm8k(args.n, args.skip)
+    elif args.source == "self_instruct":
+        if not args.self_instruct_path:
+            raise SystemExit("--source self_instruct requires --self-instruct-path")
+        en_questions = load_self_instruct(args.self_instruct_path, args.n, args.skip)
+        en_gold = [None] * len(en_questions)
     print(f"  {len(en_questions)} prompts after upstream filter")
     if args.gsm8k_filter and args.source != "gsm8k":
         raise SystemExit("--gsm8k-filter requires --source gsm8k")
