@@ -119,12 +119,15 @@ def strip_latex(text: str) -> str:
     return text
 
 
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-
-
 def strip_think(text: str) -> str:
-    """Remove Qwen-style <think>...</think> reasoning blocks."""
-    return _THINK_RE.sub("", text).strip()
+    """Drop only the <think>/</think> tags, keep the reasoning content inside.
+
+    Qwen3 emits its chain-of-thought inside <think>...</think> and then writes
+    a brief post-think summary. We want the student to learn the reasoning,
+    not just the summary — so keep the inner text and translate it too. The
+    bare tags would be OOV for v5b's SP, so strip them.
+    """
+    return text.replace("<think>", "").replace("</think>", "").strip()
 
 
 def has_unclosed_think(text: str) -> bool:
