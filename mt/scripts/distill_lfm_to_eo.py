@@ -30,7 +30,12 @@ from sp_tokenizer import SPMTokenizer
 
 PROSE_SYSTEM_PROMPT = (
     "Answer in plain prose. Do not use markdown formatting, bullet points, "
-    "numbered lists, headers, or asterisks. Write a single flowing answer."
+    "numbered lists, headers, or asterisks. Write a single flowing answer. "
+    "For arithmetic use only ASCII operators: + - * / = . Do NOT use LaTeX "
+    "(no \\(, \\[, \\boxed, \\frac, \\times, \\cdot, \\sqrt, \\pm, etc.) and "
+    "do NOT use unicode math symbols (× ÷ ≤ ≥ √ π). Spell numbers in digits. "
+    "If the answer is a number, end with a separate line containing exactly: "
+    "#### N  where N is the final numeric answer."
 )
 
 
