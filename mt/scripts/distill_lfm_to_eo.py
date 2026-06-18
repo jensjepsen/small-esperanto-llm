@@ -135,6 +135,28 @@ def has_unclosed_think(text: str) -> bool:
     return "<think>" in text and "</think>" not in text
 
 
+_FINAL_MARKER_RE = re.compile(r"####\s*([-+]?\d[\d,]*\.?\d*)\b\.?")
+
+
+def replace_final_marker(text: str) -> str:
+    """Convert GSM '#### N' markers to natural prose so v5b translates cleanly.
+
+    v5b mangles '####' (sometimes outputs '# # #', sometimes drops it),
+    which breaks the EO-side final-number extraction. Reword to a sentence
+    v5b knows how to translate. MUST run BEFORE the markdown-header stripper.
+    """
+    return _FINAL_MARKER_RE.sub(r"The final answer is \1.", text)
+
+
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Conservative sentence splitter — keeps v5b inputs short and on-topic."""
+    parts = _SENT_SPLIT_RE.split(text.strip())
+    return [p for p in parts if p.strip()]
+
+
 def strip_markdown(text: str) -> str:
     """Remove markdown + LaTeX + unicode math so v5b doesn't choke on it.
 
@@ -144,8 +166,10 @@ def strip_markdown(text: str) -> str:
     them. Strip/normalize so the en→eo translation, and later the
     student tokenizer, see plain prose with ASCII arithmetic.
     """
-    # Qwen-style <think>...</think> blocks → drop.
+    # Qwen-style <think>...</think> tags → drop (keep inner reasoning).
     text = strip_think(text)
+    # Convert GSM #### marker to prose BEFORE the header stripper eats it.
+    text = replace_final_marker(text)
     # Unicode normalization first — fewer surprises downstream.
     text = normalize_unicode(text)
     # LaTeX next — must happen before bold/italic so we don't break \[ etc.
@@ -257,13 +281,24 @@ _NUM_RE = re.compile(r"[-+]?\d[\d,]*\.?\d*")
 
 
 def extract_final_number(text: str) -> str | None:
-    """Extract the final numeric answer from a GSM8K-style solution."""
+    """Extract the final numeric answer from a GSM8K-style solution.
+
+    Handles markers from EN sources (####, \\boxed{}, "answer:", "final answer is N")
+    and the EO equivalents v5b emits ("respondo estas N", "fina respondo estas N").
+    """
     if not text:
         return None
     m = re.search(r"####\s*([-+]?\d[\d,]*\.?\d*)", text)
     if m:
         return m.group(1).replace(",", "").rstrip(".")
     m = re.search(r"\\boxed\{([-+]?\d[\d,]*\.?\d*)\}", text)
+    if m:
+        return m.group(1).replace(",", "").rstrip(".")
+    # "The final answer is N" / "answer: N" (EN) and
+    # "la (fina) respondo estas N" (EO equivalents v5b emits).
+    m = re.search(
+        r"(?:final\s+answer|answer|respondo)\s+(?:is|estas)\s+\$?([-+]?\d[\d,]*\.?\d*)",
+        text, re.IGNORECASE)
     if m:
         return m.group(1).replace(",", "").rstrip(".")
     m = re.search(r"(?:final answer|answer)\s*[:=]\s*\$?([-+]?\d[\d,]*\.?\d*)",
@@ -514,15 +549,22 @@ def main():
                               if not hedge_mask[k] and not wrong_mask[k]
                               and not trunc_mask[k]]
 
-            # Pass 3: A_EN -> A_EO
+            # Pass 3: A_EN -> A_EO. Sentence-split each answer first; v5b
+            # degenerates on >512-token inputs, and Qwen's reasoning chains
+            # routinely exceed that. Translate each sentence individually,
+            # then rejoin per answer.
             t0 = time.perf_counter()
-            a_eo_translated = []
-            if a_to_translate:
-                a_eo_translated = mt_translate([s for _, s in a_to_translate], tgt_lang="eo", desc="A en→eo")
+            flat_sents = []
+            sent_spans = []  # (start, end) into flat_sents, one per (k, s)
+            for _, s in a_to_translate:
+                sents = split_sentences(s) or [s]
+                sent_spans.append((len(flat_sents), len(flat_sents) + len(sents)))
+                flat_sents.extend(sents)
+            flat_eo = mt_translate(flat_sents, tgt_lang="eo", desc="A en→eo") if flat_sents else []
             t_a_total += time.perf_counter() - t0
             a_eo_out = [""] * len(a_en_kept)
-            for (k, _), eo in zip(a_to_translate, a_eo_translated):
-                a_eo_out[k] = eo
+            for (k, _), (a, b) in zip(a_to_translate, sent_spans):
+                a_eo_out[k] = " ".join(flat_eo[a:b])
 
             # GSM8K post-translation answer check: EN-correct gens can drift
             # to a wrong final number after v5b en→eo. Re-extract from the
