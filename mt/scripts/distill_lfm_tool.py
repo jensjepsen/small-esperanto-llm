@@ -186,51 +186,17 @@ def run_trace(model, tok, q: str, gold: str | None, max_turns: int,
     # Resolve stop ids for tool-call-end and im-end. These may multi-token,
     # so we'll detect them by string match on the decoded text.
     system_prompt = (
-        "You are a math problem solver with access to a calculator. Solve every "
-        "problem by DECOMPOSING it into single-step calculations.\n\n"
-        "Rules:\n"
-        "- Make ONE calculator call per individual computation. Never compress "
-        "multiple operations into one expression — use '5 + 3' or '8 / 2', not "
-        "'(5 + 3) / 2'.\n"
-        "- Before each call, write a short sentence saying what you're computing.\n"
-        "- After each tool result, decide what to compute next based on that "
-        "result, then make the next call.\n"
-        "- After the FINAL calculation, give a one-sentence answer."
+        "You are a math problem solver with access to a calculator. For ANY "
+        "arithmetic — even trivial — you MUST call the calculator tool. Do NOT "
+        "compute in your head and do NOT write the result inline. "
+        "Never combine multiple operations into one expression: call once per "
+        "individual operation (use '5 + 3' or '8 / 2', not '(5 + 3) / 2'). "
+        "After the final tool result, give a one-sentence answer."
     )
-    # Few-shot worked examples showing decomposition + interleaved prose.
-    few_shot = [
-        {"role": "user", "content":
-            "Anna has 5 apples. She buys 3 more, then gives half to her brother. How many does she have left?"},
-        {"role": "assistant", "content":
-            "First find how many apples Anna has after buying more. "
-            "<|tool_call_start|>[calculator(expression=\"5 + 3\")]<|tool_call_end|>"},
-        {"role": "tool", "content": "8"},
-        {"role": "assistant", "content":
-            "She gives half away, so find half of 8. "
-            "<|tool_call_start|>[calculator(expression=\"8 / 2\")]<|tool_call_end|>"},
-        {"role": "tool", "content": "4"},
-        {"role": "assistant", "content": "Anna has 4 apples left."},
-        {"role": "user", "content":
-            "A pencil costs $2 and a notebook costs $7. If I buy 3 pencils and 2 notebooks, what is the total cost?"},
-        {"role": "assistant", "content":
-            "First find the cost of the pencils. "
-            "<|tool_call_start|>[calculator(expression=\"2 * 3\")]<|tool_call_end|>"},
-        {"role": "tool", "content": "6"},
-        {"role": "assistant", "content":
-            "Now the cost of the notebooks. "
-            "<|tool_call_start|>[calculator(expression=\"7 * 2\")]<|tool_call_end|>"},
-        {"role": "tool", "content": "14"},
-        {"role": "assistant", "content":
-            "Sum the two parts. "
-            "<|tool_call_start|>[calculator(expression=\"6 + 14\")]<|tool_call_end|>"},
-        {"role": "tool", "content": "20"},
-        {"role": "assistant", "content": "The total cost is $20."},
-    ]
-    messages = [{"role": "system", "content": system_prompt}] + few_shot + [
+    messages = [
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": q},
     ]
-    # Index where the "live" Q starts — anything before is prompt scaffolding
-    # we don't want bleeding into the saved trace.
     live_start = len(messages) - 1
     tool_calls = []
 
