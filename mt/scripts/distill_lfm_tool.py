@@ -185,16 +185,53 @@ def run_trace(model, tok, q: str, gold: str | None, max_turns: int,
     pad_id = tok.pad_token_id or tok.eos_token_id
     # Resolve stop ids for tool-call-end and im-end. These may multi-token,
     # so we'll detect them by string match on the decoded text.
-    messages = [
-        {"role": "system", "content": (
-            "You are a math problem solver with access to a calculator. "
-            "For ANY arithmetic — even simple addition or subtraction — call "
-            "the calculator tool instead of computing in your head. Solve the "
-            "problem in small steps, calling the calculator once per step. "
-            "After the final tool result, give a brief one-sentence answer."
-        )},
+    system_prompt = (
+        "You are a math problem solver with access to a calculator. Solve every "
+        "problem by DECOMPOSING it into single-step calculations.\n\n"
+        "Rules:\n"
+        "- Make ONE calculator call per individual computation. Never compress "
+        "multiple operations into one expression — use '5 + 3' or '8 / 2', not "
+        "'(5 + 3) / 2'.\n"
+        "- Before each call, write a short sentence saying what you're computing.\n"
+        "- After each tool result, decide what to compute next based on that "
+        "result, then make the next call.\n"
+        "- After the FINAL calculation, give a one-sentence answer."
+    )
+    # Few-shot worked examples showing decomposition + interleaved prose.
+    few_shot = [
+        {"role": "user", "content":
+            "Anna has 5 apples. She buys 3 more, then gives half to her brother. How many does she have left?"},
+        {"role": "assistant", "content":
+            "First find how many apples Anna has after buying more. "
+            "<|tool_call_start|>[calculator(expression=\"5 + 3\")]<|tool_call_end|>"},
+        {"role": "tool", "content": "8"},
+        {"role": "assistant", "content":
+            "She gives half away, so find half of 8. "
+            "<|tool_call_start|>[calculator(expression=\"8 / 2\")]<|tool_call_end|>"},
+        {"role": "tool", "content": "4"},
+        {"role": "assistant", "content": "Anna has 4 apples left."},
+        {"role": "user", "content":
+            "A pencil costs $2 and a notebook costs $7. If I buy 3 pencils and 2 notebooks, what is the total cost?"},
+        {"role": "assistant", "content":
+            "First find the cost of the pencils. "
+            "<|tool_call_start|>[calculator(expression=\"2 * 3\")]<|tool_call_end|>"},
+        {"role": "tool", "content": "6"},
+        {"role": "assistant", "content":
+            "Now the cost of the notebooks. "
+            "<|tool_call_start|>[calculator(expression=\"7 * 2\")]<|tool_call_end|>"},
+        {"role": "tool", "content": "14"},
+        {"role": "assistant", "content":
+            "Sum the two parts. "
+            "<|tool_call_start|>[calculator(expression=\"6 + 14\")]<|tool_call_end|>"},
+        {"role": "tool", "content": "20"},
+        {"role": "assistant", "content": "The total cost is $20."},
+    ]
+    messages = [{"role": "system", "content": system_prompt}] + few_shot + [
         {"role": "user", "content": q},
     ]
+    # Index where the "live" Q starts — anything before is prompt scaffolding
+    # we don't want bleeding into the saved trace.
+    live_start = len(messages) - 1
     tool_calls = []
 
     for turn in range(max_turns):
@@ -278,8 +315,12 @@ def run_trace(model, tok, q: str, gold: str | None, max_turns: int,
         nums = re.findall(r"[-+]?\d[\d,]*\.?\d*", final_text)
         final_num = nums[-1].replace(",", "").rstrip(".") if nums else None
 
+    # Strip the few-shot scaffolding so saved traces contain only the live Q
+    # and its derived turns. Prepend the system prompt so the trace is
+    # self-contained for SFT.
+    saved_messages = [messages[0]] + messages[live_start:]
     return {
-        "messages": messages,
+        "messages": saved_messages,
         "final_answer": final_num,
         "tool_calls": tool_calls,
         "answer_matches_gold": (gold is not None and final_num == gold),
