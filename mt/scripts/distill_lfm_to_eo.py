@@ -39,6 +39,38 @@ PROSE_SYSTEM_PROMPT = (
 )
 
 
+# Unicode math/typography → ASCII. v5b's SP vocab covers ASCII operators and
+# common Esperanto letters, but most unicode math symbols (×, ÷, √, π) and
+# typographic punctuation are OOV → encoded as <unk> → decoded as '⁇' in the
+# EO output, which is then a tokenizer-killer for the student. Normalize on
+# the EN side BEFORE en→eo translation.
+_UNICODE_MAP = {
+    "×": "*", "÷": "/", "·": "*",   # × ÷ ·
+    "−": "-", "–": "-", "—": "-",   # − – —
+    "‘": "'", "’": "'", "‚": "'",   # ‘ ’ ‚
+    "“": '"', "”": '"', "„": '"',   # “ ” „
+    "…": "...",                                # …
+    "°": " degrees",                           # °
+    "±": "+/-",                                # ±
+    "²": "^2", "³": "^3",                # ² ³
+    "½": "1/2", "¼": "1/4", "¾": "3/4",
+    "√": "sqrt", "π": "pi",              # √ π
+    "≤": "<=", "≥": ">=", "≠": "!=",
+    "≈": "~", "→": "->", "←": "<-",
+    "∞": "infinity",                           # ∞
+    " ": " ",                                  # non-breaking space
+    "​": "", "‌": "", "‍": "",      # zero-width chars
+}
+
+
+def normalize_unicode(text: str) -> str:
+    """ASCII-normalize unicode math/typography. v5b SP can't encode these."""
+    for src, dst in _UNICODE_MAP.items():
+        if src in text:
+            text = text.replace(src, dst)
+    return text
+
+
 def strip_latex(text: str) -> str:
     """Convert LaTeX math notation to plain ASCII the morpheme tokenizer can encode.
 
@@ -90,14 +122,17 @@ def strip_latex(text: str) -> str:
 
 
 def strip_markdown(text: str) -> str:
-    """Remove markdown + LaTeX so v5b doesn't choke on it.
+    """Remove markdown + LaTeX + unicode math so v5b doesn't choke on it.
 
-    LFM is markdown-happy and emits LaTeX math notation; v5b's SP tokenizer
-    doesn't know **, ##, list bullets, or backslash commands and either UNKs
-    or fragments them. Strip both so the en→eo translation, and later the
+    LFM is markdown-happy and emits LaTeX math notation; it also uses
+    typographic unicode (×, ÷, –, ’, …) freely. v5b's SP tokenizer
+    doesn't know these and either UNKs (→ '⁇' in output) or fragments
+    them. Strip/normalize so the en→eo translation, and later the
     student tokenizer, see plain prose with ASCII arithmetic.
     """
-    # LaTeX first — must happen before bold/italic so we don't break \[ etc.
+    # Unicode normalization first — fewer surprises downstream.
+    text = normalize_unicode(text)
+    # LaTeX next — must happen before bold/italic so we don't break \[ etc.
     text = strip_latex(text)
     # Fenced code blocks
     text = re.sub(r"```[\s\S]*?```", " ", text)
