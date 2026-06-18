@@ -137,6 +137,11 @@ def main():
         return [(order[i:i+bs], [texts[j] for j in order[i:i+bs]])
                 for i in range(0, len(order), bs)]
 
+    # v5b has max_position_embeddings = 512; longer inputs OOB the position
+    # embedding and trigger a device-side assert. Cap at 510 to leave room
+    # for BOS/EOS.
+    MAX_SRC_TOK = min(510, mt_model.config.max_position_embeddings - 2)
+
     def mt_translate(texts, desc):
         out = [None] * len(texts)
         # Skip empties to avoid degenerate single-token batches; pad-out result.
@@ -146,7 +151,7 @@ def main():
         order_texts = [t for _, t in nonempty]
         for idx, chunk in tqdm(_sorted_batches(order_texts, args.mt_batch_size),
                                desc=desc, leave=False):
-            ids = [mt_tok.encode(t, lang="eo") for t in chunk]
+            ids = [mt_tok.encode(t, lang="eo")[:MAX_SRC_TOK] for t in chunk]
             be = mt_tok.pad_batch(ids)
             with torch.no_grad():
                 gen = mt_model.generate(
