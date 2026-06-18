@@ -34,13 +34,66 @@ PROSE_SYSTEM_PROMPT = (
 )
 
 
-def strip_markdown(text: str) -> str:
-    """Remove markdown formatting so v5b doesn't choke on it.
+def strip_latex(text: str) -> str:
+    """Convert LaTeX math notation to plain ASCII the morpheme tokenizer can encode.
 
-    LFM is markdown-happy; v5b's SP tokenizer doesn't know **, ##, list bullets
-    and emits the unk token (⁇), and isolated words inside list items lose
-    context for translation.
+    LFM2.5 emits lots of `\\(2 \\times 16 = 32\\)`, `\\boxed{N}`, `\\frac{a}{b}` etc.
+    The student tokenizer has no entries for backslash commands, so leaving them
+    in produces UNK tokens at inference and breaks numeric answers.
     """
+    # \frac{a}{b} -> (a) / (b). Iterate for shallow nesting.
+    for _ in range(3):
+        text = re.sub(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"(\1) / (\2)", text)
+    # \sqrt{x} -> sqrt(x)
+    text = re.sub(r"\\sqrt\s*\{([^{}]+)\}", r"sqrt(\1)", text)
+    # \boxed{x} -> x  (LFM's preferred final-answer marker)
+    for _ in range(3):
+        text = re.sub(r"\\boxed\s*\{([^{}]+)\}", r"\1", text)
+    # \text{x}, \mathrm{x}, \mathbf{x}, \operatorname{x} -> x
+    text = re.sub(r"\\(?:text|mathrm|mathbf|mathit|mathsf|mathtt|operatorname)\s*\{([^{}]+)\}",
+                  r"\1", text)
+    # Operator words -> ASCII
+    text = re.sub(r"\\times\b", "*", text)
+    text = re.sub(r"\\cdot\b", "*", text)
+    text = re.sub(r"\\div\b", "/", text)
+    text = re.sub(r"\\pm\b", "+/-", text)
+    text = re.sub(r"\\le(?:q)?\b", "<=", text)
+    text = re.sub(r"\\ge(?:q)?\b", ">=", text)
+    text = re.sub(r"\\ne(?:q)?\b", "!=", text)
+    text = re.sub(r"\\approx\b", "~", text)
+    text = re.sub(r"\\to\b", "->", text)
+    # Math delimiters: keep the inner expression, drop the wrapper.
+    text = re.sub(r"\\\[", " ", text)
+    text = re.sub(r"\\\]", " ", text)
+    text = re.sub(r"\\\(", " ", text)
+    text = re.sub(r"\\\)", " ", text)
+    text = re.sub(r"\$\$([^$]*)\$\$", r"\1", text)
+    text = re.sub(r"\$([^$\n]*)\$", r"\1", text)
+    # \left( \right) etc — drop the command, keep the delimiter that follows.
+    text = re.sub(r"\\left\b\s*", "", text)
+    text = re.sub(r"\\right\b\s*", "", text)
+    # Spacers
+    text = re.sub(r"\\(?:quad|qquad|,|;|!|:|\s)", " ", text)
+    # Generic command with one braced arg -> inner text.
+    for _ in range(3):
+        text = re.sub(r"\\[a-zA-Z]+\s*\{([^{}]*)\}", r"\1", text)
+    # Bare commands with no args -> just drop them.
+    text = re.sub(r"\\[a-zA-Z]+\b", "", text)
+    # Stray backslashes left over.
+    text = text.replace("\\", "")
+    return text
+
+
+def strip_markdown(text: str) -> str:
+    """Remove markdown + LaTeX so v5b doesn't choke on it.
+
+    LFM is markdown-happy and emits LaTeX math notation; v5b's SP tokenizer
+    doesn't know **, ##, list bullets, or backslash commands and either UNKs
+    or fragments them. Strip both so the en→eo translation, and later the
+    student tokenizer, see plain prose with ASCII arithmetic.
+    """
+    # LaTeX first — must happen before bold/italic so we don't break \[ etc.
+    text = strip_latex(text)
     # Fenced code blocks
     text = re.sub(r"```[\s\S]*?```", " ", text)
     # Inline code
