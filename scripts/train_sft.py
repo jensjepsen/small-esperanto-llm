@@ -79,6 +79,10 @@ def main():
                              "want format-learning without memorization.")
     parser.add_argument("--save-steps", type=int, default=500)
     parser.add_argument("--save-total-limit", type=int, default=3)
+    parser.add_argument("--no-best", action="store_true",
+                        help="Disable load_best_model_at_end. Default is to track "
+                             "eval_loss across checkpoints, keep the best one, and "
+                             "load it before saving --output-dir/final.")
     parser.add_argument(
         "--lr-scheduler", type=str, default="cosine_with_min_lr",
         choices=["cosine_with_min_lr", "constant",
@@ -229,10 +233,14 @@ def main():
         fp16=not use_bf16 and torch.cuda.is_available(),
         bf16=use_bf16,
         eval_strategy="steps",
-        eval_steps=500,
+        # eval_steps must match save_steps when load_best_model_at_end=True
+        eval_steps=args.save_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
+        load_best_model_at_end=not args.no_best,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         logging_steps=50,
         report_to="wandb" if args.wandb_project else "none",
         dataloader_num_workers=2,
