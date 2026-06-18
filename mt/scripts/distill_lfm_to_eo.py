@@ -117,14 +117,50 @@ def load_alpaca(n: int, skip: int) -> list[str]:
     return out
 
 
+def load_gsm8k(n: int, skip: int, split: str = "train") -> tuple[list[str], list[str]]:
+    """Return (questions, gold_answers) for English GSM8K."""
+    from datasets import load_dataset
+    ds = load_dataset("openai/gsm8k", "main", split=split)
+    questions, golds = [], []
+    end = min(skip + n, len(ds))
+    for i in range(skip, end):
+        questions.append(ds[i]["question"].strip())
+        golds.append(extract_final_number(ds[i]["answer"]))
+    return questions, golds
+
+
+_NUM_RE = re.compile(r"[-+]?\d[\d,]*\.?\d*")
+
+
+def extract_final_number(text: str) -> str | None:
+    """Extract the final numeric answer from a GSM8K-style solution."""
+    if not text:
+        return None
+    m = re.search(r"####\s*([-+]?\d[\d,]*\.?\d*)", text)
+    if m:
+        return m.group(1).replace(",", "").rstrip(".")
+    m = re.search(r"\\boxed\{([-+]?\d[\d,]*\.?\d*)\}", text)
+    if m:
+        return m.group(1).replace(",", "").rstrip(".")
+    m = re.search(r"(?:final answer|answer)\s*[:=]\s*\$?([-+]?\d[\d,]*\.?\d*)",
+                  text, re.IGNORECASE)
+    if m:
+        return m.group(1).replace(",", "").rstrip(".")
+    nums = _NUM_RE.findall(text)
+    return nums[-1].replace(",", "").rstrip(".") if nums else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lfm-model", default="LiquidAI/LFM2.5-350M")
     ap.add_argument("--mt-checkpoint", default="/mnt/data/espllm/runs/mt/eneo_v5b/final")
     ap.add_argument("--mt-tokenizer", default="mt/data/tokenizer/spm_eneo_32k.model")
-    ap.add_argument("--source", default="alpaca", choices=["alpaca"])
+    ap.add_argument("--source", default="alpaca", choices=["alpaca", "gsm8k"])
     ap.add_argument("--n", type=int, default=1000)
     ap.add_argument("--skip", type=int, default=0, help="Skip first N prompts in source dataset")
+    ap.add_argument("--gsm8k-filter", action="store_true",
+                    help="GSM8K-only: keep only LFM gens whose extracted final answer "
+                         "matches the gold. Turns noisy teacher into clean SFT signal.")
     ap.add_argument("--lfm-batch-size", type=int, default=256)
     ap.add_argument("--mt-batch-size", type=int, default=256)
     ap.add_argument("--lfm-max-new-tokens", type=int, default=256)
@@ -175,8 +211,15 @@ def main():
 
     # --- load source ---
     print(f"Loading {args.source} prompts (n={args.n}, skip={args.skip})…")
-    en_questions = load_alpaca(args.n, args.skip)
+    en_gold: list[str | None] = []
+    if args.source == "alpaca":
+        en_questions = load_alpaca(args.n, args.skip)
+        en_gold = [None] * len(en_questions)
+    elif args.source == "gsm8k":
+        en_questions, en_gold = load_gsm8k(args.n, args.skip)
     print(f"  {len(en_questions)} prompts after upstream filter")
+    if args.gsm8k_filter and args.source != "gsm8k":
+        raise SystemExit("--gsm8k-filter requires --source gsm8k")
     todo_indices = [
         i for i in range(len(en_questions))
         if sum(1 for g in range(args.n_gens) if (i, g) in done_keys) < args.n_gens
@@ -314,7 +357,22 @@ def main():
             # Strip markdown + hedge filter (all K*P answers, flat)
             a_en_stripped = [strip_markdown(a)[: args.max_a_chars].strip() for a in a_en_kept]
             hedge_mask = [not s or bool(HEDGE_PATTERNS.search(s)) for s in a_en_stripped]
-            a_to_translate = [(k, s) for k, s in enumerate(a_en_stripped) if not hedge_mask[k]]
+
+            # GSM8K answer-correctness filter: drop gens whose extracted final number
+            # doesn't match the gold. Uses gold from chunk_idx → q_pass → keep_q_idx mapping.
+            wrong_mask = [False] * len(a_en_stripped)
+            if args.gsm8k_filter:
+                for flat in range(len(a_en_stripped)):
+                    if hedge_mask[flat]:
+                        continue
+                    p_idx = flat // K
+                    j = keep_q_idx[q_pass[p_idx]]  # position back in chunk_idx
+                    gold = en_gold[chunk_idx[j]]
+                    pred = extract_final_number(a_en_stripped[flat])
+                    if pred is None or gold is None or pred != gold:
+                        wrong_mask[flat] = True
+            a_to_translate = [(k, s) for k, s in enumerate(a_en_stripped)
+                              if not hedge_mask[k] and not wrong_mask[k]]
 
             # Pass 3: A_EN -> A_EO
             t0 = time.perf_counter()
@@ -365,6 +423,13 @@ def main():
                                               "skipped": True, "reason": "hedge_or_empty",
                                               "q_en": chunk_q_en[j], "q_eo": q_eo,
                                               "a_en": a_en, "a_en_clean": a_en_clean})
+                        continue
+                    if args.gsm8k_filter and wrong_mask[flat]:
+                        rows_to_write.append({"i": idx_in_chunk, "gen_idx": g,
+                                              "skipped": True, "reason": "wrong_answer",
+                                              "q_en": chunk_q_en[j], "q_eo": q_eo,
+                                              "a_en": a_en, "a_en_clean": a_en_clean,
+                                              "gold": en_gold[idx_in_chunk]})
                         continue
                     a_eo = a_eo_out[flat]
                     if budget_mask[flat]:
