@@ -177,7 +177,21 @@ def main():
             ds = hf_load(source, split="train")
             if per_source_cap:
                 ds = ds.select(range(min(per_source_cap, len(ds))))
-            conversations.extend([format_conversation(row["messages"]) for row in ds])
+            for row in ds:
+                # Accept either {messages: [...]} or Alpaca-style
+                # {instruction, input, output}.
+                if "messages" in row:
+                    msgs = row["messages"]
+                else:
+                    instr = (row.get("instruction") or "").strip()
+                    inp = (row.get("input") or "").strip()
+                    out = row.get("output") or row.get("response") or ""
+                    user = f"{instr}\n\n{inp}" if inp else instr
+                    msgs = [
+                        {"role": "user", "content": user},
+                        {"role": "assistant", "content": out},
+                    ]
+                conversations.append(format_conversation(msgs))
         console.print(f"[bold]  Loaded, total so far:[/] {len(conversations):,}")
     console.print(f"[bold]Total conversations:[/] {len(conversations):,}")
 
