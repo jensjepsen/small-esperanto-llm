@@ -22,6 +22,20 @@ USER_TOKEN = "<|user|>"
 ASSISTANT_TOKEN = "<|assistant|>"
 END_TOKEN = "<|end|>"
 
+# Tool-call template tokens. Tool calls are emitted by the assistant
+# ({TOOL_CALL_OPEN}EXPR{TOOL_CALL_CLOSE}); tool results are environment
+# input ({TOOL_RESULT_OPEN}VAL{TOOL_RESULT_CLOSE}) and masked from loss.
+TOOL_CALL_OPEN = "<|tool_call|>"
+TOOL_CALL_CLOSE = "<|/tool_call|>"
+TOOL_RESULT_OPEN = "<|tool_result|>"
+TOOL_RESULT_CLOSE = "<|/tool_result|>"
+
+SPECIAL_TOKENS = [
+    USER_TOKEN, ASSISTANT_TOKEN, END_TOKEN,
+    TOOL_CALL_OPEN, TOOL_CALL_CLOSE,
+    TOOL_RESULT_OPEN, TOOL_RESULT_CLOSE,
+]
+
 
 def _clean_gsm8k_markers(text: str) -> str:
     """Strip <<calculation>> markers from GSM8K answers, keep #### final answer."""
@@ -29,14 +43,26 @@ def _clean_gsm8k_markers(text: str) -> str:
 
 
 def format_conversation(messages: list[dict]) -> str:
-    """Format a conversation into a training string with role tokens."""
+    """Format a conversation into a training string with role tokens.
+
+    Roles handled:
+      user      → "<|user|> CONTENT"
+      assistant → "<|assistant|> CONTENT <|end|>"
+      tool      → "CONTENT"  (content already carries
+                  <|tool_result|>...<|/tool_result|> from the converter,
+                  so no role wrapper is added — loss is masked over the
+                  span by the collator).
+    """
     parts = []
     for msg in messages:
         content = _clean_gsm8k_markers(msg["content"])
-        if msg["role"] == "user":
+        role = msg["role"]
+        if role == "user":
             parts.append(f"{USER_TOKEN} {content}")
-        elif msg["role"] == "assistant":
+        elif role == "assistant":
             parts.append(f"{ASSISTANT_TOKEN} {content} {END_TOKEN}")
+        elif role == "tool":
+            parts.append(content)
     return " ".join(parts)
 
 
@@ -153,8 +179,10 @@ def main():
     console.print(f"[bold green]Loading tokenizer from {args.tokenizer}...")
     tokenizer = load_tokenizer(Path(args.tokenizer))
 
-    # Add chat template tokens
-    special_tokens = [USER_TOKEN, ASSISTANT_TOKEN, END_TOKEN]
+    # Add chat + tool template tokens. add_special_tokens is a no-op for
+    # tokens already in the vocab, so this is safe across resume / fresh
+    # runs / continued fine-tunes from v4 (no tool tokens) → v6 (with).
+    special_tokens = list(SPECIAL_TOKENS)
     num_added = tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
     if num_added > 0:
         model.resize_token_embeddings(len(tokenizer))
@@ -198,9 +226,15 @@ def main():
     # Morpheme-preprocess and tokenize
     console.print("[bold green]Tokenizing conversations...")
 
+    # Build a regex that protects any of the registered special tokens
+    # from being morpheme-split. Sort longest-first so e.g. "<|/tool_call|>"
+    # is matched before "<|tool_call|>".
+    _special_pat = "(" + "|".join(
+        re.escape(t) for t in sorted(special_tokens, key=len, reverse=True)
+    ) + ")"
+
     def preprocess_and_tokenize(text: str) -> dict:
-        # Split on chat tokens, preprocess the content parts, rejoin
-        parts = re.split(f'({re.escape(USER_TOKEN)}|{re.escape(ASSISTANT_TOKEN)}|{re.escape(END_TOKEN)})', text)
+        parts = re.split(_special_pat, text)
         processed = []
         for part in parts:
             if part in special_tokens:
@@ -280,21 +314,44 @@ def main():
                 f"--completion-only-loss requires {ASSISTANT_TOKEN!r} in the "
                 f"tokenizer vocab; got id={assistant_id}"
             )
-        console.print(f"[bold]Masking loss before/including token "
-                      f"{ASSISTANT_TOKEN!r} (id={assistant_id})[/]")
+        # Tool result spans are environment input; model receives them
+        # but does not emit them. Mask the closed interval [open, close].
+        # IDs may be unk if the tokens were never added (pre-funcall
+        # checkpoints) — in that case there are no spans to mask.
+        unk_id = tokenizer.unk_token_id
+        tr_open_id = tokenizer.convert_tokens_to_ids(TOOL_RESULT_OPEN)
+        tr_close_id = tokenizer.convert_tokens_to_ids(TOOL_RESULT_CLOSE)
+        mask_tool_results = (
+            tr_open_id is not None and tr_open_id != unk_id
+            and tr_close_id is not None and tr_close_id != unk_id
+        )
+        console.print(
+            f"[bold]Masking loss before/including token "
+            f"{ASSISTANT_TOKEN!r} (id={assistant_id}); "
+            f"tool-result spans masked: {mask_tool_results}[/]"
+        )
 
         def data_collator(features):
             batch = base_collator(features)
             for i, ids in enumerate(batch["input_ids"]):
+                # 1) Mask initial prefix up to and including the first
+                #    <|assistant|>.
                 hits = (ids == assistant_id).nonzero(as_tuple=True)[0]
-                if len(hits) > 0:
-                    cutoff = hits[0].item() + 1
-                    batch["labels"][i, :cutoff] = -100
-                else:
-                    # No assistant token found — mask whole sequence to avoid
-                    # training on malformed rows rather than default back to
-                    # full-sequence loss.
+                if len(hits) == 0:
+                    # No assistant token — mask whole sequence to avoid
+                    # training on malformed rows rather than default back
+                    # to full-sequence loss.
                     batch["labels"][i, :] = -100
+                    continue
+                cutoff = hits[0].item() + 1
+                batch["labels"][i, :cutoff] = -100
+                # 2) Mask each <|tool_result|>...<|/tool_result|> span.
+                if mask_tool_results:
+                    opens = (ids == tr_open_id).nonzero(as_tuple=True)[0].tolist()
+                    closes = (ids == tr_close_id).nonzero(as_tuple=True)[0].tolist()
+                    for o, c in zip(opens, closes):
+                        if c >= o:
+                            batch["labels"][i, o:c + 1] = -100
             return batch
     else:
         data_collator = base_collator
