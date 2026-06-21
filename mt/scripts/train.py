@@ -27,9 +27,9 @@ from sp_tokenizer import SPMTokenizer
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tokenizer", type=str, default="mt/data/tokenizer/spm_eneo_32k.model")
-    ap.add_argument("--train-files", nargs="+", type=Path, default=[
-        Path("mt/data/parallel/opus100_train.jsonl"),
-    ])
+    ap.add_argument("--train-files", nargs="+", type=str, default=[
+        "hf://jensjepsen/esperanto-mt-parallel",
+    ], help="Local JSONL paths or hf://repo[/split] (default: merged HF dataset)")
     ap.add_argument("--val-files", nargs="+", type=Path, default=[
         Path("mt/data/parallel/flores_devtest.jsonl"),
         Path("mt/data/parallel/opus100_validation.jsonl"),

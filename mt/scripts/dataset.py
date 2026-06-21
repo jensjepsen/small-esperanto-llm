@@ -15,7 +15,12 @@ _VALID_DIRECTIONS = {"en2eo", "eo2en", "bidir"}
 
 
 class ParallelDataset(Dataset):
-    """JSONL of {"en": ..., "eo": ...} pairs.
+    """Parallel EN↔EO pairs from local JSONL or HF dataset repos.
+
+    Each `path` entry is one of:
+      - local file path / Path  → reads {"en", "eo"} rows from JSONL
+      - "hf://repo[/split]"    → loads via datasets.load_dataset
+        (default split = "train"); requires `en` and `eo` columns
 
     `direction`:
       - "en2eo" / "eo2en": fixed direction
@@ -24,16 +29,31 @@ class ParallelDataset(Dataset):
         is reproducible via `seed` (each index has a deterministic direction).
     """
 
-    def __init__(self, paths: list[Path], direction: str = "en2eo", seed: int = 1337):
+    def __init__(self, paths: list, direction: str = "en2eo", seed: int = 1337):
         assert direction in _VALID_DIRECTIONS, f"direction must be one of {_VALID_DIRECTIONS}"
         self.direction = direction
         self.seed = seed
         self.pairs: list[tuple[str, str]] = []
         for p in paths:
-            with Path(p).open() as f:
-                for line in f:
-                    r = json.loads(line)
-                    self.pairs.append((r["en"], r["eo"]))
+            s = str(p)
+            if s.startswith("hf://"):
+                from datasets import load_dataset
+                parts = s[len("hf://"):].split("/")
+                # hf://user/name → split=train; hf://user/name/split → that split
+                if len(parts) == 2:
+                    repo, split = "/".join(parts), "train"
+                elif len(parts) == 3:
+                    repo, split = "/".join(parts[:2]), parts[2]
+                else:
+                    raise ValueError(f"bad hf:// path: {s}")
+                ds = load_dataset(repo, split=split)
+                for row in ds:
+                    self.pairs.append((row["en"], row["eo"]))
+            else:
+                with Path(s).open() as f:
+                    for line in f:
+                        r = json.loads(line)
+                        self.pairs.append((r["en"], r["eo"]))
 
     def __len__(self) -> int:
         return len(self.pairs)
