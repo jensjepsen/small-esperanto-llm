@@ -31,14 +31,20 @@ def parse_args():
         Path("mt/data/parallel/opus100_train.jsonl"),
     ])
     ap.add_argument("--val-files", nargs="+", type=Path, default=[
+        Path("mt/data/parallel/flores_devtest.jsonl"),
         Path("mt/data/parallel/opus100_validation.jsonl"),
+        Path("mt/data/parallel/eval_mmlu_stem.jsonl"),
+        Path("mt/data/parallel/eval_sciq.jsonl"),
     ])
     ap.add_argument("--val-names", nargs="*", type=str, default=None,
                     help="Names for each val file (defaults to file stem). When >1 val file is "
                          "given, eval metrics are prefixed eval_<name>_bleu/chrf.")
-    ap.add_argument("--metric-for-best-model", type=str, default="bleu",
-                    help="Which metric to track for best-model. Use e.g. 'flores_devtest_bleu' "
-                         "when multiple val sets are provided.")
+    ap.add_argument("--metric-for-best-model", type=str,
+                    default="flores_devtest_bleu",
+                    help="Which metric to track for best-model. Default is "
+                         "flores_devtest_bleu (industry-standard OOD bench). "
+                         "Other options: opus100_validation_bleu, "
+                         "eval_mmlu_stem_bleu, eval_sciq_bleu.")
     ap.add_argument("--direction", default="en2eo", choices=["en2eo", "eo2en", "bidir"],
                     help="Training direction. 'bidir' randomizes per-pair so both directions "
                          "share encoder/decoder learning. Eval direction stays fixed via --val-direction.")

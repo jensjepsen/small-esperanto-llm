@@ -94,6 +94,24 @@ def main():
         help="Include Tatoeba sentence corpus (default: on)",
     )
     parser.add_argument(
+        "--use-tekstaro",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include Tekstaro de Esperanto curated corpus (default: on)",
+    )
+    parser.add_argument(
+        "--use-liberafolio",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include Libera Folio EO journalism (default: on)",
+    )
+    parser.add_argument(
+        "--use-fineweb",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include FineWeb-2 epo_Latn web corpus (default: on)",
+    )
+    parser.add_argument(
         "--push-to-hub",
         type=str,
         default=None,
@@ -128,6 +146,8 @@ def main():
         use_wiki=not args.no_wiki, use_hplt=args.use_hplt,
         use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4,
         use_factoids=args.use_factoids, use_sentences=args.use_sentences,
+        use_tekstaro=args.use_tekstaro, use_liberafolio=args.use_liberafolio,
+        use_fineweb=args.use_fineweb,
         min_article_length=args.min_article_length,
     )
     console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")

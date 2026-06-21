@@ -15,6 +15,8 @@ GUTENBERG_DIR = Path("data/gutenberg")
 MC4_DIR = Path("data/mc4/eo")
 FACTOIDS_PATH = Path("/mnt/data2/wikidata5m/eo_factoids_v2/factoid_text.jsonl")
 SENTENCES_PATH = Path("data/epo_sentences.tsv")
+TEKSTARO_PATH = Path("data/tekstaro/tekstaro.jsonl")
+LIBERAFOLIO_DIR = Path("data/liberafolio")
 TOKENIZER_DIR = Path("tokenizer_morpheme")
 
 # HF Hub datasets
@@ -24,6 +26,10 @@ HF_SENTENCES = "jensjepsen/esperanto-sentences"
 HF_HPLT = "jensjepsen/esperanto-hplt-filtered"
 HF_HPLT_RAW = "jensjepsen/esperanto-hplt"
 HF_GUTENBERG = "jensjepsen/esperanto-gutenberg"
+HF_TEKSTARO = "jensjepsen/esperanto-tekstaro"
+HF_LIBERAFOLIO = "jensjepsen/liberafolio"
+HF_FINEWEB = "HuggingFaceFW/fineweb-2"
+HF_FINEWEB_CONFIG = "epo_Latn"
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
 SPECIAL_TOKENS = ["<s>", "</s>", "<unk>", "<pad>"]
@@ -146,6 +152,98 @@ def load_factoids_dataset(factoids_path: Path = FACTOIDS_PATH) -> Dataset | None
         return None
 
 
+def load_tekstaro_dataset(
+    tekstaro_path: Path = TEKSTARO_PATH,
+) -> Dataset | None:
+    """Load Tekstaro de Esperanto (curated EO literature/journalism corpus).
+
+    ~15M words across 128 texts: classical EO literature, Zamenhof
+    translations, Monato/Revuo Esperanto/La Ondo journalism, mondediplo,
+    Bible, etc. Highest-quality EO corpus available — comparable in
+    style/idiom to native-Esperantist writing.
+
+    Loads from `data/tekstaro/tekstaro.jsonl` (extract via
+    `scripts/extract_tekstaro.py`); falls back to private HF repo
+    `jensjepsen/esperanto-tekstaro`.
+    """
+    if tekstaro_path.exists():
+        texts = []
+        with open(tekstaro_path) as f:
+            for line in f:
+                doc = json.loads(line)
+                if doc.get("text", "").strip():
+                    texts.append(doc["text"])
+        return Dataset.from_dict({"text": texts})
+    try:
+        ds = load_dataset(HF_TEKSTARO, split="train")
+        return ds.select_columns(["text"])
+    except Exception:
+        return None
+
+
+def load_liberafolio_dataset(
+    liberafolio_dir: Path = LIBERAFOLIO_DIR,
+    include_comments: bool = True,
+) -> Dataset | None:
+    """Load Libera Folio articles (EO journalism, 2003–present).
+
+    ~2.3M words of articles + ~2.7M words of comments. Highest-quality
+    modern EO journalism, written by competent Esperantists. Comments add
+    conversational/informal register that's hard to find elsewhere.
+
+    Loads from local JSONL under `data/liberafolio/` if present;
+    falls back to private HF repo `jensjepsen/liberafolio`.
+    """
+    local_files = sorted(liberafolio_dir.glob("*.jsonl")) if liberafolio_dir.exists() else []
+    if local_files:
+        rows = []
+        for path in local_files:
+            with open(path) as f:
+                for line in f:
+                    rows.append(json.loads(line))
+    else:
+        try:
+            ds = load_dataset(HF_LIBERAFOLIO, split="train")
+            rows = [dict(r) for r in ds]
+        except Exception:
+            return None
+
+    texts: list[str] = []
+    for r in rows:
+        title = (r.get("title") or "").strip()
+        body = (r.get("content") or "").strip()
+        if not body:
+            continue
+        parts = [f"{title}\n\n{body}" if title else body]
+        if include_comments and r.get("comments"):
+            for c in r["comments"]:
+                if not isinstance(c, dict):
+                    continue
+                ctext = (c.get("content") or "").strip()
+                if ctext:
+                    parts.append(ctext)
+        texts.append("\n\n---\n\n".join(parts))
+    return Dataset.from_dict({"text": texts})
+
+
+def load_fineweb_dataset() -> Dataset | None:
+    """Load FineWeb-2 Esperanto subset (`epo_Latn`).
+
+    ~336k documents, ~180M tokens of CommonCrawl-derived EO, passed
+    through FineWeb-2's quality filtering pipeline (stricter than HPLT's
+    or mc4's). Each row includes rich provenance metadata (CC dump, url,
+    language_score, minhash cluster). License: ODC-BY.
+
+    Pulls only the `text` column to keep memory/disk minimal. Cached by
+    HF datasets in ~/.cache/huggingface on first use.
+    """
+    try:
+        ds = load_dataset(HF_FINEWEB, HF_FINEWEB_CONFIG, split="train")
+        return ds.select_columns(["text"])
+    except Exception:
+        return None
+
+
 def load_combined_dataset(
     wiki_dir: Path = DATA_DIR,
     hplt_dir: Path = HPLT_DIR,
@@ -153,11 +251,16 @@ def load_combined_dataset(
     mc4_dir: Path = MC4_DIR,
     factoids_path: Path = FACTOIDS_PATH,
     sentences_path: Path = SENTENCES_PATH,
+    tekstaro_path: Path = TEKSTARO_PATH,
+    liberafolio_dir: Path = LIBERAFOLIO_DIR,
     use_wiki: bool = True,
     use_hplt: bool = False,
     use_gutenberg: bool = False,
     use_mc4: bool = False,
     use_factoids: bool = False,
+    use_tekstaro: bool = False,
+    use_liberafolio: bool = False,
+    use_fineweb: bool = False,
     use_sentences: bool = False,
     min_article_length: int = 0,
 ) -> DatasetDict:
@@ -217,6 +320,33 @@ def load_combined_dataset(
             sentence_splits = sentences.train_test_split(test_size=0.05, seed=42)
             extra_train.append(sentence_splits["train"])
             extra_test.append(sentence_splits["test"])
+
+    if use_tekstaro:
+        tekstaro = load_tekstaro_dataset(tekstaro_path)
+        if tekstaro is not None:
+            if min_article_length > 0:
+                tekstaro = filter_short_articles(tekstaro, min_article_length)
+            tekstaro_splits = tekstaro.train_test_split(test_size=0.05, seed=42)
+            extra_train.append(tekstaro_splits["train"])
+            extra_test.append(tekstaro_splits["test"])
+
+    if use_liberafolio:
+        liberafolio = load_liberafolio_dataset(liberafolio_dir)
+        if liberafolio is not None:
+            if min_article_length > 0:
+                liberafolio = filter_short_articles(liberafolio, min_article_length)
+            liberafolio_splits = liberafolio.train_test_split(test_size=0.05, seed=42)
+            extra_train.append(liberafolio_splits["train"])
+            extra_test.append(liberafolio_splits["test"])
+
+    if use_fineweb:
+        fineweb = load_fineweb_dataset()
+        if fineweb is not None:
+            if min_article_length > 0:
+                fineweb = filter_short_articles(fineweb, min_article_length)
+            fineweb_splits = fineweb.train_test_split(test_size=0.05, seed=42)
+            extra_train.append(fineweb_splits["train"])
+            extra_test.append(fineweb_splits["test"])
 
     all_train = base_train + extra_train
     all_test = base_test + extra_test
