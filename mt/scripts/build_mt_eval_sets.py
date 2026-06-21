@@ -50,7 +50,9 @@ def emit(en, eo, src, out):
 
 
 def build_mmlu_stem(out_path: Path):
-    ds = load_dataset("jensjepsen/esperanto-mmlu", split="validation")
+    # Use TEST split (held out from training). Training pulls
+    # dev+auxiliary_train; val/test reserved here for clean eval.
+    ds = load_dataset("jensjepsen/esperanto-mmlu", split="test")
     n = 0
     with open(out_path, "w") as f:
         for r in ds:
@@ -66,7 +68,8 @@ def build_mmlu_stem(out_path: Path):
 
 
 def build_sciq(out_path: Path):
-    ds = load_dataset("jensjepsen/esperanto-sciq", split="validation")
+    # Use TEST split (held out from training).
+    ds = load_dataset("jensjepsen/esperanto-sciq", split="test")
     n = 0
     with open(out_path, "w") as f:
         for r in ds:

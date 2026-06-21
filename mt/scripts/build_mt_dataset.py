@@ -18,8 +18,9 @@ Aggregates three families of sources:
      - jensjepsen/esperanto-gpqa-diamond  (Q, correct, 3 distractors) — off by default
      - jensjepsen/esperanto-triviaqa      (Q, answer)
 
-All splits (train/validation/test/dev) are included; eval is done on a
-separate FLORES devtest set so there's no leakage concern.
+Only TRAIN splits of benchmarks are included (auxiliary_train+dev for
+MMLU). validation/test splits are reserved for eval to avoid leakage —
+build_mt_eval_sets.py pulls those for the MT trainer's eval files.
 
 Dedup across the union, then push to HF. GPQA is OFF by default so the
 merged dataset can be public. Each row: {en, eo, src}.
@@ -97,7 +98,7 @@ def load_finetranslations(path: Path = FINETRANSLATIONS_PATH) -> list[dict]:
 
 
 def load_sciq(rows):
-    for split in ("train", "validation", "test"):
+    for split in ("train",):  # val/test reserved for eval (no leakage)
         ds = load_dataset("jensjepsen/esperanto-sciq", split=split)
         before = len(rows)
         for r in ds:
@@ -117,7 +118,7 @@ def load_sciq(rows):
 
 
 def load_copa(rows):
-    for split in ("train", "test"):
+    for split in ("train",):  # test reserved for eval (no leakage)
         ds = load_dataset("jensjepsen/esperanto-balanced-copa", split=split)
         before = len(rows)
         for r in ds:
@@ -131,7 +132,7 @@ def load_copa(rows):
 
 
 def load_piqa(rows):
-    for split in ("train", "validation", "test"):
+    for split in ("train",):  # val/test reserved for eval (no leakage)
         ds = load_dataset("jensjepsen/esperanto-piqa", split=split)
         before = len(rows)
         for r in ds:
@@ -143,7 +144,9 @@ def load_piqa(rows):
 
 
 def load_mmlu(rows):
-    for split in ("dev", "validation", "test"):
+    # MMLU has no standard "train" split; dev (285) + auxiliary_train (~99k)
+    # form the training pool. validation + test reserved for eval (no leakage).
+    for split in ("dev", "auxiliary_train"):
         try:
             ds = load_dataset("jensjepsen/esperanto-mmlu", split=split)
         except Exception as e:
@@ -171,7 +174,7 @@ def load_gpqa(rows):
 
 
 def load_triviaqa(rows):
-    for split in ("validation", "train"):
+    for split in ("train",):  # validation reserved for eval (no leakage)
         try:
             ds = load_dataset("jensjepsen/esperanto-triviaqa", split=split)
         except Exception as e:
