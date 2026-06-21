@@ -84,7 +84,10 @@ def parse_args():
                     help="Cap eval set size for fast in-loop sacrebleu")
     ap.add_argument("--predict-with-generate", action="store_true", default=True)
 
-    ap.add_argument("--fp16", action="store_true", default=True)
+    ap.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=False,
+                    help="Use FP16 mixed precision (default off; prefer bf16 on Ampere+)")
+    ap.add_argument("--bf16", action=argparse.BooleanOptionalAction, default=True,
+                    help="Use BF16 mixed precision (default on; requires Ampere or newer)")
     ap.add_argument("--wandb-tags", nargs="*", default=[])
     ap.add_argument("--wandb-project", default="espllm-mt",
                     help="W&B project name (also sets WANDB_PROJECT env)")
@@ -196,6 +199,7 @@ def main():
         weight_decay=args.weight_decay,
         label_smoothing_factor=args.label_smoothing,
         fp16=args.fp16,
+        bf16=args.bf16,
         logging_steps=args.logging_steps,
         eval_strategy="steps",
         eval_steps=args.eval_steps,
