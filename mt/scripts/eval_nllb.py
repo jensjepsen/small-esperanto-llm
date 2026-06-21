@@ -32,6 +32,11 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--hf-cache", default="/mnt/data/hf_cache")
+    ap.add_argument("--lowercase", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Lowercase preds AND refs before scoring (default on, "
+                         "matches eval_bleu.py default). Disable with "
+                         "--no-lowercase to see NLLB's true cased perf.")
     args = ap.parse_args()
 
     os.environ.setdefault("HF_HOME", args.hf_cache)
@@ -85,10 +90,17 @@ def main():
 
     refs = [g for _, g in pairs]
     srcs_all = [s for s, _ in pairs]
-    bleu = sacrebleu.corpus_bleu(preds, [refs])
-    chrf = sacrebleu.corpus_chrf(preds, [refs])
-    chrfpp = sacrebleu.corpus_chrf(preds, [refs], word_order=2)
-    print(f"\n=== {args.eval.name} | {args.direction} | beam={args.num_beams} ===")
+    if args.lowercase:
+        preds_for_score = [p.lower() for p in preds]
+        refs_for_score = [r.lower() for r in refs]
+    else:
+        preds_for_score = preds
+        refs_for_score = refs
+    bleu = sacrebleu.corpus_bleu(preds_for_score, [refs_for_score])
+    chrf = sacrebleu.corpus_chrf(preds_for_score, [refs_for_score])
+    chrfpp = sacrebleu.corpus_chrf(preds_for_score, [refs_for_score], word_order=2)
+    print(f"\n=== {args.eval.name} | {args.direction} | beam={args.num_beams}"
+          f" | lowercase={args.lowercase} ===")
     print(f"BLEU:   {bleu.score:.2f}    {bleu.format(width=2)}")
     print(f"chrF:   {chrf.score:.2f}")
     print(f"chrF++: {chrfpp.score:.2f}")
