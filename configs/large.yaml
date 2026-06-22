@@ -9,7 +9,10 @@ model:
   rms_norm_eps: 1.0e-5
 
 training:
-  num_train_epochs: 10
+  # Anneals cosine LR over the full 4 epochs (down to min_lr_rate=0.1 of peak).
+  # Previous default was 10 — we typically cut at ~2.8 epochs (checkpoint-44000),
+  # which left the LR at 84% of peak and skipped most of the anneal.
+  num_train_epochs: 4
   per_device_train_batch_size: 64
   per_device_eval_batch_size: 64
   gradient_accumulation_steps: 4
