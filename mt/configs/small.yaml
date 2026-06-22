@@ -1,0 +1,20 @@
+# ~110M params (target: pass NLLB-200-dense-3.3B chrF++ 60.8)
+# Inference: ~10 samples/sec at beam=4 on 5090 bf16 (~2x slower than tiny)
+# Training: ~6h for 3 epochs on 5090
+model:
+  d_model: 640
+  encoder_layers: 8
+  decoder_layers: 8
+  heads: 8
+  ffn_dim: 2560
+  max_position_embeddings: 512
+
+training:
+  batch_size: 96
+  gradient_accumulation: 1
+  epochs: 3
+  warmup_steps: 2000
+  learning_rate: 4.0e-4
+  weight_decay: 0.01
+  label_smoothing: 0.1
+  dropout: 0.1

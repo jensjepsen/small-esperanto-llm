@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 from transformers import (
     EarlyStoppingCallback,
     Seq2SeqTrainer,
@@ -23,9 +24,33 @@ from dataset import ParallelDataset, Seq2SeqCollator
 from model import build_model, param_summary
 from sp_tokenizer import SPMTokenizer
 
+CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
+
+
+def load_size_config(name: str) -> dict:
+    """Load mt/configs/{name}.yaml. Used to override --d-model etc. defaults."""
+    path = CONFIGS_DIR / f"{name}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"unknown --config {name}; expected one of "
+            f"{sorted(p.stem for p in CONFIGS_DIR.glob('*.yaml'))}")
+    with open(path) as f:
+        return yaml.safe_load(f)
+
 
 def parse_args():
+    # Stage 1: peek at --config so config-derived defaults are in effect.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default="tiny")
+    pre_args, _ = pre.parse_known_args()
+    cfg = load_size_config(pre_args.config)
+    m, t = cfg["model"], cfg["training"]
+
     ap = argparse.ArgumentParser()
+    ap.add_argument("--config", type=str, default="tiny",
+                    help="Size preset from mt/configs/{name}.yaml (tiny|small|"
+                         "medium|large). Sets model arch + training defaults. "
+                         "CLI flags override config values.")
     ap.add_argument("--tokenizer", type=str, default="mt/data/tokenizer/spm_eneo_32k.model")
     ap.add_argument("--train-files", nargs="+", type=str, default=[
         "hf://jensjepsen/esperanto-mt-parallel",
@@ -56,24 +81,27 @@ def parse_args():
     ap.add_argument("--resume-from-checkpoint", type=str, default=None,
                     help="Resume training from a checkpoint dir (full optimizer/scheduler/rng state).")
 
-    ap.add_argument("--d-model", type=int, default=512)
-    ap.add_argument("--encoder-layers", type=int, default=6)
-    ap.add_argument("--decoder-layers", type=int, default=6)
-    ap.add_argument("--heads", type=int, default=8)
-    ap.add_argument("--ffn-dim", type=int, default=2048)
-    ap.add_argument("--max-position-embeddings", type=int, default=512)
+    ap.add_argument("--d-model", type=int, default=m["d_model"])
+    ap.add_argument("--encoder-layers", type=int, default=m["encoder_layers"])
+    ap.add_argument("--decoder-layers", type=int, default=m["decoder_layers"])
+    ap.add_argument("--heads", type=int, default=m["heads"])
+    ap.add_argument("--ffn-dim", type=int, default=m["ffn_dim"])
+    ap.add_argument("--max-position-embeddings", type=int,
+                    default=m["max_position_embeddings"])
 
     ap.add_argument("--max-src-len", type=int, default=128)
     ap.add_argument("--max-tgt-len", type=int, default=128)
 
-    ap.add_argument("--epochs", type=int, default=3)
-    ap.add_argument("--batch-size", type=int, default=32)
-    ap.add_argument("--gradient-accumulation", type=int, default=2)
-    ap.add_argument("--learning-rate", type=float, default=5e-4)
-    ap.add_argument("--warmup-steps", type=int, default=4000)
-    ap.add_argument("--weight-decay", type=float, default=0.01)
-    ap.add_argument("--label-smoothing", type=float, default=0.1)
-    ap.add_argument("--dropout", type=float, default=0.1)
+    ap.add_argument("--epochs", type=int, default=t["epochs"])
+    ap.add_argument("--batch-size", type=int, default=t["batch_size"])
+    ap.add_argument("--gradient-accumulation", type=int,
+                    default=t["gradient_accumulation"])
+    ap.add_argument("--learning-rate", type=float, default=t["learning_rate"])
+    ap.add_argument("--warmup-steps", type=int, default=t["warmup_steps"])
+    ap.add_argument("--weight-decay", type=float, default=t["weight_decay"])
+    ap.add_argument("--label-smoothing", type=float,
+                    default=t["label_smoothing"])
+    ap.add_argument("--dropout", type=float, default=t["dropout"])
     ap.add_argument("--seed", type=int, default=42)
 
     ap.add_argument("--eval-steps", type=int, default=1000)

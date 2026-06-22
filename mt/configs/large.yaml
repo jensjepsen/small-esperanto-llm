@@ -1,0 +1,21 @@
+# ~280M params (stretch: match NLLB-200-54B MoE chrF++ 61.4)
+# Inference: ~4 samples/sec at beam=4 on 5090 bf16 (~5x slower than tiny)
+# Training: ~15h for 3 epochs on 5090 (still under one overnight)
+# VRAM: bs=64 + grad_accum=2 to fit in 32GB
+model:
+  d_model: 1024
+  encoder_layers: 8
+  decoder_layers: 8
+  heads: 16
+  ffn_dim: 4096
+  max_position_embeddings: 512
+
+training:
+  batch_size: 32
+  gradient_accumulation: 4
+  epochs: 3
+  warmup_steps: 2000
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  label_smoothing: 0.1
+  dropout: 0.1
