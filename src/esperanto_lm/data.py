@@ -1,12 +1,35 @@
 """Dataset download, tokenizer training, tokenization, and data collation."""
 
 import json
+import os
 from pathlib import Path
 from typing import Iterator
 
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset, load_from_disk
 from tokenizers import ByteLevelBPETokenizer, Tokenizer
 from transformers import DataCollatorForLanguageModeling, PreTrainedTokenizerFast
+
+
+def num_proc() -> int:
+    """Parallelism for CPU-bound dataset work (map/filter, tokenizer training).
+
+    Reads ESPLLM_NUM_PROC env var. Default is "auto" which uses
+    `os.cpu_count() - 2` (leaves headroom for the main process and
+    OS). Pin to a low number on home machines via ~/.bashrc:
+        export ESPLLM_NUM_PROC=4   # home box (see [[feedback_cpu_thread_limit]])
+    Cloud pods with many cores can leave it unset to use all.
+
+    Public helper — import from anywhere that needs HF datasets parallelism:
+        from esperanto_lm.data import num_proc
+        ds.map(fn, num_proc=num_proc())
+    """
+    v = os.environ.get("ESPLLM_NUM_PROC", "auto").strip().lower()
+    if v == "auto":
+        return max(1, (os.cpu_count() or 4) - 2)
+    try:
+        return max(1, int(v))
+    except ValueError:
+        return 4
 
 DATA_DIR = Path("data/eo_wiki")
 HPLT_DIR = Path("data/hplt_filtered")
@@ -67,7 +90,7 @@ def load_hplt_dataset(hplt_dir: Path = HPLT_DIR) -> Dataset | None:
         # dumps don't have that field. The guard is a no-op on filtered data.
         ds = ds.filter(
             lambda x: x.get("filter") != "discard" and bool(x.get("text", "").strip()),
-            num_proc=4,
+            num_proc=num_proc(),
         )
         ds = ds.select_columns(["text"])
         return ds
@@ -477,7 +500,7 @@ def load_tokenizer(tokenizer_dir: Path = TOKENIZER_DIR) -> PreTrainedTokenizerFa
 
 def filter_short_articles(dataset, min_length: int):
     """Remove articles shorter than min_length characters."""
-    return dataset.filter(lambda x: len(x["text"]) >= min_length, num_proc=4)
+    return dataset.filter(lambda x: len(x["text"]) >= min_length, num_proc=num_proc())
 
 
 def morpheme_tokenize(text: str) -> list[list[str]]:
@@ -528,7 +551,7 @@ def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: 
     tokenized = dataset.map(
         tokenize_fn,
         batched=True,
-        num_proc=4,
+        num_proc=num_proc(),
         remove_columns=dataset.column_names,
     )
 
@@ -545,7 +568,7 @@ def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: 
         }
         return result
 
-    chunked = tokenized.map(group_texts, batched=True, num_proc=4)
+    chunked = tokenized.map(group_texts, batched=True, num_proc=num_proc())
     return chunked
 
 

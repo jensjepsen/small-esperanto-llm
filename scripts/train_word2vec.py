@@ -9,7 +9,7 @@ from gensim.models import Word2Vec
 from rich.console import Console
 from rich.progress import Progress
 
-from esperanto_lm.data import load_combined_dataset, load_tokenizer
+from esperanto_lm.data import load_combined_dataset, load_tokenizer, num_proc
 from esperanto_lm.morphology import classify_morpheme, decompose, decompose_text
 
 console = Console()
@@ -185,13 +185,13 @@ def cmd_train(args):
         # Use dataset.map for parallel morpheme decomposition
         def morpheme_tokenize(examples):
             return {"tokens": [decompose_text(t) for t in examples["text"]]}
-        tokenized = subset.map(morpheme_tokenize, batched=True, num_proc=4,
+        tokenized = subset.map(morpheme_tokenize, batched=True, num_proc=num_proc(),
                                remove_columns=subset.column_names)
         sentences = tokenized["tokens"]
     elif args.whole_words:
         def word_tokenize(examples):
             return {"tokens": [t.lower().split() for t in examples["text"]]}
-        tokenized = subset.map(word_tokenize, batched=True, num_proc=4,
+        tokenized = subset.map(word_tokenize, batched=True, num_proc=num_proc(),
                                remove_columns=subset.column_names)
         sentences = tokenized["tokens"]
     else:
