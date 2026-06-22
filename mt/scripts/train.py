@@ -99,6 +99,15 @@ def parse_args():
     ap.add_argument("--learning-rate", type=float, default=t["learning_rate"])
     ap.add_argument("--warmup-steps", type=int, default=t["warmup_steps"])
     ap.add_argument("--weight-decay", type=float, default=t["weight_decay"])
+    ap.add_argument("--max-grad-norm", type=float, default=1.0,
+                    help="Gradient clipping norm. Default 1.0 (HF Trainer "
+                         "default). Lower (0.5) for tighter clipping when "
+                         "training a larger/deeper model in bf16.")
+    ap.add_argument("--skip-nan-inf", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Zero out gradients on any step where loss or grad is "
+                         "NaN/Inf, so a single bad batch doesn't corrupt Adam "
+                         "moments. Default on.")
     ap.add_argument("--label-smoothing", type=float,
                     default=t["label_smoothing"])
     ap.add_argument("--dropout", type=float, default=t["dropout"])
@@ -225,6 +234,7 @@ def main():
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,
         weight_decay=args.weight_decay,
+        max_grad_norm=args.max_grad_norm,
         label_smoothing_factor=args.label_smoothing,
         fp16=args.fp16,
         bf16=args.bf16,
@@ -246,7 +256,31 @@ def main():
         remove_unused_columns=False,
     )
 
-    trainer = Seq2SeqTrainer(
+    if args.skip_nan_inf:
+        class NaNSkippingSeq2SeqTrainer(Seq2SeqTrainer):
+            """Zero out gradients on any step with NaN/Inf loss, so a single
+            pathological batch doesn't corrupt Adam moments. Returns zero loss
+            so the running average stays clean."""
+            _nan_count = 0
+
+            def training_step(self, model, inputs, num_items_in_batch=None):
+                loss = super().training_step(model, inputs, num_items_in_batch)
+                if not torch.isfinite(loss).all():
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            p.grad.zero_()
+                    self.__class__._nan_count += 1
+                    print(f"[NaN-skip] step {self.state.global_step}: zeroing "
+                          f"grads on non-finite loss (total skipped: "
+                          f"{self.__class__._nan_count})", flush=True)
+                    return torch.zeros_like(loss)
+                return loss
+
+        TrainerCls = NaNSkippingSeq2SeqTrainer
+    else:
+        TrainerCls = Seq2SeqTrainer
+
+    trainer = TrainerCls(
         model=model,
         args=training_args,
         train_dataset=train_ds,
