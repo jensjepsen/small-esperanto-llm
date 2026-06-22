@@ -538,18 +538,9 @@ def _morpheme_preprocess(text: str) -> str:
     return " ".join(parts)
 
 
-def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: int = MAX_LENGTH,
-                       morpheme_preprocess: bool = True):
-    """Tokenize dataset and pack into fixed-length blocks.
-
-    Map output cache files go to $HF_HOME/datasets/v9_pretrain_chunks/ by
-    default — out of band from the source dataset's directory. HF's normal
-    behavior co-locates `.map()` cache with the source dataset, which
-    blew up our quota when the source lived on a 30 GB-quota MFS volume
-    while the chunking output is multi-GB. Override the env var to
-    redirect, or unset to revert to HF default behavior.
-    """
-    import hashlib
+def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerFast,
+                     morpheme_preprocess: bool = True):
+    """Tokenize a text dataset to token-id columns. No chunking."""
 
     def tokenize_fn(examples):
         texts = examples["text"]
@@ -557,30 +548,16 @@ def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: 
             texts = [_morpheme_preprocess(t) for t in texts]
         return tokenizer(texts, add_special_tokens=False)
 
-    # Build stable cache paths under HF_HOME so caches survive restarts
-    # and live on the same filesystem as everything else HF caches.
-    hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-    cache_root = Path(hf_home) / "esperanto_lm_chunks"
-    cache_root.mkdir(parents=True, exist_ok=True)
-    # Hash a stable signature (dataset size + tokenizer + config) so different
-    # configurations get different caches and re-runs of the same config hit.
-    fp = getattr(dataset, "fingerprint", None) or getattr(dataset, "_fingerprint",
-                                                          str(len(dataset)))
-    sig = f"{fp}-{len(tokenizer)}-{max_length}-{morpheme_preprocess}"
-    digest = hashlib.sha256(sig.encode()).hexdigest()[:16]
-    np = num_proc()
-    tok_cache = [str(cache_root / f"tokenize_{digest}_{i:05d}_of_{np:05d}.arrow")
-                 for i in range(np)]
-    chunk_cache = [str(cache_root / f"chunk_{digest}_{i:05d}_of_{np:05d}.arrow")
-                   for i in range(np)]
-
-    tokenized = dataset.map(
+    return dataset.map(
         tokenize_fn,
         batched=True,
-        num_proc=np,
+        num_proc=num_proc(),
         remove_columns=dataset.column_names,
-        cache_file_names={i: tok_cache[i] for i in range(np)} if np > 1 else None,
     )
+
+
+def chunk_dataset(tokenized, max_length: int = MAX_LENGTH):
+    """Pack a tokenized dataset into fixed-length blocks."""
 
     def group_texts(examples):
         from itertools import chain
@@ -595,13 +572,15 @@ def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast, max_length: 
         }
         return result
 
-    chunked = tokenized.map(
-        group_texts,
-        batched=True,
-        num_proc=np,
-        cache_file_names={i: chunk_cache[i] for i in range(np)} if np > 1 else None,
-    )
-    return chunked
+    return tokenized.map(group_texts, batched=True, num_proc=num_proc())
+
+
+def tokenize_and_chunk(dataset, tokenizer: PreTrainedTokenizerFast,
+                       max_length: int = MAX_LENGTH,
+                       morpheme_preprocess: bool = True):
+    """Tokenize then chunk. Composes tokenize_dataset + chunk_dataset."""
+    tokenized = tokenize_dataset(dataset, tokenizer, morpheme_preprocess)
+    return chunk_dataset(tokenized, max_length)
 
 
 def make_data_collator(tokenizer: PreTrainedTokenizerFast) -> DataCollatorForLanguageModeling:

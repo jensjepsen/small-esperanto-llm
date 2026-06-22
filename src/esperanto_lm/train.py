@@ -11,6 +11,7 @@ from datasets import concatenate_datasets
 
 from esperanto_lm.data import (
     load_benchmark_qa_dataset,
+    chunk_dataset,
     load_combined_dataset,
     load_tokenizer,
     make_data_collator,
@@ -125,6 +126,15 @@ def main():
              "triviaqa train splits — val/test held out for eval.",
     )
     parser.add_argument(
+        "--pretokenized-dataset",
+        type=str,
+        default=None,
+        help="HF repo of a pre-tokenized pretraining dataset to use INSTEAD of "
+             "loading the 8 sources and running tokenize. Use with the output "
+             "of scripts/push_pretrain_tokenized.py. Chunking still runs locally "
+             "(cheap). Skips the ~50-min morpheme tokenization phase.",
+    )
+    parser.add_argument(
         "--push-to-hub",
         type=str,
         default=None,
@@ -154,21 +164,30 @@ def main():
     n_params = count_parameters(model)
     console.print(f"[bold]Parameters:[/] {n_params:,}")
 
-    console.print("[bold green]Loading and tokenizing dataset...")
-    dataset = load_combined_dataset(
-        use_wiki=not args.no_wiki, use_hplt=args.use_hplt,
-        use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4,
-        use_factoids=args.use_factoids, use_sentences=args.use_sentences,
-        use_tekstaro=args.use_tekstaro, use_liberafolio=args.use_liberafolio,
-        use_fineweb=args.use_fineweb,
-        min_article_length=args.min_article_length,
-    )
-    console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")
-    console.print(f"[bold]Test examples:[/] {len(dataset['test']):,}")
     max_length = model_config.max_position_embeddings
     console.print(f"[bold]Chunk length:[/] {max_length}")
-    train_dataset = tokenize_and_chunk(dataset["train"], tokenizer, max_length=max_length)
-    eval_dataset = tokenize_and_chunk(dataset["test"], tokenizer, max_length=max_length)
+    if args.pretokenized_dataset:
+        from datasets import load_dataset as _ld
+        console.print(f"[bold green]Loading pre-tokenized:[/] {args.pretokenized_dataset}")
+        train_tok = _ld(args.pretokenized_dataset, split="train")
+        test_tok = _ld(args.pretokenized_dataset, split="test")
+        console.print(f"[bold]Pretok train rows:[/] {len(train_tok):,}  test: {len(test_tok):,}")
+        train_dataset = chunk_dataset(train_tok, max_length=max_length)
+        eval_dataset = chunk_dataset(test_tok, max_length=max_length)
+    else:
+        console.print("[bold green]Loading and tokenizing dataset...")
+        dataset = load_combined_dataset(
+            use_wiki=not args.no_wiki, use_hplt=args.use_hplt,
+            use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4,
+            use_factoids=args.use_factoids, use_sentences=args.use_sentences,
+            use_tekstaro=args.use_tekstaro, use_liberafolio=args.use_liberafolio,
+            use_fineweb=args.use_fineweb,
+            min_article_length=args.min_article_length,
+        )
+        console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")
+        console.print(f"[bold]Test examples:[/] {len(dataset['test']):,}")
+        train_dataset = tokenize_and_chunk(dataset["train"], tokenizer, max_length=max_length)
+        eval_dataset = tokenize_and_chunk(dataset["test"], tokenizer, max_length=max_length)
 
     if args.use_benchmarks:
         console.print("[bold green]Loading benchmark Q/A pairs...")
