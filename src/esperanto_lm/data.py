@@ -244,6 +244,64 @@ def load_fineweb_dataset() -> Dataset | None:
         return None
 
 
+def load_benchmark_qa_dataset() -> Dataset | None:
+    """Load benchmark train splits as raw Q/A text for pretraining.
+
+    Pulls TRAIN splits ONLY from public MC benchmarks (val/test stay
+    held out for eval — see [[reference_eo_mc_benchmarks]]). Each row
+    is formatted as a single text passage:
+
+        "Demando: <q>\\nRespondo: <a>\\n\\n"
+
+    Designed to be tokenized separately from the main pretraining mix
+    (load_combined_dataset) so adding/removing this source doesn't
+    invalidate the cache of the big tokenized corpus. Train script
+    concatenates the two tokenized arrow datasets at the end.
+
+    Sources (PUBLIC only — GPQA Diamond is private, excluded):
+      sciq train, balanced-copa train, piqa train,
+      mmlu auxiliary_train (dev is reserved for few-shot eval),
+      triviaqa train.
+    """
+    texts: list[str] = []
+
+    def _emit(q: str, a: str):
+        q = (q or "").strip()
+        a = (a or "").strip()
+        if q and a:
+            texts.append(f"Demando: {q}\nRespondo: {a}\n\n")
+
+    sources = [
+        ("jensjepsen/esperanto-sciq", "train",
+         lambda r: _emit(r["question"], r["correct_answer"])),
+        ("jensjepsen/esperanto-balanced-copa", "train",
+         lambda r: _emit(r["premise"],
+                         r["choice1"] if r["label"] == 0 else r["choice2"])),
+        ("jensjepsen/esperanto-piqa", "train",
+         lambda r: _emit(r["goal"],
+                         r["sol1"] if r["label"] == 0 else r["sol2"])),
+        ("jensjepsen/esperanto-mmlu", "auxiliary_train",
+         lambda r: _emit(r["question"], r["choices"][int(r["answer"])])),
+        ("jensjepsen/esperanto-triviaqa", "train",
+         lambda r: _emit(r["question"], r["answer"])),
+    ]
+
+    for repo, split, fmt in sources:
+        try:
+            ds = load_dataset(repo, split=split)
+        except Exception as e:
+            print(f"  [skip] {repo}/{split}: {e}")
+            continue
+        n = len(texts)
+        for r in ds:
+            fmt(r)
+        print(f"  {repo}/{split}: +{len(texts) - n}")
+
+    if not texts:
+        return None
+    return Dataset.from_dict({"text": texts})
+
+
 def load_combined_dataset(
     wiki_dir: Path = DATA_DIR,
     hplt_dir: Path = HPLT_DIR,

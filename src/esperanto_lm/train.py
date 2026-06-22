@@ -7,7 +7,10 @@ from rich.console import Console
 from transformers import AutoModelForCausalLM, Trainer
 
 from esperanto_lm.config import make_llama_config, make_training_args
+from datasets import concatenate_datasets
+
 from esperanto_lm.data import (
+    load_benchmark_qa_dataset,
     load_combined_dataset,
     load_tokenizer,
     make_data_collator,
@@ -112,6 +115,16 @@ def main():
         help="Include FineWeb-2 epo_Latn web corpus (default: on)",
     )
     parser.add_argument(
+        "--use-benchmarks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include benchmark train splits as 'Demando: ... Respondo: ...' "
+             "Q/A pairs (default: on). Tokenized separately from the main "
+             "corpus so adding/removing doesn't invalidate the big-corpus "
+             "tokenization cache. Includes sciq/copa/piqa/mmlu(aux_train)/"
+             "triviaqa train splits — val/test held out for eval.",
+    )
+    parser.add_argument(
         "--push-to-hub",
         type=str,
         default=None,
@@ -156,6 +169,15 @@ def main():
     console.print(f"[bold]Chunk length:[/] {max_length}")
     train_dataset = tokenize_and_chunk(dataset["train"], tokenizer, max_length=max_length)
     eval_dataset = tokenize_and_chunk(dataset["test"], tokenizer, max_length=max_length)
+
+    if args.use_benchmarks:
+        console.print("[bold green]Loading benchmark Q/A pairs...")
+        bench = load_benchmark_qa_dataset()
+        if bench is not None:
+            console.print(f"[bold]Benchmark examples:[/] {len(bench):,}")
+            bench_tok = tokenize_and_chunk(bench, tokenizer, max_length=max_length)
+            train_dataset = concatenate_datasets([train_dataset, bench_tok])
+            console.print(f"[bold]Combined train (post-bench):[/] {len(train_dataset):,}")
 
     data_collator = make_data_collator(tokenizer)
 
