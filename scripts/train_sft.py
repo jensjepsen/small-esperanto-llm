@@ -262,15 +262,23 @@ def main():
             padding=False,
         )
 
-    tokenized = [preprocess_and_tokenize(conv) for conv in conversations]
-
-    # Create dataset
+    # Parallelize tokenization across CPU cores. With ~400k+ convs the serial
+    # list-comp was 5-15 min single-core; map(num_proc=N) cuts to ~30s on a
+    # ~30-core box and is bounded by ESPLLM_NUM_PROC (default "auto" = all).
     from datasets import Dataset
+    from esperanto_lm.data import num_proc
 
-    dataset = Dataset.from_dict({
-        "input_ids": [t["input_ids"] for t in tokenized],
-        "attention_mask": [t["attention_mask"] for t in tokenized],
-    })
+    raw_ds = Dataset.from_dict({"text": conversations})
+
+    def _tok_row(row):
+        return preprocess_and_tokenize(row["text"])
+
+    dataset = raw_ds.map(
+        _tok_row,
+        num_proc=num_proc(),
+        remove_columns=["text"],
+        desc="Tokenizing",
+    )
 
     splits = dataset.train_test_split(test_size=0.05, seed=42)
     console.print(f"[bold]Train:[/] {len(splits['train']):,}  [bold]Eval:[/] {len(splits['test']):,}")
