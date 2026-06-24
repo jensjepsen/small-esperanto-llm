@@ -57,33 +57,33 @@ PROBES = [
 ]
 
 def extract_final_answer(pred: str) -> str | None:
-    """Pull the model's claimed final answer. Preference order:
-      1. Number immediately after the LAST `####` (the canonical marker)
-      2. Otherwise: the LAST `\\bx\\s*=\\s*N` (treats "x = N" as the final solution)
-      3. Otherwise: the LAST number on the last non-empty line
+    """Pull the model's stated final answer. Preference order:
+      1. Number immediately after the LAST `####`
+      2. Otherwise: the LAST `x = N` where N is a SOLO whole number / decimal
+         (not a numerator of a fraction like `1/3` and not glued to other digits)
 
-    This avoids the spurious-match trap where a problem like `4x − 6 = 18` (gold=6)
-    matches because "6" appears in "subtraho de 6" or "18 − 6" mid-chain.
+    No further fallback — if the model never wrote `####` or a clean `x = N`,
+    it didn't actually answer, and we say so (returns None → grades as ✗).
+    This trades some real wins (model that says "estas 4" but never writes
+    `#### 4` or `x = 4`) for zero spurious matches.
     """
-    # 1) #### N
+    # 1) `#### N`
     last_hash = None
     for m in re.finditer(r"####\s*(-?\d+(?:\.\d+)?)", pred):
         last_hash = m.group(1)
     if last_hash is not None:
         return last_hash
-    # 2) "x = N" (last occurrence). Allow "X =", "x= -3", "x = 1/3" → captures "1"
-    #    but that's OK; we just take the last solo numeric coefficient.
+    # 2) `x = N` where N is followed by whitespace, punctuation, or end-of-string
+    #    (rejects `x = 1/3` matching "1", and `x = 24/4` matching "24").
+    #    Allow optional minus (with possible space) e.g. `x = -3` or `x = - 3`.
     last_x = None
-    for m in re.finditer(r"\bx\s*=\s*(-?\d+(?:\.\d+)?)", pred):
-        last_x = m.group(1)
-    if last_x is not None:
-        return last_x
-    # 3) last number on the last non-empty line
-    for line in reversed([l.strip() for l in pred.splitlines() if l.strip()]):
-        nums = re.findall(r"-?\d+(?:\.\d+)?", line)
-        if nums:
-            return nums[-1]
-    return None
+    for m in re.finditer(
+        r"\bx\s*=\s*(-\s*)?(\d+(?:\.\d+)?)(?![\d./])",
+        pred,
+    ):
+        sign, num = m.group(1), m.group(2)
+        last_x = ("-" + num) if sign else num
+    return last_x
 
 
 def has_answer(pred, gold):
