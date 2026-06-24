@@ -56,17 +56,45 @@ PROBES = [
     ("quad",        "Solvu: x^2 - 9 = 0",          "3"),
 ]
 
+def extract_final_answer(pred: str) -> str | None:
+    """Pull the model's claimed final answer. Preference order:
+      1. Number immediately after the LAST `####` (the canonical marker)
+      2. Otherwise: the LAST `\\bx\\s*=\\s*N` (treats "x = N" as the final solution)
+      3. Otherwise: the LAST number on the last non-empty line
+
+    This avoids the spurious-match trap where a problem like `4x − 6 = 18` (gold=6)
+    matches because "6" appears in "subtraho de 6" or "18 − 6" mid-chain.
+    """
+    # 1) #### N
+    last_hash = None
+    for m in re.finditer(r"####\s*(-?\d+(?:\.\d+)?)", pred):
+        last_hash = m.group(1)
+    if last_hash is not None:
+        return last_hash
+    # 2) "x = N" (last occurrence). Allow "X =", "x= -3", "x = 1/3" → captures "1"
+    #    but that's OK; we just take the last solo numeric coefficient.
+    last_x = None
+    for m in re.finditer(r"\bx\s*=\s*(-?\d+(?:\.\d+)?)", pred):
+        last_x = m.group(1)
+    if last_x is not None:
+        return last_x
+    # 3) last number on the last non-empty line
+    for line in reversed([l.strip() for l in pred.splitlines() if l.strip()]):
+        nums = re.findall(r"-?\d+(?:\.\d+)?", line)
+        if nums:
+            return nums[-1]
+    return None
+
+
 def has_answer(pred, gold):
-    """Strict-ish: gold number must appear AFTER an `=` or `####` marker (i.e.
-    as a stated answer), not just anywhere in the chain. Avoids spurious matches
-    on the gold digit appearing as a coefficient in the question (e.g. gold=6
-    matching "subtraho de 6" or "4x − 6")."""
-    # find all positions of `=` or `####` and look at digits in the next ~25 chars
-    nums_after_marker = []
-    for m in re.finditer(r"=\s*|####\s*", pred):
-        tail = pred[m.end() : m.end() + 25]
-        nums_after_marker.extend(re.findall(r"-?\d+", tail))
-    return gold in nums_after_marker
+    """Strict: the model's STATED final answer must equal `gold`."""
+    final = extract_final_answer(pred)
+    if final is None:
+        return False
+    try:
+        return float(final) == float(gold)
+    except ValueError:
+        return final == gold
 
 
 def main():
