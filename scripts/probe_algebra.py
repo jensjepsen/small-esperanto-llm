@@ -67,9 +67,10 @@ def extract_final_answer(pred: str) -> str | None:
     This trades some real wins (model that says "estas 4" but never writes
     `#### 4` or `x = 4`) for zero spurious matches.
     """
-    # 1) `#### N`
+    # 1) `#### N` — the morpheme tokenizer splits `#` chars with spaces so the
+    #    decoded chain reads `# # # # 42`, not `#### 42`. Match either form.
     last_hash = None
-    for m in re.finditer(r"####\s*(-?\d+(?:\.\d+)?)", pred):
+    for m in re.finditer(r"(?:#\s*){2,}\s*(-?\d+(?:\.\d+)?)", pred):
         last_hash = m.group(1)
     if last_hash is not None:
         return last_hash
