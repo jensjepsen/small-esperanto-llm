@@ -84,7 +84,20 @@ def extract_final_answer(pred: str) -> str | None:
     ):
         sign, num = m.group(1), m.group(2)
         last_x = ("-" + num) if sign else num
-    return last_x
+    if last_x is not None:
+        return last_x
+    # 3) `... estas N` near the end of the chain. Catches prose finishes like
+    #    "la valoro de x ... estas 4 ." that omit a `x = N` or `####` marker.
+    #    Restrict to the final 120 chars so mid-chain "X estas Y" doesn't match.
+    tail = pred[-120:]
+    last_estas = None
+    for m in re.finditer(
+        r"\bestas\s+(-\s*)?(\d+(?:\.\d+)?)(?![\d./])",
+        tail,
+    ):
+        sign, num = m.group(1), m.group(2)
+        last_estas = ("-" + num) if sign else num
+    return last_estas
 
 
 def has_answer(pred, gold):
@@ -109,7 +122,7 @@ def main():
         p = pp(f"{USER} {text} {ASST} ")
         ids = tok(p, return_tensors="pt", add_special_tokens=False).input_ids.cuda()
         with torch.no_grad():
-            out = model.generate(ids, max_new_tokens=300, do_sample=False, num_beams=1,
+            out = model.generate(ids, max_new_tokens=500, do_sample=False, num_beams=1,
                                  pad_token_id=tok.pad_token_id or tok.eos_token_id,
                                  repetition_penalty=1.1,
                                  eos_token_id=tok.convert_tokens_to_ids(END))
