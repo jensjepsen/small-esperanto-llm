@@ -45,9 +45,11 @@ fi
 # Delete lockfile to resolve fresh for this platform
 rm -f uv.lock
 
-# Pin python and sync deps
+# Pin python and sync deps (with `train` extra for liger-kernel — required for
+# the LM and SFT training scripts, which import it via try/except but get the
+# 30-40% throughput boost when present)
 uv python pin 3.11
-uv sync
+uv sync --extra train
 
 # Download tokenizer from HF Hub
 echo "=== Downloading tokenizer from HF Hub ==="
