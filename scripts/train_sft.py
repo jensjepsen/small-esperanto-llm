@@ -202,18 +202,21 @@ def main():
             conversations.extend(load_sft_data(sft_path, per_source_cap))
         else:
             from datasets import load_dataset as hf_load
-            # Allow `repo_id:config_name` or `repo_id:config_name:split` to
-            # select an HF dataset config. Plain `repo_id` keeps default config
-            # and "train" split.
+            # Allow `repo_id:config:split:count` to select an HF dataset
+            # config + cap per-source size. Plain `repo_id` keeps default
+            # config and "train" split. All fields after `repo_id` optional.
+            source_cap = per_source_cap
             if ":" in source:
                 parts = source.split(":")
                 repo_id, config = parts[0], parts[1]
                 split = parts[2] if len(parts) > 2 else "train"
+                if len(parts) > 3 and parts[3]:
+                    source_cap = int(parts[3])
                 ds = hf_load(repo_id, config, split=split)
             else:
                 ds = hf_load(source, split="train")
-            if per_source_cap:
-                ds = ds.select(range(min(per_source_cap, len(ds))))
+            if source_cap:
+                ds = ds.shuffle(seed=42).select(range(min(source_cap, len(ds))))
             for row in ds:
                 # Accept either {messages: [...]} or Alpaca-style
                 # {instruction, input, output}.
