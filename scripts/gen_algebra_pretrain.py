@@ -534,6 +534,36 @@ def gen_collect_terms(rng: random.Random) -> dict | None:
     return {"text": text, "_kind": "collect", "_style": style, "_shape": "collect"}
 
 
+def _worker_gen(args_tuple) -> tuple[list[dict], int, Counter, Counter, Counter]:
+    """One worker generates n records. Returns (records, n_rejected, kinds, styles, shapes)."""
+    worker_id, n, seed, solve_frac = args_tuple
+    rng = random.Random(seed)
+    records: list[dict] = []
+    n_rejected = 0
+    kind_count = Counter()
+    style_count = Counter()
+    shape_count = Counter()
+    while len(records) < n:
+        r = rng.random()
+        if r < solve_frac:
+            rec = gen_one(rng)
+        elif r < solve_frac + (1 - solve_frac) * 0.5:
+            rec = gen_expand_identity(rng)
+        elif r < solve_frac + (1 - solve_frac) * 0.8:
+            rec = gen_factor_identity(rng)
+        else:
+            rec = gen_collect_terms(rng)
+        if rec is None:
+            n_rejected += 1
+            continue
+        kind_count[rec["_kind"]] += 1
+        style_count[rec["_style"]] += 1
+        if "_shape" in rec:
+            shape_count[f"{rec['_kind']}:{rec['_shape']}"] += 1
+        records.append({"text": rec["text"]})
+    return records, n_rejected, kind_count, style_count, shape_count
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=100_000)
@@ -542,36 +572,66 @@ def main():
     ap.add_argument("--solve-frac", type=float, default=0.65,
                     help="fraction of records that are solve-equation chains "
                          "(rest split among expand/factor/collect)")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="parallel worker processes; 0 = auto (cpu_count-2, "
+                         "capped at 64). 1 = single-process (no Pool).")
     args = ap.parse_args()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    rng = random.Random(args.seed)
+
+    import os
+    import time
+    import multiprocessing as mp
+    if args.workers == 0:
+        n_workers = min(64, max(1, (os.cpu_count() or 4) - 2))
+    else:
+        n_workers = max(1, args.workers)
+
+    # Split n across workers. Each gets a deterministic distinct seed.
+    chunk = (args.n + n_workers - 1) // n_workers
+    tasks = []
+    remaining = args.n
+    for w in range(n_workers):
+        take = min(chunk, remaining)
+        if take <= 0: break
+        tasks.append((w, take, args.seed * 10_000 + w, args.solve_frac))
+        remaining -= take
+
+    print(f"workers: {n_workers}  chunk: {chunk:,}  tasks: {len(tasks)}", flush=True)
+
     kind_count = Counter()
     style_count = Counter()
     shape_count = Counter()
     n_emitted = 0
     n_rejected = 0
+    t0 = time.time()
+
     with args.out.open("w") as f:
-        while n_emitted < args.n:
-            r = rng.random()
-            if r < args.solve_frac:
-                rec = gen_one(rng)
-            elif r < args.solve_frac + (1 - args.solve_frac) * 0.5:
-                rec = gen_expand_identity(rng)
-            elif r < args.solve_frac + (1 - args.solve_frac) * 0.8:
-                rec = gen_factor_identity(rng)
-            else:
-                rec = gen_collect_terms(rng)
-            if rec is None:
-                n_rejected += 1
-                continue
-            kind_count[rec["_kind"]] += 1
-            style_count[rec["_style"]] += 1
-            if "_shape" in rec:
-                shape_count[f"{rec['_kind']}:{rec['_shape']}"] += 1
-            f.write(json.dumps({"text": rec["text"]}, ensure_ascii=False) + "\n")
-            n_emitted += 1
-    print(f"\nwrote {n_emitted:,} → {args.out}  ({n_rejected:,} rejected)")
+        if n_workers == 1:
+            recs, rej, kc, sc, shc = _worker_gen(tasks[0])
+            for rec in recs:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            n_emitted += len(recs)
+            n_rejected += rej
+            kind_count.update(kc); style_count.update(sc); shape_count.update(shc)
+        else:
+            with mp.Pool(n_workers) as pool:
+                for recs, rej, kc, sc, shc in pool.imap_unordered(_worker_gen, tasks):
+                    for rec in recs:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    n_emitted += len(recs)
+                    n_rejected += rej
+                    kind_count.update(kc); style_count.update(sc); shape_count.update(shc)
+                    elapsed = time.time() - t0
+                    rate = n_emitted / max(0.1, elapsed)
+                    eta = (args.n - n_emitted) / max(1, rate)
+                    print(f"  emitted {n_emitted:>7,}/{args.n:,}  "
+                          f"({rate:.0f}/s, ETA {eta:.0f}s, "
+                          f"rejected={n_rejected:,})", flush=True)
+
+    elapsed = time.time() - t0
+    print(f"\nwrote {n_emitted:,} → {args.out}  ({n_rejected:,} rejected, "
+          f"{elapsed:.0f}s, {n_emitted/max(1,elapsed):.0f}/s)")
     print("\nby kind:")
     for k, v in sorted(kind_count.items()):
         print(f"  {k:14s} {v:>7,}")
