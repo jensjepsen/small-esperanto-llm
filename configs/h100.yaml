@@ -1,0 +1,45 @@
+model:
+  vocab_size: 8000
+  hidden_size: 1024
+  num_hidden_layers: 16
+  num_attention_heads: 16
+  num_key_value_heads: 4
+  intermediate_size: 2816
+  max_position_embeddings: 512
+  rms_norm_eps: 1.0e-5
+
+training:
+  # H100 80GB. Same model arch + effective batch (256) as `large.yaml`
+  # but the geometry is tuned for one big-batch step instead of 4 small
+  # accumulated micro-batches. Liger FLCE + bf16 keep peak VRAM around
+  # ~55-60GB at this shape, leaving ~20GB for eval + activation slack.
+  #
+  # Use for FROM-SCRATCH pretraining (warmup is back on, full cosine
+  # schedule). For continuation training, use large_continue.yaml.
+  num_train_epochs: 10
+  per_device_train_batch_size: 128
+  per_device_eval_batch_size: 256   # no grads → push eval batch high
+  gradient_accumulation_steps: 2    # effective batch = 256 (matches v10)
+  # Real warmup since model starts random. 1000 steps ≈ ~5% of an epoch
+  # at this batch size — long enough to ramp up smoothly.
+  warmup_steps: 1000
+  lr_scheduler_type: cosine_with_min_lr
+  lr_scheduler_kwargs:
+    min_lr_rate: 0.1
+  learning_rate: 2.0e-4
+  weight_decay: 0.1
+  fp16: true                # config.py auto-promotes to bf16 on Ampere+
+  bf16: false
+  max_grad_norm: 1.0
+  # eval_steps == save_steps required for load_best_model_at_end.
+  eval_steps: 5000
+  save_steps: 5000
+  save_total_limit: 5
+  logging_steps: 50
+  # config.py auto-bumps to 16 when ESPLLM_NUM_PROC is unset/auto;
+  # this value is the fallback floor.
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+  # OFF: tokenize_and_chunk produces fixed-512 chunks → bucketing
+  # has nothing to do AND pays a full-dataset length-compute pass.
+  group_by_length: false
