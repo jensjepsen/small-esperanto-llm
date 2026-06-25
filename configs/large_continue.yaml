@@ -47,7 +47,9 @@ training:
   # otherwise. Home box has ESPLLM_NUM_PROC=4.
   dataloader_num_workers: 4
   dataloader_pin_memory: true
-  # Bucket-pad similar-length sequences in each batch instead of
-  # all-to-max. Big win when mixing short benchmark Q/A (~50 tokens)
-  # with long Wikipedia (~500). Cheaper than full sequence packing.
-  group_by_length: true
+  # group_by_length intentionally OFF for pretraining: tokenize_and_chunk
+  # already produces fixed 512-token chunks → all sequences same length →
+  # no padding to recover, AND group_by_length pays a full-dataset
+  # length-compute pass upfront (~minutes on 5.4M rows). Re-enable only
+  # if you switch to a per-doc (un-chunked) training strategy.
+  group_by_length: false
