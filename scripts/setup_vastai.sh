@@ -51,6 +51,20 @@ rm -f uv.lock
 uv python pin 3.11
 uv sync --extra train
 
+# Verify Liger kernel actually applies. Install can succeed while
+# `apply_liger_kernel_to_llama` raises at runtime (transformers version
+# mismatch). train.py wraps the import in try/except, so a silent failure
+# costs ~30-40% wall + ~40% VRAM without a peep. Catch it here at setup
+# time. `set -e` aborts the script if this fails so the next launch can't
+# quietly run without Liger.
+echo "=== Verifying Liger kernel ==="
+uv run python -c "
+from liger_kernel.transformers import apply_liger_kernel_to_llama
+apply_liger_kernel_to_llama(rope=True, rms_norm=True, swiglu=True,
+                             cross_entropy=True, fused_linear_cross_entropy=False)
+print('Liger kernel OK')
+"
+
 # Download tokenizer from HF Hub
 echo "=== Downloading tokenizer from HF Hub ==="
 uv run python scripts/download_from_hub.py --tokenizer
