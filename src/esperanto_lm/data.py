@@ -54,6 +54,7 @@ HF_LIBERAFOLIO = "jensjepsen/liberafolio"
 HF_FINEWEB = "HuggingFaceFW/fineweb-2"
 HF_FINEWEB_CONFIG = "epo_Latn"
 HF_WIKI_GAPS = "jensjepsen/esperanto-wiki-gaps"
+HF_ALGEBRA_PRETRAIN = "jensjepsen/esperanto-algebra-pretrain"
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
 SPECIAL_TOKENS = ["<s>", "</s>", "<unk>", "<pad>"]
@@ -283,6 +284,19 @@ def load_wiki_gaps_dataset() -> Dataset | None:
         return None
 
 
+def load_algebra_pretrain_dataset() -> Dataset | None:
+    """Load procedural algebra equations + solution chains as pretrain text.
+
+    See scripts/gen_algebra_pretrain.py. ~300k records, sympy-verified,
+    mixed render styles (vertical / arrow / with-computation / compact).
+    """
+    try:
+        ds = load_dataset(HF_ALGEBRA_PRETRAIN, split="train")
+        return ds.select_columns(["text"])
+    except Exception:
+        return None
+
+
 def load_benchmark_qa_dataset() -> Dataset | None:
     """Load benchmark train splits as raw Q/A text for pretraining.
 
@@ -360,6 +374,7 @@ def load_combined_dataset(
     use_fineweb: bool = False,
     use_sentences: bool = False,
     use_wiki_gaps: bool = False,
+    use_algebra: bool = False,
     min_article_length: int = 0,
 ) -> DatasetDict:
     """Load datasets based on flags, returning train/test splits."""
@@ -453,6 +468,14 @@ def load_combined_dataset(
             wg_splits = wiki_gaps.train_test_split(test_size=0.05, seed=42)
             extra_train.append(wg_splits["train"])
             extra_test.append(wg_splits["test"])
+
+    if use_algebra:
+        algebra = load_algebra_pretrain_dataset()
+        if algebra is not None:
+            # short records; min_article_length doesn't apply
+            alg_splits = algebra.train_test_split(test_size=0.05, seed=42)
+            extra_train.append(alg_splits["train"])
+            extra_test.append(alg_splits["test"])
 
     all_train = base_train + extra_train
     all_test = base_test + extra_test

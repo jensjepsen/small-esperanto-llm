@@ -156,6 +156,14 @@ def main():
              "(jensjepsen/esperanto-wiki-gaps; default: on)",
     )
     parser.add_argument(
+        "--use-algebra",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include procedural sympy-generated algebra equations + "
+             "solution chains (jensjepsen/esperanto-algebra-pretrain; "
+             "default: on)",
+    )
+    parser.add_argument(
         "--use-benchmarks",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -223,6 +231,7 @@ def main():
             use_tekstaro=args.use_tekstaro, use_liberafolio=args.use_liberafolio,
             use_fineweb=args.use_fineweb,
             use_wiki_gaps=args.use_wiki_gaps,
+            use_algebra=args.use_algebra,
             min_article_length=args.min_article_length,
         )
         console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")
