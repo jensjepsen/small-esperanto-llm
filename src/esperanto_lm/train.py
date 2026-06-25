@@ -10,12 +10,17 @@ from pathlib import Path
 if os.getenv("ESPLLM_NO_LIGER") != "1":
     try:
         from liger_kernel.transformers import apply_liger_kernel_to_llama
-        # FLCE replaces the LM head module → param-group shape changes,
-        # which breaks `--resume-from-checkpoint` for checkpoints saved
-        # without Liger. Keep CE separate so the param graph matches.
+        # FLCE on: fuses LM-head linear + CE into one kernel, avoids
+        # materializing the full (B, T, V) logits tensor. ~30% additional
+        # VRAM savings on top of base Liger + small wall win. Caveat: it
+        # replaces the LM-head module → param-group shape changes →
+        # breaks `--resume-from-checkpoint` for ckpts saved without Liger.
+        # We use `--from-pretrained` (weights only, fresh optimizer) so
+        # this is safe; flip back to False if you need to resume an
+        # optimizer-bearing ckpt from a non-Liger run.
         apply_liger_kernel_to_llama(
             rope=True, rms_norm=True, swiglu=True,
-            fused_linear_cross_entropy=False, cross_entropy=True,
+            fused_linear_cross_entropy=True, cross_entropy=False,
         )
     except ImportError:
         pass  # liger optional — train without if not installed

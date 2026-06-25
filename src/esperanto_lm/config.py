@@ -79,6 +79,13 @@ def make_training_args(config_name: str, output_dir: str, hub_model_id: str | No
         weight_decay=t["weight_decay"],
         fp16=use_fp16,
         bf16=use_bf16,
+        # Eval in bf16 too — Trainer's eval defaults to fp32 even when
+        # train is mixed-precision, paying 2× on the eval forward pass.
+        # Only meaningful when bf16 is on for train.
+        bf16_full_eval=use_bf16,
+        # Skip extra metric/label compute during eval; we only track
+        # eval loss anyway. ~10-20% off each eval call.
+        prediction_loss_only=True,
         max_grad_norm=t["max_grad_norm"],
         eval_strategy="steps",
         eval_steps=t["eval_steps"],
