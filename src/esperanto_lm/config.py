@@ -32,6 +32,25 @@ def make_llama_config(config_name: str) -> LlamaConfig:
     )
 
 
+def _resolve_dataloader_workers(yaml_value: int) -> int:
+    """Same-flag semantics as data.num_proc(): respects ESPLLM_NUM_PROC.
+
+    Home boxes export ESPLLM_NUM_PROC=4 to avoid >4-core crashes (see
+    feedback_cpu_thread_limit memory). Cloud boxes leave it unset → we
+    bump dataloader workers to 16 (prefetch parallelism stops scaling
+    past ~16 in practice; no point going higher even on 64-core hosts).
+    YAML value is the floor / explicit override when neither env nor
+    auto rules apply cleanly.
+    """
+    v = os.environ.get("ESPLLM_NUM_PROC", "").strip().lower()
+    if v in ("", "auto"):
+        return 16
+    try:
+        return max(1, int(v))
+    except ValueError:
+        return yaml_value
+
+
 def make_training_args(config_name: str, output_dir: str, hub_model_id: str | None = None) -> TrainingArguments:
     cfg = load_yaml_config(config_name)
     t = cfg["training"]
@@ -68,9 +87,13 @@ def make_training_args(config_name: str, output_dir: str, hub_model_id: str | No
         save_total_limit=t["save_total_limit"],
         logging_steps=t["logging_steps"],
         report_to="wandb" if os.getenv("WANDB_API_KEY") else "none",
-        dataloader_num_workers=t["dataloader_num_workers"],
+        dataloader_num_workers=_resolve_dataloader_workers(t["dataloader_num_workers"]),
         dataloader_pin_memory=t["dataloader_pin_memory"],
+        group_by_length=t.get("group_by_length", False),
         optim=optim,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         push_to_hub=hub_model_id is not None,
         hub_model_id=hub_model_id,
         hub_strategy="checkpoint",

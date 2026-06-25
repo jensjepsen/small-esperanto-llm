@@ -26,6 +26,12 @@ torch.backends.cuda.enable_cudnn_sdp(False)
 torch.backends.cuda.enable_flash_sdp(True)
 torch.backends.cuda.enable_mem_efficient_sdp(True)
 
+# Enable TF32 for matmul + cuDNN on Ampere+ (cap >= 8). Free speedup on
+# the few fp32 paths that remain when bf16 is on; no effect on Pascal/Volta.
+if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
 from rich.console import Console
 from transformers import AutoModelForCausalLM, Trainer
 

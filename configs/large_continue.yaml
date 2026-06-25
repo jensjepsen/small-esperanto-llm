@@ -16,11 +16,15 @@ training:
   # If loss keeps dropping at meaningful rate → LR-bound (need higher floor).
   # If loss is flat → data/capacity ceiling (we were converged).
   num_train_epochs: 1
-  # Original v10 used batch=64 × accum=4 on an H100 80GB. 5090 has 32GB → OOM.
-  # Halving batch + doubling accum keeps effective batch at 256.
-  per_device_train_batch_size: 32
-  per_device_eval_batch_size: 32
-  gradient_accumulation_steps: 8
+  # batch=64×accum=4 matches the original v10 effective batch (256).
+  # Earlier OOM at batch=64 was caused by Liger NOT being applied
+  # (silent ImportError → ~40% more VRAM). With Liger active, batch=32
+  # uses ~18GB so batch=64 should land around 28-30GB on a 5090 (32GB).
+  per_device_train_batch_size: 64
+  # Eval has no grads/optimizer state, so VRAM is much lower; 128 fits
+  # easily and shaves ~3-4× off per-eval wall time.
+  per_device_eval_batch_size: 128
+  gradient_accumulation_steps: 4
   # Phase 2: train loss + eval crept up at 5e-5 → too hot.
   # Drop to 2e-5 (the original cosine floor where v10 stopped moving),
   # resume from checkpoint-1500 of v10_continue. Short warmup since we're
@@ -38,5 +42,12 @@ training:
   save_steps: 500
   save_total_limit: 5
   logging_steps: 25
+  # YAML value is the fallback floor — config.py auto-bumps to 16 on
+  # cloud boxes (ESPLLM_NUM_PROC unset/auto) and respects the env var
+  # otherwise. Home box has ESPLLM_NUM_PROC=4.
   dataloader_num_workers: 4
   dataloader_pin_memory: true
+  # Bucket-pad similar-length sequences in each batch instead of
+  # all-to-max. Big win when mixing short benchmark Q/A (~50 tokens)
+  # with long Wikipedia (~500). Cheaper than full sequence packing.
+  group_by_length: true
