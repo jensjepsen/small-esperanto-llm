@@ -1,7 +1,30 @@
 """Trainer setup and entry point."""
 
 import argparse
+import os
 from pathlib import Path
+
+# Apply Liger kernels (RMSNorm, SwiGLU, RoPE, fused LM head + CE) before
+# any Llama model is created. Saves ~30-40% wall time + ~40% VRAM on H100.
+# Skipped via ESPLLM_NO_LIGER=1 if a future env-bump breaks compatibility.
+if os.getenv("ESPLLM_NO_LIGER") != "1":
+    try:
+        from liger_kernel.transformers import apply_liger_kernel_to_llama
+        # FLCE replaces the LM head module → param-group shape changes,
+        # which breaks `--resume-from-checkpoint` for checkpoints saved
+        # without Liger. Keep CE separate so the param graph matches.
+        apply_liger_kernel_to_llama(
+            rope=True, rms_norm=True, swiglu=True,
+            fused_linear_cross_entropy=False, cross_entropy=True,
+        )
+    except ImportError:
+        pass  # liger optional — train without if not installed
+
+import torch
+# Force flash + mem-efficient SDPA backends; cuDNN's frontend has been flaky.
+torch.backends.cuda.enable_cudnn_sdp(False)
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
 
 from rich.console import Console
 from transformers import AutoModelForCausalLM, Trainer
@@ -29,8 +52,7 @@ def main():
         "--config",
         type=str,
         default="tiny",
-        choices=["tiny", "small", "medium", "large"],
-        help="Model config to use",
+        help="Model config to use (a YAML file in configs/, e.g. tiny|small|medium|large|large_continue)",
     )
     parser.add_argument(
         "--output-dir",
@@ -116,6 +138,13 @@ def main():
         help="Include FineWeb-2 epo_Latn web corpus (default: on)",
     )
     parser.add_argument(
+        "--use-wiki-gaps",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include v6-MT-translated EN→EO Wikipedia gaps "
+             "(jensjepsen/esperanto-wiki-gaps; default: on)",
+    )
+    parser.add_argument(
         "--use-benchmarks",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -182,6 +211,7 @@ def main():
             use_factoids=args.use_factoids, use_sentences=args.use_sentences,
             use_tekstaro=args.use_tekstaro, use_liberafolio=args.use_liberafolio,
             use_fineweb=args.use_fineweb,
+            use_wiki_gaps=args.use_wiki_gaps,
             min_article_length=args.min_article_length,
         )
         console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")

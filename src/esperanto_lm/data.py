@@ -53,6 +53,7 @@ HF_TEKSTARO = "jensjepsen/esperanto-tekstaro"
 HF_LIBERAFOLIO = "jensjepsen/liberafolio"
 HF_FINEWEB = "HuggingFaceFW/fineweb-2"
 HF_FINEWEB_CONFIG = "epo_Latn"
+HF_WIKI_GAPS = "jensjepsen/esperanto-wiki-gaps"
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
 SPECIAL_TOKENS = ["<s>", "</s>", "<unk>", "<pad>"]
@@ -267,6 +268,21 @@ def load_fineweb_dataset() -> Dataset | None:
         return None
 
 
+def load_wiki_gaps_dataset() -> Dataset | None:
+    """Load v6-MT-translated EN→EO Wikipedia gaps as pretrain text.
+
+    Source: foundational EN Wikipedia articles that have NO EO
+    counterpart (intersected with Vital Articles list), machine-
+    translated via the eo-mt-v6 model. See scripts/find_en_wiki_gaps.py
+    and scripts/translate_wiki_gaps.py.
+    """
+    try:
+        ds = load_dataset(HF_WIKI_GAPS, split="train")
+        return ds.select_columns(["text"])
+    except Exception:
+        return None
+
+
 def load_benchmark_qa_dataset() -> Dataset | None:
     """Load benchmark train splits as raw Q/A text for pretraining.
 
@@ -343,6 +359,7 @@ def load_combined_dataset(
     use_liberafolio: bool = False,
     use_fineweb: bool = False,
     use_sentences: bool = False,
+    use_wiki_gaps: bool = False,
     min_article_length: int = 0,
 ) -> DatasetDict:
     """Load datasets based on flags, returning train/test splits."""
@@ -428,6 +445,14 @@ def load_combined_dataset(
             fineweb_splits = fineweb.train_test_split(test_size=0.05, seed=42)
             extra_train.append(fineweb_splits["train"])
             extra_test.append(fineweb_splits["test"])
+
+    if use_wiki_gaps:
+        wiki_gaps = load_wiki_gaps_dataset()
+        if wiki_gaps is not None:
+            # already long-form articles; no length filter needed
+            wg_splits = wiki_gaps.train_test_split(test_size=0.05, seed=42)
+            extra_train.append(wg_splits["train"])
+            extra_test.append(wg_splits["test"])
 
     all_train = base_train + extra_train
     all_test = base_test + extra_test
@@ -542,11 +567,21 @@ def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerFast,
                      morpheme_preprocess: bool = True):
     """Tokenize a text dataset to token-id columns. No chunking."""
 
+    eos_id = tokenizer.eos_token_id
+
     def tokenize_fn(examples):
         texts = examples["text"]
         if morpheme_preprocess:
             texts = [_morpheme_preprocess(t) for t in texts]
-        return tokenizer(texts, add_special_tokens=False)
+        result = tokenizer(texts, add_special_tokens=False)
+        # Append </s> to every doc so chunk_dataset's concat preserves
+        # document boundaries instead of gluing adjacent docs together.
+        for ids in result["input_ids"]:
+            ids.append(eos_id)
+        if "attention_mask" in result:
+            for am in result["attention_mask"]:
+                am.append(1)
+        return result
 
     return dataset.map(
         tokenize_fn,
