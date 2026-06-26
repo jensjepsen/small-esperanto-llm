@@ -82,6 +82,12 @@ def make_training_args(config_name: str, output_dir: str, hub_model_id: str | No
         per_device_train_batch_size=t["per_device_train_batch_size"],
         per_device_eval_batch_size=t["per_device_eval_batch_size"],
         gradient_accumulation_steps=t["gradient_accumulation_steps"],
+        # torch.compile speeds up Llama by 10-20% on fixed-shape pretrain
+        # chunks. Adds 1-2 min startup compile. May interact with Liger
+        # kernels — test with a short run before committing to a long one.
+        torch_compile=t.get("torch_compile", False),
+        torch_compile_mode=t.get("torch_compile_mode") or None,
+        gradient_checkpointing=t.get("gradient_checkpointing", False),
         warmup_steps=t.get("warmup_steps", 1000),
         lr_scheduler_type=t.get("lr_scheduler_type", "cosine_with_min_lr"),
         lr_scheduler_kwargs=t.get("lr_scheduler_kwargs", {"min_lr_rate": 0.1}),

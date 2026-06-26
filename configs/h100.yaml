@@ -47,5 +47,15 @@ training:
   # Set to "paged_adamw_8bit" (requires `pip install bitsandbytes`) when
   # going to >400M params on 80GB: saves ~75% of optimizer-state VRAM,
   # tracking fp32 AdamW within <0.005 ppl at this LR range. See config.py
-  # _resolve_dataloader_workers's comment for the full menu.
+  # for the full menu.
   # optim: adamw_torch_fused
+  #
+  # torch.compile: 10-20% wall savings on Llama with fixed-shape chunks
+  # (pretrain). Adds 1-2 min startup compile. May interact with Liger
+  # kernels — test a short run first.
+  # torch_compile: true
+  # torch_compile_mode: reduce-overhead
+  #
+  # Gradient checkpointing: trades ~30% wall for ~30-50% activation VRAM
+  # savings. Only enable when batch can't otherwise fit (e.g. 400M+ params).
+  # gradient_checkpointing: false
