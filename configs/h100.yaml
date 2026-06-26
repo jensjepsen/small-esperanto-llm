@@ -7,6 +7,12 @@ model:
   intermediate_size: 2816
   max_position_embeddings: 512
   rms_norm_eps: 1.0e-5
+  # Tie input embed + lm_head weight. Saves ~vocab*hidden params (~12.7M
+  # here). For <1B-param models, tying is essentially free quality-wise
+  # (slightly helpful as regularization). MUST be set at model-init —
+  # can't be flipped on a saved checkpoint. v10/v11 trained untied; for
+  # a from-scratch v12 set true.
+  tie_word_embeddings: false
 
 training:
   # H100 80GB. Same model arch + effective batch (256) as `large.yaml`

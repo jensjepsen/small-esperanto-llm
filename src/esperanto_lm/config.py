@@ -29,6 +29,12 @@ def make_llama_config(config_name: str) -> LlamaConfig:
         intermediate_size=model_cfg["intermediate_size"],
         max_position_embeddings=model_cfg["max_position_embeddings"],
         rms_norm_eps=model_cfg["rms_norm_eps"],
+        # Share input embed + lm_head weight. Saves ~vocab*hidden params
+        # (~12.7M on 1024-hidden, 12.4k-vocab). For sub-1B-param models,
+        # quality is ~identical or slightly better (light regularization);
+        # only worth untying at 7B+. Must be set at model-init time;
+        # can't be flipped on an existing checkpoint.
+        tie_word_embeddings=model_cfg.get("tie_word_embeddings", False),
     )
 
 
