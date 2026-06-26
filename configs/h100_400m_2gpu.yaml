@@ -55,13 +55,15 @@ training:
   # 8-bit Adam — saves ~75% of optimizer-state VRAM. At 400M that's
   # ~5GB → ~1GB. Tracks fp32 AdamW within <0.005 ppl at this LR.
   optim: paged_adamw_8bit
-  # torch.compile DISABLED for DDP: reduce-overhead mode uses CUDA
-  # graphs, which assume the captured tensors are not overwritten
-  # between replays. DDP's gradient hooks fire on different tensors
-  # than the graph captured → RuntimeError mid-training. Default mode
-  # might work but the per-process compile cost on 2× GPUs eats most
-  # of the savings anyway. Skip for now.
-  torch_compile: false
+  # torch.compile with default mode (NOT reduce-overhead): Inductor
+  # gives us kernel fusion + smarter codegen without the CUDA-graph
+  # layer that crashes under DDP (reduce-overhead captured tensors get
+  # overwritten by sibling-rank gradient hooks). ~5-15% wall savings
+  # instead of the 10-20% reduce-overhead would give, but DDP-safe.
+  # If you ever switch DDP → static-graph-DDP or FSDP, reduce-overhead
+  # might be revisitable.
+  torch_compile: true
+  torch_compile_mode: default
   # Off by default. Flip true if even batch=64 OOMs (trades ~30% wall
   # for ~30-50% activation VRAM).
   gradient_checkpointing: false
