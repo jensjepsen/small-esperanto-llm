@@ -29,8 +29,8 @@ wandb = ["wandb>=0.17.0"]
 gemini = ["google-generativeai>=0.8.6", "google-genai>=1.70.0"]
 w2v = ["gensim>=4.4.0"]
 eval = ["sentence-transformers>=3.0.0"]
-train = ["liger-kernel>=0.5.0"]
-all = ["wandb>=0.17.0", "google-generativeai>=0.8.6", "google-genai>=1.70.0", "gensim>=4.4.0", "sentence-transformers>=3.0.0", "liger-kernel>=0.5.0"]
+train = ["liger-kernel>=0.5.0", "bitsandbytes>=0.43.0"]
+all = ["wandb>=0.17.0", "google-generativeai>=0.8.6", "google-genai>=1.70.0", "gensim>=4.4.0", "sentence-transformers>=3.0.0", "liger-kernel>=0.5.0", "bitsandbytes>=0.43.0"]
 
 [project.scripts]
 train = "esperanto_lm.train:main"

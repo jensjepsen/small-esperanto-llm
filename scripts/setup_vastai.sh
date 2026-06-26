@@ -65,6 +65,16 @@ apply_liger_kernel_to_llama(rope=True, rms_norm=True, swiglu=True,
 print('Liger kernel OK')
 "
 
+# Verify bitsandbytes loads (needed for paged_adamw_8bit on bigger
+# models). Optional at runtime — HF Trainer only imports it when
+# optim=paged_adamw_8bit — but the install can fail silently in
+# CUDA-mismatch situations, so we catch it here.
+echo "=== Verifying bitsandbytes ==="
+uv run python -c "
+import bitsandbytes as bnb
+print(f'bitsandbytes OK ({bnb.__version__})')
+"
+
 # Download tokenizer from HF Hub
 echo "=== Downloading tokenizer from HF Hub ==="
 uv run python scripts/download_from_hub.py --tokenizer
