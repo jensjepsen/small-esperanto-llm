@@ -56,7 +56,17 @@ def make_training_args(config_name: str, output_dir: str, hub_model_id: str | No
     t = cfg["training"]
 
     import torch
-    optim = "adamw_torch_fused" if torch.cuda.is_available() else "adamw_torch"
+    # `optim` from YAML if set, otherwise auto-pick.
+    # Recommended values:
+    #   adamw_torch_fused    — default, fp32 momenta, no extra deps
+    #   paged_adamw_8bit     — bitsandbytes 8-bit Adam, ~75% smaller optim
+    #                          state. Use when VRAM-constrained (e.g. >400M
+    #                          params on 80GB). Needs `pip install bitsandbytes`.
+    #   adafactor            — factored 2nd moment, ~50% smaller; slight LM
+    #                          convergence penalty
+    optim = t.get("optim")
+    if not optim:
+        optim = "adamw_torch_fused" if torch.cuda.is_available() else "adamw_torch"
 
     # Auto-detect bf16 support (Ampere+); fall back to fp16
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():

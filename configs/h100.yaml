@@ -43,3 +43,9 @@ training:
   # OFF: tokenize_and_chunk produces fixed-512 chunks → bucketing
   # has nothing to do AND pays a full-dataset length-compute pass.
   group_by_length: false
+  # Optimizer — omit to auto-pick adamw_torch_fused on CUDA.
+  # Set to "paged_adamw_8bit" (requires `pip install bitsandbytes`) when
+  # going to >400M params on 80GB: saves ~75% of optimizer-state VRAM,
+  # tracking fp32 AdamW within <0.005 ppl at this LR range. See config.py
+  # _resolve_dataloader_workers's comment for the full menu.
+  # optim: adamw_torch_fused
