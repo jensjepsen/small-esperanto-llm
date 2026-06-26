@@ -31,7 +31,12 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 mkdir -p "$(dirname "$OUTPUT_DIR")" /workspace/hf-cache
 
-# Standard env: wandb + HF + caches all on overlay/workspace
+# Standard env: wandb + HF + caches all on workspace (overlay / is
+# tiny and gets blasted by HF datasets' tempfile writes during
+# tokenize+chunk with many workers). TMPDIR overrides the default
+# /tmp for HF datasets' multi-shard intermediate writes.
+mkdir -p /workspace/tmp /workspace/hf-cache
+export TMPDIR=/workspace/tmp
 export WANDB_API_KEY=$(cat /root/.wandb_key)
 export HF_TOKEN=$(cat /root/hf_token)
 export HF_HOME=/workspace/hf-cache
