@@ -1,0 +1,65 @@
+model:
+  vocab_size: 12413
+  # ~409M params (with tying: ~390M)
+  # Per-layer: attn 5.5M + MLP 18.9M = 24.4M × 16 layers = 390M
+  # Embed: 12413 × 1536 = 19M
+  hidden_size: 1536
+  num_hidden_layers: 16
+  num_attention_heads: 24       # head_dim = 1536/24 = 64
+  num_key_value_heads: 4        # GQA compression 24/4 = 6
+  intermediate_size: 4096       # ~2.67× hidden
+  max_position_embeddings: 512
+  rms_norm_eps: 1.0e-5
+  # Free at this scale: saves ~19M params + their optim state, slight
+  # regularization win. Llama 3.2 1B/3B both tie; only 7B+ untie.
+  tie_word_embeddings: true
+
+training:
+  # 2x H100 80GB via DDP. Identical recipe to h100_400m.yaml EXCEPT
+  # gradient_accumulation_steps is halved (4 → 2) because DDP doubles
+  # the effective batch by running both GPUs in parallel.
+  #
+  # Effective batch math (kept at 256, matches h100_400m):
+  #   per_device × accum × world_size = 64 × 2 × 2 = 256 ✓
+  #
+  # Launch via the helper script:
+  #   bash scripts/run/launch_h100_400m_2gpu.sh
+  # Or directly with torchrun:
+  #   torchrun --nproc_per_node=2 -m esperanto_lm.train \
+  #     --config h100_400m_2gpu \
+  #     --output-dir /workspace/runs/v12_h100_400m \
+  #     --tokenizer tokenizer_morpheme
+  #
+  # Expected wall: ~1.6-1.8× speedup over single-H100 h100_400m
+  # (DDP all-reduce adds 10-20% overhead vs theoretical 2×).
+  num_train_epochs: 10
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 128
+  gradient_accumulation_steps: 2
+  warmup_steps: 1000
+  lr_scheduler_type: cosine_with_min_lr
+  lr_scheduler_kwargs:
+    min_lr_rate: 0.1
+  learning_rate: 2.0e-4
+  weight_decay: 0.1
+  fp16: true                    # config.py auto-promotes to bf16 on Ampere+
+  bf16: false
+  max_grad_norm: 1.0
+  eval_steps: 5000
+  save_steps: 5000
+  save_total_limit: 5
+  logging_steps: 50
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+  group_by_length: false        # fixed 512-chunk pretrain → bucketing useless
+  # 8-bit Adam — saves ~75% of optimizer-state VRAM. At 400M that's
+  # ~5GB → ~1GB. Tracks fp32 AdamW within <0.005 ppl at this LR.
+  optim: paged_adamw_8bit
+  # torch.compile on fixed-shape pretrain chunks → 10-20% wall savings.
+  # 1-2 min startup compile. Test a short run if Liger interaction is
+  # suspect; abort if loss diverges from a non-compiled baseline.
+  torch_compile: true
+  torch_compile_mode: reduce-overhead
+  # Off by default. Flip true if even batch=64 OOMs (trades ~30% wall
+  # for ~30-50% activation VRAM).
+  gradient_checkpointing: false
