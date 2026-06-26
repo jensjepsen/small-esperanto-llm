@@ -18,10 +18,10 @@ training:
   # H100 80GB. Same effective batch (256) as h100.yaml but per-device
   # batch dropped from 128 → 64 because 400M activations roughly 2×
   # what 205M used. Accum doubled to keep effective batch matched.
-  # Liger FLCE + paged_adamw_8bit reclaim enough VRAM to keep batch=64
+  # Liger FLCE + adamw_8bit reclaim enough VRAM to keep batch=64
   # comfortable without gradient checkpointing.
   #
-  # If you can fit batch=128 (paged optim + tied + Liger may unlock it),
+  # If you can fit batch=128 (adamw_8bit + tied + Liger may unlock it),
   # halve accum to 2 for ~50% wall savings on optimizer-sync overhead.
   # 10 epochs to match the 205M h100.yaml protocol. Expect ~2× wall
   # time vs the 205M run; pays off in stronger convergence on the
@@ -48,7 +48,10 @@ training:
   group_by_length: false        # fixed 512-chunk pretrain → bucketing useless
   # 8-bit Adam — saves ~75% of optimizer-state VRAM. At 400M that's
   # ~5GB → ~1GB. Tracks fp32 AdamW within <0.005 ppl at this LR.
-  optim: paged_adamw_8bit
+  # Non-paged variant: paged_adamw_8bit deterministically crashes under
+  # DDP on bnb 0.49.x + CUDA 12.8 (cprefetch / pythonInterface.cpp:691,
+  # invalid device-ordinal). Paged buys nothing on 80GB H100s anyway.
+  optim: adamw_8bit
   # torch.compile on fixed-shape pretrain chunks → 10-20% wall savings.
   # 1-2 min startup compile. Test a short run if Liger interaction is
   # suspect; abort if loss diverges from a non-compiled baseline.

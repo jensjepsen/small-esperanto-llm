@@ -33,9 +33,24 @@ training:
   # Expected wall: ~1.6-1.8× speedup over single-H100 h100_400m
   # (DDP all-reduce adds 10-20% overhead vs theoretical 2×).
   num_train_epochs: 10
-  per_device_train_batch_size: 64
-  per_device_eval_batch_size: 128
-  gradient_accumulation_steps: 2
+  # 80GB H100 batch geometry: per_device=128 fully fills activation
+  # memory (~71GB train resident), accum=1 means one fewer fwd/bwd per
+  # optim step → ~30-40% wall savings vs per_device=64/accum=2.
+  # Effective batch unchanged at 128 × 1 × 2 = 256 (LR schedule intact).
+  # Eval cut to 32: PyTorch caching allocator holds train high-water mark
+  # across eval, so keeping eval=128 risks fragmentation OOM against the
+  # 9GB margin. Eval wall is <1% of total.
+  #
+  # NOTE on resume: transformers 4.55.4 has a bug at trainer.py:2214 —
+  # `self._train_batch_size` is unconditionally clobbered with the saved
+  # checkpoint value, ignoring this config. If resuming from a ckpt
+  # saved with a DIFFERENT per_device_train_batch_size, ALSO edit the
+  # checkpoint's trainer_state.json to set train_batch_size to match
+  # this value. See https://github.com/huggingface/transformers/pull/43770
+  # for the upstream fix (post-4.57.3).
+  per_device_train_batch_size: 128
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 1
   warmup_steps: 1000
   lr_scheduler_type: cosine_with_min_lr
   lr_scheduler_kwargs:
@@ -54,7 +69,15 @@ training:
   group_by_length: false        # fixed 512-chunk pretrain → bucketing useless
   # 8-bit Adam — saves ~75% of optimizer-state VRAM. At 400M that's
   # ~5GB → ~1GB. Tracks fp32 AdamW within <0.005 ppl at this LR.
-  optim: paged_adamw_8bit
+  # Non-paged variant: paged_adamw_8bit deterministically crashes under
+  # DDP on bnb 0.49.x + CUDA 12.8 (cprefetch / pythonInterface.cpp:691,
+  # invalid device-ordinal at first optimizer.step on both ranks). The
+  # paged allocator binds managed buffers to the rank's local device but
+  # prefetches to param.device.index (global ordinal), and the two
+  # don't agree under torchrun. State files (.pt) are format-compatible
+  # between paged and non-paged, so swapping is lossless on resume.
+  # Paged buys nothing on 80GB H100s anyway.
+  optim: adamw_8bit
   # torch.compile with default mode (NOT reduce-overhead): Inductor
   # gives us kernel fusion + smarter codegen without the CUDA-graph
   # layer that crashes under DDP (reduce-overhead captured tensors get

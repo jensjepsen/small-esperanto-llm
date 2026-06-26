@@ -61,16 +61,18 @@ SPECIAL_TOKENS = ["<s>", "</s>", "<unk>", "<pad>"]
 
 
 def download_dataset(save_dir: Path = DATA_DIR) -> DatasetDict:
-    """Download Esperanto Wikipedia and split into train/validation."""
+    """Download Esperanto Wikipedia and split into train/validation.
+
+    HF's own dataset cache (HF_HOME) holds the downloaded shards. The
+    legacy on-disk dump under save_dir is honored if present (back-compat),
+    but no new copy is written.
+    """
     if save_dir.exists():
         return load_from_disk(str(save_dir))
 
     ds = load_dataset("wikimedia/wikipedia", "20231101.eo", split="train")
     splits = ds.train_test_split(test_size=0.05, seed=42)
-    dataset = DatasetDict({"train": splits["train"], "test": splits["test"]})
-    save_dir.parent.mkdir(parents=True, exist_ok=True)
-    dataset.save_to_disk(str(save_dir))
-    return dataset
+    return DatasetDict({"train": splits["train"], "test": splits["test"]})
 
 
 def load_hplt_dataset(hplt_dir: Path = HPLT_DIR) -> Dataset | None:

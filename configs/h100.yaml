@@ -50,10 +50,13 @@ training:
   # has nothing to do AND pays a full-dataset length-compute pass.
   group_by_length: false
   # Optimizer — omit to auto-pick adamw_torch_fused on CUDA.
-  # Set to "paged_adamw_8bit" (requires `pip install bitsandbytes`) when
-  # going to >400M params on 80GB: saves ~75% of optimizer-state VRAM,
-  # tracking fp32 AdamW within <0.005 ppl at this LR range. See config.py
-  # for the full menu.
+  # Set to "adamw_8bit" (requires `pip install bitsandbytes`) when going
+  # to >400M params on 80GB: saves ~75% of optimizer-state VRAM,
+  # tracking fp32 AdamW within <0.005 ppl at this LR range. Do NOT use
+  # paged_adamw_8bit under DDP — bnb 0.49.x crashes deterministically at
+  # cprefetch (pythonInterface.cpp:691, invalid device-ordinal) and
+  # paged buys nothing on 80GB H100s anyway. See config.py for the full
+  # menu.
   # optim: adamw_torch_fused
   #
   # torch.compile: 10-20% wall savings on Llama with fixed-shape chunks
