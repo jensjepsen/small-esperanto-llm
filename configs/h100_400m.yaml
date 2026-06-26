@@ -23,7 +23,11 @@ training:
   #
   # If you can fit batch=128 (paged optim + tied + Liger may unlock it),
   # halve accum to 2 for ~50% wall savings on optimizer-sync overhead.
-  num_train_epochs: 10
+  # 5 epochs ≈ same wall time as h100.yaml's 10-epoch 205M run
+  # (2× params × ½ epochs cancel). Chinchilla-wise, a 400M model wants
+  # more unique tokens, not more passes — fewer epochs is the
+  # generalization-friendly call at the same training budget.
+  num_train_epochs: 5
   per_device_train_batch_size: 64
   per_device_eval_batch_size: 128
   gradient_accumulation_steps: 4
