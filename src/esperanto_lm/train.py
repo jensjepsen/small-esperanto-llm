@@ -214,39 +214,46 @@ def main():
 
     max_length = model_config.max_position_embeddings
     console.print(f"[bold]Chunk length:[/] {max_length}")
-    if args.pretokenized_dataset:
-        from datasets import load_dataset as _ld
-        console.print(f"[bold green]Loading pre-tokenized:[/] {args.pretokenized_dataset}")
-        train_tok = _ld(args.pretokenized_dataset, split="train")
-        test_tok = _ld(args.pretokenized_dataset, split="test")
-        console.print(f"[bold]Pretok train rows:[/] {len(train_tok):,}  test: {len(test_tok):,}")
-        train_dataset = chunk_dataset(train_tok, max_length=max_length)
-        eval_dataset = chunk_dataset(test_tok, max_length=max_length)
-    else:
-        console.print("[bold green]Loading and tokenizing dataset...")
-        dataset = load_combined_dataset(
-            use_wiki=not args.no_wiki, use_hplt=args.use_hplt,
-            use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4,
-            use_factoids=args.use_factoids, use_sentences=args.use_sentences,
-            use_tekstaro=args.use_tekstaro, use_liberafolio=args.use_liberafolio,
-            use_fineweb=args.use_fineweb,
-            use_wiki_gaps=args.use_wiki_gaps,
-            use_algebra=args.use_algebra,
-            min_article_length=args.min_article_length,
-        )
-        console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")
-        console.print(f"[bold]Test examples:[/] {len(dataset['test']):,}")
-        train_dataset = tokenize_and_chunk(dataset["train"], tokenizer, max_length=max_length)
-        eval_dataset = tokenize_and_chunk(dataset["test"], tokenizer, max_length=max_length)
+    # Serialize dataset prep across DDP ranks: rank 0 builds the HF
+    # cache, other ranks wait then read it. Without this, each rank
+    # repeats the multi-GB tokenize+chunk independently, doubling
+    # workspace cache usage and wall time.
+    from accelerate import PartialState
+    accel_state = PartialState()
+    with accel_state.main_process_first():
+        if args.pretokenized_dataset:
+            from datasets import load_dataset as _ld
+            console.print(f"[bold green]Loading pre-tokenized:[/] {args.pretokenized_dataset}")
+            train_tok = _ld(args.pretokenized_dataset, split="train")
+            test_tok = _ld(args.pretokenized_dataset, split="test")
+            console.print(f"[bold]Pretok train rows:[/] {len(train_tok):,}  test: {len(test_tok):,}")
+            train_dataset = chunk_dataset(train_tok, max_length=max_length)
+            eval_dataset = chunk_dataset(test_tok, max_length=max_length)
+        else:
+            console.print("[bold green]Loading and tokenizing dataset...")
+            dataset = load_combined_dataset(
+                use_wiki=not args.no_wiki, use_hplt=args.use_hplt,
+                use_gutenberg=args.use_gutenberg, use_mc4=args.use_mc4,
+                use_factoids=args.use_factoids, use_sentences=args.use_sentences,
+                use_tekstaro=args.use_tekstaro, use_liberafolio=args.use_liberafolio,
+                use_fineweb=args.use_fineweb,
+                use_wiki_gaps=args.use_wiki_gaps,
+                use_algebra=args.use_algebra,
+                min_article_length=args.min_article_length,
+            )
+            console.print(f"[bold]Train examples:[/] {len(dataset['train']):,}")
+            console.print(f"[bold]Test examples:[/] {len(dataset['test']):,}")
+            train_dataset = tokenize_and_chunk(dataset["train"], tokenizer, max_length=max_length)
+            eval_dataset = tokenize_and_chunk(dataset["test"], tokenizer, max_length=max_length)
 
-    if args.use_benchmarks:
-        console.print("[bold green]Loading benchmark Q/A pairs...")
-        bench = load_benchmark_qa_dataset()
-        if bench is not None:
-            console.print(f"[bold]Benchmark examples:[/] {len(bench):,}")
-            bench_tok = tokenize_and_chunk(bench, tokenizer, max_length=max_length)
-            train_dataset = concatenate_datasets([train_dataset, bench_tok])
-            console.print(f"[bold]Combined train (post-bench):[/] {len(train_dataset):,}")
+        if args.use_benchmarks:
+            console.print("[bold green]Loading benchmark Q/A pairs...")
+            bench = load_benchmark_qa_dataset()
+            if bench is not None:
+                console.print(f"[bold]Benchmark examples:[/] {len(bench):,}")
+                bench_tok = tokenize_and_chunk(bench, tokenizer, max_length=max_length)
+                train_dataset = concatenate_datasets([train_dataset, bench_tok])
+                console.print(f"[bold]Combined train (post-bench):[/] {len(train_dataset):,}")
 
     data_collator = make_data_collator(tokenizer)
 
