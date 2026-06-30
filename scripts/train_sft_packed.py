@@ -353,11 +353,17 @@ def main():
 
     def _tok_with_labels(row):
         enc = tokenize_fn(row["text"])
-        labels = label_fn(enc["input_ids"])
+        input_ids = enc["input_ids"]
+        attention_mask = enc.get("attention_mask", [1] * len(input_ids))
+        labels = label_fn(input_ids)
         if labels is None:
             return {"input_ids": [], "attention_mask": [], "labels": []}
-        enc["labels"] = labels
-        return enc
+        # Return exactly these 3 keys regardless of what the tokenizer
+        # added — HF datasets' batched .map() across workers crashes
+        # with KeyError if the per-row return dict has inconsistent keys
+        # (some tokenizer configs slip in `token_type_ids`).
+        return {"input_ids": input_ids, "attention_mask": attention_mask,
+                "labels": labels}
 
     tokenized = raw_ds.map(
         _tok_with_labels,
