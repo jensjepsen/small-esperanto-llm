@@ -24,19 +24,30 @@ export PATH="$HOME/.local/bin:$PATH"
 sed -i '/\[\[tool\.uv\.index\]\]/,/^$/d' pyproject.toml
 sed -i '/\[tool\.uv\.sources\]/,/^$/d' pyproject.toml
 
-# Detect CUDA version from driver and set torch backend
+# Detect CUDA driver version + GPU compute capability and pick torch backend
+# accordingly. Blackwell consumer (RTX 5090, compute cap 12.0) needs cu128+
+# wheels (introduced in torch 2.6); older arches (cap < 10) are fine on cu126.
+# Without this distinction, a cu126 wheel on Blackwell crashes at first kernel
+# launch with "CUDA error: no kernel image is available".
 CUDA_VERSION=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' || echo "")
 CUDA_MAJOR=$(echo "$CUDA_VERSION" | cut -d. -f1)
-echo "Detected CUDA driver: ${CUDA_VERSION:-none}"
+GPU_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')
+GPU_CAP_MAJOR=$(echo "$GPU_CAP" | cut -d. -f1)
+echo "Detected CUDA driver: ${CUDA_VERSION:-none}  GPU compute cap: ${GPU_CAP:-none}"
 
-if [ "$CUDA_MAJOR" = "12" ]; then
-    # CUDA 12.x driver — use cu126 backend and pin torch<2.11 (which needs CUDA 13)
+if [ "$CUDA_MAJOR" = "13" ]; then
+    export UV_TORCH_BACKEND=cu128
+    echo "Using UV_TORCH_BACKEND=cu128 (CUDA 13 driver)"
+elif [ "$CUDA_MAJOR" = "12" ] && [ "${GPU_CAP_MAJOR:-0}" -ge 10 ] 2>/dev/null; then
+    # Blackwell or newer needs cu128 wheels with torch>=2.6.
+    export UV_TORCH_BACKEND=cu128
+    sed -i 's/torch>=2.3.0/torch>=2.6.0,<2.11/' pyproject.toml
+    echo "Using UV_TORCH_BACKEND=cu128 with torch>=2.6 (Blackwell+ GPU detected)"
+elif [ "$CUDA_MAJOR" = "12" ]; then
+    # Pre-Blackwell on CUDA 12.x driver — cu126 is fine and keeps the older torch range.
     export UV_TORCH_BACKEND=cu126
     sed -i 's/torch>=2.3.0/torch>=2.3.0,<2.11/' pyproject.toml
     echo "Using UV_TORCH_BACKEND=cu126 with torch<2.11"
-elif [ "$CUDA_MAJOR" = "13" ]; then
-    export UV_TORCH_BACKEND=cu128
-    echo "Using UV_TORCH_BACKEND=cu128"
 else
     export UV_TORCH_BACKEND=auto
     echo "Using UV_TORCH_BACKEND=auto"
