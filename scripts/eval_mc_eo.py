@@ -22,6 +22,9 @@ USER, ASST, END = "<|user|>", "<|assistant|>", "<|end|>"
 SPECIAL = (USER, ASST, END)
 SKIP = {"<s>", "</s>", "<pad>", "<unk>", USER, ASST, END}
 
+# Set by main() based on CUDA availability.
+_DEVICE = "cpu"
+
 
 def pp(s):
     pat = "(" + "|".join(re.escape(t) for t in SPECIAL) + ")"
@@ -33,8 +36,8 @@ def score_completion(model, tok, prompt: str, completion: str, length_norm=True)
     """Sum log P(completion tokens | prompt).  Optionally length-normalize."""
     full = pp(prompt + " " + completion)
     prefix = pp(prompt)
-    full_ids = tok(full, return_tensors="pt", add_special_tokens=False).input_ids.cuda()
-    prefix_ids = tok(prefix, return_tensors="pt", add_special_tokens=False).input_ids.cuda()
+    full_ids = tok(full, return_tensors="pt", add_special_tokens=False).input_ids.to(_DEVICE)
+    prefix_ids = tok(prefix, return_tensors="pt", add_special_tokens=False).input_ids.to(_DEVICE)
     n_pref = prefix_ids.shape[1]
     # the completion span in full_ids starts at n_pref
     with torch.no_grad():
@@ -136,7 +139,21 @@ def main():
           f"length_norm={not args.no_length_norm}", flush=True)
     tok = PreTrainedTokenizerFast.from_pretrained("tokenizer_morpheme")
     tok.add_special_tokens({"additional_special_tokens": list(SPECIAL)})
-    model = AutoModelForCausalLM.from_pretrained(args.ckpt, torch_dtype=torch.float16).cuda().eval()
+    # Auto-pick device: GPU if available (fp16), else CPU (fp32).
+    # CPU fallback lets you run alongside an in-flight GPU training job.
+    global _DEVICE
+    if torch.cuda.is_available():
+        _DEVICE = "cuda"
+        dtype = torch.float16
+        threads_msg = ""
+    else:
+        _DEVICE = "cpu"
+        dtype = torch.float32
+        torch.set_num_threads(8)
+        threads_msg = " (CPU, 8 threads)"
+    print(f"device: {_DEVICE}{threads_msg}", flush=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.ckpt, torch_dtype=dtype).to(_DEVICE).eval()
     model.resize_token_embeddings(len(tok))
 
     if args.task == "sciq":
