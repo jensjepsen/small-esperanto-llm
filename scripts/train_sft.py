@@ -132,6 +132,16 @@ def main():
                              "--output-dir. Useful when restarting "
                              "after an OOM or to switch batch size "
                              "without losing prior progress.")
+    parser.add_argument("--optim", default="adamw_torch_fused",
+                        help="HF Trainer optim string (default: "
+                             "adamw_torch_fused — fastest single-GPU). "
+                             "Use 'adamw_8bit' for memory-constrained "
+                             "boxes (Pascal 1080 Ti etc.).")
+    parser.add_argument("--attn-impl", default="auto",
+                        choices=["auto", "flash_attention_2", "sdpa", "eager"],
+                        help="Attention implementation. 'auto' picks "
+                             "flash_attention_2 if available (CUDA + "
+                             "supported arch), else sdpa.")
     args = parser.parse_args()
 
     if args.output_dir:
@@ -174,7 +184,22 @@ def main():
         )
 
     console.print(f"[bold green]Loading model from {args.checkpoint}...")
-    model = AutoModelForCausalLM.from_pretrained(args.checkpoint)
+    # Resolve attn_impl: 'auto' → flash_attention_2 if installed + GPU + bf16 supported,
+    # else sdpa (PyTorch built-in, no extra dep). Explicit choice always honored.
+    attn_impl = args.attn_impl
+    if attn_impl == "auto":
+        try:
+            import flash_attn  # noqa: F401
+            import torch as _t
+            if _t.cuda.is_available() and _t.cuda.is_bf16_supported():
+                attn_impl = "flash_attention_2"
+            else:
+                attn_impl = "sdpa"
+        except ImportError:
+            attn_impl = "sdpa"
+    console.print(f"[bold]Attention impl:[/] {attn_impl}")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.checkpoint, attn_implementation=attn_impl)
 
     console.print(f"[bold green]Loading tokenizer from {args.tokenizer}...")
     tokenizer = load_tokenizer(Path(args.tokenizer))
@@ -314,6 +339,7 @@ def main():
         logging_steps=50,
         report_to="wandb" if args.wandb_project else "none",
         dataloader_num_workers=2,
+        optim=args.optim,
     )
 
     # Data collator that pads sequences to equal length.
