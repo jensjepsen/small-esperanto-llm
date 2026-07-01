@@ -605,6 +605,19 @@ def main():
     from trl import GRPOConfig, GRPOTrainer
     from transformers import AutoModelForCausalLM
 
+    # TRL 0.16 vs transformers 4.55+ API mismatch: transformers calls
+    # `_get_train_sampler(dataset)` but TRL's GRPOTrainer overrode it
+    # with no args. Wrap so the trainer accepts+ignores the new arg.
+    _orig_sampler = GRPOTrainer._get_train_sampler
+    def _sampler_shim(self, *args, **kwargs):
+        return _orig_sampler(self)
+    GRPOTrainer._get_train_sampler = _sampler_shim
+    _orig_eval_sampler = getattr(GRPOTrainer, "_get_eval_sampler", None)
+    if _orig_eval_sampler is not None:
+        def _eval_sampler_shim(self, eval_dataset=None, *args, **kwargs):
+            return _orig_eval_sampler(self, eval_dataset) if eval_dataset is not None else _orig_eval_sampler(self)
+        GRPOTrainer._get_eval_sampler = _eval_sampler_shim
+
     if args.wandb_project:
         import os
         import wandb
