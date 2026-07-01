@@ -649,20 +649,27 @@ def main():
             result = _orig_prepare(self, inputs)
             adv = result.get("advantages")
             cm = result.get("completion_mask")
+            # Always log skip_frac so the wandb metric is populated every step
+            # (even 0.0 = "nothing to skip this step" is useful signal). Empty
+            # lists in self._metrics crash TRL's average-and-log flow.
+            mode = "eval" if self.control.should_evaluate else "train"
+            self._metrics.setdefault(mode, {}).setdefault("skip_frac", [])
             if adv is None or cm is None:
+                self._metrics[mode]["skip_frac"].append(0.0)
                 return result
             n_gen = self.num_generations
             n_local = adv.shape[0]
             if n_local < n_gen:
+                self._metrics[mode]["skip_frac"].append(0.0)
                 return result
             n_groups = n_local // n_gen
             adv_g = adv[:n_groups * n_gen].view(n_groups, n_gen)
             active = (adv_g.abs() > 1e-6).any(dim=1)
+            frac_skipped = 1.0 - active.float().mean().item()
+            self._metrics[mode]["skip_frac"].append(frac_skipped)
             if bool(active.all()) or not bool(active.any()):
                 # nothing to filter (all active) or nothing to fall back on
                 return result
-            frac_skipped = 1.0 - active.float().mean().item()
-            self._metrics.setdefault("train", {}).setdefault("skip_frac", []).append(frac_skipped)
             sample_mask = active.repeat_interleave(n_gen).to(adv.device)
             if sample_mask.numel() < n_local:
                 import torch as _t
