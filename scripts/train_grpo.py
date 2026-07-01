@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import torch
 from datasets import Dataset
 
-from esperanto_lm.data import load_tokenizer
+from esperanto_lm.data import load_tokenizer, _morpheme_preprocess
 from esperanto_lm.morphology import decompose
 from esperanto_lm.verify import (
     Verifier, LexiconCheck, DEFAULT_CHECKS, TautologyCheck,
@@ -466,6 +466,10 @@ def make_reward_components(max_gram=MAX_GRAM, math_only=False,
 # ─── Prompt formatting ──────────────────────────────────────────────────────
 
 def _morph(text, has_w):
+    """Legacy preprocessor. Kept for reference — do not use for new rollouts.
+    Isolated diagnostic (2026-07-01) showed _morph produces ~3× worse pass@12
+    than _morpheme_preprocess on ck-24000 (7% vs 22%). Route through the
+    canonical preprocessor via _preprocess_with_specials instead."""
     words = re.findall(r"[a-zA-ZĉĝĥĵŝŭĈĜĤĴŜŬ]+|[^\s]", text)
     parts = []
     for word in words:
@@ -476,6 +480,20 @@ def _morph(text, has_w):
         else:
             parts.append(word)
     return " ".join(parts)
+
+
+_SPECIAL_TOKENS = (USER_TOKEN, ASSISTANT_TOKEN, END_TOKEN,
+                   "<|tool_call|>", "<|/tool_call|>",
+                   "<|tool_result|>", "<|/tool_result|>")
+_SPECIAL_SPLIT_RE = re.compile("(" + "|".join(re.escape(t) for t in _SPECIAL_TOKENS) + ")")
+
+
+def _preprocess_with_specials(text: str) -> str:
+    """Canonical rollout preprocessor: apply _morpheme_preprocess to non-special
+    segments, leave chat/tool tokens as literal strings so the tokenizer maps
+    them to their special-token ids. Matches how the probes and SFT tokenized."""
+    return " ".join(p if p in _SPECIAL_TOKENS else _morpheme_preprocess(p)
+                    for p in _SPECIAL_SPLIT_RE.split(text) if p)
 
 
 def format_prompt(question: str, has_w: bool, style: str) -> str:
@@ -490,7 +508,7 @@ def format_prompt(question: str, has_w: bool, style: str) -> str:
         # gold (factual_qa's capitals) — it breaks for sentence-style gold
         # ("Jericho situas en Germanio.") and ellipsis gold ("Trinki ĝin.").
         text = f"{question}"
-    return _morph(text, has_w)
+    return _preprocess_with_specials(text)
 
 
 # ─── Data loading ───────────────────────────────────────────────────────────
