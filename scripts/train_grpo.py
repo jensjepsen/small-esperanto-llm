@@ -653,6 +653,16 @@ def main():
     print(f"Loading {args.checkpoint}...", flush=True)
     tokenizer = load_tokenizer(Path(args.checkpoint))
     has_w = "<w>" in tokenizer.get_vocab()
+    # Ensure chat + tool tokens exist in the tokenizer vocab. SFT models
+    # have these baked into their embedding matrix, but the pushed
+    # tokenizer files (vocab.json/merges.txt from tokenizer_morpheme/)
+    # don't include them — so `convert_tokens_to_ids('<|end|>')` returns
+    # unk, chat_stops stays empty, and generation runs to max_new_tokens
+    # every time. Add the tokens back so the trainer can stop on <|end|>.
+    _SPECIAL = [USER_TOKEN, ASSISTANT_TOKEN, END_TOKEN,
+                "<|tool_call|>", "<|/tool_call|>",
+                "<|tool_result|>", "<|/tool_result|>"]
+    tokenizer.add_special_tokens({"additional_special_tokens": _SPECIAL})
 
     # The project tokenizer marks every morpheme as a special token, so
     # TRL's `batch_decode(..., skip_special_tokens=True)` would erase the
