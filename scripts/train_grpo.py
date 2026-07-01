@@ -172,13 +172,22 @@ def _parse_num(s: str) -> float | None:
         return None
 
 
-def extract_math_answer(text: str) -> float | None:
-    """Lenient final-answer extraction for GSM8K-style chain-of-thought.
-    Tries (in order): #### N (canonical), 'respondo|estas|= N' near the end,
-    last number anywhere. Returns None if no number found."""
+def extract_math_answer(text: str, strict: bool = False) -> float | None:
+    """Final-answer extraction for GSM8K-style chain-of-thought.
+
+    strict=True: only `#### N` counts. Returns None otherwise. Use for
+    RL rewards to prevent the model from farming credit by sprinkling
+    the gold number mid-chain — the only accepted answer channel is
+    the canonical `#### N` marker at the end.
+
+    strict=False (default, for eval-only extractors): tries #### N
+    then 'respondo|estas|= N' near the end, then last number anywhere.
+    """
     m = _MATH_HASH_PATTERN.search(text)
     if m:
         return _parse_num(m.group(1))
+    if strict:
+        return None
     matches = _MATH_RESPONDO_PATTERN.findall(text)
     if matches:
         return _parse_num(matches[-1])
@@ -196,8 +205,8 @@ def math_close(generation: str, gold: str | None) -> float:
     non-numeric so it stays dormant on factoid/atomic data."""
     if not gold:
         return 0.0
-    ga = extract_math_answer(gold)
-    ca = extract_math_answer(generation)
+    ga = extract_math_answer(gold, strict=True)
+    ca = extract_math_answer(generation, strict=True)
     if ga is None or ca is None:
         return 0.0
     if abs(ga - ca) < 1e-6:
@@ -214,8 +223,8 @@ def math_exact(generation: str, gold: str | None) -> float:
     without learning math)."""
     if not gold:
         return 0.0
-    ga = extract_math_answer(gold)
-    ca = extract_math_answer(generation)
+    ga = extract_math_answer(gold, strict=True)
+    ca = extract_math_answer(generation, strict=True)
     if ga is None or ca is None:
         return 0.0
     return 1.0 if abs(ga - ca) < 1e-6 else 0.0
