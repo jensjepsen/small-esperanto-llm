@@ -583,6 +583,15 @@ def main():
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--beta", type=float, default=0.04,
                         help="KL coefficient against reference policy")
+    parser.add_argument("--skip-zero-adv", action="store_true",
+                        help="Skip groups where reward.std()==0 (all rollouts "
+                             "in the group scored equally → advantage=0 → no "
+                             "policy-gradient signal). Zeroing completion_mask "
+                             "for those groups drops their KL term too and "
+                             "prevents Adam-state pollution + LR-schedule burn. "
+                             "Useful when a large fraction of groups are all-"
+                             "wrong or all-right, esp. early with sparse binary "
+                             "rewards.")
     parser.add_argument("--math-only", action="store_true",
                         help="Strip all rewards except a single math reward. "
                              "Use to isolate numeric correctness when the "
@@ -626,6 +635,43 @@ def main():
         def _eval_sampler_shim(self, eval_dataset=None, *args, **kwargs):
             return _orig_eval_sampler(self, eval_dataset) if eval_dataset is not None else _orig_eval_sampler(self)
         GRPOTrainer._get_eval_sampler = _eval_sampler_shim
+
+    # Optional: skip zero-advantage groups (all rollouts in a group scored
+    # the same reward → std=0 → advantage=0). The reward-driven policy
+    # gradient is zero for those samples, but the KL penalty and Adam's
+    # optimizer state still take noise-only steps. Zeroing completion_mask
+    # for those groups makes both the KL term and the loss aggregation
+    # exclude them cleanly. Falls back to no-op when all groups are active
+    # or all groups are inactive (so we never divide by zero downstream).
+    if args.skip_zero_adv:
+        _orig_prepare = GRPOTrainer._prepare_inputs
+        def _prepare_with_skip(self, inputs):
+            result = _orig_prepare(self, inputs)
+            adv = result.get("advantages")
+            cm = result.get("completion_mask")
+            if adv is None or cm is None:
+                return result
+            n_gen = self.num_generations
+            n_local = adv.shape[0]
+            if n_local < n_gen:
+                return result
+            n_groups = n_local // n_gen
+            adv_g = adv[:n_groups * n_gen].view(n_groups, n_gen)
+            active = (adv_g.abs() > 1e-6).any(dim=1)
+            if bool(active.all()) or not bool(active.any()):
+                # nothing to filter (all active) or nothing to fall back on
+                return result
+            frac_skipped = 1.0 - active.float().mean().item()
+            self._metrics.setdefault("train", {}).setdefault("skip_frac", []).append(frac_skipped)
+            sample_mask = active.repeat_interleave(n_gen).to(adv.device)
+            if sample_mask.numel() < n_local:
+                import torch as _t
+                pad = _t.zeros(n_local - sample_mask.numel(), dtype=_t.bool, device=adv.device)
+                sample_mask = _t.cat([sample_mask, pad])
+            result["completion_mask"] = cm * sample_mask.to(cm.dtype).unsqueeze(1)
+            return result
+        GRPOTrainer._prepare_inputs = _prepare_with_skip
+        print("skip-zero-adv: enabled (masking completion_mask on zero-std groups)", flush=True)
 
     if args.wandb_project:
         import os
