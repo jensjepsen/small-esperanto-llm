@@ -36,20 +36,43 @@ from gen_algebra_v2 import render as _alg_render, render_eq as _alg_render_eq
 # ─── Vocab ──────────────────────────────────────────────────────────────────
 
 NAMES = ["Ana", "Petro", "Marko", "Sara", "Elena", "Luka", "Nia", "Ivo",
-         "Karlo", "Mira", "Julia", "Roberto"]
+         "Karlo", "Mira", "Julia", "Roberto", "Klara", "Vasilis", "Maria",
+         "Aleksandro", "Olga", "Erik", "Zofia", "Kristina", "Dario", "Amalia",
+         "Nikolao", "Katarina", "Filip", "Anastasia", "Tomas", "Rebeka",
+         "Georgi", "Silvia", "Adam", "Helena", "Miloŝ", "Beatrice",
+         "Aleksio", "Dagmara", "Bruno", "Ines", "Valentin", "Renata"]
+
+# Scenario framings sampled at question-open time. Not every recipe uses them,
+# but recipes that opt in inject one of these leading phrases.
+SCENARIO_FRAMES = [
+    "En 2015,",  "Dum la lernojaro,",  "Iun tagon,",  "Post la lernejo,",
+    "En la merkato,",  "Dum somero,",  "Antaŭ la festo,",  "Hodiaŭ matene,",
+    "Pasintan semajnon,",  "En festo,",  "Post la manĝo,",  "En la vendejo,",
+]
+
+# For recipes that render entities from any pool, an extended object pool
+# broadens the surface. Each is (nom_sg, nom_pl, acc_sg, acc_pl).
 
 # each tuple is (nom_sg, nom_pl, acc_sg, acc_pl)
 CHILDLIKE_NOUNS = [
     ("infano",  "infanoj",  "infanon",  "infanojn"),
     ("knabo",   "knaboj",   "knabon",   "knabojn"),
+    ("knabino", "knabinoj", "knabinon", "knabinojn"),
     ("studento","studentoj","studenton","studentojn"),
     ("lernanto","lernantoj","lernanton","lernantojn"),
+    ("kliento", "klientoj", "klienton", "klientojn"),
+    ("gasto",   "gastoj",   "gaston",   "gastojn"),
+    ("vizitanto","vizitantoj","vizitanton","vizitantojn"),
 ]
 GROUPING_NOUNS = [
-    ("grupo", "grupoj", "grupon", "grupojn"),
-    ("teamo", "teamoj", "teamon", "teamojn"),
-    ("klaso", "klasoj", "klason", "klasojn"),
-    ("tablo", "tabloj", "tablon", "tablojn"),
+    ("grupo",   "grupoj",   "grupon",   "grupojn"),
+    ("teamo",   "teamoj",   "teamon",   "teamojn"),
+    ("klaso",   "klasoj",   "klason",   "klasojn"),
+    ("tablo",   "tabloj",   "tablon",   "tablojn"),
+    ("aŭtobuso","aŭtobusoj","aŭtobuson","aŭtobusojn"),
+    ("ĉambro",  "ĉambroj",  "ĉambron",  "ĉambrojn"),
+    ("kesto",   "kestoj",   "keston",   "kestojn"),
+    ("vagono",  "vagonoj",  "vagonon",  "vagonojn"),
 ]
 OBJECT_NOUNS = [
     ("libro",  "libroj",  "libron",  "librojn"),
@@ -58,6 +81,16 @@ OBJECT_NOUNS = [
     ("ludilo", "ludiloj", "ludilon", "ludilojn"),
     ("floro",  "floroj",  "floron",  "florojn"),
     ("bulko",  "bulkoj",  "bulkon",  "bulkojn"),
+    ("bileto", "biletoj", "bileton", "biletojn"),
+    ("kajero", "kajeroj", "kajeron", "kajerojn"),
+    ("plumo",  "plumoj",  "plumon",  "plumojn"),
+    ("kekso",  "keksoj",  "kekson",  "keksojn"),
+    ("marmoro","marmoroj","marmoron","marmorojn"),
+    ("ovo",    "ovoj",    "ovon",    "ovojn"),
+    ("stelo",  "steloj",  "stelon",  "stelojn"),
+    ("ĉokolado","ĉokoladoj","ĉokoladon","ĉokoladojn"),
+    ("kartodo","kartodoj","kartodon","kartodojn"),
+    ("koverto","kovertoj","koverton","kovertojn"),
 ]
 
 Noun = tuple[str, str, str, str]  # (nom_sg, nom_pl, acc_sg, acc_pl)
@@ -133,6 +166,18 @@ class Ctx:
 
 
 # ─── Morphology helpers ─────────────────────────────────────────────────────
+
+def maybe_frame(rng: random.Random, p: float = 0.35) -> str:
+    """Optionally prepend a scenario frame to a question. p=0.35 means 35%
+    of samples get "En 2015, ..." / "Iun tagon, ..." prefixes.
+
+    Returned as a leading string or empty. Use like:
+        q = maybe_frame(rng) + main_question
+    """
+    if rng.random() < p:
+        return rng.choice(SCENARIO_FRAMES) + " "
+    return ""
+
 
 def render_qty(n: int, noun: Noun, case: str = "nom") -> str:
     """`5 studentoj` / `1 studento` — proper singular/plural agreement.
@@ -395,6 +440,15 @@ _MUL_PROSE = {
         "Ni multiplikas: {a} * {b} = {c}.",
         "{a} po {b} donas {a} * {b} = {c}.",
         "Kalkulo: {a} * {b} = {c}.",
+        "Unue kalkulu la produkton: {a} * {b} = {c}.",
+        "La produkto de {a} kaj {b} estas {c}.",
+        "Multiplikante {a} per {b}, ni ricevas {c}.",
+        "Ni komencu multiplikante: {a} * {b} = {c}.",
+        "La komenca kalkulo: {a} * {b} = {c}.",
+        "Trovi la produkton de {a} kaj {b}: {a} * {b} = {c}.",
+        "Simple: {a} * {b} = {c}.",
+        "Ni notu ke {a} * {b} = {c}.",
+        "Rezulto de multipliko: {a} * {b} = {c}.",
     ],
     "chained": [
         "Poste, {a} * {b} = {c}.",
@@ -402,6 +456,14 @@ _MUL_PROSE = {
         "{a} * {b} = {c}.",
         "Tio donas {a} * {b} = {c}.",
         "Multobligante: {a} * {b} = {c}.",
+        "Sekve, {a} * {b} = {c}.",
+        "Kaj do {a} * {b} = {c}.",
+        "Tial {a} * {b} = {c}.",
+        "Nun kalkulu: {a} * {b} = {c}.",
+        "Multiplikante per {b}: {a} * {b} = {c}.",
+        "Rezulto: {a} * {b} = {c}.",
+        "Do {a} * {b} = {c}.",
+        "Ni multiplikas kaj ricevas {c}.",
     ],
 }
 _ADD_PROSE = {
@@ -411,6 +473,13 @@ _ADD_PROSE = {
         "Kune: {a} + {b} = {c}.",
         "{a} plus {b} donas {c}.",
         "La sumo estas {a} + {b} = {c}.",
+        "Sumigante, {a} + {b} = {c}.",
+        "Adicio: {a} + {b} = {c}.",
+        "La kombinita valoro estas {a} + {b} = {c}.",
+        "Kalkulo de sumo: {a} + {b} = {c}.",
+        "Ni sumigu: {a} + {b} = {c}.",
+        "La totalo el {a} kaj {b} estas {c}.",
+        "Aldonante {a} kaj {b}, ni ricevas {c}.",
     ],
     "chained": [
         "Aldonu {b} pliajn: {a} + {b} = {c}.",
@@ -418,6 +487,14 @@ _ADD_PROSE = {
         "Kune, {a} + {b} = {c}.",
         "Tial: {a} + {b} = {c}.",
         "{a} + {b} = {c}.",
+        "Poste sumigu: {a} + {b} = {c}.",
+        "Sekve {a} + {b} = {c}.",
+        "Tio kondukas al {a} + {b} = {c}.",
+        "Nun aldonu {b}: {a} + {b} = {c}.",
+        "La nova sumo: {a} + {b} = {c}.",
+        "Post aldono: {a} + {b} = {c}.",
+        "Kombine, {a} + {b} = {c}.",
+        "Tial la kombina rezulto estas {c}.",
     ],
 }
 _SUB_PROSE = {
@@ -425,6 +502,13 @@ _SUB_PROSE = {
         "Ni subtrahas: {a} - {b} = {c}.",
         "Restas {a} - {b} = {c}.",
         "{a} minus {b} egalas {c}.",
+        "Subtrahante {b} de {a}: {a} - {b} = {c}.",
+        "La diferenco estas {a} - {b} = {c}.",
+        "Post subtraho: {a} - {b} = {c}.",
+        "Kalkulo de diferenco: {a} - {b} = {c}.",
+        "Ni forigos {b}: {a} - {b} = {c}.",
+        "La resto egalas {a} - {b} = {c}.",
+        "Redukto: {a} - {b} = {c}.",
     ],
     "chained": [
         "Post kiam {b} foriras, restas {a} - {b} = {c}.",
@@ -432,6 +516,13 @@ _SUB_PROSE = {
         "Subtrahante {b}: {a} - {b} = {c}.",
         "{a} - {b} = {c}.",
         "Tial restas {a} - {b} = {c}.",
+        "Nun {a} - {b} = {c}.",
+        "Do la diferenco: {a} - {b} = {c}.",
+        "Reduktante per {b}: {a} - {b} = {c}.",
+        "Post forigo de {b}: {a} - {b} = {c}.",
+        "La restanta valoro estas {c}.",
+        "Sekve la diferenco: {a} - {b} = {c}.",
+        "Ĉi tio lasas {a} - {b} = {c}.",
     ],
 }
 _DIV_PROSE = {
@@ -439,12 +530,26 @@ _DIV_PROSE = {
         "Ni dividas: {a} / {b} = {c}.",
         "{a} / {b} = {c}.",
         "Ĉiu parto havas {a} / {b} = {c}.",
+        "Divizio: {a} / {b} = {c}.",
+        "La kvociento estas {a} / {b} = {c}.",
+        "Dividante {a} per {b}, ni ricevas {c}.",
+        "Distribuu {a} inter {b}: {a} / {b} = {c}.",
+        "Ĉiu ricevas {a} / {b} = {c}.",
+        "Egalpartige: {a} / {b} = {c}.",
+        "Kalkulo de divizio: {a} / {b} = {c}.",
     ],
     "chained": [
         "Dividante inter {b}: {a} / {b} = {c}.",
         "Ĉiu grupo havas {a} / {b} = {c}.",
         "{a} / {b} = {c}.",
         "Tial ĉiu ricevas {a} / {b} = {c}.",
+        "Sekve {a} / {b} = {c}.",
+        "Poste dividu: {a} / {b} = {c}.",
+        "Distribuante {a} tra {b}: {a} / {b} = {c}.",
+        "Ĉiu parto: {a} / {b} = {c}.",
+        "Nun dividante per {b}: {a} / {b} = {c}.",
+        "Do {a} / {b} = {c}.",
+        "La kvociento estas {a} / {b} = {c}.",
     ],
 }
 _LINSOLVE_PROSE = {
@@ -519,7 +624,21 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         ctx.bind("groups", n_groups, noun=group)
         ctx.bind("per_group", per_group, noun=child)
 
-        q = [f"Estas {render_qty(n_groups, group)} kun {render_qty(per_group, child)} en ĉiu."]
+        # 6 sentence-structure variants + optional scenario frame
+        frame = maybe_frame(rng)
+        openers = [
+            f"{frame}estas {render_qty(n_groups, group)} kun {render_qty(per_group, child)} en ĉiu.",
+            f"{frame}en {render_qty(n_groups, group)}, ĉiu enhavas {render_qty(per_group, child)}.",
+            f"{frame}{ctx.protagonist} vidas {qty_acc(n_groups, group)}, ĉiun kun {render_qty(per_group, child)}.",
+            f"{frame}ĉiu el la {render_qty(n_groups, group)} havas {qty_acc(per_group, child)}.",
+            f"{frame}oni disdonis {render_qty(per_group, child)} en ĉiun de {render_qty(n_groups, group)}.",
+            f"{frame}{render_qty(n_groups, group)} estas plenaj de {render_qty(per_group, child)} ĉiu.",
+        ]
+        # capitalize first char if frame was empty
+        opener = rng.choice(openers)
+        if not frame:
+            opener = opener[0].upper() + opener[1:]
+        q = [opener]
         Mul("groups", "per_group", "total").apply(ctx)
         final_var = "total"
 
@@ -541,7 +660,16 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2) -> dict:
             Div(final_var, "packs", "per_pack").apply(ctx)
             final_var = "per_pack"
 
-        q.append(f"Kiom da {child[1]} estas en la fina rezulto?")
+        # 6 closing-question variants
+        closers = [
+            f"Kiom da {child[1]} estas en la fina rezulto?",
+            f"Kiu estas la fina nombro de {child[1]}?",
+            f"Kalkulu la finan nombron de {child[1]}.",
+            f"Trovu kiom da {child[1]} restas fine.",
+            f"Kiom da {child[1]} estas fine?",
+            f"Determinu la finan kvanton de {child[1]}.",
+        ]
+        q.append(rng.choice(closers))
         return ctx.render(" ".join(q), final_var)
 
     raise RuntimeError("ratio_parts_recipe: couldn't sample divisible params in 100 tries")
@@ -599,32 +727,54 @@ def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None) 
             item_acc = item[2]                    # "biciklon"
             item_nom = item[0]                    # "biciklo"
 
+            frame = maybe_frame(rng)
             if op == "discount":
-                q = rng.choice([
+                q = frame + rng.choice([
                     f"{p} aĉetas {item_acc} kiu kostas {base_qty_acc}. "
                     f"La vendejo donas rabaton de {pct}%. Kiom {p} pagas?",
-                    f"La origina prezo de {item_nom} estas {base_qty_nom}. "
+                    f"la origina prezo de {item_nom} estas {base_qty_nom}. "
                     f"Kun {pct}% rabato, kiu estas la nova prezo?",
+                    f"{item_nom} kostas {base_qty_acc}. "
+                    f"Kun rabato de {pct}%, kiom {p} devas pagi?",
+                    f"{p} vidas {item_acc} je {base_qty_acc}, kun {pct}% rabato. "
+                    f"Kalkulu la finan prezon.",
                 ])
             elif op == "markup":
-                q = rng.choice([
-                    f"La prezo de {item_nom} estis {base_qty_nom} sed pliiĝis je {pct}%. "
+                q = frame + rng.choice([
+                    f"la prezo de {item_nom} estis {base_qty_nom} sed pliiĝis je {pct}%. "
                     f"Kiu estas la nova prezo?",
                     f"{p} havas {item_acc} kiu kostas {base_qty_acc}. "
                     f"La prezo pliiĝas je {pct}%. Kiom kostas nun?",
+                    f"{item_nom} kostis {base_qty_acc}. "
+                    f"Post pliiĝo de {pct}%, kiu estas la nova prezo?",
                 ])
             elif op == "tax":
-                q = rng.choice([
+                q = frame + rng.choice([
                     f"{p} aĉetas {item_acc} por {base_qty_nom}. "
                     f"La imposto estas {pct}%. Kiom entute {p} pagas?",
                     f"{item_nom} kostas {base_qty_acc}. Kun {pct}% imposto, "
                     f"kiu estas la totalo?",
+                    f"la prezo de {item_nom} estas {base_qty_nom}, "
+                    f"kaj oni aldonas {pct}% imposton. Kiom estas la finkosto?",
                 ])
             elif op == "of-amount":
-                q = f"{p} kalkulis {pct}% de {base_qty_nom}. Kiu estas la rezulto?"
+                q = frame + rng.choice([
+                    f"{p} kalkulis {pct}% de {base_qty_nom}. Kiu estas la rezulto?",
+                    f"trovu {pct}% el {base_qty_nom}.",
+                    f"kiom estas {pct}% de {base_qty_nom}?",
+                ])
             elif op == "saving":
-                q = (f"{p} aĉetis {item_acc} kiu kostis {base_qty_acc} "
-                     f"kun {pct}% rabato. Kiom da {EUR[1]} {p} ŝparis?")
+                q = frame + rng.choice([
+                    f"{p} aĉetis {item_acc} kiu kostis {base_qty_acc} "
+                    f"kun {pct}% rabato. Kiom da {EUR[1]} {p} ŝparis?",
+                    f"{item_nom} kostis {base_qty_acc}, kun rabato de {pct}%. "
+                    f"Kiom {p} ŝparis?",
+                    f"{p} akiris {pct}% rabaton sur {item_acc} de {base_qty_acc}. "
+                    f"Kalkulu la ŝparon.",
+                ])
+            # Capitalize first char if no frame
+            if not frame:
+                q = q[0].upper() + q[1:]
         else:  # count
             item = rng.choice(COUNT_ITEMS)
             noun_acc_pl = item[3]   # "studentojn"
@@ -697,8 +847,19 @@ def average_recipe(rng: random.Random, n_steps: int = 2) -> dict:
             ctx.bind(f"s{i}", s, noun=None)
         # build question
         scores_str = ", ".join(str(s) for s in scores[:-1]) + f" kaj {scores[-1]}"
-        q = (f"{p} ricevis {n_scores} poentarojn en {subject[2]}: {scores_str}. "
-             f"Kiu estas la meza poentaro?")
+        frame = maybe_frame(rng)
+        q = frame + rng.choice([
+            f"{p} ricevis {n_scores} poentarojn en {subject[2]}: {scores_str}. "
+            f"Kiu estas la meza poentaro?",
+            f"la poentaroj de {p} en {subject[2]} estas: {scores_str}. "
+            f"Trovu la mezan.",
+            f"post {n_scores} testoj en {subject[2]}, {p} ricevis: {scores_str}. "
+            f"Kalkulu la mezan poentaron.",
+            f"{p} skribis {n_scores} testojn en {subject[2]} kaj ricevis {scores_str}. "
+            f"Kiu estas la meza rezulto?",
+        ])
+        if not frame:
+            q = q[0].upper() + q[1:]
 
         Avg([f"s{i}" for i in range(n_scores)], "avg").apply(ctx)
         final = "avg"
@@ -780,8 +941,14 @@ def ratio_diff_recipe(rng: random.Random, n_steps: int = 3) -> dict:
         ctx.bind("a", a * unit, noun=obj)  # used as `larger` value later, but computed by chain
         ctx.bind("b", b * unit, noun=obj)
 
-        q = (f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} "
-             f"laŭ la rilatumo {a}:{b}. Kiu estas la diferenco inter iliaj partoj?")
+        q = rng.choice([
+            f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} "
+            f"laŭ la rilatumo {a}:{b}. Kiu estas la diferenco inter iliaj partoj?",
+            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
+            f"{qty_acc(total, obj)}. Kiom pli havas unu ol la alia?",
+            f"{names[0]} ricevas {a} partojn, {names[1]} ricevas {b} partojn, "
+            f"el entute {render_qty(total, obj)}. Trovu la diferencon.",
+        ])
 
         # Steps: total / (a+b) = unit; a*unit; b*unit; diff
         # But we need the chain to *derive* unit; use Div op.
@@ -831,8 +998,12 @@ def consec_avg_recipe(rng: random.Random, n_steps: int = 2) -> dict:
     ctx.bind("count", count)
 
     what = {"smallest": "plej malgranda", "largest": "plej granda", "middle": "meza"}[ask]
-    q = (f"La sumo de {count} sinsekvaj entjeroj estas {total}. "
-         f"Kiu estas la {what}?")
+    q = rng.choice([
+        f"La sumo de {count} sinsekvaj entjeroj estas {total}. Kiu estas la {what}?",
+        f"{count} sinsekvaj entjeroj sumigas al {total}. Trovu la {what}n.",
+        f"Se {count} sinsekvaj entjeroj havas sumon de {total}, kiu estas la {what}?",
+        f"Estas {count} sinsekvaj entjeroj kies sumo egalas {total}. Kalkulu la {what}n.",
+    ])
 
     # Step 1: divide sum by count → get the average = middle value
     ctx.chain.append(f"{total} / {count} = {values[count // 2]}")
@@ -977,8 +1148,14 @@ def ratio_fraction_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
         which = {"larger": "pli granda parto", "smaller": "pli malgranda parto",
                  "direct": f"parto de {target_name}"}[ask]
-        q = (f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la "
-             f"rilatumo {a}:{b}. Kiu estas la {which}?")
+        q = rng.choice([
+            f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la "
+            f"rilatumo {a}:{b}. Kiu estas la {which}?",
+            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
+            f"{qty_acc(total, obj)}. Trovu la {which}n.",
+            f"Ilia dividita nombro estas {render_qty(total, obj)}, "
+            f"en rilatumo {a}:{b}. Kiu estas la {which}?",
+        ])
 
         # step 1: sum the ratio parts
         Add("ra", "rb", "r_sum").apply(ctx)
@@ -1030,26 +1207,47 @@ def distance_direct_recipe(rng: random.Random, n_steps: int = 1) -> dict:
         ctx = Ctx.new(rng)
         ctx.protagonist = name
 
+        frame = maybe_frame(rng)
         if ask == "d":
             ctx.bind("r", r); ctx.bind("t", t)
-            q = (f"{name} veturas per sia {vehicle[0]} je {r} km/h dum {t} horoj. "
-                 f"Kiom da kilometroj {name} kovras?")
+            q = frame + rng.choice([
+                f"{name} veturas per sia {vehicle[0]} je {r} km/h dum {t} horoj. "
+                f"Kiom da kilometroj {name} kovras?",
+                f"per sia {vehicle[0]}, {name} moviĝas je {r} km/h "
+                f"dum {t} horoj. Kiu estas la kovrita distanco?",
+                f"{name} rajdas sian {vehicle[2]} je {r} km/h dum {t} horoj. "
+                f"Trovu la distancon.",
+            ])
             Mul("r", "t", "d").apply(ctx)
             final = "d"
         elif ask == "r":
             ctx.bind("d", d); ctx.bind("t", t)
-            q = (f"{name} veturas {d} km per sia {vehicle[0]} en {t} horoj. "
-                 f"Kiu estas la rapideco?")
+            q = frame + rng.choice([
+                f"{name} veturas {d} km per sia {vehicle[0]} en {t} horoj. "
+                f"Kiu estas la rapideco?",
+                f"post {t} horoj de veturado, {name} kovris {d} km per sia {vehicle[0]}. "
+                f"Kalkulu la rapidecon.",
+                f"la {vehicle[0]} de {name} kovras {d} km en {t} horoj. "
+                f"Kiu estas la rapideco?",
+            ])
             Div("d", "t", "r").apply(ctx)
             final = "r"
         else:  # ask == "t"
             if d % r != 0:
-                continue  # can't happen since d = r*t, but be safe
+                continue
             ctx.bind("d", d); ctx.bind("r", r)
-            q = (f"{name} veturas per sia {vehicle[0]} je {r} km/h. Kiom da horoj "
-                 f"bezonas por kovri {d} km?")
+            q = frame + rng.choice([
+                f"{name} veturas per sia {vehicle[0]} je {r} km/h. Kiom da horoj "
+                f"bezonas por kovri {d} km?",
+                f"per sia {vehicle[0]}, {name} moviĝas je {r} km/h. "
+                f"Kiom da tempo bezonas por {d} km?",
+                f"{name} bezonas veturi {d} km je {r} km/h per sia {vehicle[0]}. "
+                f"Kiom da horoj tio daŭros?",
+            ])
             Div("d", "r", "t").apply(ctx)
             final = "t"
+        if not frame:
+            q = q[0].upper() + q[1:]
 
         if n_steps >= 2 and ask == "d":
             # add return trip at different speed for n_steps=2
@@ -1332,9 +1530,14 @@ def age_simple_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
         mul_word = {2: "dufoje", 3: "trifoje", 4: "kvarfoje", 5: "kvinfoje"}[ratio]
         target = "juna" if ask == "young" else "olda"
-        q = (f"{names[0]} estas {mul_word} pli aĝa ol {names[1]}. "
-             f"Kune ili havas {sum_now} jarojn. Kiom aĝa estas la "
-             f"{target} persono?")
+        q = rng.choice([
+            f"{names[0]} estas {mul_word} pli aĝa ol {names[1]}. "
+            f"Kune ili havas {sum_now} jarojn. Kiom aĝa estas la {target} persono?",
+            f"La aĝo de {names[0]} estas {ratio} fojoj tiu de {names[1]}. "
+            f"La sumo de iliaj aĝoj estas {sum_now}. Trovu la aĝon de la {target}.",
+            f"{names[1]} estas x jarojn aĝa. {names[0]} estas {ratio}x. "
+            f"Kune ili estas {sum_now} jarojn aĝaj. Kiom aĝa estas la {target}?",
+        ])
 
         # Solve x + r*x = sum → (r+1)*x = sum, with combining prose
         LinearSolve("sum_coef", "zero", "sum_now", "young",
@@ -1368,8 +1571,12 @@ def consec_first_as_x_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
     lhs_terms = " + ".join(["x"] + [f"(x + {i})" for i in range(1, count)])
     what = {"smallest": "plej malgranda", "largest": "plej granda", "middle": "meza"}[ask]
-    q = (f"La sumo de {count} sinsekvaj entjeroj estas {total}. "
-         f"Kiu estas la {what}?")
+    q = rng.choice([
+        f"La sumo de {count} sinsekvaj entjeroj estas {total}. Kiu estas la {what}?",
+        f"{count} sinsekvaj entjeroj sumigas al {total}. Trovu la {what}n.",
+        f"Se {count} sinsekvaj entjeroj havas sumon de {total}, kiu estas la {what}?",
+        f"Estas {count} sinsekvaj entjeroj kies sumo egalas {total}. Kalkulu la {what}n.",
+    ])
 
     LinearSolve("n", "const", "total", "x",
                 var_name="x", lhs_shape=lhs_terms).apply(ctx)
@@ -1410,8 +1617,14 @@ def ratio_algebra_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         which = {"direct-a": f"parto de {names[0]}",
                  "direct-b": f"parto de {names[1]}",
                  "larger": "pli granda parto"}[ask]
-        q = (f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la "
-             f"rilatumo {a}:{b}. Kiu estas la {which}?")
+        q = rng.choice([
+            f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la "
+            f"rilatumo {a}:{b}. Kiu estas la {which}?",
+            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
+            f"{qty_acc(total, obj)}. Trovu la {which}n.",
+            f"La totala nombro estas {render_qty(total, obj)}, dividita en la "
+            f"rilatumo {a}:{b} inter {names[0]} kaj {names[1]}. Kiu estas la {which}?",
+        ])
 
         # x + 3x = total → 4x = total → x = total/4
         LinearSolve("r_sum", "zero", "total", "x",
