@@ -884,15 +884,26 @@ def average_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
 def fraction_cascade_recipe(rng: random.Random, n_steps: int = 2) -> dict:
     """Fraction-of-fraction. n_steps=2: single fraction. n_steps=3: fraction of fraction."""
-    fractions = [(1, 2), (1, 3), (2, 3), (1, 4), (3, 4), (1, 5), (2, 5), (3, 5), (4, 5)]
+    fractions = [(1, 2), (1, 3), (2, 3), (1, 4), (3, 4), (1, 5), (2, 5), (3, 5), (4, 5),
+                 (1, 6), (5, 6), (1, 7), (2, 7), (3, 7), (5, 7), (1, 8), (3, 8), (5, 8), (7, 8),
+                 (1, 9), (2, 9), (4, 9), (5, 9), (7, 9), (1, 10), (3, 10), (7, 10), (9, 10)]
+    # Sub-populations we cascade through (girls/red/etc.) — vary the story
+    stories = [
+        ("knabinoj", "portas ruĝan ĉemizon", "ruĝan ĉemizon"),
+        ("knaboj", "havas biciklon", "biciklon"),
+        ("studentoj", "loĝas en la urbo", "en la urbo"),
+        ("lernantoj", "sciipovas naĝi", "naĝon"),
+        ("infanoj", "ludas piedpilkon", "piedpilkon"),
+        ("klientoj", "revenas la sekvan tagon", "la sekvan tagon"),
+    ]
 
     for _try in range(100):
         f1 = rng.choice(fractions)
         f2 = rng.choice(fractions)
         base_noun = rng.choice(COUNT_ITEMS)
+        sub_pop, verb_phrase, obj_phrase = rng.choice(stories)
 
-        # base must be divisible by f1's denom, and (base*f1[0]/f1[1]) by f2's denom
-        base = f1[1] * rng.randint(2, 20)
+        base = f1[1] * rng.randint(2, 40)
         step1_result = base * f1[0] // f1[1]
         if n_steps >= 3 and (step1_result * f2[0]) % f2[1] != 0:
             continue
@@ -900,20 +911,35 @@ def fraction_cascade_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         ctx = Ctx.new(rng)
         ctx.bind("base", base, noun=base_noun)
         p = ctx.protagonist
+        frame = maybe_frame(rng)
 
-        q = f"En grupo estas {render_qty(base, base_noun)}. {f1[0]}/{f1[1]} el ili estas knabinoj."
+        opener = rng.choice([
+            f"{frame}en grupo estas {render_qty(base, base_noun)}. {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
+            f"{frame}el {render_qty(base, base_noun)}, {f1[0]}/{f1[1]} estas {sub_pop}.",
+            f"{frame}{p} kalkulis {render_qty(base, base_noun)}; {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
+        ])
+        if not frame:
+            opener = opener[0].upper() + opener[1:]
+
         Frac("base", f1[0], f1[1], "girls").apply(ctx)
         final = "girls"
 
         if n_steps >= 3:
-            q += f" El la knabinoj, {f2[0]}/{f2[1]} portas ruĝan ĉemizon."
+            opener += f" El la {sub_pop}, {f2[0]}/{f2[1]} {verb_phrase}."
             Frac("girls", f2[0], f2[1], "red").apply(ctx)
             final = "red"
-            q += f" Kiom {base_noun[3]} portas ruĝan ĉemizon?"
+            opener += rng.choice([
+                f" Kiom {base_noun[3]} {verb_phrase}?",
+                f" Kalkulu la nombron kiuj {verb_phrase}.",
+                f" Trovu kiom {verb_phrase}.",
+            ])
         else:
-            q += f" Kiom estas knabinoj?"
-
-        return ctx.render(q, final)
+            opener += rng.choice([
+                f" Kiom estas {sub_pop}?",
+                f" Trovu la nombron de {sub_pop}.",
+                f" Kiom {base_noun[3]} estas {sub_pop}?",
+            ])
+        return ctx.render(opener, final)
 
     raise RuntimeError("fraction_cascade_recipe: couldn't sample")
 
@@ -984,11 +1010,10 @@ def consec_avg_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
     Only works for odd N (so the middle is an integer) and step=1.
     """
-    count = rng.choice([3, 5])   # odd
-    # When extending, avoid "middle" so we have a value to scale
+    count = rng.choice([3, 5, 7, 9])   # odd
     ask_choices = ["smallest", "largest"] if n_steps >= 3 else ["smallest", "largest", "middle"]
     ask = rng.choice(ask_choices)
-    start = rng.randint(2, 40)
+    start = rng.randint(2, 200)
     values = [start + i for i in range(count)]
     total = sum(values)
     ctx = Ctx.new(rng)
@@ -1066,10 +1091,10 @@ INV_SCENARIOS: list[tuple[Noun, str, str, Noun]] = [
 def inverse_rate_recipe(rng: random.Random, n_steps: int = 2) -> dict:
     """W1 workers × T1 time = const. Find T2 for W2 workers (or W2 for T2)."""
     for _try in range(100):
-        w1 = rng.randint(2, 12)
-        t1 = rng.randint(2, 24)
+        w1 = rng.randint(2, 30)
+        t1 = rng.randint(2, 60)
         const = w1 * t1
-        divs = [d for d in range(1, const + 1) if const % d == 0 and d != w1 and 1 <= d <= 40]
+        divs = [d for d in range(1, const + 1) if const % d == 0 and d != w1 and 1 <= d <= 60]
         if not divs:
             continue
         w2 = rng.choice(divs)
@@ -1089,20 +1114,34 @@ def inverse_rate_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         tunit_pl = tunit[1]                        # "horoj"
         workers_pl = worker[1]                     # "maŝinoj"
 
+        frame = maybe_frame(rng)
         if ask == "find-time":
             ctx.bind("w2", w2)
-            q = (f"{w1_nom} bezonas {t1_acc} por {verb} {task}. "
-                 f"Kiom da {tunit_pl} bezonatas por {w2_nom}?")
+            q = frame + rng.choice([
+                f"{w1_nom} bezonas {t1_acc} por {verb} {task}. "
+                f"Kiom da {tunit_pl} bezonatas por {w2_nom}?",
+                f"se {w1_nom} finas {task} en {t1_acc}, kiom da {tunit_pl} "
+                f"bezonatas por {w2_nom}?",
+                f"{w1_nom} bezonas {t1_acc} por la tasko. Kiom por {w2_nom}?",
+            ])
             Mul("w1", "t1", "const").apply(ctx)
             Div("const", "w2", "t2").apply(ctx)
             final = "t2"
         else:
             ctx.bind("t2", t2)
-            q = (f"{w1_nom} bezonas {t1_acc} por {verb} {task}. "
-                 f"Kiom da {workers_pl} bezonatas por fini en {t2_acc}?")
+            q = frame + rng.choice([
+                f"{w1_nom} bezonas {t1_acc} por {verb} {task}. "
+                f"Kiom da {workers_pl} bezonatas por fini en {t2_acc}?",
+                f"{w1_nom} finas {task} en {t1_acc}. "
+                f"Kiom da {workers_pl} necesatas por fini samon en {t2_acc}?",
+                f"la tasko {verb} {task} daŭras {t1_acc} kun {w1_nom}. "
+                f"Kiom da {workers_pl} necesas por daŭri nur {t2_acc}?",
+            ])
             Mul("w1", "t1", "const").apply(ctx)
             Div("const", "t2", "w2").apply(ctx)
             final = "w2"
+        if not frame:
+            q = q[0].upper() + q[1:]
 
         # n_steps=3: compare against a third team size
         if n_steps >= 3 and ask == "find-time":
@@ -1450,8 +1489,8 @@ def distance_avg_recipe(rng: random.Random, n_steps: int = 3) -> dict:
     Avg speed = 2*rout*rback / (rout + rback).  Uses Mul + Add + Div.
     """
     for _try in range(100):
-        rout = rng.choice([40, 50, 60, 75, 80, 90, 120])
-        rback = rng.choice([30, 40, 50, 60, 75, 80])
+        rout = rng.choice([30, 40, 45, 50, 60, 70, 75, 80, 90, 100, 120, 150])
+        rback = rng.choice([20, 30, 40, 45, 50, 60, 75, 80, 90, 100])
         if rout == rback:
             continue
         num = 2 * rout * rback
@@ -1467,9 +1506,20 @@ def distance_avg_recipe(rng: random.Random, n_steps: int = 3) -> dict:
         ctx.bind("two", 2)
         ctx.bind("rout", rout); ctx.bind("rback", rback)
 
-        q = (f"{name} veturas per sia {vehicle[0]} de urbo A al urbo B je "
-             f"{rout} km/h, kaj revenas je {rback} km/h. "
-             f"Kiu estas la meza rapideco por la tuta rondiro?")
+        frame = maybe_frame(rng)
+        q = frame + rng.choice([
+            f"{name} veturas per sia {vehicle[0]} de urbo A al urbo B je "
+            f"{rout} km/h, kaj revenas je {rback} km/h. "
+            f"Kiu estas la meza rapideco por la tuta rondiro?",
+            f"per sia {vehicle[0]}, {name} iras je {rout} km/h kaj revenas je {rback} km/h. "
+            f"Kalkulu la mezan rapidecon de la rondiro.",
+            f"{name} rondiras: unue je {rout} km/h, poste reveno je {rback} km/h. "
+            f"Kiu estas la meza rapideco?",
+            f"la {vehicle[0]} de {name} iras je {rout} km/h kaj revenas je {rback} km/h. "
+            f"Trovu la mezan rapidecon.",
+        ])
+        if not frame:
+            q = q[0].upper() + q[1:]
 
         # step 1: 2 * rout = 2rout
         Mul("two", "rout", "two_rout").apply(ctx)
@@ -1556,10 +1606,10 @@ def consec_first_as_x_recipe(rng: random.Random, n_steps: int = 2) -> dict:
     """N consecutive integers summing to S. Setup: x + (x+1) + (x+2) + ... = S.
     Combine: N*x + Σoffsets = S. Solve via LinearSolve. Uses Mul for follow-ups.
     """
-    count = rng.choice([3, 4, 5])
+    count = rng.choice([3, 4, 5, 6, 7, 8])
     ask_choices = ["smallest", "largest"] if count % 2 == 0 else ["smallest", "largest", "middle"]
     ask = rng.choice(ask_choices)
-    start = rng.randint(2, 40)
+    start = rng.randint(2, 120)
     values = [start + i for i in range(count)]
     total = sum(values)
     const = sum(range(count))  # 0+1+2+...+(N-1)
@@ -1571,12 +1621,18 @@ def consec_first_as_x_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
     lhs_terms = " + ".join(["x"] + [f"(x + {i})" for i in range(1, count)])
     what = {"smallest": "plej malgranda", "largest": "plej granda", "middle": "meza"}[ask]
-    q = rng.choice([
-        f"La sumo de {count} sinsekvaj entjeroj estas {total}. Kiu estas la {what}?",
+    frame = maybe_frame(rng)
+    q = frame + rng.choice([
+        f"la sumo de {count} sinsekvaj entjeroj estas {total}. Kiu estas la {what}?",
         f"{count} sinsekvaj entjeroj sumigas al {total}. Trovu la {what}n.",
-        f"Se {count} sinsekvaj entjeroj havas sumon de {total}, kiu estas la {what}?",
-        f"Estas {count} sinsekvaj entjeroj kies sumo egalas {total}. Kalkulu la {what}n.",
+        f"se {count} sinsekvaj entjeroj havas sumon de {total}, kiu estas la {what}?",
+        f"estas {count} sinsekvaj entjeroj kies sumo egalas {total}. Kalkulu la {what}n.",
+        f"trovu la {what}n el {count} sinsekvaj entjeroj kies sumo estas {total}.",
+        f"kiam {count} sinsekvaj entjeroj sumiĝas al {total}, kiu estas la {what}?",
+        f"kiu el {count} sinsekvaj entjeroj estas la {what}, se ilia sumo estas {total}?",
     ])
+    if not frame:
+        q = q[0].upper() + q[1:]
 
     LinearSolve("n", "const", "total", "x",
                 var_name="x", lhs_shape=lhs_terms).apply(ctx)
