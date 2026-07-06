@@ -481,6 +481,7 @@ def main():
 
     import os
     import torch
+    from esperanto_lm.data import num_proc as _num_proc
     # Touch CUDA in main BEFORE any child processes are spawned. Otherwise
     # child procs get a poisoned CUDA context state that propagates back
     # to main via shared handles/env, and the trainer's later CUDA init
@@ -489,7 +490,7 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.init()
         _ = torch.cuda.device_count()
-    pack_workers = min(num_proc(), max(1, os.cpu_count() - 2))
+    pack_workers = min(_num_proc(), max(1, os.cpu_count() - 2))
     console.print(f"[bold green]Packing into max_length sequences "
                   f"(parallel, workers={pack_workers})...")
     train_shuffled = splits["train"].shuffle(seed=0)
