@@ -464,6 +464,14 @@ def main():
     pad_id = tokenizer.pad_token_id
 
     import os
+    # Touch CUDA in main BEFORE any child processes are spawned. Otherwise
+    # child procs get a poisoned CUDA context state that propagates back
+    # to main via shared handles/env, and the trainer's later CUDA init
+    # fails with 'CUDA initialization: unknown error' — model falls back
+    # to CPU silently.
+    if torch.cuda.is_available():
+        torch.cuda.init()
+        _ = torch.cuda.device_count()
     pack_workers = min(num_proc(), max(1, os.cpu_count() - 2))
     console.print(f"[bold green]Packing into max_length sequences "
                   f"(parallel, workers={pack_workers})...")
