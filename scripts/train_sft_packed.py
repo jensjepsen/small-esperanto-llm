@@ -208,7 +208,15 @@ def _pack_rows(rows, max_length: int, eos_id: int, pad_id: int, num_proc: int = 
         chunks = [rows[i:i + chunk_size] for i in range(0, n, chunk_size)]
     tasks = [(c, max_length, eos_id, pad_id) for c in chunks]
 
-    with mp.get_context("fork").Pool(num_proc) as pool:
+    # Use forkserver so we don't inherit main's large tokenized-data heap
+    # AND don't need to re-pickle spawn-style. Falls back to fork if unavail.
+    # Fork poisons CUDA init later when main touches torch.cuda; forkserver
+    # spawns children from a small stub interpreter, avoiding that.
+    try:
+        ctx = mp.get_context("forkserver")
+    except ValueError:
+        ctx = mp.get_context("fork")
+    with ctx.Pool(num_proc) as pool:
         results = pool.map(_pack_chunk, tasks)
     return [p for chunk_result in results for p in chunk_result]
 
