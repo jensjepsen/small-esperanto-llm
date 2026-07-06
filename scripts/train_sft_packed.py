@@ -195,12 +195,17 @@ def _pack_rows(rows, max_length: int, eos_id: int, pad_id: int, num_proc: int = 
 
     import multiprocessing as mp
 
-    # Split rows into num_proc balanced chunks. Convert HF Dataset to a list
-    # once so worker processes don't re-materialize rows on each read.
-    if not isinstance(rows, list):
-        rows = list(rows)
-    chunk_size = (len(rows) + num_proc - 1) // num_proc
-    chunks = [rows[i:i + chunk_size] for i in range(0, len(rows), chunk_size)]
+    # Slice with HF Dataset.select() instead of materializing the whole
+    # thing to a Python list — arrow-backed views are cheap to construct
+    # and each worker iterates its slice in-process. Materializing 1M rows
+    # into a Python list on the main process was the bottleneck.
+    n = len(rows)
+    chunk_size = (n + num_proc - 1) // num_proc
+    if hasattr(rows, "select"):
+        chunks = [rows.select(range(i, min(i + chunk_size, n)))
+                  for i in range(0, n, chunk_size)]
+    else:
+        chunks = [rows[i:i + chunk_size] for i in range(0, n, chunk_size)]
     tasks = [(c, max_length, eos_id, pad_id) for c in chunks]
 
     with mp.get_context("fork").Pool(num_proc) as pool:
