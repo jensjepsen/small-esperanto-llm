@@ -201,7 +201,14 @@ def main():
     parser.add_argument("--max-examples", type=int, default=0,
                         help="Cap total examples (split evenly across sources). "
                              "0 = no cap.")
-    parser.add_argument("--save-steps", type=int, default=500)
+    parser.add_argument("--save-steps", type=int, default=None,
+                        help="Explicit save/eval interval. If set, overrides "
+                             "--save-fraction-of-epoch. If neither is set, "
+                             "defaults to every half epoch.")
+    parser.add_argument("--save-fraction-of-epoch", type=float, default=0.5,
+                        help="Save + eval every N fraction of an epoch "
+                             "(computed from train dataset size / effective "
+                             "batch). Ignored when --save-steps is given.")
     parser.add_argument("--save-total-limit", type=int, default=3)
     parser.add_argument("--no-best", action="store_true")
     parser.add_argument(
@@ -416,6 +423,18 @@ def main():
     import torch
     use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
 
+    # Compute effective save/eval interval. Explicit --save-steps wins;
+    # otherwise derive from --save-fraction-of-epoch × steps_per_epoch.
+    effective_batch = args.batch_size * args.gradient_accumulation
+    steps_per_epoch = max(1, len(train_dataset) // effective_batch)
+    if args.save_steps is not None:
+        save_steps = args.save_steps
+    else:
+        save_steps = max(1, int(steps_per_epoch * args.save_fraction_of_epoch))
+    console.print(f"[cyan]save/eval every {save_steps} steps "
+                  f"({save_steps / steps_per_epoch:.2%} of an epoch, "
+                  f"~{steps_per_epoch} steps/epoch)")
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=args.epochs,
@@ -432,9 +451,9 @@ def main():
         fp16=not use_bf16 and torch.cuda.is_available(),
         bf16=use_bf16,
         eval_strategy="steps",
-        eval_steps=args.save_steps,
+        eval_steps=save_steps,
         save_strategy="steps",
-        save_steps=args.save_steps,
+        save_steps=save_steps,
         save_total_limit=args.save_total_limit,
         load_best_model_at_end=not args.no_best,
         metric_for_best_model="eval_loss",
