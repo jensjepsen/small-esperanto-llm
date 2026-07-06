@@ -464,6 +464,7 @@ def main():
     pad_id = tokenizer.pad_token_id
 
     import os
+    import torch
     # Touch CUDA in main BEFORE any child processes are spawned. Otherwise
     # child procs get a poisoned CUDA context state that propagates back
     # to main via shared handles/env, and the trainer's later CUDA init
