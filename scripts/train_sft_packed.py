@@ -413,7 +413,7 @@ def main():
     import hashlib as _h
     fingerprint = _h.md5(
         (str(sorted(args.sft_data)) + str(args.max_length)
-         + str(args.max_examples) + str(sum(1 for _ in raw_conversations))
+         + str(args.max_examples) + str(len(raw_ds))
          ).encode()
     ).hexdigest()[:12]
     cache_root = Path(args.output_dir or ".") / "prep_cache"
