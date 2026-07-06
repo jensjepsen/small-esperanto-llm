@@ -137,15 +137,15 @@ def _build_label_masker(assistant_id, tool_open_id, tool_close_id, unk_id):
     return mask
 
 
-def _pack_rows(rows, max_length: int, eos_id: int, pad_id: int):
-    """Greedy-pack tokenized rows ({input_ids, labels}) into max_length
-    sequences. Inserts `eos_id` between packed conversations as a
-    boundary signal (label -100 — don't train on it). Final pack padded
-    to max_length with pad_id (label -100).
+def _pack_chunk(args):
+    """Pack a single chunk of rows sequentially. Called in a worker process
+    via multiprocessing. Returns a list of packed rows (each a dict).
 
-    Each input row is assumed to already be ≤ max_length (truncated
-    upstream by the tokenizer's max_length).
+    Each chunk's final buffer is emitted as a padded pack — this creates a
+    small number of extra sub-full packs at chunk boundaries (1 per worker)
+    but that's negligible when rows/chunk ≫ 1.
     """
+    rows, max_length, eos_id, pad_id = args
     packed = []
     cur_ids: list[int] = []
     cur_labels: list[int] = []
@@ -153,24 +153,22 @@ def _pack_rows(rows, max_length: int, eos_id: int, pad_id: int):
     def _emit():
         if not cur_ids:
             return
-        ids = list(cur_ids)
-        labels = list(cur_labels)
-        attn = [1] * len(ids)
-        pad = max_length - len(ids)
+        n = len(cur_ids)
+        # Pre-size once; extend with pads if short. Faster than list(cur_ids).
+        pad = max_length - n
         if pad > 0:
-            ids.extend([pad_id] * pad)
-            labels.extend([-100] * pad)
-            attn.extend([0] * pad)
-        packed.append({
-            "input_ids": ids,
-            "attention_mask": attn,
-            "labels": labels,
-        })
+            ids = cur_ids + [pad_id] * pad
+            labels = cur_labels + [-100] * pad
+            attn = [1] * n + [0] * pad
+        else:
+            ids = cur_ids
+            labels = cur_labels
+            attn = [1] * n
+        packed.append({"input_ids": ids, "attention_mask": attn, "labels": labels})
 
     for row in rows:
         ids = row["input_ids"]
         labels = row["labels"]
-        # +1 for the EOS separator if we already have content in the buffer.
         needed = len(ids) + (1 if cur_ids else 0)
         if len(cur_ids) + needed > max_length:
             _emit()
@@ -183,6 +181,31 @@ def _pack_rows(rows, max_length: int, eos_id: int, pad_id: int):
 
     _emit()
     return packed
+
+
+def _pack_rows(rows, max_length: int, eos_id: int, pad_id: int, num_proc: int = 1):
+    """Greedy-pack tokenized rows into max_length sequences. Parallelizable
+    by chunking the input across `num_proc` workers; each chunk packs
+    independently, and results are concatenated.
+
+    num_proc=1 falls back to a single sequential pack.
+    """
+    if num_proc <= 1 or len(rows) < 10_000:
+        return _pack_chunk((rows, max_length, eos_id, pad_id))
+
+    import multiprocessing as mp
+
+    # Split rows into num_proc balanced chunks. Convert HF Dataset to a list
+    # once so worker processes don't re-materialize rows on each read.
+    if not isinstance(rows, list):
+        rows = list(rows)
+    chunk_size = (len(rows) + num_proc - 1) // num_proc
+    chunks = [rows[i:i + chunk_size] for i in range(0, len(rows), chunk_size)]
+    tasks = [(c, max_length, eos_id, pad_id) for c in chunks]
+
+    with mp.get_context("fork").Pool(num_proc) as pool:
+        results = pool.map(_pack_chunk, tasks)
+    return [p for chunk_result in results for p in chunk_result]
 
 
 def main():
@@ -408,13 +431,16 @@ def main():
     eos_id = tokenizer.eos_token_id or tokenizer.convert_tokens_to_ids("</s>")
     pad_id = tokenizer.pad_token_id
 
-    console.print("[bold green]Packing into max_length sequences...")
+    import os
+    pack_workers = min(num_proc, max(1, os.cpu_count() - 2))
+    console.print(f"[bold green]Packing into max_length sequences "
+                  f"(parallel, workers={pack_workers})...")
     train_shuffled = splits["train"].shuffle(seed=0)
     test_shuffled = splits["test"].shuffle(seed=0)
     train_packed = _pack_rows(
-        train_shuffled, args.max_length, eos_id, pad_id)
+        train_shuffled, args.max_length, eos_id, pad_id, num_proc=pack_workers)
     test_packed = _pack_rows(
-        test_shuffled, args.max_length, eos_id, pad_id)
+        test_shuffled, args.max_length, eos_id, pad_id, num_proc=pack_workers)
 
     train_dataset = Dataset.from_list(train_packed)
     eval_dataset = Dataset.from_list(test_packed)
