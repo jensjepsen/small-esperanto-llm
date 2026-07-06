@@ -481,6 +481,7 @@ def main():
 
     import os
     import torch
+    from datasets import Dataset
     from esperanto_lm.data import num_proc as _num_proc
     # Touch CUDA in main BEFORE any child processes are spawned. Otherwise
     # child procs get a poisoned CUDA context state that propagates back
