@@ -408,22 +408,41 @@ def main():
         return {"input_ids": input_ids, "attention_mask": attention_mask,
                 "labels": labels}
 
-    tokenized = raw_ds.map(
-        _tok_with_labels,
-        num_proc=num_proc(),
-        remove_columns=["text"],
-        desc="Tokenizing",
-    )
-    # Filter out malformed rows (empty after dropping no-<|assistant|>)
-    n_pre = len(tokenized)
-    tokenized = tokenized.filter(lambda r: len(r["input_ids"]) > 0,
-                                  num_proc=num_proc())
-    n_dropped = n_pre - len(tokenized)
-    if n_dropped:
-        console.print(f"[bold yellow]Dropped {n_dropped:,} malformed rows "
-                      f"(no {ASSISTANT_TOKEN})")
+    # Cache the tokenized+filtered+split dataset on disk so a crashed
+    # training run can resume without redoing 10+ minutes of tokenize.
+    import hashlib as _h
+    fingerprint = _h.md5(
+        (str(sorted(args.sft_data)) + str(args.max_length)
+         + str(args.max_examples) + str(sum(1 for _ in raw_conversations))
+         ).encode()
+    ).hexdigest()[:12]
+    cache_root = Path(args.output_dir or ".") / "prep_cache"
+    cache_dir = cache_root / fingerprint
+    if cache_dir.exists() and (cache_dir / "dataset_dict.json").exists():
+        from datasets import load_from_disk
+        console.print(f"[bold cyan]Loading cached splits from {cache_dir}")
+        splits = load_from_disk(str(cache_dir))
+    else:
+        tokenized = raw_ds.map(
+            _tok_with_labels,
+            num_proc=num_proc(),
+            remove_columns=["text"],
+            desc="Tokenizing",
+        )
+        # Filter out malformed rows (empty after dropping no-<|assistant|>)
+        n_pre = len(tokenized)
+        tokenized = tokenized.filter(lambda r: len(r["input_ids"]) > 0,
+                                      num_proc=num_proc())
+        n_dropped = n_pre - len(tokenized)
+        if n_dropped:
+            console.print(f"[bold yellow]Dropped {n_dropped:,} malformed rows "
+                          f"(no {ASSISTANT_TOKEN})")
 
-    splits = tokenized.train_test_split(test_size=0.05, seed=42)
+        splits = tokenized.train_test_split(test_size=0.05, seed=42)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        splits.save_to_disk(str(cache_dir))
+        console.print(f"[bold cyan]Saved splits to {cache_dir}")
+
     console.print(f"[bold]Pre-pack:[/] train={len(splits['train']):,} "
                   f"eval={len(splits['test']):,}")
 
