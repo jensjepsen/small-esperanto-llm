@@ -206,9 +206,22 @@ def main():
                              "--save-fraction-of-epoch. If neither is set, "
                              "defaults to every half epoch.")
     parser.add_argument("--save-fraction-of-epoch", type=float, default=0.5,
-                        help="Save + eval every N fraction of an epoch "
-                             "(computed from train dataset size / effective "
-                             "batch). Ignored when --save-steps is given.")
+                        help="Save every N fraction of an epoch (computed "
+                             "from train dataset size / effective batch). "
+                             "Ignored when --save-steps is given.")
+    parser.add_argument("--eval-fraction-of-epoch", type=float, default=None,
+                        help="Eval every N fraction of an epoch. If unset, "
+                             "matches --save-fraction-of-epoch (legacy "
+                             "coupled behavior). Set a larger value than "
+                             "save-fraction to save frequently but eval "
+                             "less often — useful when eval is unstable "
+                             "and you want frequent checkpoints for crash "
+                             "recovery.")
+    parser.add_argument("--no-pin-memory", action="store_true",
+                        help="Disable dataloader_pin_memory. Workaround for "
+                             "sporadic 'CUDA error: unknown error' in "
+                             "pin_memory thread during eval on some GPUs "
+                             "(e.g. Blackwell 5090 under load).")
     parser.add_argument("--save-total-limit", type=int, default=3)
     parser.add_argument("--no-best", action="store_true")
     parser.add_argument(
@@ -431,9 +444,20 @@ def main():
         save_steps = args.save_steps
     else:
         save_steps = max(1, int(steps_per_epoch * args.save_fraction_of_epoch))
-    console.print(f"[cyan]save/eval every {save_steps} steps "
-                  f"({save_steps / steps_per_epoch:.2%} of an epoch, "
-                  f"~{steps_per_epoch} steps/epoch)")
+    # Eval interval — decoupled from save when --eval-fraction-of-epoch given.
+    if args.eval_fraction_of_epoch is not None:
+        raw_eval_steps = max(1, int(steps_per_epoch * args.eval_fraction_of_epoch))
+        # Round to a multiple of save_steps so every eval step is also a save
+        # step — required so the best-eval checkpoint actually gets saved and
+        # tracked for load_best_at_end.
+        eval_steps = max(save_steps, (raw_eval_steps // save_steps) * save_steps)
+    else:
+        eval_steps = save_steps
+    console.print(f"[cyan]save every {save_steps} steps "
+                  f"({save_steps / steps_per_epoch:.2%} of epoch), "
+                  f"eval every {eval_steps} steps "
+                  f"({eval_steps / steps_per_epoch:.2%} of epoch), "
+                  f"~{steps_per_epoch} steps/epoch")
 
     training_args = TrainingArguments(
         output_dir=output_dir,
@@ -451,9 +475,10 @@ def main():
         fp16=not use_bf16 and torch.cuda.is_available(),
         bf16=use_bf16,
         eval_strategy="steps",
-        eval_steps=save_steps,
+        eval_steps=eval_steps,
         save_strategy="steps",
         save_steps=save_steps,
+        dataloader_pin_memory=not args.no_pin_memory,
         save_total_limit=args.save_total_limit,
         load_best_model_at_end=not args.no_best,
         metric_for_best_model="eval_loss",
