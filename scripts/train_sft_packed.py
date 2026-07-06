@@ -224,7 +224,13 @@ def _pack_rows(rows, max_length: int, eos_id: int, pad_id: int, num_proc: int = 
 def main():
     parser = argparse.ArgumentParser(description="Pack-aware SFT")
     parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--sft-data", type=str, nargs="+", required=True,
+    parser.add_argument("--tokenized-cache", type=str, default=None,
+                        help="HF Hub dataset id or local path holding an "
+                             "already-tokenized+split DatasetDict "
+                             "(from a prior run's save_to_disk / "
+                             "push_to_hub). When set, --sft-data becomes "
+                             "optional and tokenize/filter/split are skipped.")
+    parser.add_argument("--sft-data", type=str, nargs="+", required=False,
                         help="Local JSONL files or HF Hub dataset names.")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--tokenizer", type=str, default="tokenizer_morpheme")
@@ -341,120 +347,130 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    per_source_cap = (args.max_examples // len(args.sft_data)
-                      if args.max_examples else 0)
-    conversations = []
-    for source in args.sft_data:
-        console.print(f"[bold green]Loading SFT data from {source}...")
-        sft_path = Path(source)
-        if sft_path.exists():
-            conversations.extend(load_sft_data(sft_path, per_source_cap))
+    # Fast path: if --tokenized-cache points at an already-tokenized
+    # DatasetDict (HF Hub or local), skip loading + tokenizing + filtering
+    # + splitting entirely and jump straight to packing.
+    splits = None
+    if args.tokenized_cache:
+        from datasets import load_dataset as _hf_load
+        from datasets import load_from_disk as _load_from_disk
+        cache_src = Path(args.tokenized_cache)
+        if cache_src.exists():
+            console.print(f"[bold cyan]Loading tokenized cache from disk: "
+                          f"{args.tokenized_cache}")
+            splits = _load_from_disk(str(cache_src))
         else:
-            from datasets import load_dataset as hf_load
-            source_cap = per_source_cap
-            if ":" in source:
-                parts = source.split(":")
-                repo_id, config = parts[0], parts[1]
-                split = parts[2] if len(parts) > 2 else "train"
-                if len(parts) > 3 and parts[3]:
-                    source_cap = int(parts[3])
-                ds = hf_load(repo_id, config, split=split)
+            console.print(f"[bold cyan]Loading tokenized cache from HF: "
+                          f"{args.tokenized_cache}")
+            splits = _hf_load(args.tokenized_cache)
+    elif not args.sft_data:
+        raise SystemExit("--sft-data is required unless --tokenized-cache is set")
+
+    if splits is None:
+        per_source_cap = (args.max_examples // len(args.sft_data)
+                          if args.max_examples else 0)
+        conversations = []
+        for source in args.sft_data:
+            console.print(f"[bold green]Loading SFT data from {source}...")
+            sft_path = Path(source)
+            if sft_path.exists():
+                conversations.extend(load_sft_data(sft_path, per_source_cap))
             else:
-                ds = hf_load(source, split="train")
-            if source_cap:
-                ds = ds.shuffle(seed=42).select(
-                    range(min(source_cap, len(ds))))
-            for row in ds:
-                if "messages" in row:
-                    msgs = row["messages"]
+                from datasets import load_dataset as hf_load
+                source_cap = per_source_cap
+                if ":" in source:
+                    parts = source.split(":")
+                    repo_id, config = parts[0], parts[1]
+                    split = parts[2] if len(parts) > 2 else "train"
+                    if len(parts) > 3 and parts[3]:
+                        source_cap = int(parts[3])
+                    ds = hf_load(repo_id, config, split=split)
                 else:
-                    instr = (row.get("instruction") or "").strip()
-                    inp = (row.get("input") or "").strip()
-                    out = row.get("output") or row.get("response") or ""
-                    user = f"{instr}\n\n{inp}" if inp else instr
-                    msgs = [
-                        {"role": "user", "content": user},
-                        {"role": "assistant", "content": out},
-                    ]
-                conversations.append(format_conversation(msgs))
-        console.print(f"[bold]  Loaded, total so far:[/] {len(conversations):,}")
-    console.print(f"[bold]Total conversations:[/] {len(conversations):,}")
+                    ds = hf_load(source, split="train")
+                if source_cap:
+                    ds = ds.shuffle(seed=42).select(
+                        range(min(source_cap, len(ds))))
+                for row in ds:
+                    if "messages" in row:
+                        msgs = row["messages"]
+                    else:
+                        instr = (row.get("instruction") or "").strip()
+                        inp = (row.get("input") or "").strip()
+                        out = row.get("output") or row.get("response") or ""
+                        user = f"{instr}\n\n{inp}" if inp else instr
+                        msgs = [
+                            {"role": "user", "content": user},
+                            {"role": "assistant", "content": out},
+                        ]
+                    conversations.append(format_conversation(msgs))
+            console.print(f"[bold]  Loaded, total so far:[/] {len(conversations):,}")
+        console.print(f"[bold]Total conversations:[/] {len(conversations):,}")
 
-    # Tokenize + compute labels per conversation. Drop rows without
-    # an <|assistant|> token (malformed) — they'd contribute zero loss
-    # anyway and would just waste packed bytes.
-    assistant_id = tokenizer.convert_tokens_to_ids(ASSISTANT_TOKEN)
-    if assistant_id is None or assistant_id == tokenizer.unk_token_id:
-        raise RuntimeError(
-            f"Completion-only loss requires {ASSISTANT_TOKEN!r} in vocab; "
-            f"got id={assistant_id}")
-    unk_id = tokenizer.unk_token_id
-    tr_open_id = tokenizer.convert_tokens_to_ids(TOOL_RESULT_OPEN)
-    tr_close_id = tokenizer.convert_tokens_to_ids(TOOL_RESULT_CLOSE)
-    mask_tool = (tr_open_id != unk_id and tr_close_id != unk_id)
-    console.print(
-        f"[bold]Masking prompt before+including {ASSISTANT_TOKEN!r} "
-        f"(id={assistant_id}); tool-result spans masked: {mask_tool}")
+        assistant_id = tokenizer.convert_tokens_to_ids(ASSISTANT_TOKEN)
+        if assistant_id is None or assistant_id == tokenizer.unk_token_id:
+            raise RuntimeError(
+                f"Completion-only loss requires {ASSISTANT_TOKEN!r} in vocab; "
+                f"got id={assistant_id}")
+        unk_id = tokenizer.unk_token_id
+        tr_open_id = tokenizer.convert_tokens_to_ids(TOOL_RESULT_OPEN)
+        tr_close_id = tokenizer.convert_tokens_to_ids(TOOL_RESULT_CLOSE)
+        mask_tool = (tr_open_id != unk_id and tr_close_id != unk_id)
+        console.print(
+            f"[bold]Masking prompt before+including {ASSISTANT_TOKEN!r} "
+            f"(id={assistant_id}); tool-result spans masked: {mask_tool}")
 
-    tokenize_fn = _build_preprocess_and_tokenize(
-        tokenizer, special_tokens, args.max_length)
-    label_fn = _build_label_masker(
-        assistant_id, tr_open_id, tr_close_id, unk_id)
+        tokenize_fn = _build_preprocess_and_tokenize(
+            tokenizer, special_tokens, args.max_length)
+        label_fn = _build_label_masker(
+            assistant_id, tr_open_id, tr_close_id, unk_id)
 
-    console.print("[bold green]Tokenizing + computing labels...")
-    from datasets import Dataset
-    from esperanto_lm.data import num_proc
+        console.print("[bold green]Tokenizing + computing labels...")
+        from datasets import Dataset
+        from esperanto_lm.data import num_proc
 
-    raw_ds = Dataset.from_dict({"text": conversations})
+        raw_ds = Dataset.from_dict({"text": conversations})
 
-    def _tok_with_labels(row):
-        enc = tokenize_fn(row["text"])
-        input_ids = enc["input_ids"]
-        attention_mask = enc.get("attention_mask", [1] * len(input_ids))
-        labels = label_fn(input_ids)
-        if labels is None:
-            return {"input_ids": [], "attention_mask": [], "labels": []}
-        # Return exactly these 3 keys regardless of what the tokenizer
-        # added — HF datasets' batched .map() across workers crashes
-        # with KeyError if the per-row return dict has inconsistent keys
-        # (some tokenizer configs slip in `token_type_ids`).
-        return {"input_ids": input_ids, "attention_mask": attention_mask,
-                "labels": labels}
+        def _tok_with_labels(row):
+            enc = tokenize_fn(row["text"])
+            input_ids = enc["input_ids"]
+            attention_mask = enc.get("attention_mask", [1] * len(input_ids))
+            labels = label_fn(input_ids)
+            if labels is None:
+                return {"input_ids": [], "attention_mask": [], "labels": []}
+            return {"input_ids": input_ids, "attention_mask": attention_mask,
+                    "labels": labels}
 
-    # Cache the tokenized+filtered+split dataset on disk so a crashed
-    # training run can resume without redoing 10+ minutes of tokenize.
-    import hashlib as _h
-    fingerprint = _h.md5(
-        (str(sorted(args.sft_data)) + str(args.max_length)
-         + str(args.max_examples) + str(len(raw_ds))
-         ).encode()
-    ).hexdigest()[:12]
-    cache_root = Path(args.output_dir or ".") / "prep_cache"
-    cache_dir = cache_root / fingerprint
-    if cache_dir.exists() and (cache_dir / "dataset_dict.json").exists():
-        from datasets import load_from_disk
-        console.print(f"[bold cyan]Loading cached splits from {cache_dir}")
-        splits = load_from_disk(str(cache_dir))
-    else:
-        tokenized = raw_ds.map(
-            _tok_with_labels,
-            num_proc=num_proc(),
-            remove_columns=["text"],
-            desc="Tokenizing",
-        )
-        # Filter out malformed rows (empty after dropping no-<|assistant|>)
-        n_pre = len(tokenized)
-        tokenized = tokenized.filter(lambda r: len(r["input_ids"]) > 0,
-                                      num_proc=num_proc())
-        n_dropped = n_pre - len(tokenized)
-        if n_dropped:
-            console.print(f"[bold yellow]Dropped {n_dropped:,} malformed rows "
-                          f"(no {ASSISTANT_TOKEN})")
+        import hashlib as _h
+        fingerprint = _h.md5(
+            (str(sorted(args.sft_data)) + str(args.max_length)
+             + str(args.max_examples) + str(len(raw_ds))
+             ).encode()
+        ).hexdigest()[:12]
+        cache_root = Path(args.output_dir or ".") / "prep_cache"
+        cache_dir = cache_root / fingerprint
+        if cache_dir.exists() and (cache_dir / "dataset_dict.json").exists():
+            from datasets import load_from_disk
+            console.print(f"[bold cyan]Loading cached splits from {cache_dir}")
+            splits = load_from_disk(str(cache_dir))
+        else:
+            tokenized = raw_ds.map(
+                _tok_with_labels,
+                num_proc=num_proc(),
+                remove_columns=["text"],
+                desc="Tokenizing",
+            )
+            n_pre = len(tokenized)
+            tokenized = tokenized.filter(lambda r: len(r["input_ids"]) > 0,
+                                          num_proc=num_proc())
+            n_dropped = n_pre - len(tokenized)
+            if n_dropped:
+                console.print(f"[bold yellow]Dropped {n_dropped:,} malformed "
+                              f"rows (no {ASSISTANT_TOKEN})")
 
-        splits = tokenized.train_test_split(test_size=0.05, seed=42)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        splits.save_to_disk(str(cache_dir))
-        console.print(f"[bold cyan]Saved splits to {cache_dir}")
+            splits = tokenized.train_test_split(test_size=0.05, seed=42)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            splits.save_to_disk(str(cache_dir))
+            console.print(f"[bold cyan]Saved splits to {cache_dir}")
 
     console.print(f"[bold]Pre-pack:[/] train={len(splits['train']):,} "
                   f"eval={len(splits['test']):,}")
