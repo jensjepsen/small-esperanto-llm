@@ -100,6 +100,9 @@ def main():
                     help="Samples per row for pass@K (default: 1 = greedy)")
     ap.add_argument("--temperature", type=float, default=0.7,
                     help="Sampling temperature when --k > 1 (default 0.7)")
+    ap.add_argument("--top-p", type=float, default=0.9,
+                    help="Nucleus sampling threshold (default 0.9, "
+                         "matches earlier v15 pass@k protocol)")
     ap.add_argument("--max-new-tokens", type=int, default=400)
     ap.add_argument("--out", type=str, default=None,
                     help="Per-row JSONL output path (default: "
@@ -157,6 +160,7 @@ def main():
                 max_new_tokens=args.max_new_tokens,
                 do_sample=(k > 1),
                 temperature=args.temperature if k > 1 else None,
+                top_p=args.top_p if k > 1 else None,
                 num_beams=1,
                 num_return_sequences=k,
                 pad_token_id=tok.pad_token_id,
