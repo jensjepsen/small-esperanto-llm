@@ -70,6 +70,9 @@ def parse_args():
         Path("mt/data/parallel/opus100_validation.jsonl"),
         Path("mt/data/parallel/eval_mmlu_stem.jsonl"),
         Path("mt/data/parallel/eval_sciq.jsonl"),
+        # Held-out math CoT eval (wp_compose seed=99999, ~1k rows).
+        # Signals whether math-domain BLEU is moving during v8-mt training.
+        Path("mt/data/parallel/eval_math_wp.jsonl"),
     ])
     ap.add_argument("--val-names", nargs="*", type=str, default=None,
                     help="Names for each val file (defaults to file stem). When >1 val file is "
