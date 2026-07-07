@@ -927,15 +927,20 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
 
 # ─── Recipe 2: percent ──────────────────────────────────────────────────────
 
-def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None) -> dict:
+def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None,
+                    reverse: bool = False) -> dict:
     """Percent problems in 3 notation styles × 5 scenarios.
 
     n_steps=2: single percentage (of-amount, saving)  or  base ± pct%  (discount, markup, tax)
     n_steps=3: stacked — e.g. discount then tax
+
+    reverse=True: only 'of-amount' and 'saving' are supported (single Pct
+    linear chain). The rest use base twice → branching, deferred.
     """
     ops = ["discount", "markup", "tax", "of-amount", "saving"]
     if op is None:
-        op = rng.choice(ops)
+        # In reverse mode, restrict to op types with a linear-chain inverse.
+        op = rng.choice(["of-amount", "saving"]) if reverse else rng.choice(ops)
     style = rng.choice(["direct", "decimal", "multiplier"])
     # multiplier only makes sense with a ± change; if of-amount/saving, fall through
     if op in ("of-amount", "saving"):
@@ -1008,20 +1013,35 @@ def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None) 
                     f"kaj oni aldonas {pct}% imposton. Kiom estas la finkosto?",
                 ])
             elif op == "of-amount":
-                q = frame + rng.choice([
-                    f"{p} kalkulis {pct}% de {base_qty_nom}. Kiu estas la rezulto?",
-                    f"trovu {pct}% el {base_qty_nom}.",
-                    f"kiom estas {pct}% de {base_qty_nom}?",
-                ])
+                if not reverse:
+                    q = frame + rng.choice([
+                        f"{p} kalkulis {pct}% de {base_qty_nom}. Kiu estas la rezulto?",
+                        f"trovu {pct}% el {base_qty_nom}.",
+                        f"kiom estas {pct}% de {base_qty_nom}?",
+                    ])
+                else:
+                    q = frame + rng.choice([
+                        f"{p} kalkulis {pct}% de nekonata sumo en {EUR[1]}.",
+                        f"{pct}% el iu sumo en {EUR[1]} estas jena kvanto.",
+                        f"{p} scias, ke {pct}% de sia buĝeto en {EUR[1]} egalas iun kvanton.",
+                    ])
             elif op == "saving":
-                q = frame + rng.choice([
-                    f"{p} aĉetis {item_acc} kiu kostis {base_qty_acc} "
-                    f"kun {pct}% rabato. Kiom da {EUR[1]} {p} ŝparis?",
-                    f"{item_nom} kostis {base_qty_acc}, kun rabato de {pct}%. "
-                    f"Kiom {p} ŝparis?",
-                    f"{p} akiris {pct}% rabaton sur {item_acc} de {base_qty_acc}. "
-                    f"Kalkulu la ŝparon.",
-                ])
+                if not reverse:
+                    q = frame + rng.choice([
+                        f"{p} aĉetis {item_acc} kiu kostis {base_qty_acc} "
+                        f"kun {pct}% rabato. Kiom da {EUR[1]} {p} ŝparis?",
+                        f"{item_nom} kostis {base_qty_acc}, kun rabato de {pct}%. "
+                        f"Kiom {p} ŝparis?",
+                        f"{p} akiris {pct}% rabaton sur {item_acc} de {base_qty_acc}. "
+                        f"Kalkulu la ŝparon.",
+                    ])
+                else:
+                    q = frame + rng.choice([
+                        f"{p} aĉetis {item_acc} kun {pct}% rabato. "
+                        f"La origina prezo estas ankoraŭ nekonata.",
+                        f"{p} akiris {pct}% rabaton sur {item_acc}. "
+                        f"La origina prezo estas nekonata.",
+                    ])
             # Capitalize first char if no frame
             if not frame:
                 q = q[0].upper() + q[1:]
@@ -1029,8 +1049,12 @@ def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None) 
             item = rng.choice(COUNT_ITEMS)
             noun_acc_pl = item[3]   # "studentojn"
             noun_nom_pl = item[1]   # "studentoj"
-            q = (f"En klaso estas {render_qty(base, item)}. {pct}% el ili "
-                 f"portas okulvitrojn. Kiom {noun_acc_pl} portas okulvitrojn?")
+            if not reverse:
+                q = (f"En klaso estas {render_qty(base, item)}. {pct}% el ili "
+                     f"portas okulvitrojn. Kiom {noun_acc_pl} portas okulvitrojn?")
+            else:
+                q = (f"En klaso estas nekonata nombro de {noun_nom_pl}. "
+                     f"{pct}% el ili portas okulvitrojn.")
 
         # Compute the answer using appropriate ops
         if style == "multiplier" and op in ("discount", "markup", "tax"):
@@ -1062,12 +1086,67 @@ def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None) 
         # n_steps=3: stack a second percentage on top (discount then tax)
         if n_steps >= 3 and op == "discount" and pct2 is not None and final == "res":
             ctx.bind("pct2", pct2)
-            q += f" Nun aldonu {pct2}% imposton sur la nova prezo. Kiu estas la fina prezo?"
+            if not reverse:
+                q += f" Nun aldonu {pct2}% imposton sur la nova prezo. Kiu estas la fina prezo?"
             Pct("pct2", "res", "tax_amt", style="direct").apply(ctx)
             Add("res", "tax_amt", "final_price").apply(ctx)
             final = "final_price"
 
-        return ctx.render(q, final)
+        if not reverse:
+            return ctx.render(q, final)
+
+        # Reverse mode: only supported for the linear-Pct paths.
+        # (discount/markup/tax use base twice — deferred.)
+        if op not in ("of-amount", "saving"):
+            raise RuntimeError(f"percent_recipe: reverse not supported for op={op}")
+
+        final_val = int(ctx.n(final))
+        # In of-amount / saving the final is the amount (result of Pct).
+        # We ask for base. Units differ by scenario:
+        #   shop:  amount + base both in EUR (or SHOP_ITEMS count in some paths)
+        #   count: amount + base both a count of `item`
+        if scenario_kind == "count":
+            state = rng.choice([
+                f" {final_val} {item[1]} portas okulvitrojn.",
+                f" Estas {render_qty(final_val, item)} kun okulvitroj.",
+            ])
+            closer = rng.choice([
+                f"Kiom da {item[1]} estas en la klaso?",
+                f"Trovu la totalan nombron de {item[1]}.",
+                f"Kalkulu la nombron de {item[1]} en la klaso.",
+            ])
+        elif op == "of-amount":
+            state = rng.choice([
+                f" La rezulto estas {render_qty(final_val, EUR)}.",
+                f" Tio egalas {render_qty(final_val, EUR)}.",
+                f" Ĝi egalas {render_qty(final_val, EUR)}.",
+            ])
+            closer = rng.choice([
+                f"Kiu estis la origina sumo en {EUR[1]}?",
+                f"Kalkulu la originan sumon.",
+                f"Trovu la originalan valoron.",
+            ])
+        else:  # saving
+            state = rng.choice([
+                f" {p} ŝparis {render_qty(final_val, EUR)}.",
+                f" La ŝparita sumo estas {render_qty(final_val, EUR)}.",
+            ])
+            closer = rng.choice([
+                f"Kiu estis la origina prezo de {item_nom}?",
+                f"Trovu la originan prezon.",
+                f"Kalkulu la originan prezon de {item_nom}.",
+            ])
+        q += state
+        result = ctx.render_reverse(
+            forward_prose=q,
+            forward_final_var=final,
+            ask_var="base",
+            closer=closer,
+        )
+        result["recipe"] = "percent_reverse"
+        result["n_steps"] = n_steps
+        result["direction"] = "reverse"
+        return result
 
     raise RuntimeError("percent_recipe: couldn't sample divisible params")
 
@@ -1236,9 +1315,14 @@ def fraction_cascade_recipe(rng: random.Random, n_steps: int = 2,
 
 # ─── Recipe 5: ratio_diff ───────────────────────────────────────────────────
 
-def ratio_diff_recipe(rng: random.Random, n_steps: int = 3) -> dict:
+def ratio_diff_recipe(rng: random.Random, n_steps: int = 3,
+                        reverse: bool = False) -> dict:
     """N:M ratio splits `total` between two people; compute each part; report difference.
     Uses only Div + Mul + Sub — no algebra.
+
+    reverse=True: state the diff, ask for total.  Uses recipe-local closed-form
+    inverse (the forward chain uses `unit` twice — branching — so we bypass
+    render_reverse).
     """
     names = rng.sample(NAMES, 2)
     obj = rng.choice(OBJECT_NOUNS)
@@ -1257,38 +1341,93 @@ def ratio_diff_recipe(rng: random.Random, n_steps: int = 3) -> dict:
         ctx.bind("a", a * unit, noun=obj)  # used as `larger` value later, but computed by chain
         ctx.bind("b", b * unit, noun=obj)
 
+        if not reverse:
+            q = rng.choice([
+                f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} "
+                f"laŭ la rilatumo {a}:{b}. Kiu estas la diferenco inter iliaj partoj?",
+                f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
+                f"{qty_acc(total, obj)}. Kiom pli havas unu ol la alia?",
+                f"{names[0]} ricevas {a} partojn, {names[1]} ricevas {b} partojn, "
+                f"el entute {render_qty(total, obj)}. Trovu la diferencon.",
+            ])
+
+            # Steps: total / (a+b) = unit; a*unit; b*unit; diff
+            # But we need the chain to *derive* unit; use Div op.
+            Div("total", "parts", "unit").apply(ctx)      # step 1: total/(a+b) = unit
+            ctx.bind("ra", a)
+            ctx.bind("rb", b)
+            Mul("ra", "unit", "part_a").apply(ctx)         # step 2: a * unit
+            Mul("rb", "unit", "part_b").apply(ctx)         # step 3: b * unit
+            Sub("part_b", "part_a", "diff").apply(ctx)     # step 4
+            final = "diff"
+
+            # n_steps=5: split the difference into K equal portions
+            if n_steps >= 5:
+                diff_val = int(ctx.n("diff"))
+                portions = [k for k in (2, 3, 4, 5) if diff_val % k == 0]
+                if not portions:
+                    continue
+                k = rng.choice(portions)
+                ctx.bind("k", k)
+                q += f" Se ni disdividas la diferencon egalpartige inter {k} personoj, kiom ricevas ĉiu?"
+                Div("diff", "k", "per_person").apply(ctx)
+                final = "per_person"
+
+            return ctx.render(q, final)
+
+        # ── Reverse path ──
+        # diff = (b - a) * unit;  total = (a + b) * unit
+        # → total = diff * (a + b) / (b - a)
+        # Ensure divisibility (should be, since (a+b)*(b-a) = b^2-a^2 divides).
+        # Absolute diff so numbers stay positive regardless of a vs b order.
+        larger_r, smaller_r = (b, a) if b > a else (a, b)
+        diff = (larger_r - smaller_r) * unit
+        if diff <= 0:
+            continue  # degenerate (a == b); resample
+        # Build reverse question
         q = rng.choice([
-            f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} "
-            f"laŭ la rilatumo {a}:{b}. Kiu estas la diferenco inter iliaj partoj?",
-            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
-            f"{qty_acc(total, obj)}. Kiom pli havas unu ol la alia?",
-            f"{names[0]} ricevas {a} partojn, {names[1]} ricevas {b} partojn, "
-            f"el entute {render_qty(total, obj)}. Trovu la diferencon.",
+            f"{names[0]} kaj {names[1]} dividas nekonatan sumon "
+            f"laŭ la rilatumo {a}:{b}. La diferenco inter iliaj partoj estas "
+            f"{render_qty(diff, obj)}.",
+            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas iom da {obj[1]}. "
+            f"Unu havas {render_qty(diff, obj)} pli ol la alia.",
+            f"{names[0]} ricevas {a} partojn, {names[1]} ricevas {b} partojn "
+            f"el nekonata totalo. La diferenco estas {render_qty(diff, obj)}.",
         ])
-
-        # Steps: total / (a+b) = unit; a*unit; b*unit; diff
-        # But we need the chain to *derive* unit; use Div op.
-        Div("total", "parts", "unit").apply(ctx)      # step 1: total/(a+b) = unit
-        ctx.bind("ra", a)
-        ctx.bind("rb", b)
-        Mul("ra", "unit", "part_a").apply(ctx)         # step 2: a * unit
-        Mul("rb", "unit", "part_b").apply(ctx)         # step 3: b * unit
-        Sub("part_b", "part_a", "diff").apply(ctx)     # step 4
-        final = "diff"
-
-        # n_steps=5: split the difference into K equal portions
-        if n_steps >= 5:
-            diff_val = int(ctx.n("diff"))
-            portions = [k for k in (2, 3, 4, 5) if diff_val % k == 0]
-            if not portions:
-                continue
-            k = rng.choice(portions)
-            ctx.bind("k", k)
-            q += f" Se ni disdividas la diferencon egalpartige inter {k} personoj, kiom ricevas ĉiu?"
-            Div("diff", "k", "per_person").apply(ctx)
-            final = "per_person"
-
-        return ctx.render(q, final)
+        closer = rng.choice([
+            f" Kalkulu la totalan sumon.",
+            f" Trovu kiom da {obj[1]} estas entute.",
+            f" Kiom da {obj[1]} estas entute?",
+        ])
+        # Manual chain (recipe-local closed-form inverse):
+        #   1) b - a = step   (difference of ratio parts)
+        #   2) diff / step = unit
+        #   3) a + b = parts
+        #   4) unit * parts = total
+        step = larger_r - smaller_r
+        parts = a + b
+        ctx.chain.append(f"{larger_r} - {smaller_r} = {step}")
+        ctx.chain.append(f"{diff} / {step} = {unit}")
+        ctx.chain.append(f"{a} + {b} = {parts}")
+        ctx.chain.append(f"{unit} * {parts} = {total}")
+        ctx.prose.append(
+            f"La diferenco de la rilatumaj partoj estas {larger_r} - {smaller_r} = {step}."
+        )
+        ctx.prose.append(
+            f"Do la valoro de unu parto estas {diff} / {step} = {unit}."
+        )
+        ctx.prose.append(
+            f"La sumo de rilatumaj partoj estas {a} + {b} = {parts}."
+        )
+        ctx.prose.append(
+            f"Do la totalo estas {unit} * {parts} = {total}."
+        )
+        ctx.bind("total_rev", total, noun=obj)
+        result = ctx.render(q + closer, "total_rev")
+        result["recipe"] = "ratio_diff_reverse"
+        result["n_steps"] = n_steps
+        result["direction"] = "reverse"
+        return result
 
     raise RuntimeError("ratio_diff_recipe: couldn't sample")
 
@@ -1730,9 +1869,14 @@ def coin_assume_recipe(rng: random.Random, n_steps: int = 3) -> dict:
 
 # ─── Recipe 11: distance_catchup ────────────────────────────────────────────
 
-def distance_catchup_recipe(rng: random.Random, n_steps: int = 2) -> dict:
+def distance_catchup_recipe(rng: random.Random, n_steps: int = 2,
+                              reverse: bool = False) -> dict:
     """A leaves at ra km/h; h hours later B leaves at rb (rb > ra) and catches up.
     t = ra*h / (rb-ra).  Uses Mul + Sub + Div.
+
+    reverse=True (n_steps=2 only): state t, ask for h (head-start hours).
+    Path h → head_start → t is linear; ra reuse in the Sub doesn't
+    interfere because the Sub isn't on the h path.
     """
     for _try in range(100):
         ra = rng.choice([40, 50, 60, 70, 75, 80])
@@ -1752,10 +1896,15 @@ def distance_catchup_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         ctx.protagonist = names[1]
         ctx.bind("ra", ra); ctx.bind("h", h); ctx.bind("rb", rb)
 
-        q = (f"{names[0]} ekveturas per sia {vehicle[0]} je {ra} km/h. "
-             f"Post {h} horoj, {names[1]} ekiras de la sama loko "
-             f"en la sama direkto je {rb} km/h. "
-             f"Post kiom da horoj {names[1]} atingos {names[0]}?")
+        if not reverse:
+            q = (f"{names[0]} ekveturas per sia {vehicle[0]} je {ra} km/h. "
+                 f"Post {h} horoj, {names[1]} ekiras de la sama loko "
+                 f"en la sama direkto je {rb} km/h. "
+                 f"Post kiom da horoj {names[1]} atingos {names[0]}?")
+        else:
+            q = (f"{names[0]} ekveturas per sia {vehicle[0]} je {ra} km/h. "
+                 f"Post nekonata nombro de horoj, {names[1]} ekiras de la sama "
+                 f"loko en la sama direkto je {rb} km/h.")
 
         # step 1: head start distance = ra * h
         Mul("ra", "h", "head_start").apply(ctx)
@@ -1767,22 +1916,48 @@ def distance_catchup_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
         # n_steps=4: also compute how far A had gone by catch-up
         if n_steps >= 4:
-            q += f" Kiom da km {names[0]} veturis kiam {names[1]} atingis?"
+            if not reverse:
+                q += f" Kiom da km {names[0]} veturis kiam {names[1]} atingis?"
             # A's total time = h + t; A's distance = ra * (h + t)
             Add("h", "t", "a_total_time").apply(ctx)
             Mul("ra", "a_total_time", "a_dist").apply(ctx)
             final = "a_dist"
 
-        return ctx.render(q, final)
+        if not reverse:
+            return ctx.render(q, final)
+
+        # Reverse: given t (n_steps=2) or a_dist (n_steps=4), find h.
+        # We only support n_steps=2 for reverse (n_steps=4 has an Add step
+        # that reuses h — becomes a branching chain).
+        if n_steps >= 4:
+            raise RuntimeError("distance_catchup: reverse not supported for n_steps=4")
+
+        final_val = int(ctx.n(final))
+        q += f" {names[1]} atingas {names[0]} post {final_val} horoj."
+        closer = f" Kalkulu, post kiom da horoj {names[1]} ekiris post {names[0]}."
+        result = ctx.render_reverse(
+            forward_prose=q,
+            forward_final_var=final,
+            ask_var="h",
+            closer=closer,
+        )
+        result["recipe"] = "distance_catchup_reverse"
+        result["n_steps"] = n_steps
+        result["direction"] = "reverse"
+        return result
 
     raise RuntimeError("distance_catchup_recipe: couldn't sample")
 
 
 # ─── Recipe 12: distance_meeting ────────────────────────────────────────────
 
-def distance_meeting_recipe(rng: random.Random, n_steps: int = 2) -> dict:
+def distance_meeting_recipe(rng: random.Random, n_steps: int = 2,
+                              reverse: bool = False) -> dict:
     """Two vehicles start at opposite ends of distance D, moving toward each other.
     t = D / (r1 + r2).  Uses Add + Div.
+
+    reverse=True (n_steps=2 only): state t, ask for D. Uses render_reverse
+    (chain path: d → t is linear, r_sum is a side input).
     """
     for _try in range(100):
         r1 = rng.choice([30, 40, 50, 60, 70])
@@ -1797,10 +1972,15 @@ def distance_meeting_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         ctx.protagonist = names[0]
         ctx.bind("r1", r1); ctx.bind("r2", r2); ctx.bind("d", d)
 
-        q = (f"{names[0]} kaj {names[1]} ekiras samtempe de du urboj "
-             f"distancaj je {d} km, veturante unu al la alia. "
-             f"{names[0]} veturas je {r1} km/h, {names[1]} je {r2} km/h. "
-             f"Post kiom da horoj ili renkontiĝos?")
+        if not reverse:
+            q = (f"{names[0]} kaj {names[1]} ekiras samtempe de du urboj "
+                 f"distancaj je {d} km, veturante unu al la alia. "
+                 f"{names[0]} veturas je {r1} km/h, {names[1]} je {r2} km/h. "
+                 f"Post kiom da horoj ili renkontiĝos?")
+        else:
+            q = (f"{names[0]} kaj {names[1]} ekiras samtempe de du urboj kun "
+                 f"nekonata distanco inter ili, veturante unu al la alia. "
+                 f"{names[0]} veturas je {r1} km/h, {names[1]} je {r2} km/h.")
 
         Add("r1", "r2", "r_sum").apply(ctx)
         Div("d", "r_sum", "t").apply(ctx)
@@ -1808,11 +1988,31 @@ def distance_meeting_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
         # n_steps=3: also ask how far each traveled — Mul each speed by t
         if n_steps >= 3:
-            q += f" Kiom da km {names[0]} veturis kiam ili renkontiĝas?"
+            if not reverse:
+                q += f" Kiom da km {names[0]} veturis kiam ili renkontiĝas?"
             Mul("r1", "t", "d1").apply(ctx)
             final = "d1"
 
-        return ctx.render(q, final)
+        if not reverse:
+            return ctx.render(q, final)
+
+        # Reverse: state t (or d1 for n_steps=3) as given, ask for d
+        final_val = int(ctx.n(final))
+        if n_steps >= 3:
+            q += f" {names[0]} veturis {final_val} km ĝis ili renkontiĝis."
+        else:
+            q += f" Ili renkontiĝas post {final_val} horoj."
+        closer = " Kalkulu la originalan distancon inter la du urboj."
+        result = ctx.render_reverse(
+            forward_prose=q,
+            forward_final_var=final,
+            ask_var="d",
+            closer=closer,
+        )
+        result["recipe"] = "distance_meeting_reverse"
+        result["n_steps"] = n_steps
+        result["direction"] = "reverse"
+        return result
 
     raise RuntimeError("distance_meeting_recipe: couldn't sample")
 
@@ -2049,7 +2249,15 @@ RECIPES = {
 }
 
 
-REVERSABLE_RECIPES = {"ratio_parts", "fraction_cascade", "ratio_fraction"}
+REVERSABLE_RECIPES = {
+    "ratio_parts",
+    "fraction_cascade",
+    "ratio_fraction",
+    "percent",
+    "ratio_diff",
+    "distance_meeting",
+    "distance_catchup",
+}
 
 
 def main():
