@@ -91,11 +91,19 @@ def parse_args():
                     help="Names for each val file (defaults to file stem). When >1 val file is "
                          "given, eval metrics are prefixed eval_<name>_bleu/chrf.")
     ap.add_argument("--metric-for-best-model", type=str,
-                    default="flores_devtest_bleu",
+                    default="flores_devtest_loss",
                     help="Which metric to track for best-model. Default is "
-                         "flores_devtest_bleu (industry-standard OOD bench). "
-                         "Other options: opus100_validation_bleu, "
-                         "eval_mmlu_stem_bleu, eval_sciq_bleu.")
+                         "flores_devtest_loss (bug-immune — computed via teacher "
+                         "forcing, no beam search). BLEU-based metrics like "
+                         "flores_devtest_bleu are affected by HF issue #38116 "
+                         "(beam search collapses on ~10% of inputs with peaked "
+                         "logits) — later converged ckpts get systematically "
+                         "penalized. Loss is well-correlated with BLEU on "
+                         "well-behaved MT training.")
+    ap.add_argument("--greater-is-better", type=lambda s: s.lower() == "true",
+                    default=False,
+                    help="Whether a HIGHER metric value is better. Default False "
+                         "since metric_for_best_model defaults to loss.")
     ap.add_argument("--direction", default="en2eo", choices=["en2eo", "eo2en", "bidir"],
                     help="Training direction. 'bidir' randomizes per-pair so both directions "
                          "share encoder/decoder learning. Eval direction stays fixed via --val-direction.")
@@ -300,7 +308,7 @@ def main():
         generation_num_beams=4,
         load_best_model_at_end=True,
         metric_for_best_model=args.metric_for_best_model,
-        greater_is_better=True,
+        greater_is_better=args.greater_is_better,
         report_to=["wandb"] if os.environ.get("WANDB_API_KEY") else ["none"],
         run_name=args.run_name or Path(args.output_dir).name,
         seed=args.seed,
