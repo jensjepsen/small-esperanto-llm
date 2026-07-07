@@ -1599,85 +1599,120 @@ def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None,
         p = ctx.protagonist
 
         if scenario_kind == "shop":
-            item: Noun = rng.choice(SHOP_ITEMS)
+            item_idx = rng.randrange(len(SHOP_ITEMS))
+            item: Noun = SHOP_ITEMS[item_idx]
+            item_en = SHOP_ITEMS_EN[item_idx]
             base_qty_acc = qty_acc(base, EUR)     # "200 eŭrojn"
             base_qty_nom = render_qty(base, EUR)  # "200 eŭroj"
+            base_qty_en = render_qty_en(base, EUR_EN)  # "200 euros"
             item_acc = item[2]                    # "biciklon"
             item_nom = item[0]                    # "biciklo"
+            item_nom_en = item_en[0]              # "bicycle"
 
-            frame = maybe_frame(rng)
+            frame, frame_en = maybe_frame_bi(rng)
             if op == "discount":
-                q = frame + rng.choice([
-                    f"{p} aĉetas {item_acc} kiu kostas {base_qty_acc}. "
-                    f"La vendejo donas rabaton de {pct}%. Kiom {p} pagas?",
-                    f"la origina prezo de {item_nom} estas {base_qty_nom}. "
-                    f"Kun {pct}% rabato, kiu estas la nova prezo?",
-                    f"{item_nom} kostas {base_qty_acc}. "
-                    f"Kun rabato de {pct}%, kiom {p} devas pagi?",
-                    f"{p} vidas {item_acc} je {base_qty_acc}, kun {pct}% rabato. "
-                    f"Kalkulu la finan prezon.",
-                ])
+                openers_eo = [
+                    f"{frame}{p} aĉetas {item_acc} kiu kostas {base_qty_acc}. La vendejo donas rabaton de {pct}%. Kiom {p} pagas?",
+                    f"{frame}la origina prezo de {item_nom} estas {base_qty_nom}. Kun {pct}% rabato, kiu estas la nova prezo?",
+                    f"{frame}{item_nom} kostas {base_qty_acc}. Kun rabato de {pct}%, kiom {p} devas pagi?",
+                    f"{frame}{p} vidas {item_acc} je {base_qty_acc}, kun {pct}% rabato. Kalkulu la finan prezon.",
+                ]
+                openers_en = [
+                    f"{frame_en}{p} buys a {item_nom_en} that costs {base_qty_en}. The store gives a {pct}% discount. How much does {p} pay?",
+                    f"{frame_en}the original price of the {item_nom_en} is {base_qty_en}. With a {pct}% discount, what is the new price?",
+                    f"{frame_en}the {item_nom_en} costs {base_qty_en}. With a {pct}% discount, how much does {p} have to pay?",
+                    f"{frame_en}{p} sees a {item_nom_en} at {base_qty_en}, with a {pct}% discount. Calculate the final price.",
+                ]
             elif op == "markup":
-                q = frame + rng.choice([
-                    f"la prezo de {item_nom} estis {base_qty_nom} sed pliiĝis je {pct}%. "
-                    f"Kiu estas la nova prezo?",
-                    f"{p} havas {item_acc} kiu kostas {base_qty_acc}. "
-                    f"La prezo pliiĝas je {pct}%. Kiom kostas nun?",
-                    f"{item_nom} kostis {base_qty_acc}. "
-                    f"Post pliiĝo de {pct}%, kiu estas la nova prezo?",
-                ])
+                openers_eo = [
+                    f"{frame}la prezo de {item_nom} estis {base_qty_nom} sed pliiĝis je {pct}%. Kiu estas la nova prezo?",
+                    f"{frame}{p} havas {item_acc} kiu kostas {base_qty_acc}. La prezo pliiĝas je {pct}%. Kiom kostas nun?",
+                    f"{frame}{item_nom} kostis {base_qty_acc}. Post pliiĝo de {pct}%, kiu estas la nova prezo?",
+                ]
+                openers_en = [
+                    f"{frame_en}the price of the {item_nom_en} was {base_qty_en} but increased by {pct}%. What is the new price?",
+                    f"{frame_en}{p} has a {item_nom_en} that costs {base_qty_en}. The price increases by {pct}%. How much does it cost now?",
+                    f"{frame_en}the {item_nom_en} cost {base_qty_en}. After a {pct}% increase, what is the new price?",
+                ]
             elif op == "tax":
-                q = frame + rng.choice([
-                    f"{p} aĉetas {item_acc} por {base_qty_nom}. "
-                    f"La imposto estas {pct}%. Kiom entute {p} pagas?",
-                    f"{item_nom} kostas {base_qty_acc}. Kun {pct}% imposto, "
-                    f"kiu estas la totalo?",
-                    f"la prezo de {item_nom} estas {base_qty_nom}, "
-                    f"kaj oni aldonas {pct}% imposton. Kiom estas la finkosto?",
-                ])
+                openers_eo = [
+                    f"{frame}{p} aĉetas {item_acc} por {base_qty_nom}. La imposto estas {pct}%. Kiom entute {p} pagas?",
+                    f"{frame}{item_nom} kostas {base_qty_acc}. Kun {pct}% imposto, kiu estas la totalo?",
+                    f"{frame}la prezo de {item_nom} estas {base_qty_nom}, kaj oni aldonas {pct}% imposton. Kiom estas la finkosto?",
+                ]
+                openers_en = [
+                    f"{frame_en}{p} buys a {item_nom_en} for {base_qty_en}. Tax is {pct}%. How much does {p} pay in total?",
+                    f"{frame_en}the {item_nom_en} costs {base_qty_en}. With {pct}% tax, what is the total?",
+                    f"{frame_en}the price of the {item_nom_en} is {base_qty_en}, and {pct}% tax is added. What is the final cost?",
+                ]
             elif op == "of-amount":
                 if not reverse:
-                    q = frame + rng.choice([
-                        f"{p} kalkulis {pct}% de {base_qty_nom}. Kiu estas la rezulto?",
-                        f"trovu {pct}% el {base_qty_nom}.",
-                        f"kiom estas {pct}% de {base_qty_nom}?",
-                    ])
+                    openers_eo = [
+                        f"{frame}{p} kalkulis {pct}% de {base_qty_nom}. Kiu estas la rezulto?",
+                        f"{frame}trovu {pct}% el {base_qty_nom}.",
+                        f"{frame}kiom estas {pct}% de {base_qty_nom}?",
+                    ]
+                    openers_en = [
+                        f"{frame_en}{p} computed {pct}% of {base_qty_en}. What is the result?",
+                        f"{frame_en}find {pct}% of {base_qty_en}.",
+                        f"{frame_en}how much is {pct}% of {base_qty_en}?",
+                    ]
                 else:
-                    q = frame + rng.choice([
-                        f"{p} kalkulis {pct}% de nekonata sumo en {EUR[1]}.",
-                        f"{pct}% el iu sumo en {EUR[1]} estas jena kvanto.",
-                        f"{p} scias, ke {pct}% de sia buĝeto en {EUR[1]} egalas iun kvanton.",
-                    ])
+                    openers_eo = [
+                        f"{frame}{p} kalkulis {pct}% de nekonata sumo en {EUR[1]}.",
+                        f"{frame}{pct}% el iu sumo en {EUR[1]} estas jena kvanto.",
+                        f"{frame}{p} scias, ke {pct}% de sia buĝeto en {EUR[1]} egalas iun kvanton.",
+                    ]
+                    openers_en = [
+                        f"{frame_en}{p} computed {pct}% of an unknown sum in {EUR_EN[1]}.",
+                        f"{frame_en}{pct}% of some sum in {EUR_EN[1]} equals the following amount.",
+                        f"{frame_en}{p} knows that {pct}% of their budget in {EUR_EN[1]} equals some amount.",
+                    ]
             elif op == "saving":
                 if not reverse:
-                    q = frame + rng.choice([
-                        f"{p} aĉetis {item_acc} kiu kostis {base_qty_acc} "
-                        f"kun {pct}% rabato. Kiom da {EUR[1]} {p} ŝparis?",
-                        f"{item_nom} kostis {base_qty_acc}, kun rabato de {pct}%. "
-                        f"Kiom {p} ŝparis?",
-                        f"{p} akiris {pct}% rabaton sur {item_acc} de {base_qty_acc}. "
-                        f"Kalkulu la ŝparon.",
-                    ])
+                    openers_eo = [
+                        f"{frame}{p} aĉetis {item_acc} kiu kostis {base_qty_acc} kun {pct}% rabato. Kiom da {EUR[1]} {p} ŝparis?",
+                        f"{frame}{item_nom} kostis {base_qty_acc}, kun rabato de {pct}%. Kiom {p} ŝparis?",
+                        f"{frame}{p} akiris {pct}% rabaton sur {item_acc} de {base_qty_acc}. Kalkulu la ŝparon.",
+                    ]
+                    openers_en = [
+                        f"{frame_en}{p} bought a {item_nom_en} that cost {base_qty_en} with a {pct}% discount. How many {EUR_EN[1]} did {p} save?",
+                        f"{frame_en}the {item_nom_en} cost {base_qty_en}, with a {pct}% discount. How much did {p} save?",
+                        f"{frame_en}{p} got a {pct}% discount on a {item_nom_en} costing {base_qty_en}. Calculate the savings.",
+                    ]
                 else:
-                    q = frame + rng.choice([
-                        f"{p} aĉetis {item_acc} kun {pct}% rabato. "
-                        f"La origina prezo estas ankoraŭ nekonata.",
-                        f"{p} akiris {pct}% rabaton sur {item_acc}. "
-                        f"La origina prezo estas nekonata.",
-                    ])
+                    openers_eo = [
+                        f"{frame}{p} aĉetis {item_acc} kun {pct}% rabato. La origina prezo estas ankoraŭ nekonata.",
+                        f"{frame}{p} akiris {pct}% rabaton sur {item_acc}. La origina prezo estas nekonata.",
+                    ]
+                    openers_en = [
+                        f"{frame_en}{p} bought a {item_nom_en} with a {pct}% discount. The original price is still unknown.",
+                        f"{frame_en}{p} got a {pct}% discount on a {item_nom_en}. The original price is unknown.",
+                    ]
+            o_idx = rng.randrange(len(openers_eo))
+            q = openers_eo[o_idx]
+            q_en = openers_en[o_idx]
             # Capitalize first char if no frame
             if not frame:
                 q = q[0].upper() + q[1:]
+                q_en = q_en[0].upper() + q_en[1:]
         else:  # count
-            item = rng.choice(COUNT_ITEMS)
+            item_idx = rng.randrange(len(COUNT_ITEMS))
+            item = COUNT_ITEMS[item_idx]
+            item_en = COUNT_ITEMS_EN[item_idx]
             noun_acc_pl = item[3]   # "studentojn"
             noun_nom_pl = item[1]   # "studentoj"
+            noun_pl_en = item_en[1] # "students"
             if not reverse:
                 q = (f"En klaso estas {render_qty(base, item)}. {pct}% el ili "
                      f"portas okulvitrojn. Kiom {noun_acc_pl} portas okulvitrojn?")
+                q_en = (f"In a class there are {render_qty_en(base, item_en)}. "
+                         f"{pct}% of them wear glasses. How many {noun_pl_en} wear glasses?")
             else:
                 q = (f"En klaso estas nekonata nombro de {noun_nom_pl}. "
                      f"{pct}% el ili portas okulvitrojn.")
+                q_en = (f"In a class there is an unknown number of {noun_pl_en}. "
+                         f"{pct}% of them wear glasses.")
 
         # Compute the answer using appropriate ops
         if style == "multiplier" and op in ("discount", "markup", "tax"):
@@ -1692,8 +1727,10 @@ def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None,
             ctx.chain.append(f"{fmt_num(base)} * {mult_str} = {fmt_num(res)}")
             ctx.prose.append(f"La multobligilo estas 1 {sign} {pct}/100 = {mult_str}.")
             ctx.prose.append(f"Rezulto = {fmt_num(base)} * {mult_str} = {fmt_num(res)}.")
+            ctx.prose_en.append(f"The multiplier is 1 {sign} {pct}/100 = {mult_str}.")
+            ctx.prose_en.append(f"Result = {fmt_num(base)} * {mult_str} = {fmt_num(res)}.")
             ctx.bind("res", res)
-            return ctx.render(q, "res")
+            return ctx.render(q, "res", question_en=q_en)
 
         # direct / decimal path — always compute the % first
         Pct("pct", "base", "amount", style=style).apply(ctx)
@@ -1711,12 +1748,13 @@ def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None,
             ctx.bind("pct2", pct2)
             if not reverse:
                 q += f" Nun aldonu {pct2}% imposton sur la nova prezo. Kiu estas la fina prezo?"
+                q_en += f" Now add {pct2}% tax on the new price. What is the final price?"
             Pct("pct2", "res", "tax_amt", style="direct").apply(ctx)
             Add("res", "tax_amt", "final_price").apply(ctx)
             final = "final_price"
 
         if not reverse:
-            return ctx.render(q, final)
+            return ctx.render(q, final, question_en=q_en)
 
         # Reverse mode: only supported for the linear-Pct paths.
         # (discount/markup/tax use base twice — deferred.)
@@ -1726,45 +1764,76 @@ def percent_recipe(rng: random.Random, n_steps: int = 2, op: str | None = None,
         final_val = int(ctx.n(final))
         # In of-amount / saving the final is the amount (result of Pct).
         # We ask for base. Units differ by scenario:
-        #   shop:  amount + base both in EUR (or SHOP_ITEMS count in some paths)
-        #   count: amount + base both a count of `item`
         if scenario_kind == "count":
-            state = rng.choice([
+            states_eo = [
                 f" {final_val} {item[1]} portas okulvitrojn.",
                 f" Estas {render_qty(final_val, item)} kun okulvitroj.",
-            ])
-            closer = rng.choice([
+            ]
+            states_en = [
+                f" {final_val} {noun_pl_en} wear glasses.",
+                f" There are {render_qty_en(final_val, item_en)} with glasses.",
+            ]
+            closers_eo = [
                 f"Kiom da {item[1]} estas en la klaso?",
                 f"Trovu la totalan nombron de {item[1]}.",
                 f"Kalkulu la nombron de {item[1]} en la klaso.",
-            ])
+            ]
+            closers_en = [
+                f"How many {noun_pl_en} are in the class?",
+                f"Find the total number of {noun_pl_en}.",
+                f"Calculate the number of {noun_pl_en} in the class.",
+            ]
         elif op == "of-amount":
-            state = rng.choice([
+            states_eo = [
                 f" La rezulto estas {render_qty(final_val, EUR)}.",
                 f" Tio egalas {render_qty(final_val, EUR)}.",
                 f" Ĝi egalas {render_qty(final_val, EUR)}.",
-            ])
-            closer = rng.choice([
+            ]
+            states_en = [
+                f" The result is {render_qty_en(final_val, EUR_EN)}.",
+                f" That equals {render_qty_en(final_val, EUR_EN)}.",
+                f" It equals {render_qty_en(final_val, EUR_EN)}.",
+            ]
+            closers_eo = [
                 f"Kiu estis la origina sumo en {EUR[1]}?",
                 f"Kalkulu la originan sumon.",
                 f"Trovu la originalan valoron.",
-            ])
+            ]
+            closers_en = [
+                f"What was the original sum in {EUR_EN[1]}?",
+                f"Calculate the original sum.",
+                f"Find the original value.",
+            ]
         else:  # saving
-            state = rng.choice([
+            states_eo = [
                 f" {p} ŝparis {render_qty(final_val, EUR)}.",
                 f" La ŝparita sumo estas {render_qty(final_val, EUR)}.",
-            ])
-            closer = rng.choice([
+            ]
+            states_en = [
+                f" {p} saved {render_qty_en(final_val, EUR_EN)}.",
+                f" The amount saved is {render_qty_en(final_val, EUR_EN)}.",
+            ]
+            closers_eo = [
                 f"Kiu estis la origina prezo de {item_nom}?",
                 f"Trovu la originan prezon.",
                 f"Kalkulu la originan prezon de {item_nom}.",
-            ])
-        q += state
+            ]
+            closers_en = [
+                f"What was the original price of the {item_nom_en}?",
+                f"Find the original price.",
+                f"Calculate the original price of the {item_nom_en}.",
+            ]
+        s_idx = rng.randrange(len(states_eo))
+        q += states_eo[s_idx]
+        q_en += states_en[s_idx]
+        c_idx = rng.randrange(len(closers_eo))
         result = ctx.render_reverse(
             forward_prose=q,
             forward_final_var=final,
             ask_var="base",
-            closer=closer,
+            closer=closers_eo[c_idx],
+            forward_prose_en=q_en,
+            closer_en=closers_en[c_idx],
         )
         result["recipe"] = "percent_reverse"
         result["n_steps"] = n_steps
@@ -1785,7 +1854,9 @@ def average_recipe(rng: random.Random, n_steps: int = 2) -> dict:
     n_steps=3: given N scores → find average → find X% of average
     """
     for _try in range(100):
-        subject = rng.choice(SUBJECT_NOUNS)
+        subject_idx = rng.randrange(len(SUBJECT_NOUNS))
+        subject = SUBJECT_NOUNS[subject_idx]
+        subject_en = SUBJECT_NOUNS_EN[subject_idx]
         n_scores = rng.choice([3, 4, 5])
         # sample scores whose sum is divisible by n
         scores = [rng.randint(60, 100) for _ in range(n_scores)]
@@ -1798,36 +1869,44 @@ def average_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         for i, s in enumerate(scores):
             ctx.bind(f"s{i}", s, noun=None)
         # build question
-        scores_str = ", ".join(str(s) for s in scores[:-1]) + f" kaj {scores[-1]}"
-        frame = maybe_frame(rng)
-        q = frame + rng.choice([
-            f"{p} ricevis {n_scores} poentarojn en {subject[2]}: {scores_str}. "
-            f"Kiu estas la meza poentaro?",
-            f"la poentaroj de {p} en {subject[2]} estas: {scores_str}. "
-            f"Trovu la mezan.",
-            f"post {n_scores} testoj en {subject[2]}, {p} ricevis: {scores_str}. "
-            f"Kalkulu la mezan poentaron.",
-            f"{p} skribis {n_scores} testojn en {subject[2]} kaj ricevis {scores_str}. "
-            f"Kiu estas la meza rezulto?",
-        ])
+        scores_str_eo = ", ".join(str(s) for s in scores[:-1]) + f" kaj {scores[-1]}"
+        scores_str_en = ", ".join(str(s) for s in scores[:-1]) + f" and {scores[-1]}"
+        frame, frame_en = maybe_frame_bi(rng)
+        openers_eo = [
+            f"{frame}{p} ricevis {n_scores} poentarojn en {subject[2]}: {scores_str_eo}. Kiu estas la meza poentaro?",
+            f"{frame}la poentaroj de {p} en {subject[2]} estas: {scores_str_eo}. Trovu la mezan.",
+            f"{frame}post {n_scores} testoj en {subject[2]}, {p} ricevis: {scores_str_eo}. Kalkulu la mezan poentaron.",
+            f"{frame}{p} skribis {n_scores} testojn en {subject[2]} kaj ricevis {scores_str_eo}. Kiu estas la meza rezulto?",
+        ]
+        openers_en = [
+            f"{frame_en}{p} got {n_scores} scores in {subject_en[0]}: {scores_str_en}. What is the average score?",
+            f"{frame_en}{p}'s scores in {subject_en[0]} are: {scores_str_en}. Find the average.",
+            f"{frame_en}after {n_scores} tests in {subject_en[0]}, {p} got: {scores_str_en}. Calculate the average score.",
+            f"{frame_en}{p} took {n_scores} tests in {subject_en[0]} and got {scores_str_en}. What is the mean result?",
+        ]
+        o_idx = rng.randrange(len(openers_eo))
+        q = openers_eo[o_idx]
+        q_en = openers_en[o_idx]
         if not frame:
             q = q[0].upper() + q[1:]
+            q_en = q_en[0].upper() + q_en[1:]
 
         Avg([f"s{i}" for i in range(n_scores)], "avg").apply(ctx)
         final = "avg"
 
         if n_steps >= 3:
             # find some percentage of the average — need divisibility
-            avail_pcts = [p for p in [10, 20, 25, 50, 75] if int(ctx.n("avg")) * p % 100 == 0]
+            avail_pcts = [pp for pp in [10, 20, 25, 50, 75] if int(ctx.n("avg")) * pp % 100 == 0]
             if not avail_pcts:
                 continue
             pct = rng.choice(avail_pcts)
             ctx.bind("pct", pct)
             q += f" Poste, kiom estas {pct}% el la meza poentaro?"
+            q_en += f" Then, how much is {pct}% of the average score?"
             Pct("pct", "avg", "result", style=rng.choice(["direct", "decimal"])).apply(ctx)
             final = "result"
 
-        return ctx.render(q, final)
+        return ctx.render(q, final, question_en=q_en)
 
     raise RuntimeError("average_recipe: couldn't sample divisible params")
 
@@ -2007,7 +2086,9 @@ def ratio_diff_recipe(rng: random.Random, n_steps: int = 3,
     render_reverse).
     """
     names = rng.sample(NAMES, 2)
-    obj = rng.choice(OBJECT_NOUNS)
+    obj_idx = rng.randrange(len(OBJECT_NOUNS))
+    obj = OBJECT_NOUNS[obj_idx]
+    obj_en = OBJECT_NOUNS_EN[obj_idx]
 
     for _try in range(100):
         # ratio (a, b), pick unit so total is realistic
@@ -2024,17 +2105,21 @@ def ratio_diff_recipe(rng: random.Random, n_steps: int = 3,
         ctx.bind("b", b * unit, noun=obj)
 
         if not reverse:
-            q = rng.choice([
-                f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} "
-                f"laŭ la rilatumo {a}:{b}. Kiu estas la diferenco inter iliaj partoj?",
-                f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
-                f"{qty_acc(total, obj)}. Kiom pli havas unu ol la alia?",
-                f"{names[0]} ricevas {a} partojn, {names[1]} ricevas {b} partojn, "
-                f"el entute {render_qty(total, obj)}. Trovu la diferencon.",
-            ])
+            openers_eo = [
+                f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la rilatumo {a}:{b}. Kiu estas la diferenco inter iliaj partoj?",
+                f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas {qty_acc(total, obj)}. Kiom pli havas unu ol la alia?",
+                f"{names[0]} ricevas {a} partojn, {names[1]} ricevas {b} partojn, el entute {render_qty(total, obj)}. Trovu la diferencon.",
+            ]
+            openers_en = [
+                f"{names[0]} and {names[1]} share {render_qty_en(total, obj_en)} in the ratio {a}:{b}. What is the difference between their parts?",
+                f"In the ratio {a}:{b}, {names[0]} and {names[1]} share {render_qty_en(total, obj_en)}. How many more does one have than the other?",
+                f"{names[0]} receives {a} parts, {names[1]} receives {b} parts, out of {render_qty_en(total, obj_en)}. Find the difference.",
+            ]
+            o_idx = rng.randrange(len(openers_eo))
+            q = openers_eo[o_idx]
+            q_en = openers_en[o_idx]
 
             # Steps: total / (a+b) = unit; a*unit; b*unit; diff
-            # But we need the chain to *derive* unit; use Div op.
             Div("total", "parts", "unit").apply(ctx)      # step 1: total/(a+b) = unit
             ctx.bind("ra", a)
             ctx.bind("rb", b)
@@ -2052,60 +2137,59 @@ def ratio_diff_recipe(rng: random.Random, n_steps: int = 3,
                 k = rng.choice(portions)
                 ctx.bind("k", k)
                 q += f" Se ni disdividas la diferencon egalpartige inter {k} personoj, kiom ricevas ĉiu?"
+                q_en += f" If we split the difference equally among {k} people, how much does each get?"
                 Div("diff", "k", "per_person").apply(ctx)
                 final = "per_person"
 
-            return ctx.render(q, final)
+            return ctx.render(q, final, question_en=q_en)
 
-        # ── Reverse path ──
-        # diff = (b - a) * unit;  total = (a + b) * unit
-        # → total = diff * (a + b) / (b - a)
-        # Ensure divisibility (should be, since (a+b)*(b-a) = b^2-a^2 divides).
-        # Absolute diff so numbers stay positive regardless of a vs b order.
+        # ── Reverse path (branching chain — manual EO + EN prose) ──
         larger_r, smaller_r = (b, a) if b > a else (a, b)
         diff = (larger_r - smaller_r) * unit
         if diff <= 0:
             continue  # degenerate (a == b); resample
-        # Build reverse question
-        q = rng.choice([
-            f"{names[0]} kaj {names[1]} dividas nekonatan sumon "
-            f"laŭ la rilatumo {a}:{b}. La diferenco inter iliaj partoj estas "
-            f"{render_qty(diff, obj)}.",
-            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas iom da {obj[1]}. "
-            f"Unu havas {render_qty(diff, obj)} pli ol la alia.",
-            f"{names[0]} ricevas {a} partojn, {names[1]} ricevas {b} partojn "
-            f"el nekonata totalo. La diferenco estas {render_qty(diff, obj)}.",
-        ])
-        closer = rng.choice([
+        openers_eo = [
+            f"{names[0]} kaj {names[1]} dividas nekonatan sumon laŭ la rilatumo {a}:{b}. La diferenco inter iliaj partoj estas {render_qty(diff, obj)}.",
+            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas iom da {obj[1]}. Unu havas {render_qty(diff, obj)} pli ol la alia.",
+            f"{names[0]} ricevas {a} partojn, {names[1]} ricevas {b} partojn el nekonata totalo. La diferenco estas {render_qty(diff, obj)}.",
+        ]
+        openers_en = [
+            f"{names[0]} and {names[1]} share an unknown sum in the ratio {a}:{b}. The difference between their parts is {render_qty_en(diff, obj_en)}.",
+            f"In the ratio {a}:{b}, {names[0]} and {names[1]} share some {obj_en[1]}. One has {render_qty_en(diff, obj_en)} more than the other.",
+            f"{names[0]} receives {a} parts, {names[1]} receives {b} parts of an unknown total. The difference is {render_qty_en(diff, obj_en)}.",
+        ]
+        o_idx = rng.randrange(len(openers_eo))
+        q = openers_eo[o_idx]
+        q_en = openers_en[o_idx]
+        closers_eo = [
             f" Kalkulu la totalan sumon.",
             f" Trovu kiom da {obj[1]} estas entute.",
             f" Kiom da {obj[1]} estas entute?",
-        ])
-        # Manual chain (recipe-local closed-form inverse):
-        #   1) b - a = step   (difference of ratio parts)
-        #   2) diff / step = unit
-        #   3) a + b = parts
-        #   4) unit * parts = total
+        ]
+        closers_en = [
+            f" Calculate the total sum.",
+            f" Find how many {obj_en[1]} there are in total.",
+            f" How many {obj_en[1]} are there in total?",
+        ]
+        c_idx = rng.randrange(len(closers_eo))
+        # Manual chain — same EO/EN counts so parallel emission fires.
         step = larger_r - smaller_r
         parts = a + b
         ctx.chain.append(f"{larger_r} - {smaller_r} = {step}")
         ctx.chain.append(f"{diff} / {step} = {unit}")
         ctx.chain.append(f"{a} + {b} = {parts}")
         ctx.chain.append(f"{unit} * {parts} = {total}")
-        ctx.prose.append(
-            f"La diferenco de la rilatumaj partoj estas {larger_r} - {smaller_r} = {step}."
-        )
-        ctx.prose.append(
-            f"Do la valoro de unu parto estas {diff} / {step} = {unit}."
-        )
-        ctx.prose.append(
-            f"La sumo de rilatumaj partoj estas {a} + {b} = {parts}."
-        )
-        ctx.prose.append(
-            f"Do la totalo estas {unit} * {parts} = {total}."
-        )
+        ctx.prose.append(f"La diferenco de la rilatumaj partoj estas {larger_r} - {smaller_r} = {step}.")
+        ctx.prose.append(f"Do la valoro de unu parto estas {diff} / {step} = {unit}.")
+        ctx.prose.append(f"La sumo de rilatumaj partoj estas {a} + {b} = {parts}.")
+        ctx.prose.append(f"Do la totalo estas {unit} * {parts} = {total}.")
+        ctx.prose_en.append(f"The difference of the ratio parts is {larger_r} - {smaller_r} = {step}.")
+        ctx.prose_en.append(f"So the value of one part is {diff} / {step} = {unit}.")
+        ctx.prose_en.append(f"The sum of the ratio parts is {a} + {b} = {parts}.")
+        ctx.prose_en.append(f"So the total is {unit} * {parts} = {total}.")
         ctx.bind("total_rev", total, noun=obj)
-        result = ctx.render(q + closer, "total_rev")
+        result = ctx.render(q + closers_eo[c_idx], "total_rev",
+                             question_en=q_en + closers_en[c_idx])
         result["recipe"] = "ratio_diff_reverse"
         result["n_steps"] = n_steps
         result["direction"] = "reverse"
@@ -2133,17 +2217,29 @@ def consec_avg_recipe(rng: random.Random, n_steps: int = 2) -> dict:
     ctx.bind("total", total)
     ctx.bind("count", count)
 
-    what = {"smallest": "plej malgranda", "largest": "plej granda", "middle": "meza"}[ask]
-    q = rng.choice([
-        f"La sumo de {count} sinsekvaj entjeroj estas {total}. Kiu estas la {what}?",
-        f"{count} sinsekvaj entjeroj sumigas al {total}. Trovu la {what}n.",
-        f"Se {count} sinsekvaj entjeroj havas sumon de {total}, kiu estas la {what}?",
-        f"Estas {count} sinsekvaj entjeroj kies sumo egalas {total}. Kalkulu la {what}n.",
-    ])
+    what_eo = {"smallest": "plej malgranda", "largest": "plej granda", "middle": "meza"}[ask]
+    what_en = {"smallest": "smallest", "largest": "largest", "middle": "middle"}[ask]
+    openers_eo = [
+        f"La sumo de {count} sinsekvaj entjeroj estas {total}. Kiu estas la {what_eo}?",
+        f"{count} sinsekvaj entjeroj sumigas al {total}. Trovu la {what_eo}n.",
+        f"Se {count} sinsekvaj entjeroj havas sumon de {total}, kiu estas la {what_eo}?",
+        f"Estas {count} sinsekvaj entjeroj kies sumo egalas {total}. Kalkulu la {what_eo}n.",
+    ]
+    openers_en = [
+        f"The sum of {count} consecutive integers is {total}. What is the {what_en}?",
+        f"{count} consecutive integers add up to {total}. Find the {what_en}.",
+        f"If {count} consecutive integers have a sum of {total}, what is the {what_en}?",
+        f"There are {count} consecutive integers whose sum equals {total}. Calculate the {what_en}.",
+    ]
+    o_idx = rng.randrange(len(openers_eo))
+    q = openers_eo[o_idx]
+    q_en = openers_en[o_idx]
 
-    # Step 1: divide sum by count → get the average = middle value
+    # Step 1: divide sum by count → get the average = middle value.
+    # Manual chain step — we hand-write parallel EO/EN prose.
     ctx.chain.append(f"{total} / {count} = {values[count // 2]}")
     ctx.prose.append(f"Meznombro = sumo / kalkulo: {total} / {count} = {values[count // 2]}.")
+    ctx.prose_en.append(f"Mean = sum / count: {total} / {count} = {values[count // 2]}.")
     ctx.bind("avg", values[count // 2])
 
     if ask == "middle":
@@ -2152,12 +2248,14 @@ def consec_avg_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         offset = count // 2   # avg - offset = smallest
         ctx.chain.append(f"{values[count // 2]} - {offset} = {values[0]}")
         ctx.prose.append(f"Plej malgranda = meza - {offset}: {values[count // 2]} - {offset} = {values[0]}.")
+        ctx.prose_en.append(f"Smallest = mean - {offset}: {values[count // 2]} - {offset} = {values[0]}.")
         ctx.bind("smallest", values[0])
         final_var = "smallest"
     else:  # largest
         offset = count // 2
         ctx.chain.append(f"{values[count // 2]} + {offset} = {values[-1]}")
         ctx.prose.append(f"Plej granda = meza + {offset}: {values[count // 2]} + {offset} = {values[-1]}.")
+        ctx.prose_en.append(f"Largest = mean + {offset}: {values[count // 2]} + {offset} = {values[-1]}.")
         ctx.bind("largest", values[-1])
         final_var = "largest"
 
@@ -2166,10 +2264,11 @@ def consec_avg_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         k = rng.randint(2, 5)
         ctx.bind("k", k)
         q += f" Kio estas {k} foje tiu valoro?"
+        q_en += f" What is {k} times that value?"
         Mul(final_var, "k", "scaled").apply(ctx)
         final_var = "scaled"
 
-    return ctx.render(q, final_var)
+    return ctx.render(q, final_var, question_en=q_en)
 
 
 # ─── Recipe 7: inverse_rate ─────────────────────────────────────────────────
@@ -2182,11 +2281,23 @@ _WORKERS: list[Noun] = [
     ("rikoltisto", "rikoltistoj", "rikoltiston", "rikoltistojn"),
     ("kuiristo",   "kuiristoj",   "kuiriston",   "kuiristojn"),
 ]
+_WORKERS_EN = [
+    ("worker",    "workers"),
+    ("pump",      "pumps"),
+    ("machine",   "machines"),
+    ("harvester", "harvesters"),
+    ("cook",      "cooks"),
+]
 # Time-unit Noun tuples
 _TIME_UNITS: list[Noun] = [
     ("horo",   "horoj",   "horon",   "horojn"),
     ("minuto", "minutoj", "minuton", "minutojn"),
     ("tago",   "tagoj",   "tagon",   "tagojn"),
+]
+_TIME_UNITS_EN = [
+    ("hour",   "hours"),
+    ("minute", "minutes"),
+    ("day",    "days"),
 ]
 
 # (worker_noun, verb_infinitive, task_acc, time_noun)
@@ -2196,6 +2307,14 @@ INV_SCENARIOS: list[tuple[Noun, str, str, Noun]] = [
     (_WORKERS[2], "presi",   "libron",    _TIME_UNITS[0]),
     (_WORKERS[3], "rikolti", "kampon",    _TIME_UNITS[2]),
     (_WORKERS[4], "prepari", "manĝon",    _TIME_UNITS[0]),
+]
+# Parallel EN scenario data: (worker_en, verb_en, task_en, time_en)
+INV_SCENARIOS_EN: list[tuple[tuple[str, str], str, str, tuple[str, str]]] = [
+    (_WORKERS_EN[0], "paint",   "a wall",     _TIME_UNITS_EN[0]),
+    (_WORKERS_EN[1], "fill",    "a pool",     _TIME_UNITS_EN[1]),
+    (_WORKERS_EN[2], "print",   "a book",     _TIME_UNITS_EN[0]),
+    (_WORKERS_EN[3], "harvest", "a field",    _TIME_UNITS_EN[2]),
+    (_WORKERS_EN[4], "prepare", "a meal",     _TIME_UNITS_EN[0]),
 ]
 
 
@@ -2211,7 +2330,9 @@ def inverse_rate_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         w2 = rng.choice(divs)
         t2 = const // w2
 
-        worker, verb, task, tunit = rng.choice(INV_SCENARIOS)
+        scenario_idx = rng.randrange(len(INV_SCENARIOS))
+        worker, verb, task, tunit = INV_SCENARIOS[scenario_idx]
+        worker_en, verb_en, task_en, tunit_en = INV_SCENARIOS_EN[scenario_idx]
         ask = rng.choice(["find-time", "find-workers"])
         ctx = Ctx.new(rng)
         ctx.bind("w1", w1)
@@ -2224,35 +2345,51 @@ def inverse_rate_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         w2_nom = render_qty(w2, worker)            # "1 maŝino" etc.
         tunit_pl = tunit[1]                        # "horoj"
         workers_pl = worker[1]                     # "maŝinoj"
+        # EN renderings
+        t1_en = render_qty_en(t1, tunit_en)
+        t2_en = render_qty_en(t2, tunit_en)
+        w1_en = render_qty_en(w1, worker_en)
+        w2_en = render_qty_en(w2, worker_en)
+        tunit_pl_en = tunit_en[1]
+        workers_pl_en = worker_en[1]
 
-        frame = maybe_frame(rng)
+        frame, frame_en = maybe_frame_bi(rng)
         if ask == "find-time":
             ctx.bind("w2", w2)
-            q = frame + rng.choice([
-                f"{w1_nom} bezonas {t1_acc} por {verb} {task}. "
-                f"Kiom da {tunit_pl} bezonatas por {w2_nom}?",
-                f"se {w1_nom} finas {task} en {t1_acc}, kiom da {tunit_pl} "
-                f"bezonatas por {w2_nom}?",
-                f"{w1_nom} bezonas {t1_acc} por la tasko. Kiom por {w2_nom}?",
-            ])
+            openers_eo = [
+                f"{frame}{w1_nom} bezonas {t1_acc} por {verb} {task}. Kiom da {tunit_pl} bezonatas por {w2_nom}?",
+                f"{frame}se {w1_nom} finas {task} en {t1_acc}, kiom da {tunit_pl} bezonatas por {w2_nom}?",
+                f"{frame}{w1_nom} bezonas {t1_acc} por la tasko. Kiom por {w2_nom}?",
+            ]
+            openers_en = [
+                f"{frame_en}{w1_en} need {t1_en} to {verb_en} {task_en}. How many {tunit_pl_en} does {w2_en} need?",
+                f"{frame_en}if {w1_en} finish {task_en} in {t1_en}, how many {tunit_pl_en} does {w2_en} need?",
+                f"{frame_en}{w1_en} need {t1_en} for the task. How long for {w2_en}?",
+            ]
             Mul("w1", "t1", "const").apply(ctx)
             Div("const", "w2", "t2").apply(ctx)
             final = "t2"
         else:
             ctx.bind("t2", t2)
-            q = frame + rng.choice([
-                f"{w1_nom} bezonas {t1_acc} por {verb} {task}. "
-                f"Kiom da {workers_pl} bezonatas por fini en {t2_acc}?",
-                f"{w1_nom} finas {task} en {t1_acc}. "
-                f"Kiom da {workers_pl} necesatas por fini samon en {t2_acc}?",
-                f"la tasko {verb} {task} daŭras {t1_acc} kun {w1_nom}. "
-                f"Kiom da {workers_pl} necesas por daŭri nur {t2_acc}?",
-            ])
+            openers_eo = [
+                f"{frame}{w1_nom} bezonas {t1_acc} por {verb} {task}. Kiom da {workers_pl} bezonatas por fini en {t2_acc}?",
+                f"{frame}{w1_nom} finas {task} en {t1_acc}. Kiom da {workers_pl} necesatas por fini samon en {t2_acc}?",
+                f"{frame}la tasko {verb} {task} daŭras {t1_acc} kun {w1_nom}. Kiom da {workers_pl} necesas por daŭri nur {t2_acc}?",
+            ]
+            openers_en = [
+                f"{frame_en}{w1_en} need {t1_en} to {verb_en} {task_en}. How many {workers_pl_en} are needed to finish in {t2_en}?",
+                f"{frame_en}{w1_en} finish {task_en} in {t1_en}. How many {workers_pl_en} are needed to finish the same in {t2_en}?",
+                f"{frame_en}the task of {verb_en}-ing {task_en} lasts {t1_en} with {w1_en}. How many {workers_pl_en} are needed to complete it in only {t2_en}?",
+            ]
             Mul("w1", "t1", "const").apply(ctx)
             Div("const", "t2", "w2").apply(ctx)
             final = "w2"
+        o_idx = rng.randrange(len(openers_eo))
+        q = openers_eo[o_idx]
+        q_en = openers_en[o_idx]
         if not frame:
             q = q[0].upper() + q[1:]
+            q_en = q_en[0].upper() + q_en[1:]
 
         # n_steps=3: compare against a third team size
         if n_steps >= 3 and ask == "find-time":
@@ -2263,10 +2400,11 @@ def inverse_rate_recipe(rng: random.Random, n_steps: int = 2) -> dict:
             w3 = rng.choice(w3_candidates)
             ctx.bind("w3", w3)
             q += f" Kaj kiom da {tunit_pl} bezonatas por {render_qty(w3, worker)}?"
+            q_en += f" And how many {tunit_pl_en} does {render_qty_en(w3, worker_en)} need?"
             Div("const", "w3", "t3").apply(ctx)
             final = "t3"
 
-        return ctx.render(q, final)
+        return ctx.render(q, final, question_en=q_en)
 
     raise RuntimeError("inverse_rate_recipe: couldn't sample")
 
@@ -2281,7 +2419,9 @@ def ratio_fraction_recipe(rng: random.Random, n_steps: int = 2,
     reverse=True: state the final part (or gift) value as given, ask for total.
     """
     names = rng.sample(NAMES, 2)
-    obj = rng.choice(OBJECT_NOUNS)
+    obj_idx = rng.randrange(len(OBJECT_NOUNS))
+    obj = OBJECT_NOUNS[obj_idx]
+    obj_en = OBJECT_NOUNS_EN[obj_idx]
 
     for _try in range(100):
         a, b = rng.choice([(2, 3), (3, 5), (1, 4), (3, 4), (1, 3), (4, 5), (3, 7), (2, 5)])
@@ -2299,26 +2439,35 @@ def ratio_fraction_recipe(rng: random.Random, n_steps: int = 2,
         ctx.bind("rb", b)
         ctx.bind("total", total, noun=obj)
 
-        which = {"larger": "pli granda parto", "smaller": "pli malgranda parto",
-                 "direct": f"parto de {target_name}"}[ask]
+        which_eo = {"larger": "pli granda parto", "smaller": "pli malgranda parto",
+                     "direct": f"parto de {target_name}"}[ask]
+        which_en = {"larger": "larger part", "smaller": "smaller part",
+                     "direct": f"share of {target_name}"}[ask]
         if not reverse:
-            q = rng.choice([
-                f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la "
-                f"rilatumo {a}:{b}. Kiu estas la {which}?",
-                f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
-                f"{qty_acc(total, obj)}. Trovu la {which}n.",
-                f"Ilia dividita nombro estas {render_qty(total, obj)}, "
-                f"en rilatumo {a}:{b}. Kiu estas la {which}?",
-            ])
+            openers_eo = [
+                f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la rilatumo {a}:{b}. Kiu estas la {which_eo}?",
+                f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas {qty_acc(total, obj)}. Trovu la {which_eo}n.",
+                f"Ilia dividita nombro estas {render_qty(total, obj)}, en rilatumo {a}:{b}. Kiu estas la {which_eo}?",
+            ]
+            openers_en = [
+                f"{names[0]} and {names[1]} divide {render_qty_en(total, obj_en)} in the ratio {a}:{b}. What is the {which_en}?",
+                f"In the ratio {a}:{b}, {names[0]} and {names[1]} share {render_qty_en(total, obj_en)}. Find the {which_en}.",
+                f"Their divided number is {render_qty_en(total, obj_en)}, in the ratio {a}:{b}. What is the {which_en}?",
+            ]
         else:
-            q = rng.choice([
-                f"{names[0]} kaj {names[1]} dividas nekonatan nombron de {obj[1]} "
-                f"laŭ la rilatumo {a}:{b}.",
-                f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas iom "
-                f"da {obj[1]}.",
-                f"Ilia dividita nombro estas ankoraŭ nekonata, "
-                f"sed la rilatumo estas {a}:{b}.",
-            ])
+            openers_eo = [
+                f"{names[0]} kaj {names[1]} dividas nekonatan nombron de {obj[1]} laŭ la rilatumo {a}:{b}.",
+                f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas iom da {obj[1]}.",
+                f"Ilia dividita nombro estas ankoraŭ nekonata, sed la rilatumo estas {a}:{b}.",
+            ]
+            openers_en = [
+                f"{names[0]} and {names[1]} share an unknown number of {obj_en[1]} in the ratio {a}:{b}.",
+                f"In the ratio {a}:{b}, {names[0]} and {names[1]} share some {obj_en[1]}.",
+                f"Their divided number is still unknown, but the ratio is {a}:{b}.",
+            ]
+        o_idx = rng.randrange(len(openers_eo))
+        q = openers_eo[o_idx]
+        q_en = openers_en[o_idx]
 
         # step 1: sum the ratio parts
         Add("ra", "rb", "r_sum").apply(ctx)
@@ -2336,36 +2485,54 @@ def ratio_fraction_recipe(rng: random.Random, n_steps: int = 2,
             ctx.bind("pct", pct)
             if not reverse:
                 q += f" Poste, {pct}% de tiu parto estas donacita. Kiom estas donacita?"
+                q_en += f" Then, {pct}% of that share is donated. How much is donated?"
             Pct("pct", "part", "gift", style="direct").apply(ctx)
             final = "gift"
 
         if not reverse:
-            return ctx.render(q, final)
+            return ctx.render(q, final, question_en=q_en)
 
         # Reverse: state the final (part or gift) value; ask for total.
         final_val = int(ctx.n(final))
-        role_desc = "donacita" if final == "gift" else which
         if final == "gift":
-            state = rng.choice([
-                f" La donacita kvanto estas {render_qty(final_val, obj)} ({pct}% de la {which}).",
-                f" El la {which}, {pct}% donacita estas {render_qty(final_val, obj)}.",
-            ])
+            states_eo = [
+                f" La donacita kvanto estas {render_qty(final_val, obj)} ({pct}% de la {which_eo}).",
+                f" El la {which_eo}, {pct}% donacita estas {render_qty(final_val, obj)}.",
+            ]
+            states_en = [
+                f" The donated amount is {render_qty_en(final_val, obj_en)} ({pct}% of the {which_en}).",
+                f" Of the {which_en}, {pct}% donated is {render_qty_en(final_val, obj_en)}.",
+            ]
         else:
-            state = rng.choice([
-                f" La {which} estas {render_qty(final_val, obj)}.",
+            states_eo = [
+                f" La {which_eo} estas {render_qty(final_val, obj)}.",
                 f" {target_name} ricevas {qty_acc(final_val, obj)}.",
-            ])
-        q += state
-        closer = rng.choice([
+            ]
+            states_en = [
+                f" The {which_en} is {render_qty_en(final_val, obj_en)}.",
+                f" {target_name} receives {render_qty_en(final_val, obj_en)}.",
+            ]
+        s_idx = rng.randrange(len(states_eo))
+        q += states_eo[s_idx]
+        q_en += states_en[s_idx]
+        closers_eo = [
             f"Kiom da {obj[1]} estas entute?",
             f"Trovu la totalan nombron de {obj[1]}.",
             f"Kalkulu la totalan kvanton de {obj[1]}.",
-        ])
+        ]
+        closers_en = [
+            f"How many {obj_en[1]} are there in total?",
+            f"Find the total number of {obj_en[1]}.",
+            f"Calculate the total quantity of {obj_en[1]}.",
+        ]
+        c_idx = rng.randrange(len(closers_eo))
         result = ctx.render_reverse(
             forward_prose=q,
             forward_final_var=final,
             ask_var="total",
-            closer=closer,
+            closer=closers_eo[c_idx],
+            forward_prose_en=q_en,
+            closer_en=closers_en[c_idx],
         )
         result["recipe"] = "ratio_fraction_reverse"
         result["n_steps"] = n_steps
@@ -2766,26 +2933,33 @@ def distance_avg_recipe(rng: random.Random, n_steps: int = 3) -> dict:
         avg = num // den
 
         name = rng.choice(NAMES)
-        vehicle = rng.choice(_VEHICLES)
+        vehicle_idx = rng.randrange(len(_VEHICLES))
+        vehicle = _VEHICLES[vehicle_idx]
+        vehicle_en = _VEHICLES_EN[vehicle_idx]
         ctx = Ctx.new(rng)
         ctx.protagonist = name
         ctx.bind("two", 2)
         ctx.bind("rout", rout); ctx.bind("rback", rback)
 
-        frame = maybe_frame(rng)
-        q = frame + rng.choice([
-            f"{name} veturas per sia {vehicle[0]} de urbo A al urbo B je "
-            f"{rout} km/h, kaj revenas je {rback} km/h. "
-            f"Kiu estas la meza rapideco por la tuta rondiro?",
-            f"per sia {vehicle[0]}, {name} iras je {rout} km/h kaj revenas je {rback} km/h. "
-            f"Kalkulu la mezan rapidecon de la rondiro.",
-            f"{name} rondiras: unue je {rout} km/h, poste reveno je {rback} km/h. "
-            f"Kiu estas la meza rapideco?",
-            f"la {vehicle[0]} de {name} iras je {rout} km/h kaj revenas je {rback} km/h. "
-            f"Trovu la mezan rapidecon.",
-        ])
+        frame, frame_en = maybe_frame_bi(rng)
+        openers_eo = [
+            f"{frame}{name} veturas per sia {vehicle[0]} de urbo A al urbo B je {rout} km/h, kaj revenas je {rback} km/h. Kiu estas la meza rapideco por la tuta rondiro?",
+            f"{frame}per sia {vehicle[0]}, {name} iras je {rout} km/h kaj revenas je {rback} km/h. Kalkulu la mezan rapidecon de la rondiro.",
+            f"{frame}{name} rondiras: unue je {rout} km/h, poste reveno je {rback} km/h. Kiu estas la meza rapideco?",
+            f"{frame}la {vehicle[0]} de {name} iras je {rout} km/h kaj revenas je {rback} km/h. Trovu la mezan rapidecon.",
+        ]
+        openers_en = [
+            f"{frame_en}{name} rides their {vehicle_en[0]} from city A to city B at {rout} km/h, and returns at {rback} km/h. What is the average speed for the whole round trip?",
+            f"{frame_en}on their {vehicle_en[0]}, {name} goes at {rout} km/h and returns at {rback} km/h. Calculate the average speed of the round trip.",
+            f"{frame_en}{name} makes a round trip: first at {rout} km/h, then returning at {rback} km/h. What is the average speed?",
+            f"{frame_en}{name}'s {vehicle_en[0]} goes at {rout} km/h and returns at {rback} km/h. Find the average speed.",
+        ]
+        o_idx = rng.randrange(len(openers_eo))
+        q = openers_eo[o_idx]
+        q_en = openers_en[o_idx]
         if not frame:
             q = q[0].upper() + q[1:]
+            q_en = q_en[0].upper() + q_en[1:]
 
         # step 1: 2 * rout = 2rout
         Mul("two", "rout", "two_rout").apply(ctx)
@@ -2806,12 +2980,13 @@ def distance_avg_recipe(rng: random.Random, n_steps: int = 3) -> dict:
             d = rng.choice(candidates)
             ctx.bind("d", d)
             q += f" Se la distanco A-al-B estas {d} km, kiom da horoj daŭras la tuta rondiro?"
+            q_en += f" If the distance from A to B is {d} km, how many hours does the whole round trip take?"
             Div("d", "rout", "t_out").apply(ctx)
             Div("d", "rback", "t_back").apply(ctx)
             Add("t_out", "t_back", "t_total").apply(ctx)
             final = "t_total"
 
-        return ctx.render(q, final)
+        return ctx.render(q, final, question_en=q_en)
 
     raise RuntimeError("distance_avg_recipe: couldn't sample")
 
@@ -2845,23 +3020,36 @@ def age_simple_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         ctx.bind("ratio", ratio)
 
         mul_word = {2: "dufoje", 3: "trifoje", 4: "kvarfoje", 5: "kvinfoje"}[ratio]
-        target = "juna" if ask == "young" else "olda"
-        q = rng.choice([
+        mul_word_en = {2: "twice", 3: "three times", 4: "four times", 5: "five times"}[ratio]
+        target_eo = "juna" if ask == "young" else "olda"
+        target_en = "younger" if ask == "young" else "older"
+        openers_eo = [
             f"{names[0]} estas {mul_word} pli aĝa ol {names[1]}. "
-            f"Kune ili havas {sum_now} jarojn. Kiom aĝa estas la {target} persono?",
+            f"Kune ili havas {sum_now} jarojn. Kiom aĝa estas la {target_eo} persono?",
             f"La aĝo de {names[0]} estas {ratio} fojoj tiu de {names[1]}. "
-            f"La sumo de iliaj aĝoj estas {sum_now}. Trovu la aĝon de la {target}.",
+            f"La sumo de iliaj aĝoj estas {sum_now}. Trovu la aĝon de la {target_eo}.",
             f"{names[1]} estas x jarojn aĝa. {names[0]} estas {ratio}x. "
-            f"Kune ili estas {sum_now} jarojn aĝaj. Kiom aĝa estas la {target}?",
-        ])
+            f"Kune ili estas {sum_now} jarojn aĝaj. Kiom aĝa estas la {target_eo}?",
+        ]
+        openers_en = [
+            f"{names[0]} is {mul_word_en} older than {names[1]}. "
+            f"Together they are {sum_now} years old. How old is the {target_en} person?",
+            f"{names[0]}'s age is {ratio} times {names[1]}'s. "
+            f"The sum of their ages is {sum_now}. Find the age of the {target_en} one.",
+            f"{names[1]} is x years old. {names[0]} is {ratio}x. "
+            f"Together they are {sum_now} years old. How old is the {target_en} one?",
+        ]
+        o_idx = rng.randrange(len(openers_eo))
+        q = openers_eo[o_idx]
+        q_en = openers_en[o_idx]
 
         # Solve x + r*x = sum → (r+1)*x = sum, with combining prose
         LinearSolve("sum_coef", "zero", "sum_now", "young",
                     var_name="x", lhs_shape=f"x + {ratio}*x").apply(ctx)
         if ask == "young":
-            return ctx.render(q, "young")
+            return ctx.render(q, "young", question_en=q_en)
         Mul("ratio", "young", "old").apply(ctx)
-        return ctx.render(q, "old")
+        return ctx.render(q, "old", question_en=q_en)
 
     raise RuntimeError("age_simple_recipe: couldn't sample")
 
@@ -2886,30 +3074,44 @@ def consec_first_as_x_recipe(rng: random.Random, n_steps: int = 2) -> dict:
     ctx.bind("total", total)
 
     lhs_terms = " + ".join(["x"] + [f"(x + {i})" for i in range(1, count)])
-    what = {"smallest": "plej malgranda", "largest": "plej granda", "middle": "meza"}[ask]
-    frame = maybe_frame(rng)
-    q = frame + rng.choice([
-        f"la sumo de {count} sinsekvaj entjeroj estas {total}. Kiu estas la {what}?",
-        f"{count} sinsekvaj entjeroj sumigas al {total}. Trovu la {what}n.",
-        f"se {count} sinsekvaj entjeroj havas sumon de {total}, kiu estas la {what}?",
-        f"estas {count} sinsekvaj entjeroj kies sumo egalas {total}. Kalkulu la {what}n.",
-        f"trovu la {what}n el {count} sinsekvaj entjeroj kies sumo estas {total}.",
-        f"kiam {count} sinsekvaj entjeroj sumiĝas al {total}, kiu estas la {what}?",
-        f"kiu el {count} sinsekvaj entjeroj estas la {what}, se ilia sumo estas {total}?",
-    ])
+    what_eo = {"smallest": "plej malgranda", "largest": "plej granda", "middle": "meza"}[ask]
+    what_en = {"smallest": "smallest", "largest": "largest", "middle": "middle"}[ask]
+    frame, frame_en = maybe_frame_bi(rng)
+    openers_eo = [
+        f"{frame}la sumo de {count} sinsekvaj entjeroj estas {total}. Kiu estas la {what_eo}?",
+        f"{frame}{count} sinsekvaj entjeroj sumigas al {total}. Trovu la {what_eo}n.",
+        f"{frame}se {count} sinsekvaj entjeroj havas sumon de {total}, kiu estas la {what_eo}?",
+        f"{frame}estas {count} sinsekvaj entjeroj kies sumo egalas {total}. Kalkulu la {what_eo}n.",
+        f"{frame}trovu la {what_eo}n el {count} sinsekvaj entjeroj kies sumo estas {total}.",
+        f"{frame}kiam {count} sinsekvaj entjeroj sumiĝas al {total}, kiu estas la {what_eo}?",
+        f"{frame}kiu el {count} sinsekvaj entjeroj estas la {what_eo}, se ilia sumo estas {total}?",
+    ]
+    openers_en = [
+        f"{frame_en}the sum of {count} consecutive integers is {total}. What is the {what_en}?",
+        f"{frame_en}{count} consecutive integers sum to {total}. Find the {what_en}.",
+        f"{frame_en}if {count} consecutive integers have a sum of {total}, what is the {what_en}?",
+        f"{frame_en}there are {count} consecutive integers whose sum equals {total}. Calculate the {what_en}.",
+        f"{frame_en}find the {what_en} of {count} consecutive integers whose sum is {total}.",
+        f"{frame_en}when {count} consecutive integers add up to {total}, what is the {what_en}?",
+        f"{frame_en}which of {count} consecutive integers is the {what_en}, if their sum is {total}?",
+    ]
+    o_idx = rng.randrange(len(openers_eo))
+    q = openers_eo[o_idx]
+    q_en = openers_en[o_idx]
     if not frame:
         q = q[0].upper() + q[1:]
+        q_en = q_en[0].upper() + q_en[1:]
 
     LinearSolve("n", "const", "total", "x",
                 var_name="x", lhs_shape=lhs_terms).apply(ctx)
 
     if ask == "smallest":
-        return ctx.render(q, "x")
+        return ctx.render(q, "x", question_en=q_en)
     # x + (count-1) for largest, x + (count//2) for middle
     offset = (count - 1) if ask == "largest" else (count // 2)
     ctx.bind("offset", offset)
     Add("x", "offset", "result").apply(ctx)
-    return ctx.render(q, "result")
+    return ctx.render(q, "result", question_en=q_en)
 
 
 # ─── Recipe 16: ratio_algebra ───────────────────────────────────────────────
@@ -2919,7 +3121,9 @@ def ratio_algebra_recipe(rng: random.Random, n_steps: int = 2) -> dict:
     Then r_i * x = part_i. Uses LinearSolve + Mul.
     """
     names = rng.sample(NAMES, 2)
-    obj = rng.choice(OBJECT_NOUNS)
+    obj_idx = rng.randrange(len(OBJECT_NOUNS))
+    obj = OBJECT_NOUNS[obj_idx]
+    obj_en = OBJECT_NOUNS_EN[obj_idx]
 
     for _try in range(100):
         a, b = rng.choice([(2, 3), (3, 5), (1, 4), (3, 4), (1, 3), (4, 5), (3, 7), (2, 5)])
@@ -2936,17 +3140,25 @@ def ratio_algebra_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         ctx.bind("rb", b)
 
         ask = rng.choice(["direct-a", "direct-b", "larger"])
-        which = {"direct-a": f"parto de {names[0]}",
-                 "direct-b": f"parto de {names[1]}",
-                 "larger": "pli granda parto"}[ask]
-        q = rng.choice([
-            f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la "
-            f"rilatumo {a}:{b}. Kiu estas la {which}?",
-            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
-            f"{qty_acc(total, obj)}. Trovu la {which}n.",
-            f"La totala nombro estas {render_qty(total, obj)}, dividita en la "
-            f"rilatumo {a}:{b} inter {names[0]} kaj {names[1]}. Kiu estas la {which}?",
-        ])
+        which_eo = {"direct-a": f"parto de {names[0]}",
+                     "direct-b": f"parto de {names[1]}",
+                     "larger": "pli granda parto"}[ask]
+        which_en = {"direct-a": f"share of {names[0]}",
+                     "direct-b": f"share of {names[1]}",
+                     "larger": "larger part"}[ask]
+        openers_eo = [
+            f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la rilatumo {a}:{b}. Kiu estas la {which_eo}?",
+            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas {qty_acc(total, obj)}. Trovu la {which_eo}n.",
+            f"La totala nombro estas {render_qty(total, obj)}, dividita en la rilatumo {a}:{b} inter {names[0]} kaj {names[1]}. Kiu estas la {which_eo}?",
+        ]
+        openers_en = [
+            f"{names[0]} and {names[1]} share {render_qty_en(total, obj_en)} in the ratio {a}:{b}. What is the {which_en}?",
+            f"In the ratio {a}:{b}, {names[0]} and {names[1]} share {render_qty_en(total, obj_en)}. Find the {which_en}.",
+            f"The total number is {render_qty_en(total, obj_en)}, divided in the ratio {a}:{b} between {names[0]} and {names[1]}. What is the {which_en}?",
+        ]
+        o_idx = rng.randrange(len(openers_eo))
+        q = openers_eo[o_idx]
+        q_en = openers_en[o_idx]
 
         # x + 3x = total → 4x = total → x = total/4
         LinearSolve("r_sum", "zero", "total", "x",
@@ -2955,7 +3167,7 @@ def ratio_algebra_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         # multiply by the target ratio to get the part
         target_coef = "ra" if ask == "direct-a" else ("rb" if ask == "direct-b" else ("rb" if b >= a else "ra"))
         Mul(target_coef, "x", "part").apply(ctx)
-        return ctx.render(q, "part")
+        return ctx.render(q, "part", question_en=q_en)
 
     raise RuntimeError("ratio_algebra_recipe: couldn't sample")
 
