@@ -129,8 +129,18 @@ def parse_args():
     ap.add_argument("--dropout", type=float, default=t["dropout"])
     ap.add_argument("--seed", type=int, default=42)
 
-    ap.add_argument("--eval-steps", type=int, default=1000)
-    ap.add_argument("--save-steps", type=int, default=1000)
+    ap.add_argument("--eval-steps", type=int, default=None,
+                    help="Explicit eval interval in steps. When unset, "
+                         "derived from --eval-fraction-of-epoch.")
+    ap.add_argument("--save-steps", type=int, default=None,
+                    help="Explicit save interval in steps. When unset, "
+                         "derived from --save-fraction-of-epoch.")
+    ap.add_argument("--eval-fraction-of-epoch", type=float, default=0.25,
+                    help="Fraction of an epoch between evals (default 0.25 → "
+                         "4 evals per epoch). Ignored if --eval-steps is set.")
+    ap.add_argument("--save-fraction-of-epoch", type=float, default=0.25,
+                    help="Fraction of an epoch between checkpoints "
+                         "(default 0.25). Ignored if --save-steps is set.")
     ap.add_argument("--save-total-limit", type=int, default=3)
     ap.add_argument("--logging-steps", type=int, default=50)
     ap.add_argument("--eval-max-samples", type=int, default=500,
@@ -240,6 +250,20 @@ def main():
     )
     compute_metrics = make_compute_metrics(tok)
 
+    # Derive eval/save intervals from fraction-of-epoch when not explicitly set.
+    # steps_per_epoch = train_len / (batch_size * grad_accum). HF trainer counts
+    # optimizer steps, so this matches TrainingArguments.
+    steps_per_epoch = max(1, len(train_ds) // (args.batch_size * args.gradient_accumulation))
+    eval_steps = args.eval_steps or max(1, int(steps_per_epoch * args.eval_fraction_of_epoch))
+    save_steps = args.save_steps or max(1, int(steps_per_epoch * args.save_fraction_of_epoch))
+    # HF requires save_steps % eval_steps == 0 when load_best_model_at_end=True.
+    # Round save_steps to nearest multiple of eval_steps (>= eval_steps).
+    if save_steps % eval_steps != 0:
+        save_steps = max(eval_steps, ((save_steps + eval_steps - 1) // eval_steps) * eval_steps)
+    print(f"Schedule: steps_per_epoch={steps_per_epoch:,}  "
+          f"eval every {eval_steps} steps ({eval_steps/steps_per_epoch:.2f} ep)  "
+          f"save every {save_steps} steps ({save_steps/steps_per_epoch:.2f} ep)", flush=True)
+
     training_args = Seq2SeqTrainingArguments(
         output_dir=args.output_dir,
         overwrite_output_dir=False,
@@ -256,8 +280,8 @@ def main():
         bf16=args.bf16,
         logging_steps=args.logging_steps,
         eval_strategy="steps",
-        eval_steps=args.eval_steps,
-        save_steps=args.save_steps,
+        eval_steps=eval_steps,
+        save_steps=save_steps,
         save_total_limit=args.save_total_limit,
         predict_with_generate=args.predict_with_generate,
         generation_max_length=args.max_tgt_len,
