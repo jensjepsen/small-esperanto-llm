@@ -1132,8 +1132,12 @@ def average_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
 # ─── Recipe 4: fraction_cascade ─────────────────────────────────────────────
 
-def fraction_cascade_recipe(rng: random.Random, n_steps: int = 2) -> dict:
-    """Fraction-of-fraction. n_steps=2: single fraction. n_steps=3: fraction of fraction."""
+def fraction_cascade_recipe(rng: random.Random, n_steps: int = 2,
+                             reverse: bool = False) -> dict:
+    """Fraction-of-fraction. n_steps=2: single fraction. n_steps=3: fraction of fraction.
+
+    reverse=True: state the FINAL fraction-count as given; ask for the base.
+    """
     fractions = [(1, 2), (1, 3), (2, 3), (1, 4), (3, 4), (1, 5), (2, 5), (3, 5), (4, 5),
                  (1, 6), (5, 6), (1, 7), (2, 7), (3, 7), (5, 7), (1, 8), (3, 8), (5, 8), (7, 8),
                  (1, 9), (2, 9), (4, 9), (5, 9), (7, 9), (1, 10), (3, 10), (7, 10), (9, 10)]
@@ -1163,11 +1167,18 @@ def fraction_cascade_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         p = ctx.protagonist
         frame = maybe_frame(rng)
 
-        opener = rng.choice([
-            f"{frame}en grupo estas {render_qty(base, base_noun)}. {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
-            f"{frame}el {render_qty(base, base_noun)}, {f1[0]}/{f1[1]} estas {sub_pop}.",
-            f"{frame}{p} kalkulis {render_qty(base, base_noun)}; {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
-        ])
+        if not reverse:
+            opener = rng.choice([
+                f"{frame}en grupo estas {render_qty(base, base_noun)}. {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
+                f"{frame}el {render_qty(base, base_noun)}, {f1[0]}/{f1[1]} estas {sub_pop}.",
+                f"{frame}{p} kalkulis {render_qty(base, base_noun)}; {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
+            ])
+        else:
+            opener = rng.choice([
+                f"{frame}en grupo estas nekonata nombro de {base_noun[1]}. {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
+                f"{frame}el la grupo de {base_noun[1]}, {f1[0]}/{f1[1]} estas {sub_pop}.",
+                f"{frame}{p} kalkulis grupon de {base_noun[1]}; {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
+            ])
         if not frame:
             opener = opener[0].upper() + opener[1:]
 
@@ -1178,18 +1189,47 @@ def fraction_cascade_recipe(rng: random.Random, n_steps: int = 2) -> dict:
             opener += f" El la {sub_pop}, {f2[0]}/{f2[1]} {verb_phrase}."
             Frac("girls", f2[0], f2[1], "red").apply(ctx)
             final = "red"
-            opener += rng.choice([
-                f" Kiom {base_noun[3]} {verb_phrase}?",
-                f" Kalkulu la nombron kiuj {verb_phrase}.",
-                f" Trovu kiom {verb_phrase}.",
-            ])
+            if not reverse:
+                opener += rng.choice([
+                    f" Kiom {base_noun[3]} {verb_phrase}?",
+                    f" Kalkulu la nombron kiuj {verb_phrase}.",
+                    f" Trovu kiom {verb_phrase}.",
+                ])
         else:
-            opener += rng.choice([
-                f" Kiom estas {sub_pop}?",
-                f" Trovu la nombron de {sub_pop}.",
-                f" Kiom {base_noun[3]} estas {sub_pop}?",
-            ])
-        return ctx.render(opener, final)
+            if not reverse:
+                opener += rng.choice([
+                    f" Kiom estas {sub_pop}?",
+                    f" Trovu la nombron de {sub_pop}.",
+                    f" Kiom {base_noun[3]} estas {sub_pop}?",
+                ])
+
+        if not reverse:
+            return ctx.render(opener, final)
+
+        # Reverse: state final count, ask for base.
+        final_val = int(ctx.n(final))
+        which = sub_pop if n_steps == 2 else f"{sub_pop} kiuj {verb_phrase}"
+        state_final = rng.choice([
+            f" Estas {final_val} {which}.",
+            f" La nombro de {which} estas {final_val}.",
+            f" Fine, {final_val} el ili estas {which}.",
+        ])
+        opener += state_final
+        closer = rng.choice([
+            f"Kiom da {base_noun[1]} estas entute?",
+            f"Trovu la totalan nombron de {base_noun[1]}.",
+            f"Kalkulu la nombron de {base_noun[1]} en la grupo.",
+        ])
+        result = ctx.render_reverse(
+            forward_prose=opener,
+            forward_final_var=final,
+            ask_var="base",
+            closer=closer,
+        )
+        result["recipe"] = "fraction_cascade_reverse"
+        result["n_steps"] = n_steps
+        result["direction"] = "reverse"
+        return result
 
     raise RuntimeError("fraction_cascade_recipe: couldn't sample")
 
@@ -1412,9 +1452,12 @@ def inverse_rate_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
 # ─── Recipe 8: ratio_fraction ───────────────────────────────────────────────
 
-def ratio_fraction_recipe(rng: random.Random, n_steps: int = 2) -> dict:
+def ratio_fraction_recipe(rng: random.Random, n_steps: int = 2,
+                            reverse: bool = False) -> dict:
     """Ratio via fraction-of-total: r_i/(r_1+r_2) * total = part_i.
     Direct + larger + smaller asks. Uses Add + Frac.
+
+    reverse=True: state the final part (or gift) value as given, ask for total.
     """
     names = rng.sample(NAMES, 2)
     obj = rng.choice(OBJECT_NOUNS)
@@ -1437,14 +1480,24 @@ def ratio_fraction_recipe(rng: random.Random, n_steps: int = 2) -> dict:
 
         which = {"larger": "pli granda parto", "smaller": "pli malgranda parto",
                  "direct": f"parto de {target_name}"}[ask]
-        q = rng.choice([
-            f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la "
-            f"rilatumo {a}:{b}. Kiu estas la {which}?",
-            f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
-            f"{qty_acc(total, obj)}. Trovu la {which}n.",
-            f"Ilia dividita nombro estas {render_qty(total, obj)}, "
-            f"en rilatumo {a}:{b}. Kiu estas la {which}?",
-        ])
+        if not reverse:
+            q = rng.choice([
+                f"{names[0]} kaj {names[1]} dividas {qty_acc(total, obj)} laŭ la "
+                f"rilatumo {a}:{b}. Kiu estas la {which}?",
+                f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas "
+                f"{qty_acc(total, obj)}. Trovu la {which}n.",
+                f"Ilia dividita nombro estas {render_qty(total, obj)}, "
+                f"en rilatumo {a}:{b}. Kiu estas la {which}?",
+            ])
+        else:
+            q = rng.choice([
+                f"{names[0]} kaj {names[1]} dividas nekonatan nombron de {obj[1]} "
+                f"laŭ la rilatumo {a}:{b}.",
+                f"En rilatumo {a}:{b}, {names[0]} kaj {names[1]} dividas iom "
+                f"da {obj[1]}.",
+                f"Ilia dividita nombro estas ankoraŭ nekonata, "
+                f"sed la rilatumo estas {a}:{b}.",
+            ])
 
         # step 1: sum the ratio parts
         Add("ra", "rb", "r_sum").apply(ctx)
@@ -1460,11 +1513,43 @@ def ratio_fraction_recipe(rng: random.Random, n_steps: int = 2) -> dict:
                 continue
             pct = rng.choice(pcts)
             ctx.bind("pct", pct)
-            q += f" Poste, {pct}% de tiu parto estas donacita. Kiom estas donacita?"
+            if not reverse:
+                q += f" Poste, {pct}% de tiu parto estas donacita. Kiom estas donacita?"
             Pct("pct", "part", "gift", style="direct").apply(ctx)
             final = "gift"
 
-        return ctx.render(q, final)
+        if not reverse:
+            return ctx.render(q, final)
+
+        # Reverse: state the final (part or gift) value; ask for total.
+        final_val = int(ctx.n(final))
+        role_desc = "donacita" if final == "gift" else which
+        if final == "gift":
+            state = rng.choice([
+                f" La donacita kvanto estas {render_qty(final_val, obj)} ({pct}% de la {which}).",
+                f" El la {which}, {pct}% donacita estas {render_qty(final_val, obj)}.",
+            ])
+        else:
+            state = rng.choice([
+                f" La {which} estas {render_qty(final_val, obj)}.",
+                f" {target_name} ricevas {qty_acc(final_val, obj)}.",
+            ])
+        q += state
+        closer = rng.choice([
+            f"Kiom da {obj[1]} estas entute?",
+            f"Trovu la totalan nombron de {obj[1]}.",
+            f"Kalkulu la totalan kvanton de {obj[1]}.",
+        ])
+        result = ctx.render_reverse(
+            forward_prose=q,
+            forward_final_var=final,
+            ask_var="total",
+            closer=closer,
+        )
+        result["recipe"] = "ratio_fraction_reverse"
+        result["n_steps"] = n_steps
+        result["direction"] = "reverse"
+        return result
 
     raise RuntimeError("ratio_fraction_recipe: couldn't sample")
 
@@ -1964,11 +2049,18 @@ RECIPES = {
 }
 
 
+REVERSABLE_RECIPES = {"ratio_parts", "fraction_cascade", "ratio_fraction"}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--count", type=int, default=0)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--recipe", choices=list(RECIPES.keys()), default=None)
+    ap.add_argument("--reverse-frac", type=float, default=0.0,
+                    help="Fraction (0-1) of generated rows that use reverse-"
+                         "direction mode. Only applies to recipes that support "
+                         "reverse (ratio_parts, fraction_cascade, ratio_fraction).")
     args = ap.parse_args()
     rng = random.Random(args.seed)
 
@@ -1979,10 +2071,22 @@ def main():
             # 2/3 base + occasional 4/5 extensions — bias toward 2/3 so overall
             # distribution matches natural GSM8K density (mostly 2-3-step chains).
             n_steps = rng.choices([2, 3, 4, 5], weights=[3, 3, 2, 1])[0]
+            do_reverse = (
+                args.reverse_frac > 0
+                and recipe_name in REVERSABLE_RECIPES
+                and rng.random() < args.reverse_frac
+            )
             try:
-                p = recipe(rng, n_steps=n_steps)
-                p["recipe"] = recipe_name
-                p["n_steps"] = n_steps
+                if do_reverse:
+                    p = recipe(rng, n_steps=n_steps, reverse=True)
+                    p.setdefault("recipe", recipe_name)
+                    p.setdefault("n_steps", n_steps)
+                    p.setdefault("direction", "reverse")
+                else:
+                    p = recipe(rng, n_steps=n_steps)
+                    p["recipe"] = recipe_name
+                    p["n_steps"] = n_steps
+                    p["direction"] = "forward"
                 print(json.dumps(p, ensure_ascii=False))
             except RuntimeError:
                 continue
