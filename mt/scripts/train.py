@@ -54,20 +54,25 @@ def parse_args():
     ap.add_argument("--tokenizer", type=str, default="mt/data/tokenizer/spm_eneo_32k.model")
     ap.add_argument("--train-files", nargs="+", type=str, default=[
         "hf://jensjepsen/esperanto-mt-parallel",
-        # Math-domain parallel (closes v6's "left → maldekstre" gap on math CoT).
-        # Sentences slice = deduped step-level chain lines + short question sentences.
-        # Rows slice = full multi-sentence Q+A pairs (turns off if disk-thin).
-        "hf://jensjepsen/esperanto-mt-math-parallel::sentences",
-        "hf://jensjepsen/esperanto-mt-math-parallel::rows",
-        # YAGO-derived named-entity label pairs + short descriptions
-        # (closes v6's "Horace → Horacio" proper-noun bug).
-        "hf://jensjepsen/esperanto-mt-yago-parallel::labels",
-        "hf://jensjepsen/esperanto-mt-yago-parallel::comments",
+        # Math-domain parallel v2 — downsampled to 100k+100k after v8 evidence
+        # that model learns math notation extremely quickly (v6 already ~75 BLEU
+        # on eval_math_wp without any math training data). More was diluting
+        # general prose.
+        "hf://jensjepsen/esperanto-mt-math-parallel-v2::sentences",
+        "hf://jensjepsen/esperanto-mt-math-parallel-v2::rows",
+        # YAGO parallel v2 — filtered labels config: dropped the 636k identity
+        # pairs (en==eo) that were teaching the model to copy English verbatim.
+        # v8 handcrafted probes showed "churning → churning" and "battle of
+        # waterloo → battle of waterloo" leaks; v2 keeps only 162k real
+        # translations. Comments (415k, essentially all real translations)
+        # unchanged.
+        "hf://jensjepsen/esperanto-mt-yago-parallel-v2::labels",
+        "hf://jensjepsen/esperanto-mt-yago-parallel-v2::comments",
         # OPUS bundle: QED (educational subtitles), GlobalVoices (news),
         # KDE4/GNOME/Ubuntu (software localization). ~159k pairs across 5 registers.
         "hf://jensjepsen/esperanto-mt-opus-parallel",
     ], help="Local JSONL paths or hf://repo[::config][/split] "
-            "(default: merged v6 corpus + math + YAGO + OPUS supplements)")
+            "(default: merged v6 corpus + math-v2 + YAGO-v2 + OPUS supplements)")
     ap.add_argument("--val-files", nargs="+", type=Path, default=[
         Path("mt/data/parallel/flores_devtest.jsonl"),
         Path("mt/data/parallel/opus100_validation.jsonl"),
@@ -143,8 +148,10 @@ def parse_args():
                          "(default 0.25). Ignored if --save-steps is set.")
     ap.add_argument("--save-total-limit", type=int, default=3)
     ap.add_argument("--logging-steps", type=int, default=50)
-    ap.add_argument("--eval-max-samples", type=int, default=500,
-                    help="Cap eval set size for fast in-loop sacrebleu")
+    ap.add_argument("--eval-max-samples", type=int, default=1500,
+                    help="Cap eval set size for in-loop sacrebleu (default "
+                         "1500 covers full FLORES devtest of 1012 rows — "
+                         "prior cap of 500 hid ~2 BLEU of tail difficulty).")
     ap.add_argument("--predict-with-generate", action="store_true", default=True)
 
     ap.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=False,
