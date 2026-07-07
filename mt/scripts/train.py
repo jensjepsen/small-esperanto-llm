@@ -76,7 +76,12 @@ def parse_args():
     ap.add_argument("--val-files", nargs="+", type=Path, default=[
         Path("mt/data/parallel/flores_devtest.jsonl"),
         Path("mt/data/parallel/opus100_validation.jsonl"),
+        # STEM slice (18 subjects, 1086 rows) — legacy tracking.
         Path("mt/data/parallel/eval_mmlu_stem.jsonl"),
+        # Full MMLU (57 subjects, 59,795 rows) — shuffled so the 1500-cap
+        # in-loop slice covers all subjects (4-179 rows each). Broader
+        # general-prose signal than the STEM slice.
+        Path("mt/data/parallel/eval_mmlu_full.jsonl"),
         Path("mt/data/parallel/eval_sciq.jsonl"),
         # Held-out math CoT eval (wp_compose seed=99999, ~1k rows).
         # Signals whether math-domain BLEU is moving during v8-mt training.
