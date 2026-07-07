@@ -216,6 +216,8 @@ class Ctx:
         ask_var: str,
         closer: str,
         recipe_name: str = "reverse",
+        forward_prose_en: str | None = None,
+        closer_en: str | None = None,
     ) -> dict:
         """Reverse-frame the forward problem.
 
@@ -267,6 +269,10 @@ class Ctx:
 
         reverse_chain: list[str] = []
         reverse_prose: list[str] = []
+        reverse_prose_en: list[str] = []
+        # If any op-kind on the path lacks an EN reverse-step lib, we drop
+        # EN emission entirely (like Ctx.render's contract).
+        en_ok = True
         known_val: float = self.vars[forward_final_var].value
 
         for op, side in zip(reversed(self.applied_ops), reversed(path_sides)):
@@ -280,23 +286,34 @@ class Ctx:
                 unknown = op.reverse_step(known_val, known_side, None)
                 reverse_chain.append(
                     op.reverse_chain_line(known_val, known_side, None, unknown))
-                template = self.rng.choice(REVERSE_STEP_PROSE[op.kind])
-                reverse_prose.append(
-                    template.format(a=fmt_num(known_val), c=fmt_num(unknown),
-                                    n=op.num, d=op.denom)
-                )
+                # Same-index EO/EN pick — preserves parallel alignment.
+                variants_eo = REVERSE_STEP_PROSE[op.kind]
+                idx = self.rng.randrange(len(variants_eo))
+                fmt_kwargs = dict(a=fmt_num(known_val), c=fmt_num(unknown),
+                                   n=op.num, d=op.denom)
+                reverse_prose.append(variants_eo[idx].format(**fmt_kwargs))
+                variants_en = REVERSE_STEP_PROSE_EN.get(op.kind, [])
+                if idx < len(variants_en):
+                    reverse_prose_en.append(variants_en[idx].format(**fmt_kwargs))
+                else:
+                    en_ok = False
             else:
                 other_side_var = op.rhs if known_side == "rhs" else op.lhs
                 other_side_val = self.vars[other_side_var].value
                 unknown = op.reverse_step(known_val, known_side, other_side_val)
                 reverse_chain.append(
                     op.reverse_chain_line(known_val, known_side, other_side_val, unknown))
-                template = self.rng.choice(REVERSE_STEP_PROSE[op.kind])
-                reverse_prose.append(
-                    template.format(a=fmt_num(known_val),
-                                    b=fmt_num(other_side_val),
-                                    c=fmt_num(unknown))
-                )
+                variants_eo = REVERSE_STEP_PROSE[op.kind]
+                idx = self.rng.randrange(len(variants_eo))
+                fmt_kwargs = dict(a=fmt_num(known_val),
+                                   b=fmt_num(other_side_val),
+                                   c=fmt_num(unknown))
+                reverse_prose.append(variants_eo[idx].format(**fmt_kwargs))
+                variants_en = REVERSE_STEP_PROSE_EN.get(op.kind, [])
+                if idx < len(variants_en):
+                    reverse_prose_en.append(variants_en[idx].format(**fmt_kwargs))
+                else:
+                    en_ok = False
             known_val = unknown
 
         # Sanity check: reverse walk lands on the ask_var value
@@ -306,12 +323,19 @@ class Ctx:
 
         question = f"{forward_prose} {closer}"
         answer = " ".join(reverse_prose) + f" #### {ans_str}"
-        return {
+        result = {
             "question": question,
             "answer": answer.strip(),
             "chain_lines": reverse_chain,
             "final": ans_str,
         }
+        # Emit parallel EN iff caller supplied both forward_prose_en +
+        # closer_en, AND every reverse-step had an EN mirror.
+        if forward_prose_en is not None and closer_en is not None and en_ok:
+            answer_en = " ".join(reverse_prose_en) + f" #### {ans_str}"
+            result["question_en"] = f"{forward_prose_en} {closer_en}"
+            result["answer_en"] = answer_en.strip()
+        return result
 
 
 # Reverse-step prose per Op kind. Placeholders:
@@ -384,6 +408,76 @@ REVERSE_STEP_PROSE: dict[str, list[str]] = {
         "Retroiri tra la procento: {a} * 100 / {b} = {c}.",
         "La antaŭa bazo estis {a} * 100 / {b} = {c}.",
         "Divizio per {b}% donas {a} * 100 / {b} = {c}.",
+    ],
+}
+
+# EN mirror — same indexing as REVERSE_STEP_PROSE so render_reverse can
+# emit parallel EN chains alongside the EO ones.
+REVERSE_STEP_PROSE_EN: dict[str, list[str]] = {
+    "mul": [
+        "We reverse the multiplication: {a} / {b} = {c}.",
+        "We divide to reverse: {a} / {b} = {c}.",
+        "The original number is {a} / {b} = {c}.",
+        "So the original quantity was {a} / {b} = {c}.",
+        "Dividing to reverse: {a} / {b} = {c}.",
+        "Undo the multiplication: {a} / {b} = {c}.",
+        "Invert the multiplication by division: {a} / {b} = {c}.",
+        "The previous value was {a} / {b} = {c}.",
+        "Backwards by division: {a} / {b} = {c}.",
+        "So the input to the multiplication was {c}, since {a} / {b} = {c}.",
+    ],
+    "add": [
+        "We subtract the addition: {a} - {b} = {c}.",
+        "The original value was {a} - {b} = {c}.",
+        "So before the addition it was {a} - {b} = {c}.",
+        "Reverse the addition: {a} - {b} = {c}.",
+        "Undo the addition: {a} - {b} = {c}.",
+        "Subtracting the addition: {a} - {b} = {c}.",
+        "Invert the addition: {a} - {b} = {c}.",
+        "The previous value was {a} - {b} = {c}.",
+        "Backwards by subtraction: {a} - {b} = {c}.",
+    ],
+    "sub": [
+        "We add to reverse: {a} + {b} = {c}.",
+        "So before the subtraction it was {a} + {b} = {c}.",
+        "The original value was {a} + {b} = {c}.",
+        "Reverse the subtraction: {a} + {b} = {c}.",
+        "Undo the subtraction: {a} + {b} = {c}.",
+        "Add to invert: {a} + {b} = {c}.",
+        "Restore what was removed: {a} + {b} = {c}.",
+        "The previous value was {a} + {b} = {c}.",
+        "Backwards by addition: {a} + {b} = {c}.",
+    ],
+    "div": [
+        "We multiply to reverse: {a} * {b} = {c}.",
+        "The original number was {a} * {b} = {c}.",
+        "So before the division it was {a} * {b} = {c}.",
+        "Reverse the division: {a} * {b} = {c}.",
+        "Undo the division: {a} * {b} = {c}.",
+        "Multiply to invert: {a} * {b} = {c}.",
+        "The previous value was {a} * {b} = {c}.",
+        "Backwards by multiplication: {a} * {b} = {c}.",
+        "So the input to the division was {a} * {b} = {c}.",
+    ],
+    "frac": [
+        "We reverse the fraction: {a} * {d} / {n} = {c}.",
+        "The original base was {a} * {d} / {n} = {c}.",
+        "So the original base was {a} * {d} / {n} = {c}.",
+        "Undo the fraction: {a} * {d} / {n} = {c}.",
+        "Invert {n}/{d}: multiplying by {d}/{n} gives {c}.",
+        "Backwards through the fraction: {a} * {d} / {n} = {c}.",
+        "The previous base was {a} * {d} / {n} = {c}.",
+        "Inverting {n}/{d}: {a} * {d} / {n} = {c}.",
+    ],
+    "pct": [
+        "We reverse the percentage: {a} * 100 / {b} = {c}.",
+        "The original base was {a} * 100 / {b} = {c}.",
+        "So the original base was {a} * 100 / {b} = {c}.",
+        "Undo the percentage: {a} * 100 / {b} = {c}.",
+        "Invert {b}%: {a} * 100 / {b} = {c}.",
+        "Backwards through the percentage: {a} * 100 / {b} = {c}.",
+        "The previous base was {a} * 100 / {b} = {c}.",
+        "Division by {b}% gives {a} * 100 / {b} = {c}.",
     ],
 }
 
@@ -601,8 +695,8 @@ class Frac(Op):
         ctx.bind(self.out, result, noun=ctx.get(self.lhs).noun)
         ctx.chain.append(f"{self.num}/{self.denom} * {fmt_num(base)} = {fmt_num(result)}")
         role = "first" if not ctx.prose else "chained"
-        template = ctx.rng.choice(_FRAC_PROSE[role])
-        ctx.prose.append(template.format(n=self.num, d=self.denom, b=fmt_num(base), r=fmt_num(result)))
+        self._pick_emit(ctx, _FRAC_PROSE, role, _FRAC_PROSE_EN,
+                         n=self.num, d=self.denom, b=fmt_num(base), r=fmt_num(result))
         ctx.applied_ops.append(self)
 
     def reverse_step(self, out_val, known_side, known_val=None):
@@ -636,8 +730,8 @@ class Avg(Op):
         ctx.chain.append(f"{sum_str} = {fmt_num(total)}")
         ctx.chain.append(f"{fmt_num(total)} / {n} = {fmt_num(avg)}")
         role = "first" if not ctx.prose else "chained"
-        template = ctx.rng.choice(_AVG_PROSE[role])
-        ctx.prose.append(template.format(vals=sum_str, t=fmt_num(total), n=n, a=fmt_num(avg)))
+        self._pick_emit(ctx, _AVG_PROSE, role, _AVG_PROSE_EN,
+                         vals=sum_str, t=fmt_num(total), n=n, a=fmt_num(avg))
         ctx.applied_ops.append(self)
     # NOTE: Avg has no clean single-var inverse → skip in reverse mode.
 
@@ -667,14 +761,14 @@ class Pct(Op):
             ctx.chain.append(f"{pct} / 100 = {dec_str}")
             ctx.chain.append(f"{dec_str} * {fmt_num(base)} = {fmt_num(amount)}")
             role = "first" if not ctx.prose else "chained"
-            template = ctx.rng.choice(_PCT_DECIMAL_PROSE[role])
-            ctx.prose.append(template.format(p=pct, d=dec_str, b=fmt_num(base), a=fmt_num(amount)))
+            self._pick_emit(ctx, _PCT_DECIMAL_PROSE, role, _PCT_DECIMAL_PROSE_EN,
+                             p=pct, d=dec_str, b=fmt_num(base), a=fmt_num(amount))
         else:
             # direct: pct/100 * base = amount
             ctx.chain.append(f"{pct} / 100 * {fmt_num(base)} = {fmt_num(amount)}")
             role = "first" if not ctx.prose else "chained"
-            template = ctx.rng.choice(_PCT_DIRECT_PROSE[role])
-            ctx.prose.append(template.format(p=pct, b=fmt_num(base), a=fmt_num(amount)))
+            self._pick_emit(ctx, _PCT_DIRECT_PROSE, role, _PCT_DIRECT_PROSE_EN,
+                             p=pct, b=fmt_num(base), a=fmt_num(amount))
         ctx.applied_ops.append(self)
 
     def reverse_step(self, out_val, known_side, known_val):
@@ -750,12 +844,10 @@ class LinearSolve(Op):
 
         # single prose block — narrative frame around the algebra
         role = "first" if not ctx.prose else "chained"
-        template = ctx.rng.choice(_LINSOLVE_PROSE[role])
-        ctx.prose.append(template.format(
-            v=v,
-            eq=f"{c}{v} + {b}" if b > 0 else f"{c}{v} - {-b}" if b < 0 else f"{c}{v}",
-            t=t, c=c, num=num, x=x,
-        ))
+        eq_str = f"{c}{v} + {b}" if b > 0 else f"{c}{v} - {-b}" if b < 0 else f"{c}{v}"
+        self._pick_emit(ctx, _LINSOLVE_PROSE, role, _LINSOLVE_PROSE_EN,
+                         v=v, eq=eq_str, t=t, c=c, num=num, x=x)
+        ctx.applied_ops.append(self)
 
 
 # ─── Prose libraries ────────────────────────────────────────────────────────
@@ -1011,6 +1103,127 @@ _DIV_PROSE_EN = {
     ],
 }
 
+_FRAC_PROSE_EN = {
+    "first": [
+        "We find {n}/{d} of {b}: {n}/{d} * {b} = {r}.",
+        "{n}/{d} of {b} is {r}.",
+        "Calculate {n}/{d} of {b}: {n}/{d} * {b} = {r}.",
+        "The {n}/{d} part of {b} equals {r}.",
+        "Take {n}/{d} of {b}: {n}/{d} * {b} = {r}.",
+        "First find {n}/{d}: {n}/{d} * {b} = {r}.",
+        "The fraction {n}/{d} of {b} gives {r}.",
+        "Multiplying {b} by {n}/{d}: {n} * {b} / {d} = {r}.",
+        "Applying {n}/{d} to {b}: {r}.",
+        "{n}/{d} of {b}: {r}.",
+    ],
+    "chained": [
+        "Then {n}/{d} of {b}: {n}/{d} * {b} = {r}.",
+        "{n}/{d} of {b} = {r}.",
+        "Now find {n}/{d}: {n}/{d} * {b} = {r}.",
+        "Next the fraction {n}/{d} of {b} gives {r}.",
+        "From that, {n}/{d} of {b} = {r}.",
+        "So {n}/{d} of {b} equals {r}.",
+        "Applying {n}/{d}: {n}/{d} * {b} = {r}.",
+        "And {n}/{d} of {b} = {r}.",
+        "So {n}/{d} of {b} is {r}.",
+    ],
+}
+
+_AVG_PROSE_EN = {
+    "first": [
+        "Sum: {vals} = {t}. Mean value: {t} / {n} = {a}.",
+        "Add them all: {vals} = {t}. Mean: {t} / {n} = {a}.",
+        "The mean value is ({vals}) / {n} = {a}.",
+        "Sum: {vals} = {t}. Mean: {t} / {n} = {a}.",
+        "The sum is {vals} = {t}. Dividing by {n}: {t} / {n} = {a}.",
+        "Compute the sum: {vals} = {t}. Then {t} / {n} = {a}.",
+        "First sum ({vals}) = {t}, then divide by {n}: {a}.",
+        "The arithmetic mean: ({vals}) / {n} = {a}.",
+        "Find the mean value: ({vals}) / {n} = {a}.",
+    ],
+    "chained": [
+        "Now the mean: ({vals}) / {n} = {a}.",
+        "The sum is {t}, so the mean = {t} / {n} = {a}.",
+        "Then compute the mean: {t} / {n} = {a}.",
+        "The sum {t} divided by {n} gives {a}.",
+        "So the mean value is {t} / {n} = {a}.",
+        "And the average is {t} / {n} = {a}.",
+        "So the mean is ({vals}) / {n} = {a}.",
+        "Mean value = {t} / {n} = {a}.",
+    ],
+}
+
+_PCT_DIRECT_PROSE_EN = {
+    "first": [
+        "We compute {p}% of {b}: {p}/100 * {b} = {a}.",
+        "{p}% of {b} is {p}/100 * {b} = {a}.",
+        "Find {p}%: {p}/100 * {b} = {a}.",
+        "The percentage {p}% of {b} gives {p}/100 * {b} = {a}.",
+        "Applying {p}% to {b}: {p}/100 * {b} = {a}.",
+        "Multiplying {b} by {p}/100: {a}.",
+        "{p}% of {b} equals {p} * {b} / 100 = {a}.",
+        "Calculation of {p}%: {p}/100 * {b} = {a}.",
+        "First find {p}% of {b}: {a}.",
+        "The {p}-percent value of {b} is {a}.",
+    ],
+    "chained": [
+        "Then we find {p}% of {b}: {p}/100 * {b} = {a}.",
+        "{p}% of {b} = {p}/100 * {b} = {a}.",
+        "Now applying {p}% to {b}: {a}.",
+        "So {p}% of {b} equals {a}.",
+        "And {p}% of {b} gives {a}.",
+        "Thus {p}/100 * {b} = {a}.",
+        "After applying {p}%: {p}/100 * {b} = {a}.",
+        "So {p}% of {b} = {a}.",
+    ],
+}
+
+_PCT_DECIMAL_PROSE_EN = {
+    "first": [
+        "First convert {p}% to a decimal: {p}/100 = {d}. Now {d} * {b} = {a}.",
+        "{p}% = {d}, so {d} * {b} = {a}.",
+        "Convert {p}% to a decimal: {p}/100 = {d}. Then {d} * {b} = {a}.",
+        "The decimal for {p}% is {d}, so {d} * {b} = {a}.",
+        "Write {p}% as {d}: {d} * {b} = {a}.",
+        "In decimal form: {p}/100 = {d}. Multiplying: {d} * {b} = {a}.",
+        "Treat {p}% as {d}, so {d} * {b} = {a}.",
+        "The percentage multiplier is {d}: {d} * {b} = {a}.",
+    ],
+    "chained": [
+        "Convert {p}% to a decimal: {p}/100 = {d}. Then {d} * {b} = {a}.",
+        "Now {p}% = {d}, so {d} * {b} = {a}.",
+        "Then convert {p}% to {d} and multiply: {d} * {b} = {a}.",
+        "Use the decimal {d} = {p}/100: {d} * {b} = {a}.",
+        "So {p}/100 = {d}, so {d} * {b} = {a}.",
+        "In decimal form: {d} * {b} = {a}.",
+        "Thus {d} * {b} = {a}.",
+    ],
+}
+
+_LINSOLVE_PROSE_EN = {
+    "first": [
+        "Let {v} be the unknown. The equation: {eq} = {t}. Solving for {v}: {v} = {x}.",
+        "Let {v} be the unknown. So {eq} = {t}. Solving, {v} = {x}.",
+        "Denote the unknown by {v}. The equation becomes {eq} = {t}. Isolating: {v} = {x}.",
+        "Define {v} as the unknown. The equation {eq} = {t} gives {v} = {x}.",
+        "Set up the equation: {eq} = {t}. Solving for {v}, we get {v} = {x}.",
+        "If {v} is the unknown, then {eq} = {t}, so {v} = {x}.",
+        "Use {v} for the unknown. Equation: {eq} = {t}. Solution: {v} = {x}.",
+        "Set up the equation {eq} = {t} where {v} is unknown. Result: {v} = {x}.",
+        "Defining {v} as the unknown: {eq} = {t}, so {v} = {x}.",
+        "Mark the unknown as {v}. The equation {eq} = {t} solved gives {v} = {x}.",
+    ],
+    "chained": [
+        "Now set up the equation: {eq} = {t}. Solution: {v} = {x}.",
+        "The next equation is {eq} = {t}, so {v} = {x}.",
+        "Then build the equation {eq} = {t}. Solving: {v} = {x}.",
+        "Next, the equation {eq} = {t} gives {v} = {x}.",
+        "Now {eq} = {t}, so {v} = {x}.",
+        "From that, {eq} = {t}, and {v} = {x}.",
+        "And the equation {eq} = {t} solved: {v} = {x}.",
+    ],
+}
+
 
 _LINSOLVE_PROSE = {
     "first": [
@@ -1186,17 +1399,27 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
             q_en = [opener_en]
         else:
             # Reverse: STATE groups, but HIDE per_group (mark unknown).
-            frame = maybe_frame(rng)
-            r_openers = [
+            frame, frame_en = maybe_frame_bi(rng)
+            r_openers_eo = [
                 f"{frame}estas {render_qty(n_groups, group)}, ĉiu enhavanta la saman nekonatan nombron de {child[1]}.",
                 f"{frame}en {render_qty(n_groups, group)}, ĉiu havas la saman nombron de {child[1]}.",
                 f"{frame}{ctx.protagonist} havas {qty_acc(n_groups, group)}, ĉiu kun sama sed nekonata nombro de {child[1]}.",
                 f"{frame}oni disdonis egalajn kvantojn de {child[1]} en ĉiun de {render_qty(n_groups, group)}.",
             ]
-            opener = rng.choice(r_openers)
+            r_openers_en = [
+                f"{frame_en}there are {render_qty_en(n_groups, group_en)}, each containing the same unknown number of {child_en[1]}.",
+                f"{frame_en}in {render_qty_en(n_groups, group_en)}, each has the same number of {child_en[1]}.",
+                f"{frame_en}{ctx.protagonist} has {render_qty_en(n_groups, group_en)}, each with the same but unknown number of {child_en[1]}.",
+                f"{frame_en}equal quantities of {child_en[1]} were placed into each of {render_qty_en(n_groups, group_en)}.",
+            ]
+            r_idx = rng.randrange(len(r_openers_eo))
+            opener = r_openers_eo[r_idx]
+            opener_en = r_openers_en[r_idx]
             if not frame:
                 opener = opener[0].upper() + opener[1:]
+                opener_en = opener_en[0].upper() + opener_en[1:]
             q = [opener]
+            q_en = [opener_en]
 
         Mul("groups", "per_group", "total").apply(ctx)
         final_var = "total"
@@ -1205,9 +1428,8 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
             absent = rng.randint(1, min(6, int(ctx.n("total")) // 2))
             ctx.bind("absent", absent, noun=child)
             q.append(f"{render_qty(absent, child, case='nom')} forestas.")
-            if not reverse:
-                verb = "is" if absent == 1 else "are"
-                q_en.append(f"{render_qty_en(absent, child_en)} {verb} absent.")
+            verb = "is" if absent == 1 else "are"
+            q_en.append(f"{render_qty_en(absent, child_en)} {verb} absent.")
             Sub("total", "absent", "present").apply(ctx)
             final_var = "present"
 
@@ -1219,8 +1441,7 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
             n_packs = rng.choice(divisors)
             ctx.bind("packs", n_packs)
             q.append(f"Ili dividas sin en {n_packs} egalajn grupojn.")
-            if not reverse:
-                q_en.append(f"They divide into {n_packs} equal groups.")
+            q_en.append(f"They divide into {n_packs} equal groups.")
             Div(final_var, "packs", "per_pack").apply(ctx)
             final_var = "per_pack"
 
@@ -1248,22 +1469,37 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
 
         # Reverse: state the final value and ask for per_group
         final_val = int(ctx.n(final_var))
-        state_final = rng.choice([
+        state_finals_eo = [
             f"Fine, entute estas {render_qty(final_val, child, case='nom')}.",
             f"La fina kvanto estas {render_qty(final_val, child, case='nom')}.",
             f"Post ĉio, la rezulto estas {render_qty(final_val, child, case='nom')}.",
-        ])
-        q.append(state_final)
-        closer = rng.choice([
+        ]
+        state_finals_en = [
+            f"In the end, there are a total of {render_qty_en(final_val, child_en)}.",
+            f"The final quantity is {render_qty_en(final_val, child_en)}.",
+            f"After everything, the result is {render_qty_en(final_val, child_en)}.",
+        ]
+        sf_idx = rng.randrange(len(state_finals_eo))
+        q.append(state_finals_eo[sf_idx])
+        q_en.append(state_finals_en[sf_idx])
+        closers_eo = [
             f"Kiom da {child[1]} estas en ĉiu {group[0]}?",
             f"Trovu la nombron de {child[1]} en ĉiu {group[0]}.",
             f"Kalkulu kiom da {child[1]} enhavis ĉiu {group[0]}.",
-        ])
+        ]
+        closers_en = [
+            f"How many {child_en[1]} are in each {group_en[0]}?",
+            f"Find the number of {child_en[1]} in each {group_en[0]}.",
+            f"Calculate how many {child_en[1]} each {group_en[0]} contained.",
+        ]
+        c_idx = rng.randrange(len(closers_eo))
         result = ctx.render_reverse(
             forward_prose=" ".join(q),
             forward_final_var=final_var,
             ask_var="per_group",
-            closer=closer,
+            closer=closers_eo[c_idx],
+            forward_prose_en=" ".join(q_en),
+            closer_en=closers_en[c_idx],
         )
         result["recipe"] = "ratio_parts_reverse"
         result["n_steps"] = n_steps
