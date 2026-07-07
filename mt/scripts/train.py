@@ -54,7 +54,17 @@ def parse_args():
     ap.add_argument("--tokenizer", type=str, default="mt/data/tokenizer/spm_eneo_32k.model")
     ap.add_argument("--train-files", nargs="+", type=str, default=[
         "hf://jensjepsen/esperanto-mt-parallel",
-    ], help="Local JSONL paths or hf://repo[/split] (default: merged HF dataset)")
+        # Math-domain parallel (closes v6's "left → maldekstre" gap on math CoT).
+        # Sentences slice = deduped step-level chain lines + short question sentences.
+        # Rows slice = full multi-sentence Q+A pairs (turns off if disk-thin).
+        "hf://jensjepsen/esperanto-mt-math-parallel::sentences",
+        "hf://jensjepsen/esperanto-mt-math-parallel::rows",
+        # YAGO-derived named-entity label pairs + short descriptions
+        # (closes v6's "Horace → Horacio" proper-noun bug).
+        "hf://jensjepsen/esperanto-mt-yago-parallel::labels",
+        "hf://jensjepsen/esperanto-mt-yago-parallel::comments",
+    ], help="Local JSONL paths or hf://repo[::config][/split] "
+            "(default: merged v6 corpus + math + YAGO supplements)")
     ap.add_argument("--val-files", nargs="+", type=Path, default=[
         Path("mt/data/parallel/flores_devtest.jsonl"),
         Path("mt/data/parallel/opus100_validation.jsonl"),

@@ -21,6 +21,9 @@ class ParallelDataset(Dataset):
       - local file path / Path  → reads {"en", "eo"} rows from JSONL
       - "hf://repo[/split]"    → loads via datasets.load_dataset
         (default split = "train"); requires `en` and `eo` columns
+      - "hf://repo::config[/split]"  → loads a specific config (e.g. for
+        multi-config datasets like esperanto-mt-math-parallel with
+        `rows`/`sentences`).
 
     `direction`:
       - "en2eo" / "eo2en": fixed direction
@@ -38,15 +41,28 @@ class ParallelDataset(Dataset):
             s = str(p)
             if s.startswith("hf://"):
                 from datasets import load_dataset
-                parts = s[len("hf://"):].split("/")
-                # hf://user/name → split=train; hf://user/name/split → that split
-                if len(parts) == 2:
-                    repo, split = "/".join(parts), "train"
-                elif len(parts) == 3:
-                    repo, split = "/".join(parts[:2]), parts[2]
+                # Peel off optional ::config specifier BEFORE the split part.
+                tail = s[len("hf://"):]
+                config = None
+                if "::" in tail:
+                    head, cfg_and_maybe_split = tail.split("::", 1)
+                    cfg_parts = cfg_and_maybe_split.split("/")
+                    config = cfg_parts[0]
+                    split = cfg_parts[1] if len(cfg_parts) > 1 else "train"
+                    repo = head
                 else:
-                    raise ValueError(f"bad hf:// path: {s}")
-                ds = load_dataset(repo, split=split)
+                    parts = tail.split("/")
+                    # hf://user/name → split=train; hf://user/name/split → that split
+                    if len(parts) == 2:
+                        repo, split = "/".join(parts), "train"
+                    elif len(parts) == 3:
+                        repo, split = "/".join(parts[:2]), parts[2]
+                    else:
+                        raise ValueError(f"bad hf:// path: {s}")
+                if config:
+                    ds = load_dataset(repo, config, split=split)
+                else:
+                    ds = load_dataset(repo, split=split)
                 for row in ds:
                     self.pairs.append((row["en"], row["eo"]))
             else:
