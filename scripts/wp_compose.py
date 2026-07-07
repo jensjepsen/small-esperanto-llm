@@ -49,6 +49,12 @@ SCENARIO_FRAMES = [
     "En la merkato,",  "Dum somero,",  "Antaŭ la festo,",  "Hodiaŭ matene,",
     "Pasintan semajnon,",  "En festo,",  "Post la manĝo,",  "En la vendejo,",
 ]
+# EN mirror — same index order as SCENARIO_FRAMES so parallel emission works.
+SCENARIO_FRAMES_EN = [
+    "In 2015,",  "During the school year,",  "One day,",  "After school,",
+    "At the market,",  "During summer,",  "Before the party,",  "This morning,",
+    "Last week,",  "At the party,",  "After the meal,",  "At the shop,",
+]
 
 # For recipes that render entities from any pool, an extended object pool
 # broadens the surface. Each is (nom_sg, nom_pl, acc_sg, acc_pl).
@@ -73,6 +79,28 @@ GROUPING_NOUNS = [
     ("ĉambro",  "ĉambroj",  "ĉambron",  "ĉambrojn"),
     ("kesto",   "kestoj",   "keston",   "kestojn"),
     ("vagono",  "vagonoj",  "vagonon",  "vagonojn"),
+]
+# EN parallel nouns — same index as the EO list.  (singular, plural).
+# When a recipe needs EN alongside EO, pick the SAME index into both lists.
+CHILDLIKE_NOUNS_EN = [
+    ("child",    "children"),
+    ("boy",      "boys"),
+    ("girl",     "girls"),
+    ("student",  "students"),
+    ("pupil",    "pupils"),
+    ("customer", "customers"),
+    ("guest",    "guests"),
+    ("visitor",  "visitors"),
+]
+GROUPING_NOUNS_EN = [
+    ("group",       "groups"),
+    ("team",        "teams"),
+    ("class",       "classes"),
+    ("table",       "tables"),
+    ("bus",         "buses"),
+    ("room",        "rooms"),
+    ("box",         "boxes"),
+    ("wagon",       "wagons"),
 ]
 OBJECT_NOUNS = [
     ("libro",  "libroj",  "libron",  "librojn"),
@@ -133,6 +161,13 @@ class Ctx:
     vars: dict[str, Var] = field(default_factory=dict)
     chain: list[str] = field(default_factory=list)
     prose: list[str] = field(default_factory=list)
+    # English parallel prose. Populated by Ops whose prose-lib has an EN
+    # mirror (see `_MUL_PROSE_EN` etc.). If ALL Ops on a chain have EN,
+    # `len(prose_en) == len(prose)` and render() can emit question_en/answer_en.
+    # Partial EN emission is intentional — a recipe that mixes EN-mirrored
+    # Ops with EN-less ones simply won't get the EN pair, silently.
+    prose_en: list[str] = field(default_factory=list)
+    protagonist_en: str = ""
     # Ops appended in application order — walked in reverse by render_reverse.
     applied_ops: list["Op"] = field(default_factory=list)
     protagonist: str = ""
@@ -154,17 +189,25 @@ class Ctx:
     def n(self, name: str) -> float:
         return self.vars[name].value
 
-    def render(self, question: str, final_var: str) -> dict:
+    def render(self, question: str, final_var: str,
+                question_en: str | None = None) -> dict:
         v = self.vars[final_var].value
         final_str = str(int(v)) if v == int(v) else str(v)
         # Prose paragraphs joined; end-marker last.
         answer = " ".join(self.prose) + f" #### {final_str}"
-        return {
+        result = {
             "question": question,
             "answer": answer.strip(),
             "chain_lines": self.chain,
             "final": final_str,
         }
+        # Emit English parallel iff (a) caller supplied question_en, and (b)
+        # every applied Op has an EN mirror → prose_en length matches prose.
+        if question_en is not None and len(self.prose_en) == len(self.prose):
+            answer_en = " ".join(self.prose_en) + f" #### {final_str}"
+            result["question_en"] = question_en
+            result["answer_en"] = answer_en.strip()
+        return result
 
     def render_reverse(
         self,
@@ -359,6 +402,17 @@ def maybe_frame(rng: random.Random, p: float = 0.35) -> str:
     return ""
 
 
+def maybe_frame_bi(rng: random.Random, p: float = 0.35) -> tuple[str, str]:
+    """Bilingual variant — returns (eo_frame, en_frame) tuple, indexed
+    identically into SCENARIO_FRAMES / SCENARIO_FRAMES_EN. Both empty when
+    no frame is picked.
+    """
+    if rng.random() < p:
+        idx = rng.randrange(len(SCENARIO_FRAMES))
+        return SCENARIO_FRAMES[idx] + " ", SCENARIO_FRAMES_EN[idx] + " "
+    return "", ""
+
+
 def render_qty(n: int, noun: Noun, case: str = "nom") -> str:
     """`5 studentoj` / `1 studento` — proper singular/plural agreement.
 
@@ -375,6 +429,16 @@ def render_qty(n: int, noun: Noun, case: str = "nom") -> str:
 # transitive verbs like `havas`, `aĉetas`, `kostas`, `donas`, `manĝas`
 def qty_acc(n: int, noun: Noun) -> str:
     return render_qty(n, noun, case="acc")
+
+
+def render_qty_en(n: int, noun_en: tuple[str, str]) -> str:
+    """English quantity phrasing — singular/plural agreement.
+
+    noun_en: (singular, plural). Simpler than EO — no accusative case.
+        render_qty_en(1, ("boy", "boys"))  → "1 boy"
+        render_qty_en(5, ("boy", "boys"))  → "5 boys"
+    """
+    return f"{n} {noun_en[0] if n == 1 else noun_en[1]}"
 
 
 def fmt_num(x: float) -> str:
@@ -409,6 +473,29 @@ class Op:
     def _chain_line(self, ctx: Ctx, a: float, sym: str, b: float, c: float) -> None:
         ctx.chain.append(f"{fmt_num(a)} {sym} {fmt_num(b)} = {fmt_num(c)}")
 
+    @staticmethod
+    def _pick_emit(ctx: Ctx, lib_eo: dict, role: str, lib_en: dict | None,
+                    **fmt_kwargs) -> None:
+        """Sample an index once from the EO library, emit both EO and EN
+        (if EN lib provided) using the SAME index.
+
+        This is how we keep parallel EO/EN alignment: index-per-call, not
+        independent random picks. If EN lib exists but has fewer templates
+        at that index, we skip EN emission for this call (partial coverage
+        is fine — recipe checks len(prose_en) == len(prose) at render).
+
+        Use like:
+            self._pick_emit(ctx, _MUL_PROSE, role, _MUL_PROSE_EN,
+                             a=fmt_num(a), b=fmt_num(b), c=fmt_num(c))
+        """
+        variants_eo = lib_eo[role]
+        idx = ctx.rng.randrange(len(variants_eo))
+        ctx.prose.append(variants_eo[idx].format(**fmt_kwargs))
+        if lib_en is not None:
+            variants_en = lib_en.get(role, [])
+            if idx < len(variants_en):
+                ctx.prose_en.append(variants_en[idx].format(**fmt_kwargs))
+
 
 class Mul(Op):
     kind = "mul"
@@ -418,8 +505,8 @@ class Mul(Op):
         ctx.bind(self.out, c, noun=ctx.get(self.lhs).noun)
         self._chain_line(ctx, a, "*", b, c)
         role = "first" if not ctx.prose else "chained"
-        variants = _MUL_PROSE[role]
-        ctx.prose.append(ctx.rng.choice(variants).format(a=fmt_num(a), b=fmt_num(b), c=fmt_num(c)))
+        self._pick_emit(ctx, _MUL_PROSE, role, _MUL_PROSE_EN,
+                         a=fmt_num(a), b=fmt_num(b), c=fmt_num(c))
         ctx.applied_ops.append(self)
 
     def reverse_step(self, out_val, known_side, known_val):
@@ -438,7 +525,8 @@ class Add(Op):
         ctx.bind(self.out, c, noun=ctx.get(self.lhs).noun)
         self._chain_line(ctx, a, "+", b, c)
         role = "first" if not ctx.prose else "chained"
-        ctx.prose.append(ctx.rng.choice(_ADD_PROSE[role]).format(a=fmt_num(a), b=fmt_num(b), c=fmt_num(c)))
+        self._pick_emit(ctx, _ADD_PROSE, role, _ADD_PROSE_EN,
+                         a=fmt_num(a), b=fmt_num(b), c=fmt_num(c))
         ctx.applied_ops.append(self)
 
     def reverse_step(self, out_val, known_side, known_val):
@@ -457,7 +545,8 @@ class Sub(Op):
         ctx.bind(self.out, c, noun=ctx.get(self.lhs).noun)
         self._chain_line(ctx, a, "-", b, c)
         role = "first" if not ctx.prose else "chained"
-        ctx.prose.append(ctx.rng.choice(_SUB_PROSE[role]).format(a=fmt_num(a), b=fmt_num(b), c=fmt_num(c)))
+        self._pick_emit(ctx, _SUB_PROSE, role, _SUB_PROSE_EN,
+                         a=fmt_num(a), b=fmt_num(b), c=fmt_num(c))
         ctx.applied_ops.append(self)
 
     def reverse_step(self, out_val, known_side, known_val):
@@ -480,7 +569,8 @@ class Div(Op):
         ctx.bind(self.out, c, noun=ctx.get(self.lhs).noun)
         self._chain_line(ctx, a, "/", b, c)
         role = "first" if not ctx.prose else "chained"
-        ctx.prose.append(ctx.rng.choice(_DIV_PROSE[role]).format(a=fmt_num(a), b=fmt_num(b), c=fmt_num(c)))
+        self._pick_emit(ctx, _DIV_PROSE, role, _DIV_PROSE_EN,
+                         a=fmt_num(a), b=fmt_num(b), c=fmt_num(c))
         ctx.applied_ops.append(self)
 
     def reverse_step(self, out_val, known_side, known_val):
@@ -790,6 +880,138 @@ _DIV_PROSE = {
         "La kvociento estas {a} / {b} = {c}.",
     ],
 }
+# ─── EN mirrors ─────────────────────────────────────────────────────────────
+# Parallel English templates. Same key set + same placeholder names as the EO
+# libs above. Indexed 1:1 with EO so Op._pick_emit() picks the same slot in both.
+# Recipes that stay EO-only don't need to touch these; recipes with EN openers
+# populate the parallel Ctx.prose_en, which triggers question_en/answer_en at
+# render time. See design note above Op._pick_emit.
+
+_MUL_PROSE_EN = {
+    "first": [
+        "There are {a} * {b} = {c} in total.",
+        "{a} times {b} equals {c}.",
+        "The total number is {a} * {b} = {c}.",
+        "We multiply: {a} * {b} = {c}.",
+        "{a} groups of {b} give {a} * {b} = {c}.",
+        "Calculation: {a} * {b} = {c}.",
+        "First compute the product: {a} * {b} = {c}.",
+        "The product of {a} and {b} is {c}.",
+        "Multiplying {a} by {b}, we get {c}.",
+        "Start by multiplying: {a} * {b} = {c}.",
+        "Initial calculation: {a} * {b} = {c}.",
+        "Finding the product of {a} and {b}: {a} * {b} = {c}.",
+        "Simply: {a} * {b} = {c}.",
+        "Note that {a} * {b} = {c}.",
+        "Multiplication result: {a} * {b} = {c}.",
+    ],
+    "chained": [
+        "Then, {a} * {b} = {c}.",
+        "Now we multiply by {b}: {a} * {b} = {c}.",
+        "{a} * {b} = {c}.",
+        "That gives {a} * {b} = {c}.",
+        "Multiplying: {a} * {b} = {c}.",
+        "Next, {a} * {b} = {c}.",
+        "So {a} * {b} = {c}.",
+        "Therefore {a} * {b} = {c}.",
+        "Now compute: {a} * {b} = {c}.",
+        "Multiplying by {b}: {a} * {b} = {c}.",
+        "Result: {a} * {b} = {c}.",
+        "Hence {a} * {b} = {c}.",
+        "We multiply and get {c}.",
+    ],
+}
+
+_ADD_PROSE_EN = {
+    "first": [
+        "We add: {a} + {b} = {c}.",
+        "Altogether there are {a} + {b} = {c}.",
+        "Together: {a} + {b} = {c}.",
+        "{a} plus {b} gives {c}.",
+        "The sum is {a} + {b} = {c}.",
+        "Summing up, {a} + {b} = {c}.",
+        "Addition: {a} + {b} = {c}.",
+        "The combined value is {a} + {b} = {c}.",
+        "Sum calculation: {a} + {b} = {c}.",
+        "Let's sum: {a} + {b} = {c}.",
+        "The total from {a} and {b} is {c}.",
+        "Adding {a} and {b}, we get {c}.",
+    ],
+    "chained": [
+        "Add {b} more: {a} + {b} = {c}.",
+        "Now there are {a} + {b} = {c}.",
+        "Together, {a} + {b} = {c}.",
+        "Therefore: {a} + {b} = {c}.",
+        "{a} + {b} = {c}.",
+        "Then sum: {a} + {b} = {c}.",
+        "Next {a} + {b} = {c}.",
+        "That leads to {a} + {b} = {c}.",
+        "Now add {b}: {a} + {b} = {c}.",
+        "The new sum: {a} + {b} = {c}.",
+        "After adding: {a} + {b} = {c}.",
+        "Combined, {a} + {b} = {c}.",
+        "So the combined result is {c}.",
+    ],
+}
+
+_SUB_PROSE_EN = {
+    "first": [
+        "We subtract: {a} - {b} = {c}.",
+        "Remaining: {a} - {b} = {c}.",
+        "{a} minus {b} equals {c}.",
+        "Subtracting {b} from {a}: {a} - {b} = {c}.",
+        "The difference is {a} - {b} = {c}.",
+        "After subtraction: {a} - {b} = {c}.",
+        "Difference calculation: {a} - {b} = {c}.",
+        "We remove {b}: {a} - {b} = {c}.",
+        "The remainder equals {a} - {b} = {c}.",
+        "Reduction: {a} - {b} = {c}.",
+    ],
+    "chained": [
+        "After {b} leaves, {a} - {b} = {c} remain.",
+        "Remaining: {a} - {b} = {c}.",
+        "Subtracting {b}: {a} - {b} = {c}.",
+        "{a} - {b} = {c}.",
+        "So {a} - {b} = {c} remain.",
+        "Now {a} - {b} = {c}.",
+        "So the difference: {a} - {b} = {c}.",
+        "Reducing by {b}: {a} - {b} = {c}.",
+        "After removing {b}: {a} - {b} = {c}.",
+        "The remaining value is {c}.",
+        "Then the difference: {a} - {b} = {c}.",
+        "This leaves {a} - {b} = {c}.",
+    ],
+}
+
+_DIV_PROSE_EN = {
+    "first": [
+        "We divide: {a} / {b} = {c}.",
+        "{a} / {b} = {c}.",
+        "Each part gets {a} / {b} = {c}.",
+        "Division: {a} / {b} = {c}.",
+        "The quotient is {a} / {b} = {c}.",
+        "Dividing {a} by {b}, we get {c}.",
+        "Distribute {a} among {b}: {a} / {b} = {c}.",
+        "Each receives {a} / {b} = {c}.",
+        "Equally split: {a} / {b} = {c}.",
+        "Division calculation: {a} / {b} = {c}.",
+    ],
+    "chained": [
+        "Dividing among {b}: {a} / {b} = {c}.",
+        "Each group gets {a} / {b} = {c}.",
+        "{a} / {b} = {c}.",
+        "So each receives {a} / {b} = {c}.",
+        "Next {a} / {b} = {c}.",
+        "Then divide: {a} / {b} = {c}.",
+        "Distributing {a} across {b}: {a} / {b} = {c}.",
+        "Each part: {a} / {b} = {c}.",
+        "Now dividing by {b}: {a} / {b} = {c}.",
+        "So {a} / {b} = {c}.",
+        "The quotient is {a} / {b} = {c}.",
+    ],
+}
+
+
 _LINSOLVE_PROSE = {
     "first": [
         "Estu {v} la nekonato. La ekvacio: {eq} = {t}. Ni solvas por {v}: {v} = {x}.",
@@ -921,8 +1143,14 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
     # Resample outer parameters until (n_steps=4 case) integer division works.
     for _try in range(100):
         ctx = Ctx.new(rng)
-        child = rng.choice(CHILDLIKE_NOUNS)
-        group = rng.choice(GROUPING_NOUNS)
+        # Pick nouns by INDEX so we can look up parallel EN nouns from the
+        # mirror lists.
+        child_idx = rng.randrange(len(CHILDLIKE_NOUNS))
+        group_idx = rng.randrange(len(GROUPING_NOUNS))
+        child = CHILDLIKE_NOUNS[child_idx]
+        group = GROUPING_NOUNS[group_idx]
+        child_en = CHILDLIKE_NOUNS_EN[child_idx]
+        group_en = GROUPING_NOUNS_EN[group_idx]
 
         n_groups = rng.randint(3, 12)
         per_group = rng.randint(4, 15)
@@ -930,8 +1158,9 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
         ctx.bind("per_group", per_group, noun=child)
 
         if not reverse:
-            frame = maybe_frame(rng)
-            openers = [
+            frame, frame_en = maybe_frame_bi(rng)
+            # Parallel opener libs — indexed identically. EO first, EN second.
+            openers_eo = [
                 f"{frame}estas {render_qty(n_groups, group)} kun {render_qty(per_group, child)} en ĉiu.",
                 f"{frame}en {render_qty(n_groups, group)}, ĉiu enhavas {render_qty(per_group, child)}.",
                 f"{frame}{ctx.protagonist} vidas {qty_acc(n_groups, group)}, ĉiun kun {render_qty(per_group, child)}.",
@@ -939,10 +1168,22 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
                 f"{frame}oni disdonis {render_qty(per_group, child)} en ĉiun de {render_qty(n_groups, group)}.",
                 f"{frame}{render_qty(n_groups, group)} estas plenaj de {render_qty(per_group, child)} ĉiu.",
             ]
-            opener = rng.choice(openers)
+            openers_en = [
+                f"{frame_en}there are {render_qty_en(n_groups, group_en)} with {render_qty_en(per_group, child_en)} in each.",
+                f"{frame_en}in {render_qty_en(n_groups, group_en)}, each contains {render_qty_en(per_group, child_en)}.",
+                f"{frame_en}{ctx.protagonist} sees {render_qty_en(n_groups, group_en)}, each with {render_qty_en(per_group, child_en)}.",
+                f"{frame_en}each of the {render_qty_en(n_groups, group_en)} has {render_qty_en(per_group, child_en)}.",
+                f"{frame_en}{render_qty_en(per_group, child_en)} were placed into each of {render_qty_en(n_groups, group_en)}.",
+                f"{frame_en}{render_qty_en(n_groups, group_en)} are full of {render_qty_en(per_group, child_en)} each.",
+            ]
+            idx = rng.randrange(len(openers_eo))
+            opener = openers_eo[idx]
+            opener_en = openers_en[idx]
             if not frame:
                 opener = opener[0].upper() + opener[1:]
+                opener_en = opener_en[0].upper() + opener_en[1:]
             q = [opener]
+            q_en = [opener_en]
         else:
             # Reverse: STATE groups, but HIDE per_group (mark unknown).
             frame = maybe_frame(rng)
@@ -964,6 +1205,9 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
             absent = rng.randint(1, min(6, int(ctx.n("total")) // 2))
             ctx.bind("absent", absent, noun=child)
             q.append(f"{render_qty(absent, child, case='nom')} forestas.")
+            if not reverse:
+                verb = "is" if absent == 1 else "are"
+                q_en.append(f"{render_qty_en(absent, child_en)} {verb} absent.")
             Sub("total", "absent", "present").apply(ctx)
             final_var = "present"
 
@@ -975,11 +1219,13 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
             n_packs = rng.choice(divisors)
             ctx.bind("packs", n_packs)
             q.append(f"Ili dividas sin en {n_packs} egalajn grupojn.")
+            if not reverse:
+                q_en.append(f"They divide into {n_packs} equal groups.")
             Div(final_var, "packs", "per_pack").apply(ctx)
             final_var = "per_pack"
 
         if not reverse:
-            closers = [
+            closers_eo = [
                 f"Kiom da {child[1]} estas en la fina rezulto?",
                 f"Kiu estas la fina nombro de {child[1]}?",
                 f"Kalkulu la finan nombron de {child[1]}.",
@@ -987,8 +1233,18 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
                 f"Kiom da {child[1]} estas fine?",
                 f"Determinu la finan kvanton de {child[1]}.",
             ]
-            q.append(rng.choice(closers))
-            return ctx.render(" ".join(q), final_var)
+            closers_en = [
+                f"How many {child_en[1]} are in the final result?",
+                f"What is the final number of {child_en[1]}?",
+                f"Calculate the final number of {child_en[1]}.",
+                f"Find how many {child_en[1]} are left at the end.",
+                f"How many {child_en[1]} are there at the end?",
+                f"Determine the final quantity of {child_en[1]}.",
+            ]
+            c_idx = rng.randrange(len(closers_eo))
+            q.append(closers_eo[c_idx])
+            q_en.append(closers_en[c_idx])
+            return ctx.render(" ".join(q), final_var, question_en=" ".join(q_en))
 
         # Reverse: state the final value and ask for per_group
         final_val = int(ctx.n(final_var))
