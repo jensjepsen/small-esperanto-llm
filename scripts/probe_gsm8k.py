@@ -108,6 +108,10 @@ def main():
     ap.add_argument("--dtype", type=str, default="float16",
                     choices=["float16", "bfloat16", "float32"])
     ap.add_argument("--repetition-penalty", type=float, default=1.1)
+    ap.add_argument("--rows-per-batch", type=int, default=1,
+                    help="Pack B rows into a single forward pass "
+                         "(B*K sequences per batch). Left-pads shorter prompts. "
+                         "Default 1 = one row at a time. 5090 comfortably handles B=8, K=12.")
     args = ap.parse_args()
 
     ckpt = Path(args.ckpt)
@@ -122,68 +126,95 @@ def main():
 
     print(f"loading {ckpt}  N={args.n or 'all'}  pass@{args.k}"
           f"{f' T={args.temperature}' if args.k > 1 else ''}"
-          f"  dtype={args.dtype}  out={out_path}", flush=True)
+          f"  dtype={args.dtype}  rows/batch={args.rows_per_batch}"
+          f"  out={out_path}", flush=True)
     tok = PreTrainedTokenizerFast.from_pretrained(str(ckpt))
+    # Left-padding for decoder-only generation (padding on LEFT so all
+    # sequences resume from the SAME position on the right).
+    tok.padding_side = "left"
+    if tok.pad_token_id is None:
+        tok.pad_token_id = tok.eos_token_id
     model = AutoModelForCausalLM.from_pretrained(str(ckpt), torch_dtype=dtype).cuda().eval()
     end_id = tok.convert_tokens_to_ids(END_TOKEN)
 
-    def ask_one(question: str) -> str:
-        prompt_raw = (format_conversation([{"role": "user", "content": question}])
-                      + " " + ASSISTANT_TOKEN + " ")
-        prompt = train_prep(prompt_raw)
-        ids = tok(prompt, return_tensors="pt",
-                    add_special_tokens=False).input_ids.cuda()
+    def _fmt_prompt(question: str) -> str:
+        raw = (format_conversation([{"role": "user", "content": question}])
+               + " " + ASSISTANT_TOKEN + " ")
+        return train_prep(raw)
+
+    def ask_batch(questions: list[str], k: int) -> list[list[str]]:
+        """Return B lists of k completions each. Packs B rows into ONE forward
+        pass with left-padding + attention mask. Total batch = B*k sequences."""
+        prompts = [_fmt_prompt(q) for q in questions]
+        enc = tok(prompts, return_tensors="pt", padding=True,
+                    add_special_tokens=False)
+        ids = enc.input_ids.cuda()
+        mask = enc.attention_mask.cuda()
         with torch.no_grad():
             out = model.generate(
                 ids,
+                attention_mask=mask,
                 max_new_tokens=args.max_new_tokens,
-                do_sample=(args.k > 1),
-                temperature=args.temperature if args.k > 1 else None,
+                do_sample=(k > 1),
+                temperature=args.temperature if k > 1 else None,
                 num_beams=1,
-                pad_token_id=tok.pad_token_id or tok.eos_token_id,
+                num_return_sequences=k,
+                pad_token_id=tok.pad_token_id,
                 repetition_penalty=args.repetition_penalty,
                 eos_token_id=end_id,
             )
-        return decode(tok, out[0][ids.shape[1]:].tolist())
+        prompt_len = ids.shape[1]
+        # out shape: (B*k, prompt_len + max_new_tokens). Split into B groups of k.
+        results: list[list[str]] = []
+        for b in range(len(questions)):
+            group = [decode(tok, out[b * k + i][prompt_len:].tolist())
+                       for i in range(k)]
+            results.append(group)
+        return results
 
     ds = load_dataset("jensjepsen/esperanto-gsm8k", split="test")
     if args.n:
         ds = ds.select(range(min(args.n, len(ds))))
     print(f"test rows: {len(ds)}", flush=True)
 
+    # Pre-collect valid (idx, question, gold) tuples; skip rows without gold.
+    todo = []
+    for i, row in enumerate(ds):
+        msgs = row["messages"]
+        gm = _HASH_RE.search(msgs[1]["content"])
+        if not gm:
+            continue
+        gold = gm.group(1).replace(",", "").replace(" ", "").rstrip(".")
+        todo.append((i, msgs[0]["content"], gold))
+
     t0 = time.time()
     hit_p1 = hit_pk = total = 0
+    B = max(1, args.rows_per_batch)
     with out_path.open("w") as f:
-        for i, row in enumerate(ds):
-            msgs = row["messages"]
-            gm = _HASH_RE.search(msgs[1]["content"])
-            if not gm:
-                continue
-            gold = gm.group(1).replace(",", "").replace(" ", "").rstrip(".")
-            preds, resps = [], []
-            for _ in range(args.k):
-                resp = ask_one(msgs[0]["content"])
-                pred = extract_answer(resp)
-                preds.append(pred)
-                resps.append(resp)
-            p1_ok = matches(preds[0], gold)
-            pk_ok = any(matches(p, gold) for p in preds)
-            hit_p1 += int(p1_ok)
-            hit_pk += int(pk_ok)
-            total += 1
-            f.write(json.dumps({
-                "idx": i, "gold": gold, "preds": preds,
-                "p1_correct": p1_ok, "pk_correct": pk_ok,
-                "resps": resps if args.k > 1 else resps[0],
-            }, ensure_ascii=False) + "\n")
+        for chunk_start in range(0, len(todo), B):
+            chunk = todo[chunk_start:chunk_start + B]
+            questions = [q for _, q, _ in chunk]
+            batch_resps = ask_batch(questions, args.k)
+            for (i, _, gold), resps in zip(chunk, batch_resps):
+                preds = [extract_answer(r) for r in resps]
+                p1_ok = matches(preds[0], gold)
+                pk_ok = any(matches(p, gold) for p in preds)
+                hit_p1 += int(p1_ok)
+                hit_pk += int(pk_ok)
+                total += 1
+                f.write(json.dumps({
+                    "idx": i, "gold": gold, "preds": preds,
+                    "p1_correct": p1_ok, "pk_correct": pk_ok,
+                    "resps": resps if args.k > 1 else resps[0],
+                }, ensure_ascii=False) + "\n")
             f.flush()
-            if total % args.log_every == 0:
+            if total // args.log_every > (total - len(chunk)) // args.log_every:
                 if args.k == 1:
-                    print(f"[{total}/{len(ds)}] hit={hit_p1} "
+                    print(f"[{total}/{len(todo)}] hit={hit_p1} "
                           f"({100*hit_p1/total:.1f}%) e={time.time()-t0:.0f}s",
                           flush=True)
                 else:
-                    print(f"[{total}/{len(ds)}] pass@1={hit_p1} "
+                    print(f"[{total}/{len(todo)}] pass@1={hit_p1} "
                           f"({100*hit_p1/total:.1f}%)  pass@{args.k}={hit_pk} "
                           f"({100*hit_pk/total:.1f}%) e={time.time()-t0:.0f}s",
                           flush=True)
