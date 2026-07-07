@@ -63,8 +63,11 @@ def parse_args():
         # (closes v6's "Horace → Horacio" proper-noun bug).
         "hf://jensjepsen/esperanto-mt-yago-parallel::labels",
         "hf://jensjepsen/esperanto-mt-yago-parallel::comments",
+        # OPUS bundle: QED (educational subtitles), GlobalVoices (news),
+        # KDE4/GNOME/Ubuntu (software localization). ~159k pairs across 5 registers.
+        "hf://jensjepsen/esperanto-mt-opus-parallel",
     ], help="Local JSONL paths or hf://repo[::config][/split] "
-            "(default: merged v6 corpus + math + YAGO supplements)")
+            "(default: merged v6 corpus + math + YAGO + OPUS supplements)")
     ap.add_argument("--val-files", nargs="+", type=Path, default=[
         Path("mt/data/parallel/flores_devtest.jsonl"),
         Path("mt/data/parallel/opus100_validation.jsonl"),
