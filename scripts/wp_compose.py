@@ -133,6 +133,8 @@ class Ctx:
     vars: dict[str, Var] = field(default_factory=dict)
     chain: list[str] = field(default_factory=list)
     prose: list[str] = field(default_factory=list)
+    # Ops appended in application order — walked in reverse by render_reverse.
+    applied_ops: list["Op"] = field(default_factory=list)
     protagonist: str = ""
 
     @classmethod
@@ -163,6 +165,153 @@ class Ctx:
             "chain_lines": self.chain,
             "final": final_str,
         }
+
+    def render_reverse(
+        self,
+        forward_prose: str,
+        forward_final_var: str,
+        ask_var: str,
+        closer: str,
+        recipe_name: str = "reverse",
+    ) -> dict:
+        """Reverse-frame the forward problem.
+
+        Given a forward narrative + chain that computed forward_final_var from
+        the initial vars, produce a NEW question that STATES the value of
+        forward_final_var and ASKS for ask_var (an early input), plus a
+        reasoning chain that walks the applied_ops backwards.
+
+        The forward narrative is rebuilt by the CALLER via `forward_prose` —
+        which should NOT state the value of ask_var (that's what we're
+        hiding) and SHOULD state the value of forward_final_var (that's
+        what's given). Sample recipes handle this by using an "unknown
+        quantity" template for the ask_var position.
+
+        Only invertible ops are supported (no Avg / LinearSolve).
+        """
+        answer_val = self.vars[ask_var].value
+        ans_str = str(int(answer_val)) if answer_val == int(answer_val) else str(answer_val)
+
+        # Trace forward through applied_ops to find which side (lhs/rhs) of
+        # each Op is on the ask_var → forward_final path. Starts at ask_var,
+        # ends at forward_final_var. If an op has ask_var (or a downstream
+        # descendant) on its lhs, we'll invert on the rhs (rhs is known);
+        # if on its rhs, we'll invert on the lhs (lhs is known).
+        path_var: str = ask_var
+        path_sides: list[str] = []  # per op in application order, "lhs" or "rhs"
+        for op in self.applied_ops:
+            if op.kind == "frac":
+                # Frac's lhs is the base; num/denom are literals not ctx vars.
+                if op.lhs == path_var:
+                    path_sides.append("lhs")
+                    path_var = op.out
+                else:
+                    path_sides.append(None)
+            else:
+                if op.lhs == path_var:
+                    path_sides.append("lhs")
+                    path_var = op.out
+                elif op.rhs == path_var:
+                    path_sides.append("rhs")
+                    path_var = op.out
+                else:
+                    path_sides.append(None)
+
+        assert path_var == forward_final_var, (
+            f"ask_var {ask_var} does not chain into {forward_final_var}: "
+            f"trace ended at {path_var}"
+        )
+
+        reverse_chain: list[str] = []
+        reverse_prose: list[str] = []
+        known_val: float = self.vars[forward_final_var].value
+
+        for op, side in zip(reversed(self.applied_ops), reversed(path_sides)):
+            if side is None:
+                # This op isn't on the ask_var → final path; skip it.
+                continue
+            # `side` is which SIDE carries the ask_var chain. So the OTHER
+            # side is the "known constant" we use to invert.
+            known_side = "rhs" if side == "lhs" else "lhs"
+            if op.kind == "frac":
+                unknown = op.reverse_step(known_val, known_side, None)
+                reverse_chain.append(
+                    op.reverse_chain_line(known_val, known_side, None, unknown))
+                template = self.rng.choice(REVERSE_STEP_PROSE[op.kind])
+                reverse_prose.append(
+                    template.format(a=fmt_num(known_val), c=fmt_num(unknown),
+                                    n=op.num, d=op.denom)
+                )
+            else:
+                other_side_var = op.rhs if known_side == "rhs" else op.lhs
+                other_side_val = self.vars[other_side_var].value
+                unknown = op.reverse_step(known_val, known_side, other_side_val)
+                reverse_chain.append(
+                    op.reverse_chain_line(known_val, known_side, other_side_val, unknown))
+                template = self.rng.choice(REVERSE_STEP_PROSE[op.kind])
+                reverse_prose.append(
+                    template.format(a=fmt_num(known_val),
+                                    b=fmt_num(other_side_val),
+                                    c=fmt_num(unknown))
+                )
+            known_val = unknown
+
+        # Sanity check: reverse walk lands on the ask_var value
+        assert abs(known_val - answer_val) < 1e-9, (
+            f"reverse chain didn't recover: known={known_val} answer={answer_val}"
+        )
+
+        question = f"{forward_prose} {closer}"
+        answer = " ".join(reverse_prose) + f" #### {ans_str}"
+        return {
+            "question": question,
+            "answer": answer.strip(),
+            "chain_lines": reverse_chain,
+            "final": ans_str,
+        }
+
+
+# Reverse-step prose per Op kind. Placeholders:
+#   {a} = known output value entering this reverse step
+#   {b} = other-side value (side input)
+#   {c} = computed unknown
+#   For frac: also {n}=numerator, {d}=denominator
+REVERSE_STEP_PROSE: dict[str, list[str]] = {
+    "mul": [
+        "Ni retropasi la multiplikon: {a} / {b} = {c}.",
+        "Ni dividas por retropasi: {a} / {b} = {c}.",
+        "La origina nombro estas {a} / {b} = {c}.",
+        "Do la origina kvanto estis {a} / {b} = {c}.",
+    ],
+    "add": [
+        "Ni subtrahas la aldonon: {a} - {b} = {c}.",
+        "La origina valoro estis {a} - {b} = {c}.",
+        "Do antaŭ la aldono estis {a} - {b} = {c}.",
+        "Retropasi la aldonon: {a} - {b} = {c}.",
+    ],
+    "sub": [
+        "Ni aldonas por retropasi: {a} + {b} = {c}.",
+        "Do antaŭ la subtraho estis {a} + {b} = {c}.",
+        "La origina valoro estis {a} + {b} = {c}.",
+        "Retropasi la subtrahon: {a} + {b} = {c}.",
+    ],
+    "div": [
+        "Ni multiplikas por retropasi: {a} * {b} = {c}.",
+        "La origina nombro estis {a} * {b} = {c}.",
+        "Do antaŭ la divido estis {a} * {b} = {c}.",
+        "Retropasi la dividon: {a} * {b} = {c}.",
+    ],
+    "frac": [
+        "Ni retropasi la frakcion: {a} * {d} / {n} = {c}.",
+        "La origina bazo estis {a} * {d} / {n} = {c}.",
+        "Do la origina bazo estis {a} * {d} / {n} = {c}.",
+    ],
+    "pct": [
+        "Ni retropasi la procenton: {a} * 100 / {b} = {c}.",
+        "La origina bazo estis {a} * 100 / {b} = {c}.",
+        "Do la origina bazo estis {a} * 100 / {b} = {c}.",
+    ],
+}
 
 
 # ─── Morphology helpers ─────────────────────────────────────────────────────
@@ -240,6 +389,14 @@ class Mul(Op):
         role = "first" if not ctx.prose else "chained"
         variants = _MUL_PROSE[role]
         ctx.prose.append(ctx.rng.choice(variants).format(a=fmt_num(a), b=fmt_num(b), c=fmt_num(c)))
+        ctx.applied_ops.append(self)
+
+    def reverse_step(self, out_val, known_side, known_val):
+        assert known_val != 0
+        return out_val / known_val
+
+    def reverse_chain_line(self, out_val, known_side, known_val, unknown):
+        return f"{fmt_num(out_val)} / {fmt_num(known_val)} = {fmt_num(unknown)}"
 
 
 class Add(Op):
@@ -251,6 +408,14 @@ class Add(Op):
         self._chain_line(ctx, a, "+", b, c)
         role = "first" if not ctx.prose else "chained"
         ctx.prose.append(ctx.rng.choice(_ADD_PROSE[role]).format(a=fmt_num(a), b=fmt_num(b), c=fmt_num(c)))
+        ctx.applied_ops.append(self)
+
+    def reverse_step(self, out_val, known_side, known_val):
+        # out = lhs + rhs → unknown = out - known
+        return out_val - known_val
+
+    def reverse_chain_line(self, out_val, known_side, known_val, unknown):
+        return f"{fmt_num(out_val)} - {fmt_num(known_val)} = {fmt_num(unknown)}"
 
 
 class Sub(Op):
@@ -262,6 +427,16 @@ class Sub(Op):
         self._chain_line(ctx, a, "-", b, c)
         role = "first" if not ctx.prose else "chained"
         ctx.prose.append(ctx.rng.choice(_SUB_PROSE[role]).format(a=fmt_num(a), b=fmt_num(b), c=fmt_num(c)))
+        ctx.applied_ops.append(self)
+
+    def reverse_step(self, out_val, known_side, known_val):
+        # out = lhs - rhs. If lhs known → rhs = lhs - out; if rhs known → lhs = out + rhs.
+        return known_val - out_val if known_side == "lhs" else out_val + known_val
+
+    def reverse_chain_line(self, out_val, known_side, known_val, unknown):
+        if known_side == "lhs":
+            return f"{fmt_num(known_val)} - {fmt_num(out_val)} = {fmt_num(unknown)}"
+        return f"{fmt_num(out_val)} + {fmt_num(known_val)} = {fmt_num(unknown)}"
 
 
 class Div(Op):
@@ -275,6 +450,16 @@ class Div(Op):
         self._chain_line(ctx, a, "/", b, c)
         role = "first" if not ctx.prose else "chained"
         ctx.prose.append(ctx.rng.choice(_DIV_PROSE[role]).format(a=fmt_num(a), b=fmt_num(b), c=fmt_num(c)))
+        ctx.applied_ops.append(self)
+
+    def reverse_step(self, out_val, known_side, known_val):
+        # out = lhs / rhs. If lhs known → rhs = lhs / out; if rhs known → lhs = out * rhs.
+        return known_val / out_val if known_side == "lhs" else out_val * known_val
+
+    def reverse_chain_line(self, out_val, known_side, known_val, unknown):
+        if known_side == "lhs":
+            return f"{fmt_num(known_val)} / {fmt_num(out_val)} = {fmt_num(unknown)}"
+        return f"{fmt_num(out_val)} * {fmt_num(known_val)} = {fmt_num(unknown)}"
 
 
 class Frac(Op):
@@ -297,6 +482,15 @@ class Frac(Op):
         role = "first" if not ctx.prose else "chained"
         template = ctx.rng.choice(_FRAC_PROSE[role])
         ctx.prose.append(template.format(n=self.num, d=self.denom, b=fmt_num(base), r=fmt_num(result)))
+        ctx.applied_ops.append(self)
+
+    def reverse_step(self, out_val, known_side, known_val=None):
+        # We only invert on `base`: out = base * num/denom → base = out * denom / num
+        assert self.num != 0
+        return out_val * self.denom / self.num
+
+    def reverse_chain_line(self, out_val, known_side, known_val, unknown):
+        return f"{fmt_num(out_val)} * {self.denom} / {self.num} = {fmt_num(unknown)}"
 
 
 class Avg(Op):
@@ -323,6 +517,8 @@ class Avg(Op):
         role = "first" if not ctx.prose else "chained"
         template = ctx.rng.choice(_AVG_PROSE[role])
         ctx.prose.append(template.format(vals=sum_str, t=fmt_num(total), n=n, a=fmt_num(avg)))
+        ctx.applied_ops.append(self)
+    # NOTE: Avg has no clean single-var inverse → skip in reverse mode.
 
 
 class Pct(Op):
@@ -358,6 +554,17 @@ class Pct(Op):
             role = "first" if not ctx.prose else "chained"
             template = ctx.rng.choice(_PCT_DIRECT_PROSE[role])
             ctx.prose.append(template.format(p=pct, b=fmt_num(base), a=fmt_num(amount)))
+        ctx.applied_ops.append(self)
+
+    def reverse_step(self, out_val, known_side, known_val):
+        # out = base * pct/100. We invert on `base` (rhs) given pct known (lhs).
+        # → base = out * 100 / pct
+        assert known_val != 0
+        return out_val * 100 / known_val
+
+    def reverse_chain_line(self, out_val, known_side, known_val, unknown):
+        return (f"{fmt_num(out_val)} * 100 / {fmt_num(known_val)} "
+                f"= {fmt_num(unknown)}")
 
 
 class LinearSolve(Op):
@@ -611,8 +818,14 @@ _PCT_DECIMAL_PROSE = {
 
 # ─── Recipe 1: ratio_parts ──────────────────────────────────────────────────
 
-def ratio_parts_recipe(rng: random.Random, n_steps: int = 2) -> dict:
-    """N groups × K per group → total. Optionally: minus absent, then / packs."""
+def ratio_parts_recipe(rng: random.Random, n_steps: int = 2,
+                        reverse: bool = False) -> dict:
+    """N groups × K per group → total. Optionally: minus absent, then / packs.
+
+    When reverse=True, the total (or final) is stated as GIVEN and the
+    per-group value is asked as the UNKNOWN. Chain walks the applied Ops
+    backwards via ctx.render_reverse.
+    """
     # Resample outer parameters until (n_steps=4 case) integer division works.
     for _try in range(100):
         ctx = Ctx.new(rng)
@@ -624,21 +837,34 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2) -> dict:
         ctx.bind("groups", n_groups, noun=group)
         ctx.bind("per_group", per_group, noun=child)
 
-        # 6 sentence-structure variants + optional scenario frame
-        frame = maybe_frame(rng)
-        openers = [
-            f"{frame}estas {render_qty(n_groups, group)} kun {render_qty(per_group, child)} en ĉiu.",
-            f"{frame}en {render_qty(n_groups, group)}, ĉiu enhavas {render_qty(per_group, child)}.",
-            f"{frame}{ctx.protagonist} vidas {qty_acc(n_groups, group)}, ĉiun kun {render_qty(per_group, child)}.",
-            f"{frame}ĉiu el la {render_qty(n_groups, group)} havas {qty_acc(per_group, child)}.",
-            f"{frame}oni disdonis {render_qty(per_group, child)} en ĉiun de {render_qty(n_groups, group)}.",
-            f"{frame}{render_qty(n_groups, group)} estas plenaj de {render_qty(per_group, child)} ĉiu.",
-        ]
-        # capitalize first char if frame was empty
-        opener = rng.choice(openers)
-        if not frame:
-            opener = opener[0].upper() + opener[1:]
-        q = [opener]
+        if not reverse:
+            frame = maybe_frame(rng)
+            openers = [
+                f"{frame}estas {render_qty(n_groups, group)} kun {render_qty(per_group, child)} en ĉiu.",
+                f"{frame}en {render_qty(n_groups, group)}, ĉiu enhavas {render_qty(per_group, child)}.",
+                f"{frame}{ctx.protagonist} vidas {qty_acc(n_groups, group)}, ĉiun kun {render_qty(per_group, child)}.",
+                f"{frame}ĉiu el la {render_qty(n_groups, group)} havas {qty_acc(per_group, child)}.",
+                f"{frame}oni disdonis {render_qty(per_group, child)} en ĉiun de {render_qty(n_groups, group)}.",
+                f"{frame}{render_qty(n_groups, group)} estas plenaj de {render_qty(per_group, child)} ĉiu.",
+            ]
+            opener = rng.choice(openers)
+            if not frame:
+                opener = opener[0].upper() + opener[1:]
+            q = [opener]
+        else:
+            # Reverse: STATE groups, but HIDE per_group (mark unknown).
+            frame = maybe_frame(rng)
+            r_openers = [
+                f"{frame}estas {render_qty(n_groups, group)}, ĉiu enhavanta la saman nekonatan nombron de {child[1]}.",
+                f"{frame}en {render_qty(n_groups, group)}, ĉiu havas la saman nombron de {child[1]}.",
+                f"{frame}{ctx.protagonist} havas {qty_acc(n_groups, group)}, ĉiu kun sama sed nekonata nombro de {child[1]}.",
+                f"{frame}oni disdonis egalajn kvantojn de {child[1]} en ĉiun de {render_qty(n_groups, group)}.",
+            ]
+            opener = rng.choice(r_openers)
+            if not frame:
+                opener = opener[0].upper() + opener[1:]
+            q = [opener]
+
         Mul("groups", "per_group", "total").apply(ctx)
         final_var = "total"
 
@@ -660,17 +886,41 @@ def ratio_parts_recipe(rng: random.Random, n_steps: int = 2) -> dict:
             Div(final_var, "packs", "per_pack").apply(ctx)
             final_var = "per_pack"
 
-        # 6 closing-question variants
-        closers = [
-            f"Kiom da {child[1]} estas en la fina rezulto?",
-            f"Kiu estas la fina nombro de {child[1]}?",
-            f"Kalkulu la finan nombron de {child[1]}.",
-            f"Trovu kiom da {child[1]} restas fine.",
-            f"Kiom da {child[1]} estas fine?",
-            f"Determinu la finan kvanton de {child[1]}.",
-        ]
-        q.append(rng.choice(closers))
-        return ctx.render(" ".join(q), final_var)
+        if not reverse:
+            closers = [
+                f"Kiom da {child[1]} estas en la fina rezulto?",
+                f"Kiu estas la fina nombro de {child[1]}?",
+                f"Kalkulu la finan nombron de {child[1]}.",
+                f"Trovu kiom da {child[1]} restas fine.",
+                f"Kiom da {child[1]} estas fine?",
+                f"Determinu la finan kvanton de {child[1]}.",
+            ]
+            q.append(rng.choice(closers))
+            return ctx.render(" ".join(q), final_var)
+
+        # Reverse: state the final value and ask for per_group
+        final_val = int(ctx.n(final_var))
+        state_final = rng.choice([
+            f"Fine, entute estas {render_qty(final_val, child, case='nom')}.",
+            f"La fina kvanto estas {render_qty(final_val, child, case='nom')}.",
+            f"Post ĉio, la rezulto estas {render_qty(final_val, child, case='nom')}.",
+        ])
+        q.append(state_final)
+        closer = rng.choice([
+            f"Kiom da {child[1]} estas en ĉiu {group[0]}?",
+            f"Trovu la nombron de {child[1]} en ĉiu {group[0]}.",
+            f"Kalkulu kiom da {child[1]} enhavis ĉiu {group[0]}.",
+        ])
+        result = ctx.render_reverse(
+            forward_prose=" ".join(q),
+            forward_final_var=final_var,
+            ask_var="per_group",
+            closer=closer,
+        )
+        result["recipe"] = "ratio_parts_reverse"
+        result["n_steps"] = n_steps
+        result["direction"] = "reverse"
+        return result
 
     raise RuntimeError("ratio_parts_recipe: couldn't sample divisible params in 100 tries")
 
