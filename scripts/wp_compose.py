@@ -146,6 +146,45 @@ SUBJECT_NOUNS: list[Noun] = [
     ("biologio",   "biologioj",   "biologion",   "biologiojn"),
 ]
 
+# ─── EN mirrors for remaining noun lists ────────────────────────────────────
+# Same-index tuples (singular, plural) for parallel EN emission.
+OBJECT_NOUNS_EN = [
+    ("book",       "books"),
+    ("pencil",     "pencils"),
+    ("apple",      "apples"),
+    ("toy",        "toys"),
+    ("flower",     "flowers"),
+    ("bun",        "buns"),
+    ("ticket",     "tickets"),
+    ("notebook",   "notebooks"),
+    ("pen",        "pens"),
+    ("cookie",     "cookies"),
+    ("marble",     "marbles"),
+    ("egg",        "eggs"),
+    ("star",       "stars"),
+    ("chocolate",  "chocolates"),
+    ("card",       "cards"),
+    ("envelope",   "envelopes"),
+]
+EUR_EN: tuple[str, str] = ("euro", "euros")
+SHOP_ITEMS_EN = [
+    ("bicycle",  "bicycles"),
+    ("shirt",    "shirts"),
+    ("book",     "books"),
+    ("computer", "computers"),
+]
+COUNT_ITEMS_EN = [
+    ("student", "students"),
+    ("pupil",   "pupils"),
+    ("child",   "children"),
+]
+SUBJECT_NOUNS_EN = [
+    ("math",      "maths"),
+    ("history",   "histories"),
+    ("chemistry", "chemistries"),
+    ("biology",   "biologies"),
+]
+
 
 # ─── Ctx ────────────────────────────────────────────────────────────────────
 
@@ -1804,21 +1843,33 @@ def fraction_cascade_recipe(rng: random.Random, n_steps: int = 2,
     fractions = [(1, 2), (1, 3), (2, 3), (1, 4), (3, 4), (1, 5), (2, 5), (3, 5), (4, 5),
                  (1, 6), (5, 6), (1, 7), (2, 7), (3, 7), (5, 7), (1, 8), (3, 8), (5, 8), (7, 8),
                  (1, 9), (2, 9), (4, 9), (5, 9), (7, 9), (1, 10), (3, 10), (7, 10), (9, 10)]
-    # Sub-populations we cascade through (girls/red/etc.) — vary the story
+    # Sub-populations we cascade through (girls/red/etc.) — vary the story.
+    # Parallel EN list must be same index; each row is
+    #   (sub_pop, verb_phrase, obj_phrase, sub_pop_en, verb_phrase_en)
+    # for cleanest access.
     stories = [
-        ("knabinoj", "portas ruĝan ĉemizon", "ruĝan ĉemizon"),
-        ("knaboj", "havas biciklon", "biciklon"),
-        ("studentoj", "loĝas en la urbo", "en la urbo"),
-        ("lernantoj", "sciipovas naĝi", "naĝon"),
-        ("infanoj", "ludas piedpilkon", "piedpilkon"),
-        ("klientoj", "revenas la sekvan tagon", "la sekvan tagon"),
+        ("knabinoj", "portas ruĝan ĉemizon", "ruĝan ĉemizon",
+         "girls",      "wear a red shirt"),
+        ("knaboj",   "havas biciklon",       "biciklon",
+         "boys",       "own a bicycle"),
+        ("studentoj","loĝas en la urbo",     "en la urbo",
+         "students",   "live in the city"),
+        ("lernantoj","sciipovas naĝi",       "naĝon",
+         "pupils",     "know how to swim"),
+        ("infanoj",  "ludas piedpilkon",     "piedpilkon",
+         "children",   "play football"),
+        ("klientoj", "revenas la sekvan tagon","la sekvan tagon",
+         "customers",  "return the next day"),
     ]
 
     for _try in range(100):
         f1 = rng.choice(fractions)
         f2 = rng.choice(fractions)
-        base_noun = rng.choice(COUNT_ITEMS)
-        sub_pop, verb_phrase, obj_phrase = rng.choice(stories)
+        base_noun_idx = rng.randrange(len(COUNT_ITEMS))
+        base_noun = COUNT_ITEMS[base_noun_idx]
+        base_noun_en = COUNT_ITEMS_EN[base_noun_idx]
+        story = rng.choice(stories)
+        sub_pop, verb_phrase, obj_phrase, sub_pop_en, verb_phrase_en = story
 
         base = f1[1] * rng.randint(2, 40)
         step1_result = base * f1[0] // f1[1]
@@ -1828,66 +1879,113 @@ def fraction_cascade_recipe(rng: random.Random, n_steps: int = 2,
         ctx = Ctx.new(rng)
         ctx.bind("base", base, noun=base_noun)
         p = ctx.protagonist
-        frame = maybe_frame(rng)
+        frame, frame_en = maybe_frame_bi(rng)
 
         if not reverse:
-            opener = rng.choice([
+            openers_eo = [
                 f"{frame}en grupo estas {render_qty(base, base_noun)}. {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
                 f"{frame}el {render_qty(base, base_noun)}, {f1[0]}/{f1[1]} estas {sub_pop}.",
                 f"{frame}{p} kalkulis {render_qty(base, base_noun)}; {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
-            ])
+            ]
+            openers_en = [
+                f"{frame_en}in a group there are {render_qty_en(base, base_noun_en)}. {f1[0]}/{f1[1]} of them are {sub_pop_en}.",
+                f"{frame_en}out of {render_qty_en(base, base_noun_en)}, {f1[0]}/{f1[1]} are {sub_pop_en}.",
+                f"{frame_en}{p} counted {render_qty_en(base, base_noun_en)}; {f1[0]}/{f1[1]} of them are {sub_pop_en}.",
+            ]
         else:
-            opener = rng.choice([
+            openers_eo = [
                 f"{frame}en grupo estas nekonata nombro de {base_noun[1]}. {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
                 f"{frame}el la grupo de {base_noun[1]}, {f1[0]}/{f1[1]} estas {sub_pop}.",
                 f"{frame}{p} kalkulis grupon de {base_noun[1]}; {f1[0]}/{f1[1]} el ili estas {sub_pop}.",
-            ])
+            ]
+            openers_en = [
+                f"{frame_en}in a group there are an unknown number of {base_noun_en[1]}. {f1[0]}/{f1[1]} of them are {sub_pop_en}.",
+                f"{frame_en}out of the group of {base_noun_en[1]}, {f1[0]}/{f1[1]} are {sub_pop_en}.",
+                f"{frame_en}{p} counted a group of {base_noun_en[1]}; {f1[0]}/{f1[1]} of them are {sub_pop_en}.",
+            ]
+        o_idx = rng.randrange(len(openers_eo))
+        opener = openers_eo[o_idx]
+        opener_en = openers_en[o_idx]
         if not frame:
             opener = opener[0].upper() + opener[1:]
+            opener_en = opener_en[0].upper() + opener_en[1:]
 
         Frac("base", f1[0], f1[1], "girls").apply(ctx)
         final = "girls"
 
         if n_steps >= 3:
             opener += f" El la {sub_pop}, {f2[0]}/{f2[1]} {verb_phrase}."
+            opener_en += f" Of the {sub_pop_en}, {f2[0]}/{f2[1]} {verb_phrase_en}."
             Frac("girls", f2[0], f2[1], "red").apply(ctx)
             final = "red"
             if not reverse:
-                opener += rng.choice([
+                closers_eo = [
                     f" Kiom {base_noun[3]} {verb_phrase}?",
                     f" Kalkulu la nombron kiuj {verb_phrase}.",
                     f" Trovu kiom {verb_phrase}.",
-                ])
+                ]
+                closers_en = [
+                    f" How many {base_noun_en[1]} {verb_phrase_en}?",
+                    f" Calculate the number who {verb_phrase_en}.",
+                    f" Find how many {verb_phrase_en}.",
+                ]
+                c_idx = rng.randrange(len(closers_eo))
+                opener += closers_eo[c_idx]
+                opener_en += closers_en[c_idx]
         else:
             if not reverse:
-                opener += rng.choice([
+                closers_eo = [
                     f" Kiom estas {sub_pop}?",
                     f" Trovu la nombron de {sub_pop}.",
                     f" Kiom {base_noun[3]} estas {sub_pop}?",
-                ])
+                ]
+                closers_en = [
+                    f" How many are {sub_pop_en}?",
+                    f" Find the number of {sub_pop_en}.",
+                    f" How many {base_noun_en[1]} are {sub_pop_en}?",
+                ]
+                c_idx = rng.randrange(len(closers_eo))
+                opener += closers_eo[c_idx]
+                opener_en += closers_en[c_idx]
 
         if not reverse:
-            return ctx.render(opener, final)
+            return ctx.render(opener, final, question_en=opener_en)
 
         # Reverse: state final count, ask for base.
         final_val = int(ctx.n(final))
-        which = sub_pop if n_steps == 2 else f"{sub_pop} kiuj {verb_phrase}"
-        state_final = rng.choice([
-            f" Estas {final_val} {which}.",
-            f" La nombro de {which} estas {final_val}.",
-            f" Fine, {final_val} el ili estas {which}.",
-        ])
-        opener += state_final
-        closer = rng.choice([
+        which_eo = sub_pop if n_steps == 2 else f"{sub_pop} kiuj {verb_phrase}"
+        which_en = sub_pop_en if n_steps == 2 else f"{sub_pop_en} who {verb_phrase_en}"
+        state_finals_eo = [
+            f" Estas {final_val} {which_eo}.",
+            f" La nombro de {which_eo} estas {final_val}.",
+            f" Fine, {final_val} el ili estas {which_eo}.",
+        ]
+        state_finals_en = [
+            f" There are {final_val} {which_en}.",
+            f" The number of {which_en} is {final_val}.",
+            f" In the end, {final_val} of them are {which_en}.",
+        ]
+        sf_idx = rng.randrange(len(state_finals_eo))
+        opener += state_finals_eo[sf_idx]
+        opener_en += state_finals_en[sf_idx]
+        closers_eo = [
             f"Kiom da {base_noun[1]} estas entute?",
             f"Trovu la totalan nombron de {base_noun[1]}.",
             f"Kalkulu la nombron de {base_noun[1]} en la grupo.",
-        ])
+        ]
+        closers_en = [
+            f"How many {base_noun_en[1]} are there in total?",
+            f"Find the total number of {base_noun_en[1]}.",
+            f"Calculate the number of {base_noun_en[1]} in the group.",
+        ]
+        rc_idx = rng.randrange(len(closers_eo))
         result = ctx.render_reverse(
             forward_prose=opener,
             forward_final_var=final,
             ask_var="base",
-            closer=closer,
+            closer=closers_eo[rc_idx],
+            forward_prose_en=opener_en,
+            closer_en=closers_en[rc_idx],
         )
         result["recipe"] = "fraction_cascade_reverse"
         result["n_steps"] = n_steps
@@ -2285,6 +2383,12 @@ _VEHICLES: list[Noun] = [
     ("kamiono",  "kamionoj",  "kamionon",  "kamionojn"),
     ("motorciklo","motorcikloj","motorciklon","motorciklojn"),
 ]
+_VEHICLES_EN = [
+    ("car",        "cars"),
+    ("bicycle",    "bicycles"),
+    ("truck",      "trucks"),
+    ("motorcycle", "motorcycles"),
+]
 
 def distance_direct_recipe(rng: random.Random, n_steps: int = 1) -> dict:
     """D = R * T with a single ask: find D, R, or T.
@@ -2299,52 +2403,64 @@ def distance_direct_recipe(rng: random.Random, n_steps: int = 1) -> dict:
         # n_steps>=2 only makes sense after "find distance" — pin ask to 'd'
         ask = "d" if n_steps >= 2 else rng.choice(["d", "r", "t"])
 
-        vehicle = rng.choice(_VEHICLES)
+        vehicle_idx = rng.randrange(len(_VEHICLES))
+        vehicle = _VEHICLES[vehicle_idx]
+        vehicle_en = _VEHICLES_EN[vehicle_idx]
         name = rng.choice(NAMES)
         ctx = Ctx.new(rng)
         ctx.protagonist = name
 
-        frame = maybe_frame(rng)
+        frame, frame_en = maybe_frame_bi(rng)
         if ask == "d":
             ctx.bind("r", r); ctx.bind("t", t)
-            q = frame + rng.choice([
-                f"{name} veturas per sia {vehicle[0]} je {r} km/h dum {t} horoj. "
-                f"Kiom da kilometroj {name} kovras?",
-                f"per sia {vehicle[0]}, {name} moviĝas je {r} km/h "
-                f"dum {t} horoj. Kiu estas la kovrita distanco?",
-                f"{name} rajdas sian {vehicle[2]} je {r} km/h dum {t} horoj. "
-                f"Trovu la distancon.",
-            ])
+            openers_eo = [
+                f"{frame}{name} veturas per sia {vehicle[0]} je {r} km/h dum {t} horoj. Kiom da kilometroj {name} kovras?",
+                f"{frame}per sia {vehicle[0]}, {name} moviĝas je {r} km/h dum {t} horoj. Kiu estas la kovrita distanco?",
+                f"{frame}{name} rajdas sian {vehicle[2]} je {r} km/h dum {t} horoj. Trovu la distancon.",
+            ]
+            openers_en = [
+                f"{frame_en}{name} rides their {vehicle_en[0]} at {r} km/h for {t} hours. How many km does {name} cover?",
+                f"{frame_en}on their {vehicle_en[0]}, {name} moves at {r} km/h for {t} hours. What is the distance covered?",
+                f"{frame_en}{name} rides their {vehicle_en[0]} at {r} km/h for {t} hours. Find the distance.",
+            ]
             Mul("r", "t", "d").apply(ctx)
             final = "d"
         elif ask == "r":
             ctx.bind("d", d); ctx.bind("t", t)
-            q = frame + rng.choice([
-                f"{name} veturas {d} km per sia {vehicle[0]} en {t} horoj. "
-                f"Kiu estas la rapideco?",
-                f"post {t} horoj de veturado, {name} kovris {d} km per sia {vehicle[0]}. "
-                f"Kalkulu la rapidecon.",
-                f"la {vehicle[0]} de {name} kovras {d} km en {t} horoj. "
-                f"Kiu estas la rapideco?",
-            ])
+            openers_eo = [
+                f"{frame}{name} veturas {d} km per sia {vehicle[0]} en {t} horoj. Kiu estas la rapideco?",
+                f"{frame}post {t} horoj de veturado, {name} kovris {d} km per sia {vehicle[0]}. Kalkulu la rapidecon.",
+                f"{frame}la {vehicle[0]} de {name} kovras {d} km en {t} horoj. Kiu estas la rapideco?",
+            ]
+            openers_en = [
+                f"{frame_en}{name} rides {d} km on their {vehicle_en[0]} in {t} hours. What is the speed?",
+                f"{frame_en}after {t} hours of riding, {name} covered {d} km on their {vehicle_en[0]}. Calculate the speed.",
+                f"{frame_en}{name}'s {vehicle_en[0]} covers {d} km in {t} hours. What is the speed?",
+            ]
             Div("d", "t", "r").apply(ctx)
             final = "r"
         else:  # ask == "t"
             if d % r != 0:
                 continue
             ctx.bind("d", d); ctx.bind("r", r)
-            q = frame + rng.choice([
-                f"{name} veturas per sia {vehicle[0]} je {r} km/h. Kiom da horoj "
-                f"bezonas por kovri {d} km?",
-                f"per sia {vehicle[0]}, {name} moviĝas je {r} km/h. "
-                f"Kiom da tempo bezonas por {d} km?",
-                f"{name} bezonas veturi {d} km je {r} km/h per sia {vehicle[0]}. "
-                f"Kiom da horoj tio daŭros?",
-            ])
+            openers_eo = [
+                f"{frame}{name} veturas per sia {vehicle[0]} je {r} km/h. Kiom da horoj bezonas por kovri {d} km?",
+                f"{frame}per sia {vehicle[0]}, {name} moviĝas je {r} km/h. Kiom da tempo bezonas por {d} km?",
+                f"{frame}{name} bezonas veturi {d} km je {r} km/h per sia {vehicle[0]}. Kiom da horoj tio daŭros?",
+            ]
+            openers_en = [
+                f"{frame_en}{name} rides their {vehicle_en[0]} at {r} km/h. How many hours are needed to cover {d} km?",
+                f"{frame_en}on their {vehicle_en[0]}, {name} moves at {r} km/h. How much time is needed for {d} km?",
+                f"{frame_en}{name} needs to ride {d} km at {r} km/h on their {vehicle_en[0]}. How many hours will that take?",
+            ]
             Div("d", "r", "t").apply(ctx)
             final = "t"
+        o_idx = rng.randrange(len(openers_eo))
+        q = openers_eo[o_idx]
+        q_en = openers_en[o_idx]
         if not frame:
             q = q[0].upper() + q[1:]
+            q_en = q_en[0].upper() + q_en[1:]
 
         if n_steps >= 2 and ask == "d":
             # add return trip at different speed for n_steps=2
@@ -2354,6 +2470,7 @@ def distance_direct_recipe(rng: random.Random, n_steps: int = 1) -> dict:
             r2 = rng.choice(r2_candidates)
             ctx.bind("r2", r2)
             q += f" Se {name} revenas je {r2} km/h, kiom da horoj daŭros la reveno?"
+            q_en += f" If {name} returns at {r2} km/h, how many hours will the return trip take?"
             Div("d", "r2", "t2").apply(ctx)
             final = "t2"
 
@@ -2361,10 +2478,11 @@ def distance_direct_recipe(rng: random.Random, n_steps: int = 1) -> dict:
             if n_steps >= 3:
                 ctx.bind("t_orig", t)
                 q += f" Kaj kiom da horoj daŭras la tuta rondiro?"
+                q_en += f" And how many hours does the whole round trip take?"
                 Add("t_orig", "t2", "t_total").apply(ctx)
                 final = "t_total"
 
-        return ctx.render(q, final)
+        return ctx.render(q, final, question_en=q_en)
 
     raise RuntimeError("distance_direct_recipe: couldn't sample")
 
@@ -2475,7 +2593,10 @@ def distance_catchup_recipe(rng: random.Random, n_steps: int = 2,
             continue
 
         names = rng.sample(NAMES, 2)
-        vehicle = rng.choice(_VEHICLES)
+        # Pick vehicle by index so we can look up EN mirror.
+        vehicle_idx = rng.randrange(len(_VEHICLES))
+        vehicle = _VEHICLES[vehicle_idx]
+        vehicle_en = _VEHICLES_EN[vehicle_idx]
         ctx = Ctx.new(rng)
         ctx.protagonist = names[1]
         ctx.bind("ra", ra); ctx.bind("h", h); ctx.bind("rb", rb)
@@ -2485,10 +2606,17 @@ def distance_catchup_recipe(rng: random.Random, n_steps: int = 2,
                  f"Post {h} horoj, {names[1]} ekiras de la sama loko "
                  f"en la sama direkto je {rb} km/h. "
                  f"Post kiom da horoj {names[1]} atingos {names[0]}?")
+            q_en = (f"{names[0]} sets off on their {vehicle_en[0]} at {ra} km/h. "
+                    f"After {h} hours, {names[1]} sets off from the same place "
+                    f"in the same direction at {rb} km/h. "
+                    f"After how many hours will {names[1]} catch up to {names[0]}?")
         else:
             q = (f"{names[0]} ekveturas per sia {vehicle[0]} je {ra} km/h. "
                  f"Post nekonata nombro de horoj, {names[1]} ekiras de la sama "
                  f"loko en la sama direkto je {rb} km/h.")
+            q_en = (f"{names[0]} sets off on their {vehicle_en[0]} at {ra} km/h. "
+                    f"After an unknown number of hours, {names[1]} sets off from "
+                    f"the same place in the same direction at {rb} km/h.")
 
         # step 1: head start distance = ra * h
         Mul("ra", "h", "head_start").apply(ctx)
@@ -2502,13 +2630,14 @@ def distance_catchup_recipe(rng: random.Random, n_steps: int = 2,
         if n_steps >= 4:
             if not reverse:
                 q += f" Kiom da km {names[0]} veturis kiam {names[1]} atingis?"
+                q_en += f" How many km did {names[0]} travel when {names[1]} caught up?"
             # A's total time = h + t; A's distance = ra * (h + t)
             Add("h", "t", "a_total_time").apply(ctx)
             Mul("ra", "a_total_time", "a_dist").apply(ctx)
             final = "a_dist"
 
         if not reverse:
-            return ctx.render(q, final)
+            return ctx.render(q, final, question_en=q_en)
 
         # Reverse: given t (n_steps=2) or a_dist (n_steps=4), find h.
         # We only support n_steps=2 for reverse (n_steps=4 has an Add step
@@ -2518,12 +2647,16 @@ def distance_catchup_recipe(rng: random.Random, n_steps: int = 2,
 
         final_val = int(ctx.n(final))
         q += f" {names[1]} atingas {names[0]} post {final_val} horoj."
+        q_en += f" {names[1]} catches up to {names[0]} after {final_val} hours."
         closer = f" Kalkulu, post kiom da horoj {names[1]} ekiris post {names[0]}."
+        closer_en = f" Calculate after how many hours {names[1]} set off after {names[0]}."
         result = ctx.render_reverse(
             forward_prose=q,
             forward_final_var=final,
             ask_var="h",
             closer=closer,
+            forward_prose_en=q_en,
+            closer_en=closer_en,
         )
         result["recipe"] = "distance_catchup_reverse"
         result["n_steps"] = n_steps
@@ -2561,10 +2694,18 @@ def distance_meeting_recipe(rng: random.Random, n_steps: int = 2,
                  f"distancaj je {d} km, veturante unu al la alia. "
                  f"{names[0]} veturas je {r1} km/h, {names[1]} je {r2} km/h. "
                  f"Post kiom da horoj ili renkontiĝos?")
+            q_en = (f"{names[0]} and {names[1]} set off simultaneously from two "
+                    f"cities {d} km apart, traveling toward each other. "
+                    f"{names[0]} travels at {r1} km/h, {names[1]} at {r2} km/h. "
+                    f"After how many hours will they meet?")
         else:
             q = (f"{names[0]} kaj {names[1]} ekiras samtempe de du urboj kun "
                  f"nekonata distanco inter ili, veturante unu al la alia. "
                  f"{names[0]} veturas je {r1} km/h, {names[1]} je {r2} km/h.")
+            q_en = (f"{names[0]} and {names[1]} set off simultaneously from two "
+                    f"cities with an unknown distance between them, traveling "
+                    f"toward each other. "
+                    f"{names[0]} travels at {r1} km/h, {names[1]} at {r2} km/h.")
 
         Add("r1", "r2", "r_sum").apply(ctx)
         Div("d", "r_sum", "t").apply(ctx)
@@ -2574,24 +2715,30 @@ def distance_meeting_recipe(rng: random.Random, n_steps: int = 2,
         if n_steps >= 3:
             if not reverse:
                 q += f" Kiom da km {names[0]} veturis kiam ili renkontiĝas?"
+                q_en += f" How many km did {names[0]} travel when they met?"
             Mul("r1", "t", "d1").apply(ctx)
             final = "d1"
 
         if not reverse:
-            return ctx.render(q, final)
+            return ctx.render(q, final, question_en=q_en)
 
         # Reverse: state t (or d1 for n_steps=3) as given, ask for d
         final_val = int(ctx.n(final))
         if n_steps >= 3:
             q += f" {names[0]} veturis {final_val} km ĝis ili renkontiĝis."
+            q_en += f" {names[0]} traveled {final_val} km until they met."
         else:
             q += f" Ili renkontiĝas post {final_val} horoj."
+            q_en += f" They meet after {final_val} hours."
         closer = " Kalkulu la originalan distancon inter la du urboj."
+        closer_en = " Calculate the original distance between the two cities."
         result = ctx.render_reverse(
             forward_prose=q,
             forward_final_var=final,
             ask_var="d",
             closer=closer,
+            forward_prose_en=q_en,
+            closer_en=closer_en,
         )
         result["recipe"] = "distance_meeting_reverse"
         result["n_steps"] = n_steps
