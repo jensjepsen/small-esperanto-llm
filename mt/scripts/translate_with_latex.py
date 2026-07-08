@@ -55,6 +55,49 @@ from sp_tokenizer import SPMTokenizer
 # Currency amounts: $25, $1,234.56, but NOT $abc or $\sin
 _CURRENCY = re.compile(r"\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\b")
 
+# Unicode math → ASCII normalization. Our SPM tokenizer OOVs these to `<unk>`
+# during encoding, destroying content like `9 × 4` or `36 cm²`. Normalize
+# to ASCII-safe equivalents that survive round-trip cleanly.
+_UNICODE_MATH_NORMALIZE = {
+    # Operators
+    "×": "*",   "÷": "/",  "−": "-",  "·": "*",  "∗": "*",
+    # Comparators
+    "≤": "<=",  "≥": ">=", "≠": "!=", "≈": "~",  "≡": "==",
+    # Superscript digits → ^N (e.g. cm² → cm^2)
+    "⁰": "^0",  "¹": "^1",  "²": "^2",  "³": "^3",  "⁴": "^4",
+    "⁵": "^5",  "⁶": "^6",  "⁷": "^7",  "⁸": "^8",  "⁹": "^9",
+    "⁻": "^-",  "⁺": "^+",
+    # Subscript digits → _N
+    "₀": "_0",  "₁": "_1",  "₂": "_2",  "₃": "_3",  "₄": "_4",
+    "₅": "_5",  "₆": "_6",  "₇": "_7",  "₈": "_8",  "₉": "_9",
+    # Common math sets (kept as English words; MT model knows R, Z, N, Q, C)
+    "ℝ": "R",   "ℤ": "Z",   "ℕ": "N",   "ℚ": "Q",   "ℂ": "C",
+    # Special
+    "∅": "{}",  "∞": "inf", "√": "sqrt", "∂": "d",
+    "∈": " in ", "∉": " notin ", "⊂": " subset ", "⊆": " subseteq ",
+    "∀": "forall ", "∃": "exists ",
+    "→": "->", "←": "<-", "↔": "<->", "⇒": "=>", "⇐": "<=",
+    # Greek letters — spell out for common usage
+    "α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta",
+    "ε": "epsilon", "θ": "theta", "λ": "lambda", "μ": "mu",
+    "π": "pi", "σ": "sigma", "τ": "tau", "φ": "phi", "ω": "omega",
+    "Δ": "Delta", "Σ": "Sigma", "Π": "Pi", "Ω": "Omega",
+    # Fractions
+    "½": "1/2", "⅓": "1/3", "⅔": "2/3", "¼": "1/4", "¾": "3/4",
+    "⅕": "1/5", "⅖": "2/5", "⅗": "3/5", "⅘": "4/5",
+    # Degree
+    "°": " deg",
+}
+
+
+def normalize_unicode_math(text: str) -> str:
+    """Replace Unicode math characters with ASCII equivalents. Preserves
+    prose Unicode (accented Latin, quotes, dashes) — only substitutes
+    known math glyphs."""
+    for uni, ascii_ in _UNICODE_MATH_NORMALIZE.items():
+        text = text.replace(uni, ascii_)
+    return text
+
 
 class LatexAwareTranslator:
     """v9-mt EN→EO translator with LaTeX/currency preservation."""
@@ -144,7 +187,9 @@ class LatexAwareTranslator:
     # ── Public API ─────────────────────────────────────────────────────
 
     def translate(self, src: str) -> str:
-        """Translate one EN string, protecting LaTeX + currency."""
+        """Translate one EN string. Normalizes Unicode math to ASCII,
+        then protects LaTeX + currency with sentinels."""
+        src = normalize_unicode_math(src)
         protected, mapping = self._protect(src)
         pred = self._generate(protected)
         return self._restore(pred, mapping)
@@ -152,6 +197,7 @@ class LatexAwareTranslator:
     def translate_batch(self, srcs: list[str]) -> list[str]:
         """Translate a batch by protecting each, running one batched
         generate, then restoring per-item."""
+        srcs = [normalize_unicode_math(s) for s in srcs]
         prot_and_map = [self._protect(s) for s in srcs]
         prots = [p for p, _ in prot_and_map]
         ids_list = [self.tok.encode(p, lang="eo")[: self.max_input_tokens]
@@ -174,6 +220,12 @@ class LatexAwareTranslator:
 # ── Smoke test ─────────────────────────────────────────────────────────
 
 _SMOKE_PROBES = [
+    ("unicode math ops",
+     "The volume is 9 cm × 4 cm × 7 cm = 252 cm³. And 45 ÷ 5 = 9."),
+    ("unicode inequalities",
+     "For all x ≤ 5, we have x² ≤ 25 and x² ≥ 0."),
+    ("greek + set membership",
+     "For all α, β ∈ ℝ, we have α + β ∈ ℝ."),
     ("currency+text",
      "Each player requires a $25 jersey and 3 balls costing $47 total."),
     ("currency w/ commas",
