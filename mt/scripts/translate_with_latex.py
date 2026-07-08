@@ -192,10 +192,6 @@ class LatexAwareTranslator:
         be = self.tok.pad_batch([ids])
         with torch.no_grad():
             out = self.model.generate(
-                bad_words_ids=[[1]],  # suppress <unk> — verified to fix
-                                      # ~40% of the orca-math UNK cases by
-                                      # picking the 2nd-most-likely token
-                                      # (usually the correct math operator)
                 input_ids=be.input_ids.to(self.device),
                 attention_mask=be.attention_mask.to(self.device),
                 max_length=self.max_output_tokens,
@@ -225,7 +221,6 @@ class LatexAwareTranslator:
         be = self.tok.pad_batch(ids_list)
         with torch.no_grad():
             out = self.model.generate(
-                bad_words_ids=[[1]],  # suppress <unk>
                 input_ids=be.input_ids.to(self.device),
                 attention_mask=be.attention_mask.to(self.device),
                 max_length=self.max_output_tokens,
