@@ -52,8 +52,9 @@ from transformers import MarianMTModel
 sys.path.insert(0, str(Path(__file__).parent))
 from sp_tokenizer import SPMTokenizer
 
-# Currency amounts: $25, $1,234.56, but NOT $abc or $\sin
-_CURRENCY = re.compile(r"\$\d{1,3}(?:,\d{3})*(?:\.\d+)?\b")
+# Currency amounts in USD ($), GBP (£), EUR (€): 25, 1,234.56.
+# European conventions (1.234,56) rare in orca-math; extend if needed.
+_CURRENCY = re.compile(r"[$£€]\d{1,3}(?:,\d{3})*(?:\.\d+)?\b")
 
 # Unicode math → ASCII normalization. Our SPM tokenizer OOVs these to `<unk>`
 # during encoding, destroying content like `9 × 4` or `36 cm²`. Normalize
@@ -87,6 +88,21 @@ _UNICODE_MATH_NORMALIZE = {
     "⅕": "1/5", "⅖": "2/5", "⅗": "3/5", "⅘": "4/5",
     # Degree
     "°": " deg",
+    # More math ops surfaced in orca-math scan.
+    # Use " +- " (space-surrounded, no slash) for ± since "+/-" gets the "+"
+    # dropped by the tokenizer and the "/" reinterpreted as division.
+    "±": " +- ", "∛": "cbrt", "∪": " union ", "∩": " intersect ",
+    # Unicode squared-unit CJK-compatibility block (frequent in orca-math)
+    "㎖": " ml", "㎗": " dl", "㎘": " kL", "㎜": " mm",
+    "㎝": " cm", "㎞": " km", "㎟": " mm^2", "㎠": " cm^2",
+    "㎡": " m^2", "㎢": " km^2", "㎣": " mm^3", "㎤": " cm^3",
+    "㎥": " m^3", "㎦": " km^3", "㎏": " kg", "㎎": " mg",
+    "㎍": " ug", "㎕": " uL", "㎫": " MPa", "㎩": " Pa",
+    "㎾": " kW", "㎿": " MW", "㎐": " Hz", "㎑": " kHz",
+    "㎒": " MHz", "㎓": " GHz", "㎔": " THz",
+    # Curly quotes + dashes → ASCII
+    "’": "'", "‘": "'", "“": '"', "”": '"',
+    "–": "-", "—": "-", "…": "...",
 }
 
 
@@ -226,6 +242,14 @@ _SMOKE_PROBES = [
      "For all x ≤ 5, we have x² ≤ 25 and x² ≥ 0."),
     ("greek + set membership",
      "For all α, β ∈ ℝ, we have α + β ∈ ℝ."),
+    ("gbp + eur currency",
+     "The book costs £15 in London and €18 in Paris."),
+    ("squared units",
+     "The tank holds 500 ㎖ and the room is 20 ㎡."),
+    ("curly quotes + dashes",
+     "The result of Jane’s calculation was “42” — surprising."),
+    ("cube root + plus-minus",
+     "The solution is ∛8 ± 1 = 2 ± 1."),
     ("currency+text",
      "Each player requires a $25 jersey and 3 balls costing $47 total."),
     ("currency w/ commas",
