@@ -102,7 +102,14 @@ _UNICODE_MATH_NORMALIZE = {
     "㎒": " MHz", "㎓": " GHz", "㎔": " THz",
     # Curly quotes + dashes → ASCII
     "’": "'", "‘": "'", "“": '"', "”": '"',
-    "–": "-", "—": "-", "…": "...",
+    "–": "-", "—": "-", "…": "...", "―": "-",
+    # More Unicode picked up in training-data OOV scan
+    "•": "*",  # bullet
+    "′": "'",  # prime (angle minutes, feet)
+    "″": '"',  # double prime (angle seconds, inches)
+    "µ": "u",  # micro sign (U+00B5)
+    "℃": " degC", "℉": " degF",  # temperature units
+    "†": "*", "‡": "**",  # footnote markers
 }
 
 
