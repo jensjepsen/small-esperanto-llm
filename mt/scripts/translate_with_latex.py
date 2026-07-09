@@ -219,13 +219,24 @@ class LatexAwareTranslator:
 
     def translate_batch(self, srcs: list[str]) -> list[str]:
         """Translate a batch by protecting each, running one batched
-        generate, then restoring per-item."""
+        generate, then restoring per-item.
+
+        Sorts inputs by tokenized length before batching so shorter inputs
+        share a batch — cuts padding waste. Output preserves the original
+        input order.
+        """
         srcs = [normalize_unicode_math(s) for s in srcs]
         prot_and_map = [self._protect(s) for s in srcs]
         prots = [p for p, _ in prot_and_map]
         ids_list = [self.tok.encode(p, lang="eo")[: self.max_input_tokens]
                     for p in prots]
-        be = self.tok.pad_batch(ids_list)
+
+        # Sort by length ASCENDING so similar-length items batch together.
+        # Track original position so we can unshuffle after generate.
+        order = sorted(range(len(ids_list)), key=lambda i: len(ids_list[i]))
+        sorted_ids = [ids_list[i] for i in order]
+
+        be = self.tok.pad_batch(sorted_ids)
         with torch.no_grad():
             out = self.model.generate(
                 input_ids=be.input_ids.to(self.device),
@@ -234,10 +245,15 @@ class LatexAwareTranslator:
                 do_sample=False,
                 num_beams=1,
             )
-        return [
-            self._restore(self.tok.decode(out[i]), prot_and_map[i][1])
-            for i in range(len(srcs))
-        ]
+
+        # Decode each output in sorted order, then restore to original order.
+        decoded_sorted = [self.tok.decode(out[i]) for i in range(len(sorted_ids))]
+        results = [""] * len(srcs)
+        for sort_pos, orig_pos in enumerate(order):
+            results[orig_pos] = self._restore(
+                decoded_sorted[sort_pos], prot_and_map[orig_pos][1]
+            )
+        return results
 
 
 # ── Smoke test ─────────────────────────────────────────────────────────
