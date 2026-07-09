@@ -51,7 +51,13 @@ def parse_args():
                     help="Size preset from mt/configs/{name}.yaml (tiny|small|"
                          "medium|large). Sets model arch + training defaults. "
                          "CLI flags override config values.")
-    ap.add_argument("--tokenizer", type=str, default="mt/data/tokenizer/spm_eneo_32k.model")
+    ap.add_argument("--tokenizer", type=str, required=True,
+                    help="Path to SPM model. Explicit to prevent silent "
+                         "tokenizer mismatches. Current options: "
+                         "mt/data/tokenizer/spm_eneo_32k.model (v1, 32k vocab, "
+                         "used by v6..v10) or mt/data/tokenizer/spm_eneo_48k_v2.model "
+                         "(v2, 48k vocab, LaTeX atoms + <extra_N> sentinels + "
+                         "expanded Unicode coverage, for v11+).")
     ap.add_argument("--train-files", nargs="+", type=str, default=[
         "hf://jensjepsen/esperanto-mt-parallel",
         # Math-domain parallel v2 — downsampled to 100k+100k after v8 evidence
