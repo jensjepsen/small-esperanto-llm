@@ -71,8 +71,13 @@ def parse_args():
         # OPUS bundle: QED (educational subtitles), GlobalVoices (news),
         # KDE4/GNOME/Ubuntu (software localization). ~159k pairs across 5 registers.
         "hf://jensjepsen/esperanto-mt-opus-parallel",
+        # Gemini Flash Lite-translated orca-math (20k source rows → 40k Q+A
+        # parallel pairs). Provides real math prose EN↔EO with correct
+        # math-domain vocabulary (meznombro, ebeno, kampo, ringo, grupo, etc.) —
+        # the exact terminology v9 currently mistranslates.
+        "hf://jensjepsen/esperanto-orca-math-gemini-parallel",
     ], help="Local JSONL paths or hf://repo[::config][/split] "
-            "(default: merged v6 corpus + math-v2 + YAGO-v2 + OPUS supplements)")
+            "(default: merged v6 corpus + math-v2 + YAGO-v2 + OPUS + orca-math)")
     ap.add_argument("--val-files", nargs="+", type=Path, default=[
         Path("mt/data/parallel/flores_devtest.jsonl"),
         Path("mt/data/parallel/opus100_validation.jsonl"),
