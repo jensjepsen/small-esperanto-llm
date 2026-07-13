@@ -265,8 +265,15 @@ def main():
         preds, labels = eval_pred
         if isinstance(preds, tuple):
             preds = preds[0]
-        # replace -100 with pad for decoding
-        labels = np.where(labels != -100, labels, tok.pad_token_id)
+        # Clip both to valid vocab range. HF Trainer sometimes returns
+        # pad-marker values (-100 or large negatives) in preds; decode()
+        # then raises OverflowError converting to C int. Guard by
+        # replacing anything out-of-range with pad_token_id.
+        vocab_size = tok.vocab_size
+        preds = np.asarray(preds)
+        labels = np.asarray(labels)
+        preds = np.where((preds >= 0) & (preds < vocab_size), preds, tok.pad_token_id)
+        labels = np.where((labels >= 0) & (labels < vocab_size), labels, tok.pad_token_id)
         decoded_preds = tok.batch_decode(preds, skip_special_tokens=True)
         decoded_labels = tok.batch_decode(labels, skip_special_tokens=True)
         bleu = sacrebleu.corpus_bleu(decoded_preds, [decoded_labels]).score
