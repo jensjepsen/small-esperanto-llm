@@ -241,7 +241,10 @@ def main():
     tok = SPMTokenizer(args.tokenizer)
     print(f"Tokenizer: vocab={tok.vocab_size}  pad={tok.pad_id} eos={tok.eos_id}")
 
+    cfg = load_size_config(args.config)
+    m = cfg["model"]
     architecture = cfg.get("architecture", "marian")
+    print(f"Architecture: {architecture}")
     if args.init_from:
         if architecture == "t5":
             from transformers import T5ForConditionalGeneration
