@@ -27,7 +27,7 @@ import numpy as np
 import sacrebleu
 import torch
 import yaml
-from datasets import Dataset, load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset
 from transformers import (
     AutoTokenizer,
     DataCollatorForSeq2Seq,
@@ -40,8 +40,15 @@ from transformers import (
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 
-def load_parallel_iter(spec: str):
-    """Yield {'en': ..., 'eo': ...} dicts from local JSONL or hf://repo[::config][/split]."""
+EN2EO_TAG = "translate English to Esperanto: "
+EO2EN_TAG = "translate Esperanto to English: "
+
+
+def load_parallel_ds(spec: str) -> Dataset:
+    """Return a Dataset of `{en, eo}` rows from local JSONL or hf://repo[::config][/split].
+
+    Arrow-native: never materializes into a Python list.
+    """
     if spec.startswith("hf://"):
         tail = spec[len("hf://"):]
         config = None
@@ -60,30 +67,38 @@ def load_parallel_iter(spec: str):
             else:
                 raise ValueError(f"bad hf:// path: {spec}")
         ds = load_dataset(repo, config, split=split) if config else load_dataset(repo, split=split)
-        for r in ds:
-            if r.get("en") and r.get("eo"):
-                yield {"en": r["en"], "eo": r["eo"]}
     else:
-        with open(spec) as f:
-            for line in f:
-                r = json.loads(line)
-                if r.get("en") and r.get("eo"):
-                    yield {"en": r["en"], "eo": r["eo"]}
+        ds = load_dataset("json", data_files=str(spec), split="train")
+    # keep only en/eo columns; drop empties
+    keep = [c for c in ("en", "eo") if c in ds.column_names]
+    if len(keep) != 2:
+        raise ValueError(f"{spec}: missing en/eo columns; got {ds.column_names}")
+    drop = [c for c in ds.column_names if c not in keep]
+    if drop:
+        ds = ds.remove_columns(drop)
+    return ds
 
 
-def build_bidir_examples(pairs):
-    """Expand each (en, eo) pair into two directed training examples."""
-    for p in pairs:
-        yield {"source": f"translate English to Esperanto: {p['en']}", "target": p["eo"]}
-        yield {"source": f"translate Esperanto to English: {p['eo']}", "target": p["en"]}
+def to_bidir(batch, tag_en2eo=EN2EO_TAG, tag_eo2en=EO2EN_TAG):
+    """Batched map function that expands each row into 2 directed rows."""
+    ens = batch["en"]
+    eos = batch["eo"]
+    src, tgt = [], []
+    for e, o in zip(ens, eos):
+        src.append(tag_en2eo + e); tgt.append(o)
+        src.append(tag_eo2en + o); tgt.append(e)
+    return {"source": src, "target": tgt}
 
 
-def build_direction_examples(pairs, direction: str):
-    tag = "translate English to Esperanto: " if direction == "en2eo" else "translate Esperanto to English: "
-    for p in pairs:
-        src = p["en"] if direction == "en2eo" else p["eo"]
-        tgt = p["eo"] if direction == "en2eo" else p["en"]
-        yield {"source": tag + src, "target": tgt}
+def to_direction(batch, direction: str):
+    tag = EN2EO_TAG if direction == "en2eo" else EO2EN_TAG
+    if direction == "en2eo":
+        src = [tag + e for e in batch["en"]]
+        tgt = list(batch["eo"])
+    else:
+        src = [tag + o for o in batch["eo"]]
+        tgt = list(batch["en"])
+    return {"source": src, "target": tgt}
 
 
 def main():
@@ -143,29 +158,43 @@ def main():
     print(f"[model] vocab={tok.vocab_size}  params={sum(p.numel() for p in model.parameters())/1e6:.1f}M",
           flush=True)
 
-    print("[data] streaming train sources...", flush=True)
-    train_pairs = []
+    print("[data] loading train sources (arrow-native)...", flush=True)
+    train_shards = []
     for spec in args.train_files:
-        n0 = len(train_pairs)
-        for p in load_parallel_iter(spec):
-            train_pairs.append(p)
-        print(f"  {spec}: +{len(train_pairs) - n0:,}", flush=True)
+        ds = load_parallel_ds(spec)
+        print(f"  {spec}: {len(ds):,}", flush=True)
+        train_shards.append(ds)
+    train_pairs_ds = concatenate_datasets(train_shards)
+    print(f"[data] merged pair pool: {len(train_pairs_ds):,}", flush=True)
 
     if args.direction == "bidir":
-        train_rows = list(build_bidir_examples(train_pairs))
+        train_ds = train_pairs_ds.map(
+            to_bidir, batched=True, batch_size=1000,
+            remove_columns=["en", "eo"],
+            num_proc=8, desc="expand bidir",
+        )
     else:
-        train_rows = list(build_direction_examples(train_pairs, args.direction))
-    train_ds = Dataset.from_list(train_rows)
+        d = args.direction
+        train_ds = train_pairs_ds.map(
+            lambda batch: to_direction(batch, d), batched=True, batch_size=1000,
+            remove_columns=["en", "eo"],
+            num_proc=8, desc=f"format {d}",
+        )
     print(f"[data] train examples: {len(train_ds):,}  (direction={args.direction})", flush=True)
 
     val_sets = {}
+    val_dir = args.val_direction
     for name, path in zip(args.val_names, args.val_files):
-        pairs = list(load_parallel_iter(str(path)))
-        if args.val_cap_per_set and len(pairs) > args.val_cap_per_set:
-            pairs = pairs[: args.val_cap_per_set]
-        rows = list(build_direction_examples(pairs, args.val_direction))
-        val_sets[name] = Dataset.from_list(rows)
-        print(f"  val[{name}]: {len(rows):,}  direction={args.val_direction}", flush=True)
+        ds = load_parallel_ds(str(path))
+        if args.val_cap_per_set and len(ds) > args.val_cap_per_set:
+            ds = ds.select(range(args.val_cap_per_set))
+        ds = ds.map(
+            lambda batch: to_direction(batch, val_dir), batched=True, batch_size=500,
+            remove_columns=["en", "eo"],
+            desc=f"format val[{name}]",
+        )
+        val_sets[name] = ds
+        print(f"  val[{name}]: {len(ds):,}  direction={args.val_direction}", flush=True)
 
     def tokenize(batch):
         model_inputs = tok(
