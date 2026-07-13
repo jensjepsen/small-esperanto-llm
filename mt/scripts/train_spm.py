@@ -136,7 +136,12 @@ def train_spm(corpus_path: Path, out_prefix: Path, vocab_size: int,
         input_sentence_size=50_000_000,
         shuffle_input_sentence=True,
         # Preserve control chars we care about (|, math ops, etc.)
-        normalization_rule_name="nmt_nfkc_cf",  # NFKC + case-fold (v1 was case-folding)
+        # Case preserved: v1 (nmt_nfkc_cf) case-folded, dropping proper-noun
+        # capitalization in MT outputs (Nikkei→nikkei, Belŝacar→belŝacar).
+        # Downstream datasets translated with cased MT will preserve caps.
+        # Requires a fresh MT training after SPM retrain — no on-disk model
+        # trained with the case-folded vocab is usable with this SPM.
+        normalization_rule_name="nmt_nfkc",
         # Our corpus is 26M+ sentences — SPM defaults blow past int32 array
         # limits without this flag.
         train_extremely_large_corpus=True,
