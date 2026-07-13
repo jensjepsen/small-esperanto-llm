@@ -1,13 +1,17 @@
-"""Build a small MarianMT encoder-decoder.
+"""Build a small MarianMT (Marian) or T5-style encoder-decoder.
 
-Defaults: 6+6 layers, d_model=512, ffn=2048, 8 heads. ~70M params
-with tied input/output embeddings on a 32k joint vocab.
+Marian default: 6+6 layers, d_model=512, ffn=2048, 8 heads.
+~70M params with tied input/output embeddings on a 32k joint vocab.
+
+T5 variant: same topology, but with T5-modernizations (relative
+position bias, pre-norm, gated-GELU FFN) — for a direct
+architecture-vs-architecture comparison at matched param count.
 """
 from __future__ import annotations
 
 import argparse
 
-from transformers import MarianConfig, MarianMTModel
+from transformers import MarianConfig, MarianMTModel, T5Config, T5ForConditionalGeneration
 
 
 def build_model(
@@ -48,6 +52,54 @@ def build_model(
         scale_embedding=True,
     )
     return MarianMTModel(cfg)
+
+
+def build_t5_model(
+    vocab_size: int,
+    d_model: int = 512,
+    encoder_layers: int = 6,
+    decoder_layers: int = 6,
+    heads: int = 8,
+    ffn_dim: int = 2048,
+    max_position_embeddings: int = 512,
+    dropout: float = 0.1,
+    pad_token_id: int = 0,
+    eos_token_id: int = 3,
+    relative_attention_num_buckets: int = 32,
+    relative_attention_max_distance: int = 128,
+    feed_forward_proj: str = "gated-gelu",
+) -> T5ForConditionalGeneration:
+    """T5-style encoder-decoder matched to Marian's shape.
+
+    Differences from build_model (Marian):
+      - Relative position bias (T5) vs sinusoidal absolute (Marian)
+      - Pre-norm layer arrangement (T5) vs post-norm (Marian)
+      - Optional gated-GELU FFN (T5 v1.1) vs plain GELU (Marian)
+
+    d_kv = d_model // heads (matches Marian's per-head dimension).
+    T5 has no explicit BOS; decoder_start_token_id = pad_token_id
+    (T5 convention).
+    """
+    cfg = T5Config(
+        vocab_size=vocab_size,
+        d_model=d_model,
+        d_ff=ffn_dim,
+        num_layers=encoder_layers,
+        num_decoder_layers=decoder_layers,
+        num_heads=heads,
+        d_kv=d_model // heads,
+        dropout_rate=dropout,
+        relative_attention_num_buckets=relative_attention_num_buckets,
+        relative_attention_max_distance=relative_attention_max_distance,
+        feed_forward_proj=feed_forward_proj,
+        tie_word_embeddings=True,
+        pad_token_id=pad_token_id,
+        eos_token_id=eos_token_id,
+        decoder_start_token_id=pad_token_id,
+        n_positions=max_position_embeddings,
+        use_cache=True,
+    )
+    return T5ForConditionalGeneration(cfg)
 
 
 def _fmt(n: int) -> str:

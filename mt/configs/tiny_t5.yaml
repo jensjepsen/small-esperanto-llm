@@ -1,0 +1,34 @@
+# ~60M params — T5-style modern encoder-decoder, matched to tiny.yaml topology
+# for a direct architecture comparison. Same d_model/depth/heads/ffn as
+# tiny.yaml (Marian), but swaps in T5 modernizations:
+#
+#   - T5 relative position bias (vs Marian sinusoidal)
+#   - Pre-norm layer arrangement (vs Marian post-norm)
+#   - gated-GELU FFN (T5 v1.1's SwiGLU-lite) (vs Marian's plain GELU)
+#   - tied embeddings + shared en/eo vocab (same as Marian tiny)
+#
+# All training-side hyperparameters (batch/LR/warmup) held equal to tiny.yaml
+# so any BLEU delta is purely architecture-attributable.
+architecture: t5
+
+model:
+  d_model: 512
+  encoder_layers: 6
+  decoder_layers: 6
+  heads: 8
+  ffn_dim: 2048
+  max_position_embeddings: 512
+  # T5-specific:
+  relative_attention_num_buckets: 32
+  relative_attention_max_distance: 128
+  feed_forward_proj: gated-gelu
+
+training:
+  batch_size: 128
+  gradient_accumulation: 1
+  epochs: 3
+  warmup_steps: 2000
+  learning_rate: 5.0e-4      # matched to tiny.yaml peak — held equal
+  weight_decay: 0.01
+  label_smoothing: 0.1
+  dropout: 0.1

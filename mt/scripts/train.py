@@ -241,10 +241,33 @@ def main():
     tok = SPMTokenizer(args.tokenizer)
     print(f"Tokenizer: vocab={tok.vocab_size}  pad={tok.pad_id} eos={tok.eos_id}")
 
+    architecture = cfg.get("architecture", "marian")
     if args.init_from:
-        from transformers import MarianMTModel
-        print(f"Init from {args.init_from} (fresh optimizer)")
-        model = MarianMTModel.from_pretrained(args.init_from)
+        if architecture == "t5":
+            from transformers import T5ForConditionalGeneration
+            print(f"Init from {args.init_from} (fresh optimizer, T5)")
+            model = T5ForConditionalGeneration.from_pretrained(args.init_from)
+        else:
+            from transformers import MarianMTModel
+            print(f"Init from {args.init_from} (fresh optimizer, Marian)")
+            model = MarianMTModel.from_pretrained(args.init_from)
+    elif architecture == "t5":
+        from model import build_t5_model
+        model = build_t5_model(
+            vocab_size=tok.vocab_size,
+            d_model=args.d_model,
+            encoder_layers=args.encoder_layers,
+            decoder_layers=args.decoder_layers,
+            heads=args.heads,
+            ffn_dim=args.ffn_dim,
+            max_position_embeddings=args.max_position_embeddings,
+            dropout=args.dropout,
+            pad_token_id=tok.pad_id,
+            eos_token_id=tok.eos_id,
+            relative_attention_num_buckets=m.get("relative_attention_num_buckets", 32),
+            relative_attention_max_distance=m.get("relative_attention_max_distance", 128),
+            feed_forward_proj=m.get("feed_forward_proj", "gated-gelu"),
+        )
     else:
         model = build_model(
             vocab_size=tok.vocab_size,
