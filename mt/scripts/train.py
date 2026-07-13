@@ -59,7 +59,11 @@ def parse_args():
                          "(v2, 48k vocab, LaTeX atoms + <extra_N> sentinels + "
                          "expanded Unicode coverage, for v11+).")
     ap.add_argument("--train-files", nargs="+", type=str, default=[
-        "hf://jensjepsen/esperanto-mt-parallel",
+        # v13: swapped from `esperanto-mt-parallel` (v12) to v13, which drops
+        # the opus-100 slice (KDE/GNOME/Ubuntu contamination), refreshes
+        # OpenSubtitles to OPUS v2024, and adds individual QED + GlobalVoices
+        # pulls. See project_mt_opus_ui_contamination memory.
+        "hf://jensjepsen/esperanto-mt-parallel-v13",
         # Math-domain parallel v2 — downsampled to 100k+100k after v8 evidence
         # that model learns math notation extremely quickly (v6 already ~75 BLEU
         # on eval_math_wp without any math training data). More was diluting
@@ -74,9 +78,15 @@ def parse_args():
         # unchanged.
         "hf://jensjepsen/esperanto-mt-yago-parallel-v2::labels",
         "hf://jensjepsen/esperanto-mt-yago-parallel-v2::comments",
-        # OPUS bundle: QED (educational subtitles), GlobalVoices (news),
-        # KDE4/GNOME/Ubuntu (software localization). ~159k pairs across 5 registers.
-        "hf://jensjepsen/esperanto-mt-opus-parallel",
+        # v12 note: `hf://jensjepsen/esperanto-mt-opus-parallel` was here
+        # (159k pairs across 5 registers). DROPPED in v13 — 88.7k rows of
+        # that were opus:kde4 + opus:gnome + opus:ubuntu .po localization
+        # pairs which trained the model to collapse capitalized-fragment-
+        # no-terminal-punct inputs to memorized UI labels (`@ info: whatsthis`
+        # → `& Resize`). See project_mt_opus_ui_contamination memory. The
+        # two clean sub-corpora (opus:qed + opus:global_voices, ~21k rows)
+        # are now pulled individually into esperanto-mt-parallel via
+        # download_opus.py — see build_mt_dataset.py EXISTING_FILES.
         # Gemini Flash Lite-translated orca-math (20k source rows → 40k Q+A
         # parallel pairs). Provides real math prose EN↔EO with correct
         # math-domain vocabulary (meznombro, ebeno, kampo, ringo, grupo, etc.) —
@@ -115,9 +125,11 @@ def parse_args():
                     default=False,
                     help="Whether a HIGHER metric value is better. Default False "
                          "since metric_for_best_model defaults to loss.")
-    ap.add_argument("--direction", default="en2eo", choices=["en2eo", "eo2en", "bidir"],
+    ap.add_argument("--direction", default="bidir", choices=["en2eo", "eo2en", "bidir"],
                     help="Training direction. 'bidir' randomizes per-pair so both directions "
-                         "share encoder/decoder learning. Eval direction stays fixed via --val-direction.")
+                         "share encoder/decoder learning. Eval direction stays fixed via --val-direction. "
+                         "Default is 'bidir' — v5/v5b had it, v6..v11 accidentally dropped to en2eo-only. "
+                         "See [[feedback-mt-next-bidir]].")
     ap.add_argument("--val-direction", default="en2eo", choices=["en2eo", "eo2en"],
                     help="Direction used for all val sets (kept fixed for stable metric tracking).")
     ap.add_argument("--output-dir", type=str, default="/mnt/data/espllm/runs/mt/eneo_v1")

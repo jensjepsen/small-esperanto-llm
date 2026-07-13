@@ -36,6 +36,16 @@ def write_jsonl(path: Path, rows):
 
 
 def fetch_opus_100(out_dir: Path, min_len: int, max_len: int) -> None:
+    """Pull Helsinki-NLP/opus-100 en-eo (train/validation/test).
+
+    WARNING: opus-100 is an aggregated multilingual blob that bundles
+    KDE/GNOME/Ubuntu .po localization pairs without src labels. In v13
+    the train split is NO LONGER included in build_mt_dataset.py — using
+    it directly for training causes the model to memorize UI-label junk
+    (see project_mt_opus_ui_contamination memory + build_mt_dataset.py
+    module docstring). The validation split is still used as an eval
+    set by train.py (mt/data/parallel/opus100_validation.jsonl).
+    """
     from datasets import load_dataset
     ds = load_dataset("Helsinki-NLP/opus-100", "en-eo")
     for split in ("train", "validation", "test"):

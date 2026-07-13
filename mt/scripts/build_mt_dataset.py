@@ -3,8 +3,18 @@
 Aggregates three families of sources:
 
 1. Existing parallel mt/data/parallel/*_dedup.jsonl from the original
-   v5b recipe (ccmatrix, xlent, tatoeba, wikimatrix, opus100, bible,
-   opensubtitles, wikimedia, ted2020, opusbooks).
+   v5b recipe (ccmatrix, xlent, tatoeba, wikimatrix, bible,
+   opensubtitles, wikimedia, ted2020, opusbooks, qed, globalvoices).
+   NOTE: opus-100 (Helsinki-NLP/opus-100) was DROPPED as of v13 — it
+   is an aggregated multilingual blob that pre-bundles KDE/GNOME/Ubuntu
+   .po localization pairs without src labels, and cannot be filtered
+   cleanly at download time. Detected in v12 as a systematic failure
+   mode: capitalized-fragment-no-terminal-punct inputs collapsed to
+   memorized UI labels (`@ info: whatsthis` → `& Resize` etc.).
+   Replaced with individual OPUS pulls of QED + GlobalVoices via
+   download_opus.py (both clean; the other useful OPUS sub-corpora
+   — opensubtitles, ted2020, opusbooks, wikimedia — were already
+   pulled individually).
 
 2. FineTranslations — pulled from /mnt/data2/datasets/finetranslations/
    (large file, kept off / to avoid disk pressure).
@@ -42,12 +52,28 @@ EXISTING_FILES = [
     "xlent_dedup.jsonl",
     "tatoeba_train_dedup.jsonl",
     "wikimatrix_dedup.jsonl",
-    "opus100_train_dedup.jsonl",
+    # opus100_train_dedup.jsonl — dropped in v13 (KDE/GNOME/Ubuntu bleed;
+    # see module docstring). Do NOT re-add without a src-aware download path.
     "bible_uedin_dedup.jsonl",
     "opensubtitles_v2024_dedup.jsonl",
     "wikimedia_dedup.jsonl",
     "ted2020_dedup.jsonl",
     "opusbooks_train_dedup.jsonl",
+    # New in v13: individual OPUS pulls to replace the opus-100 slot with
+    # only the clean sub-corpora. Pulled via
+    #   uv run python mt/scripts/download_opus.py --corpus QED --version v2.0a \
+    #     --out mt/data/parallel/opus_qed_dedup.jsonl --src-label opus:qed
+    #   uv run python mt/scripts/download_opus.py --corpus GlobalVoices \
+    #     --version 2018q4 --out mt/data/parallel/opus_globalvoices_dedup.jsonl \
+    #     --src-label opus:global_voices
+    # Also refresh OpenSubtitles to the latest OPUS version (covers the
+    # ~77k dialogue rows that were unique to opus-100 and any new
+    # material scraped since v5b):
+    #   uv run python mt/scripts/download_opus.py --corpus OpenSubtitles \
+    #     --version v2024 --out mt/data/parallel/opensubtitles_v2024_dedup.jsonl \
+    #     --src-label opus:opensubtitles
+    "opus_qed_dedup.jsonl",
+    "opus_globalvoices_dedup.jsonl",
 ]
 
 
