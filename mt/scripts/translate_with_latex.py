@@ -56,6 +56,11 @@ from sp_tokenizer import SPMTokenizer
 # European conventions (1.234,56) rare in orca-math; extend if needed.
 _CURRENCY = re.compile(r"[$£€]\d{1,3}(?:,\d{3})*(?:\.\d+)?\b")
 
+# Standalone numeric literals: -5, 3.14, 1,234, 1,234.56, but NOT $25 (currency)
+# nor part of an identifier like x_1 or Z_24. Requires a non-digit boundary.
+# Not required to include leading +.
+_NUMBER = re.compile(r"(?<![$£€\w])-?\d[\d,]*(?:\.\d+)?(?!\w)")
+
 # Unicode math → ASCII normalization. Our SPM tokenizer OOVs these to `<unk>`
 # during encoding, destroying content like `9 × 4` or `36 cm²`. Normalize
 # to ASCII-safe equivalents that survive round-trip cleanly.
@@ -132,22 +137,25 @@ class LatexAwareTranslator:
         device: str = "cuda",
         max_input_tokens: int = 500,
         max_output_tokens: int = 256,
+        protect_numbers: bool = False,
     ):
         self.tok = SPMTokenizer(tokenizer_path)
         self.model = MarianMTModel.from_pretrained(checkpoint).to(device).eval()
         self.device = device
         self.max_input_tokens = max_input_tokens
         self.max_output_tokens = max_output_tokens
+        self.protect_numbers = protect_numbers
 
     # ── Protection ─────────────────────────────────────────────────────
 
-    @staticmethod
-    def _protect(text: str) -> tuple[str, list[tuple[str, str]]]:
+    def _protect(self, text: str) -> tuple[str, list[tuple[str, str]]]:
         """Replace currency + LaTeX math with ``<extra_N>`` sentinels.
+        Optionally also protect standalone numeric literals when
+        ``self.protect_numbers`` is True.
 
         Returns ``(protected_text, mapping)`` where ``mapping[i]`` is
         ``(kind, original)`` for sentinel ``<extra_i>``. ``kind`` is
-        ``'curr'`` for currency, ``'math'`` for LaTeX math nodes.
+        ``'curr'``, ``'math'``, or ``'num'``.
         """
         mapping: list[tuple[str, str]] = []
 
@@ -163,18 +171,24 @@ class LatexAwareTranslator:
         try:
             nodes, _, _ = LatexWalker(text).get_latex_nodes()
         except Exception:
-            return text, mapping
+            nodes = []
 
         # Walk in reverse so we don't invalidate earlier positions
-        math_nodes = [
-            n for n in nodes
-            if isinstance(n, LatexMathNode)
-        ]
+        math_nodes = [n for n in nodes if isinstance(n, LatexMathNode)]
         for n in reversed(math_nodes):
             orig = text[n.pos:n.pos + n.len]
             idx = len(mapping)
             mapping.append(("math", orig))
             text = text[:n.pos] + f" <extra_{idx}> " + text[n.pos + n.len:]
+
+        # Stage 3: standalone numbers (opt-in) — enables aggressive dedup on
+        # templated math prose ("The answer is: N", "3x = 15", etc.)
+        if self.protect_numbers:
+            def _num(m: re.Match) -> str:
+                idx = len(mapping)
+                mapping.append(("num", m.group(0)))
+                return f"<extra_{idx}>"
+            text = _NUMBER.sub(_num, text)
 
         return text, mapping
 
@@ -188,6 +202,31 @@ class LatexAwareTranslator:
         for i in range(len(mapping) - 1, -1, -1):
             _, orig = mapping[i]
             text = text.replace(f"<extra_{i}>", orig)
+        return text
+
+    # ── Input normalization ────────────────────────────────────────────
+
+    @staticmethod
+    def _ensure_terminator(text: str) -> tuple[str, bool]:
+        """Append '.' if the text lacks terminal punctuation. v11 was trained
+        on sentence-terminated inputs; bare noun phrases like 'Grumman' cause
+        the decoder to wander past the source ('grummancity in germany').
+        Returns (normalized, added) so callers can strip the trailing period
+        from the output when we synthesized it."""
+        stripped = text.rstrip()
+        if not stripped:
+            return text, False
+        if stripped[-1] in ".!?…":
+            return text, False
+        return text + ".", True
+
+    @staticmethod
+    def _strip_appended_terminator(text: str) -> str:
+        """Remove one trailing '.' if the input was auto-terminated. Preserves
+        other punctuation, and leaves multi-period cases like '...' alone."""
+        s = text.rstrip()
+        if s.endswith(".") and not s.endswith(".."):
+            return s[:-1].rstrip()
         return text
 
     # ── Model call ─────────────────────────────────────────────────────
@@ -213,9 +252,13 @@ class LatexAwareTranslator:
         """Translate one EN string. Normalizes Unicode math to ASCII,
         then protects LaTeX + currency with sentinels."""
         src = normalize_unicode_math(src)
+        src, added_term = self._ensure_terminator(src)
         protected, mapping = self._protect(src)
         pred = self._generate(protected)
-        return self._restore(pred, mapping)
+        out = self._restore(pred, mapping)
+        if added_term:
+            out = self._strip_appended_terminator(out)
+        return out
 
     def translate_batch(self, srcs: list[str]) -> list[str]:
         """Translate a batch by protecting each, running one batched
@@ -226,6 +269,9 @@ class LatexAwareTranslator:
         input order.
         """
         srcs = [normalize_unicode_math(s) for s in srcs]
+        srcs_and_flags = [self._ensure_terminator(s) for s in srcs]
+        srcs = [s for s, _ in srcs_and_flags]
+        added_flags = [f for _, f in srcs_and_flags]
         prot_and_map = [self._protect(s) for s in srcs]
         prots = [p for p, _ in prot_and_map]
         ids_list = [self.tok.encode(p, lang="eo")[: self.max_input_tokens]
@@ -250,9 +296,12 @@ class LatexAwareTranslator:
         decoded_sorted = [self.tok.decode(out[i]) for i in range(len(sorted_ids))]
         results = [""] * len(srcs)
         for sort_pos, orig_pos in enumerate(order):
-            results[orig_pos] = self._restore(
+            restored = self._restore(
                 decoded_sorted[sort_pos], prot_and_map[orig_pos][1]
             )
+            if added_flags[orig_pos]:
+                restored = self._strip_appended_terminator(restored)
+            results[orig_pos] = restored
         return results
 
 
@@ -321,9 +370,20 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--smoke", action="store_true",
                     help="Run built-in smoke test on 8 probes")
+    ap.add_argument("--protect-numbers", action="store_true",
+                    help="Also sentinel-protect standalone numeric literals. "
+                         "Enables aggressive dedup on templated math prose "
+                         "(e.g. 'The answer is: 3' vs '... 5' become identical "
+                         "after protection). Off by default because it slightly "
+                         "reduces the model's ability to recase/format numbers "
+                         "in EO conventions.")
     args = ap.parse_args()
 
-    tr = LatexAwareTranslator(args.checkpoint, tokenizer_path=args.tokenizer)
+    tr = LatexAwareTranslator(
+        args.checkpoint,
+        tokenizer_path=args.tokenizer,
+        protect_numbers=args.protect_numbers,
+    )
 
     if args.smoke:
         _smoke(tr)
