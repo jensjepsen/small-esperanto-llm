@@ -69,29 +69,39 @@ REGISTRY = {
 
 
 def batch_translate(model, tok, srcs, tgt_lang,
-                    max_input=500, max_output=256):
+                    max_input=500, max_output=256, sub_batch=64):
+    """Sort by length, split into fixed-size sub-batches for GPU efficiency.
+
+    A single giant model.generate on 1000+ sequences with max_length=256
+    KV-caches every seq at every step -> 5-10x slower than batched.
+    """
     if not srcs:
         return []
-    # empty strings passthrough (some rows have missing fields)
     nonempty = [(i, s) for i, s in enumerate(srcs) if s and s.strip()]
     outs = [""] * len(srcs)
     if not nonempty:
         return outs
     ids_list = [tok.encode(s, lang=tgt_lang)[:max_input] for _, s in nonempty]
+    # Sort by length across ALL sub-batches so each sub-batch is homogeneous.
     order = sorted(range(len(ids_list)), key=lambda i: len(ids_list[i]))
     sorted_ids = [ids_list[i] for i in order]
-    be = tok.pad_batch(sorted_ids)
-    with torch.no_grad():
-        out = model.generate(
-            input_ids=be.input_ids.cuda(),
-            attention_mask=be.attention_mask.cuda(),
-            max_length=max_output,
-            do_sample=False,
-            num_beams=1,
-        )
-    decoded = [tok.decode(out[i]) for i in range(len(sorted_ids))]
+
+    decoded_sorted: list[str] = []
+    for start in range(0, len(sorted_ids), sub_batch):
+        chunk = sorted_ids[start:start + sub_batch]
+        be = tok.pad_batch(chunk)
+        with torch.no_grad():
+            out = model.generate(
+                input_ids=be.input_ids.cuda(),
+                attention_mask=be.attention_mask.cuda(),
+                max_length=max_output,
+                do_sample=False,
+                num_beams=1,
+            )
+        decoded_sorted.extend(tok.decode(out[i]) for i in range(len(chunk)))
+
     for sp, op in enumerate(order):
-        outs[nonempty[op][0]] = decoded[sp]
+        outs[nonempty[op][0]] = decoded_sorted[sp]
     return outs
 
 
@@ -172,11 +182,13 @@ def process_dataset(cfg_name, cfg, split, args, model, tok, lt, lm):
             # EN -> EO
             eo_texts = batch_translate(model, tok, en_texts, "eo",
                                         max_input=args.max_input,
-                                        max_output=args.max_output)
+                                        max_output=args.max_output,
+                                        sub_batch=args.sub_batch)
             # EO -> EN back
             back_texts = batch_translate(model, tok, eo_texts, "en",
                                           max_input=args.max_input,
-                                          max_output=args.max_output)
+                                          max_output=args.max_output,
+                                          sub_batch=args.sub_batch)
 
             # LaBSE cos_sim
             e_en = embed(en_texts)
@@ -234,6 +246,8 @@ def main():
                     choices=list(REGISTRY.keys()))
     ap.add_argument("--batch-rows", type=int, default=64,
                     help="Rows per outer batch (each row has multiple fields)")
+    ap.add_argument("--sub-batch", type=int, default=128,
+                    help="Max sequences per model.generate call")
     ap.add_argument("--max-input", type=int, default=500)
     ap.add_argument("--max-output", type=int, default=256)
     args = ap.parse_args()
