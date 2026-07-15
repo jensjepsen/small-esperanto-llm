@@ -20,6 +20,7 @@ import os
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +28,10 @@ import sacrebleu
 import torch
 from datasets import load_dataset
 from transformers import AutoModel, AutoTokenizer, MarianMTModel
+
+# Reusable thread pool for tokenizer encoding. SPM's encode releases the
+# GIL (C++), so threading actually parallelizes.
+_ENCODE_POOL = ThreadPoolExecutor(max_workers=16)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "mt" / "scripts"))
 from sp_tokenizer import SPMTokenizer  # type: ignore  # noqa: E402
@@ -81,7 +86,10 @@ def batch_translate(model, tok, srcs, tgt_lang,
     outs = [""] * len(srcs)
     if not nonempty:
         return outs
-    ids_list = [tok.encode(s, lang=tgt_lang)[:max_input] for _, s in nonempty]
+    # Parallel tokenize across threads (SPM releases the GIL).
+    strs = [s for _, s in nonempty]
+    ids_list = list(_ENCODE_POOL.map(
+        lambda s: tok.encode(s, lang=tgt_lang)[:max_input], strs))
     # Sort by length across ALL sub-batches so each sub-batch is homogeneous.
     order = sorted(range(len(ids_list)), key=lambda i: len(ids_list[i]))
     sorted_ids = [ids_list[i] for i in order]
@@ -98,7 +106,9 @@ def batch_translate(model, tok, srcs, tgt_lang,
                 do_sample=False,
                 num_beams=1,
             )
-        decoded_sorted.extend(tok.decode(out[i]) for i in range(len(chunk)))
+        # Parallel decode (SPM releases GIL)
+        out_cpu = out.cpu()
+        decoded_sorted.extend(_ENCODE_POOL.map(tok.decode, [out_cpu[i] for i in range(len(chunk))]))
 
     for sp, op in enumerate(order):
         outs[nonempty[op][0]] = decoded_sorted[sp]
@@ -195,11 +205,11 @@ def process_dataset(cfg_name, cfg, split, args, model, tok, lt, lm):
             e_back = embed(back_texts)
             cos = (e_en * e_back).sum(1).tolist()
 
-            # chrF per translation
-            chrfs = [
-                sacrebleu.sentence_chrf(b, [e]).score if e else 0.0
-                for e, b in zip(en_texts, back_texts)
-            ]
+            # chrF per translation — parallel (sacrebleu is pure python but chunks are small)
+            def _chrf(pair):
+                e, b = pair
+                return sacrebleu.sentence_chrf(b, [e]).score if e else 0.0
+            chrfs = list(_ENCODE_POOL.map(_chrf, zip(en_texts, back_texts)))
 
             # Reassemble by row
             per_row = {r: {} for r, _, _ in flat}
