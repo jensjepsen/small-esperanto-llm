@@ -28,7 +28,7 @@ if [[ -z "${HF_TOKEN:-}" && -f "$HF_HOME/token" ]]; then
   export HF_TOKEN
 fi
 
-exec torchrun --nproc_per_node=4 --nnodes=1 \
+exec torchrun --nproc_per_node=4 --nnodes=1 --no-python \
   scripts/numa_worker.sh \
   --config h100_400m_4gpu_da \
   --tokenizer jensjepsen/danish-tokenizer \
