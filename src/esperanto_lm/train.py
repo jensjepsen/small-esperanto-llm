@@ -266,21 +266,18 @@ def main():
             # to the largest's size (default uniform weights would give
             # 3× overexposure to 2M-row supplement vs 93M-row main).
             if len(train_parts) > 1:
-                from huggingface_hub import HfApi
-                hf_api = HfApi()
+                import urllib.parse, urllib.request, json as _json
                 sizes = []
                 for repo in repos:
-                    info = hf_api.dataset_info(repo)
-                    ds_info = (getattr(info.card_data, "dataset_info", None)
-                               if info.card_data else None)
-                    if isinstance(ds_info, dict):
-                        ds_info = [ds_info]
-                    n_rows = None
-                    for cfg in (ds_info or []):
-                        for s in cfg.get("splits", []):
-                            if s.get("name") == "train":
-                                n_rows = s.get("num_examples")
-                                break
+                    url = ("https://datasets-server.huggingface.co/size?dataset="
+                           + urllib.parse.quote(repo, safe=""))
+                    with urllib.request.urlopen(url, timeout=30) as r:
+                        data = _json.loads(r.read())
+                    n_rows = next(
+                        (s["num_rows"] for s in data["size"]["splits"]
+                         if s["split"] == "train"),
+                        None,
+                    )
                     if not n_rows:
                         raise RuntimeError(f"No train row count for {repo}")
                     sizes.append(n_rows)
