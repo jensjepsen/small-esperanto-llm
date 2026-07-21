@@ -257,12 +257,14 @@ def main():
                 snapshot_download(repo_id=repo, repo_type="dataset",
                                   max_workers=n_workers)
 
-            # Bypass HF's builder + arrow-cachification entirely. The files
-            # are already parquet with the correct schema; feed them to
-            # load_dataset("parquet", data_files=...) which streams parquet
-            # directly. Much faster than the repo-aware builder that copies
-            # into HF's arrow cache with num_proc-coordination overhead
-            # (was stalling at ~5.7GB written after 5+ min).
+            # Bypass HF's `Generating train split` (Python-object per row,
+            # ~40k rows/s = 40 min for 93M rows). Use pyarrow to read all
+            # parquet shards natively into a single arrow Table, then wrap
+            # in datasets.Dataset. Zero Python-object materialization →
+            # ~seconds to load. Requires all shards to share schema.
+            import pyarrow as _pa
+            import pyarrow.parquet as _pq
+            from datasets import Dataset as _Dataset
             from huggingface_hub import HfApi, snapshot_download as _sd
             train_parts, test_parts = [], []
             hf_api = HfApi()
@@ -275,12 +277,14 @@ def main():
                 if not pq_files:
                     raise RuntimeError(f"{repo}: no parquet files found")
                 console.print(f"  [dim]{repo}: {len(pq_files)} parquet shards[/]")
-                # Simple heuristic: files matching train/test.
                 train_files = [f for f in pq_files if "test" not in Path(f).name.lower()]
                 test_files = [f for f in pq_files if "test" in Path(f).name.lower()]
-                train_parts.append(_ld("parquet", data_files=train_files, split="train"))
+                # pyarrow's parquet dataset scanner: parallel read of all shards
+                _tbl = _pq.ParquetDataset(train_files).read()
+                train_parts.append(_Dataset(_tbl))
                 if test_files:
-                    test_parts.append(_ld("parquet", data_files=test_files, split="train"))
+                    _tbl_t = _pq.ParquetDataset(test_files).read()
+                    test_parts.append(_Dataset(_tbl_t))
                 else:
                     console.print(f"  [dim]{repo}: no test split — skipping[/]")
             train_tok = (concatenate_datasets(train_parts)
