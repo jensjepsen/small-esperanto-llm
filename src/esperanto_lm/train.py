@@ -237,69 +237,58 @@ def main():
     accel_state = PartialState()
     with accel_state.main_process_first():
         if args.pretokenized_dataset:
+            # Standard HF pattern for large pretokenized corpora: streaming.
+            # Trainer only iterates the dataset — never needs random access —
+            # so streaming IterableDatasets are perfect. Zero in-memory
+            # materialization, zero arrow cache build, zero setup time.
+            # Chunk map runs lazily as batches are pulled.
             from datasets import load_dataset as _ld
-            repos = args.pretokenized_dataset
-            console.print(f"[bold green]Loading pre-tokenized:[/] "
-                          f"{len(repos)} repo(s): {repos}")
-
-            # Prefetch via snapshot_download with many parallel workers.
-            # Default load_dataset() serializes file downloads → 5-30 min
-            # for a 100GB dataset. snapshot_download(max_workers=N) uses
-            # HfFileSystem in parallel + hf-transfer chunking within each
-            # file → 5-10× faster on multi-file datasets.
-            # Cap at 32 workers to stay under HF's per-user rate limit.
+            from datasets import interleave_datasets
             import os as _os
             _os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
-            n_workers = min(32, (_os.cpu_count() or 8))
-            from huggingface_hub import snapshot_download
-            for repo in repos:
-                console.print(f"  [dim]prefetch {repo} (max_workers={n_workers})[/]")
-                snapshot_download(repo_id=repo, repo_type="dataset",
-                                  max_workers=n_workers)
 
-            # Bypass HF's `Generating train split` (Python-object per row,
-            # ~40k rows/s = 40 min for 93M rows). Use pyarrow to read all
-            # parquet shards natively into a single arrow Table, then wrap
-            # in datasets.Dataset. Zero Python-object materialization →
-            # ~seconds to load. Requires all shards to share schema.
-            import pyarrow as _pa
-            import pyarrow.parquet as _pq
-            from datasets import Dataset as _Dataset
-            from huggingface_hub import HfApi, snapshot_download as _sd
+            repos = args.pretokenized_dataset
+            console.print(f"[bold green]Loading pre-tokenized (streaming):[/] "
+                          f"{len(repos)} repo(s): {repos}")
+
             train_parts, test_parts = [], []
-            hf_api = HfApi()
             for repo in repos:
-                info = hf_api.dataset_info(repo, files_metadata=True)
-                snap = Path(_sd(repo_id=repo, repo_type="dataset",
-                                max_workers=n_workers))
-                pq_files = sorted(str(snap / f.rfilename) for f in info.siblings
-                                  if f.rfilename.endswith(".parquet"))
-                if not pq_files:
-                    raise RuntimeError(f"{repo}: no parquet files found")
-                console.print(f"  [dim]{repo}: {len(pq_files)} parquet shards[/]")
-                train_files = [f for f in pq_files if "test" not in Path(f).name.lower()]
-                test_files = [f for f in pq_files if "test" in Path(f).name.lower()]
-                # pyarrow's parquet dataset scanner: parallel read of all shards
-                _tbl = _pq.ParquetDataset(train_files).read()
-                train_parts.append(_Dataset(_tbl))
-                if test_files:
-                    _tbl_t = _pq.ParquetDataset(test_files).read()
-                    test_parts.append(_Dataset(_tbl_t))
-                else:
+                train_parts.append(_ld(repo, split="train", streaming=True))
+                try:
+                    test_parts.append(_ld(repo, split="test", streaming=True))
+                except Exception:
                     console.print(f"  [dim]{repo}: no test split — skipping[/]")
-            train_tok = (concatenate_datasets(train_parts)
-                         if len(train_parts) > 1 else train_parts[0])
-            if test_parts:
-                test_tok = (concatenate_datasets(test_parts)
-                            if len(test_parts) > 1 else test_parts[0])
+
+            # interleave_datasets round-robins across streams; concatenate
+            # would exhaust one repo before touching next → bad shuffling.
+            if len(train_parts) > 1:
+                train_tok = interleave_datasets(train_parts,
+                                                stopping_strategy="all_exhausted")
             else:
-                # Slice a tiny eval split out of train if no test split exists
-                # in any repo. Keeps eval loop from breaking.
-                test_tok = train_tok.select(range(min(1000, len(train_tok))))
-            console.print(f"[bold]Pretok train rows:[/] {len(train_tok):,}  "
-                          f"test: {len(test_tok):,}")
-            train_dataset = chunk_dataset(train_tok, max_length=max_length)
-            eval_dataset = chunk_dataset(test_tok, max_length=max_length)
+                train_tok = train_parts[0]
+
+            if test_parts:
+                eval_source = (interleave_datasets(test_parts, stopping_strategy="all_exhausted")
+                               if len(test_parts) > 1 else test_parts[0])
+            else:
+                # No test split anywhere → take first N rows of train stream.
+                eval_source = train_tok.take(1000)
+                # Advance train past the same rows so we don't train on eval.
+                train_tok = train_tok.skip(1000)
+
+            # chunk_dataset uses .map(num_proc=...) which is incompatible
+            # with streaming. For streaming, apply a lightweight per-batch
+            # chunker that only uses batched=True (no num_proc).
+            def _chunk_stream(examples):
+                from itertools import chain
+                concat = {k: list(chain.from_iterable(examples[k])) for k in examples}
+                total = (len(concat["input_ids"]) // max_length) * max_length
+                return {k: [v[i:i + max_length] for i in range(0, total, max_length)]
+                        for k, v in concat.items()}
+
+            train_dataset = train_tok.map(_chunk_stream, batched=True, batch_size=1000)
+            eval_dataset = eval_source.map(_chunk_stream, batched=True, batch_size=1000)
+            console.print("[bold]Streaming pretokenized loaded (lazy).[/]")
         else:
             console.print("[bold green]Loading and tokenizing dataset...")
             dataset = load_combined_dataset(
