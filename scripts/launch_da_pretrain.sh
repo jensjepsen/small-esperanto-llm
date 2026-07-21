@@ -14,6 +14,12 @@ fi
 
 : "${WANDB_PROJECT:=danish-lm-pretrain}"
 : "${WANDB_NAME:=v1_400m_$(date +%Y%m%d_%H%M)}"
+# Trainer's report_to check in config.py needs WANDB_API_KEY set explicitly
+# (.netrc alone is not enough). Pull from netrc if not already exported.
+if [[ -z "${WANDB_API_KEY:-}" && -f "$HOME/.netrc" ]]; then
+  WANDB_API_KEY="$(awk '/machine api\.wandb\.ai/{n=1;next} n&&/password/{print $2;exit}' "$HOME/.netrc")"
+  export WANDB_API_KEY
+fi
 export WANDB_PROJECT WANDB_NAME
 
 # HF cache on the fast overlay (workspace has a 30GB quota — don't use)
