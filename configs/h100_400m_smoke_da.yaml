@@ -43,7 +43,7 @@ training:
   eval_strategy: "no"
   save_strategy: "no"
   logging_steps: 1
-  dataloader_num_workers: 4
+  dataloader_num_workers: 2
   dataloader_pin_memory: true
   group_by_length: false
   optim: adamw_8bit
