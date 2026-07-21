@@ -26,7 +26,7 @@ training:
   # Wall clock estimate: ~15-30 min (dominated by download ~110GB parquet
   # + chunking, not training). Training itself = 10 steps in ~1-2 min.
   max_steps: 1000
-  per_device_train_batch_size: 64
+  per_device_train_batch_size: 128
   per_device_eval_batch_size: 32
   gradient_accumulation_steps: 1
   warmup_steps: 2
