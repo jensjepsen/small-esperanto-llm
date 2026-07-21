@@ -27,7 +27,8 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from esperanto_lm.eo_numbers import wordify_text  # noqa: E402
+# wordify_text is language-specific; picked in main() based on --lang.
+wordify_text = None  # type: ignore
 
 
 def _safe(v: int, max_abs: int = 100_000) -> bool:
@@ -146,7 +147,9 @@ def gen_one(rng: random.Random) -> dict | None:
     c = _build_chain(rng)
     if c is None: return None
     text = _render(c["start"], c["ops"])
-    return {"text": text, "_n_ops": len(c["ops"])}
+    # Final value after all ops is what the chain reduces to.
+    final = c["ops"][-1][2] if c["ops"] else c["start"]
+    return {"text": text, "answer": str(final), "_n_ops": len(c["ops"])}
 
 
 def main():
@@ -156,9 +159,17 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--word-frac", type=float, default=0.15,
                     help="Per-number probability of replacing a digit "
-                         "with its Esperanto word form (e.g. 23 → "
-                         "'dudek tri'). 0 = pure digits.")
+                         "with its language word form. 0 = pure digits.")
+    ap.add_argument("--lang", choices=["eo", "da"], default="eo",
+                    help="Language for wordify_text number rendering.")
     args = ap.parse_args()
+
+    global wordify_text
+    if args.lang == "eo":
+        from esperanto_lm.eo_numbers import wordify_text as _wt
+    else:
+        from esperanto_lm.da_numbers import wordify_text as _wt
+    wordify_text = _wt
 
     rng = random.Random(args.seed)
     seen = set()
@@ -172,6 +183,9 @@ def main():
                 continue
             if args.word_frac > 0:
                 r["text"] = wordify_text(r["text"], rng, p_word=args.word_frac)
+            # Append canonical `#### N` answer marker AFTER wordify so the
+            # marker stays as digits even with word_frac > 0.
+            r["text"] = r["text"] + "\n#### " + r["answer"]
             text = r["text"]
             if text in seen:
                 dups += 1

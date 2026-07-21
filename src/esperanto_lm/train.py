@@ -156,6 +156,17 @@ def main():
              "(jensjepsen/esperanto-wiki-gaps; default: on)",
     )
     parser.add_argument(
+        "--use-wikisource",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include native EO Wikisource / Vikifontaro literature "
+             "(jensjepsen/esperanto-wikisource). Default: off — HF dataset "
+             "is not yet published because MediaWiki extracts API returns "
+             "empty for most Wikisource pages (they transclude PDF text via "
+             "<pages/> templates). Needs bulk-XML-dump or parse-API+HTML-strip "
+             "extraction. Set default=True once dataset is published.",
+    )
+    parser.add_argument(
         "--use-algebra",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -176,11 +187,15 @@ def main():
     parser.add_argument(
         "--pretokenized-dataset",
         type=str,
+        nargs="+",
         default=None,
-        help="HF repo of a pre-tokenized pretraining dataset to use INSTEAD of "
-             "loading the 8 sources and running tokenize. Use with the output "
-             "of scripts/push_pretrain_tokenized.py. Chunking still runs locally "
-             "(cheap). Skips the ~50-min morpheme tokenization phase.",
+        help="One or more HF repos of pre-tokenized pretraining datasets to "
+             "use INSTEAD of loading the raw sources and running tokenize. "
+             "All datasets must share the same schema (input_ids + "
+             "attention_mask). Multiple repos are concatenated at load time — "
+             "useful for combining main + supplement + math shards. Chunking "
+             "still runs locally (cheap). Skips the ~50-min morpheme "
+             "tokenization phase.",
     )
     parser.add_argument(
         "--push-to-hub",
@@ -223,10 +238,27 @@ def main():
     with accel_state.main_process_first():
         if args.pretokenized_dataset:
             from datasets import load_dataset as _ld
-            console.print(f"[bold green]Loading pre-tokenized:[/] {args.pretokenized_dataset}")
-            train_tok = _ld(args.pretokenized_dataset, split="train")
-            test_tok = _ld(args.pretokenized_dataset, split="test")
-            console.print(f"[bold]Pretok train rows:[/] {len(train_tok):,}  test: {len(test_tok):,}")
+            repos = args.pretokenized_dataset
+            console.print(f"[bold green]Loading pre-tokenized:[/] "
+                          f"{len(repos)} repo(s): {repos}")
+            train_parts, test_parts = [], []
+            for repo in repos:
+                train_parts.append(_ld(repo, split="train"))
+                try:
+                    test_parts.append(_ld(repo, split="test"))
+                except Exception:
+                    console.print(f"  [dim]{repo}: no test split — skipping[/]")
+            train_tok = (concatenate_datasets(train_parts)
+                         if len(train_parts) > 1 else train_parts[0])
+            if test_parts:
+                test_tok = (concatenate_datasets(test_parts)
+                            if len(test_parts) > 1 else test_parts[0])
+            else:
+                # Slice a tiny eval split out of train if no test split exists
+                # in any repo. Keeps eval loop from breaking.
+                test_tok = train_tok.select(range(min(1000, len(train_tok))))
+            console.print(f"[bold]Pretok train rows:[/] {len(train_tok):,}  "
+                          f"test: {len(test_tok):,}")
             train_dataset = chunk_dataset(train_tok, max_length=max_length)
             eval_dataset = chunk_dataset(test_tok, max_length=max_length)
         else:
@@ -238,6 +270,7 @@ def main():
                 use_tekstaro=args.use_tekstaro, use_liberafolio=args.use_liberafolio,
                 use_fineweb=args.use_fineweb,
                 use_wiki_gaps=args.use_wiki_gaps,
+                use_wikisource=args.use_wikisource,
                 use_algebra=args.use_algebra,
                 min_article_length=args.min_article_length,
             )

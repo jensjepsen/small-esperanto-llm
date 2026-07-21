@@ -29,7 +29,9 @@ from pathlib import Path as _P
 # Script runs under PyPy with --no-project, so the espllm package isn't
 # installed in the env. Add src/ to sys.path so we can import its modules.
 sys.path.insert(0, str(_P(__file__).resolve().parents[1] / "src"))
-from esperanto_lm.eo_numbers import wordify_text  # noqa: E402
+# wordify_text is language-specific; picked in main() based on --lang.
+# Default: EO. Set by main() so gen_one/_worker see the right function.
+wordify_text = None  # type: ignore
 from pathlib import Path
 
 import sympy as sp
@@ -309,7 +311,10 @@ def gen_one(rng: random.Random, preset: dict | str = "hard",
     # and check each parsed Eq holds under the answer.
     if verify_text and not _verify_rendered_text(text, var, answer):
         return None
-    return {"text": text, "_kind": "solve", "_style": "didactic", "_n_ops": len(ops)}
+    # `answer` is appended as `#### N` in _worker AFTER wordify, so the
+    # marker line always stays as digits (matches gsm8k / word-problems).
+    return {"text": text, "answer": render(chain[-1].rhs),
+            "_kind": "solve", "_style": "didactic", "_n_ops": len(ops)}
 
 
 # Sympy text parser for round-trip verification.
@@ -649,6 +654,12 @@ def _worker(args_tuple) -> tuple[list[str], int, Counter]:
         text = r["text"]
         if word_frac > 0:
             text = wordify_text(text, rng, p_word=word_frac)
+        # Append canonical `#### N` answer marker AFTER wordify, so the
+        # marker line always stays as digits even when word_frac > 0.
+        # Only solve chains have a single numeric answer; expand/factor/
+        # collect produce identities and skip the marker.
+        if r.get("answer") is not None:
+            text = text + "\n#### " + r["answer"]
         texts.append(text)
     return texts, n_rej, kinds
 
@@ -667,26 +678,40 @@ def main():
     ap.add_argument("--workers", type=int, default=0, help="0 = auto (cpu-2, capped 64); 1 = sequential")
     ap.add_argument("--word-frac", type=float, default=0.15,
                     help="Per-number probability of replacing a digit "
-                         "(integer or X/Y fraction) with its Esperanto "
+                         "(integer or X/Y fraction) with its language "
                          "word form. Default 0.15 produces intra-chain "
                          "variation without overwhelming the digit form; "
                          "0 = pure digits.")
+    ap.add_argument("--lang", choices=["eo", "da"], default="eo",
+                    help="Language for wordify_text number rendering.")
     args = ap.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
+
+    global wordify_text
+    if args.lang == "eo":
+        from esperanto_lm.eo_numbers import wordify_text as _wt
+    else:
+        from esperanto_lm.da_numbers import wordify_text as _wt
+    wordify_text = _wt
 
     if args.workers == 0:
         n_workers = min(64, max(1, (os.cpu_count() or 4) - 2))
     else:
         n_workers = max(1, args.workers)
 
-    chunk = (args.n + n_workers - 1) // n_workers
+    # Cap per-task chunk at 100k rows so parent gets frequent progress
+    # updates + streaming file writes. For n >> 4*100k, this creates many
+    # more tasks than workers; pool.imap load-balances them naturally.
+    max_chunk = 100_000
+    chunk = min(max_chunk, (args.n + n_workers - 1) // n_workers)
     tasks = []
     remaining = args.n
-    for w in range(n_workers):
+    w = 0
+    while remaining > 0:
         take = min(chunk, remaining)
-        if take <= 0: break
         tasks.append((w, take, args.seed * 10_000 + w, args.solve_frac, args.difficulty, args.word_frac))
         remaining -= take
+        w += 1
     print(f"workers: {n_workers}  chunk: {chunk:,}  tasks: {len(tasks)}  target: {args.n:,}  difficulty: {args.difficulty}  word_frac: {args.word_frac}", flush=True)
 
     kinds = Counter()

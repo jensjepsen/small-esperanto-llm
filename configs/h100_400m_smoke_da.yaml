@@ -1,0 +1,52 @@
+model:
+  vocab_size: 16000
+  # Danish 400M smoke — identical arch to h100_400m_4gpu_da for pipeline
+  # verification. Cap at 10 training steps; skip eval/save.
+  hidden_size: 1536
+  num_hidden_layers: 16
+  num_attention_heads: 24
+  num_key_value_heads: 4
+  intermediate_size: 4096
+  max_position_embeddings: 512
+  rms_norm_eps: 1.0e-5
+  tie_word_embeddings: true
+
+training:
+  # Single H100 smoke — validates torchrun + data pipeline + config end-to-end.
+  # Launch:
+  #   torchrun --nproc_per_node=1 -m esperanto_lm.train \
+  #     --config h100_400m_smoke_da \
+  #     --tokenizer jensjepsen/danish-tokenizer \
+  #     --pretokenized-dataset \
+  #       jensjepsen/danish-pretokenized-16k \
+  #       jensjepsen/danish-pretokenized-16k-supp \
+  #       jensjepsen/danish-math-pretokenized-16k \
+  #     --output-dir /workspace/runs/smoke_da
+  #
+  # Wall clock estimate: ~15-30 min (dominated by download ~110GB parquet
+  # + chunking, not training). Training itself = 10 steps in ~1-2 min.
+  max_steps: 10
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 1
+  warmup_steps: 2
+  lr_scheduler_type: cosine_with_min_lr
+  lr_scheduler_kwargs:
+    min_lr_rate: 0.1
+  learning_rate: 2.0e-4
+  weight_decay: 0.1
+  fp16: true
+  bf16: false
+  max_grad_norm: 1.0
+  # Skip eval — smoke doesn't need it. But eval_strategy=no means Trainer
+  # won't even try. Setting eval_steps > max_steps also works.
+  eval_strategy: "no"
+  save_strategy: "no"
+  logging_steps: 1
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+  group_by_length: false
+  optim: adamw_8bit
+  torch_compile: true
+  torch_compile_mode: default
+  gradient_checkpointing: false
