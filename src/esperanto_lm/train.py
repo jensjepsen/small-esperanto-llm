@@ -18,9 +18,16 @@ if os.getenv("ESPLLM_NO_LIGER") != "1":
         # We use `--from-pretrained` (weights only, fresh optimizer) so
         # this is safe; flip back to False if you need to resume an
         # optimizer-bearing ckpt from a non-Liger run.
+        # ESPLLM_LIGER_FLCE=0 turns FLCE off (falls back to HF's standard
+        # linear + CE, ~10-15% slower on CE path). Needed when
+        # per_device_batch × seq_len > MAX_FUSED_SIZE (32,768) — Liger's
+        # chunk kernel has int32 indexing that overflows and crashes with
+        # "illegal memory access" past that ceiling. Keep the other Liger
+        # kernels (RoPE/RMSNorm/SwiGLU) — they have no such limit.
+        _flce = os.getenv("ESPLLM_LIGER_FLCE", "1") != "0"
         apply_liger_kernel_to_llama(
             rope=True, rms_norm=True, swiglu=True,
-            fused_linear_cross_entropy=True, cross_entropy=False,
+            fused_linear_cross_entropy=_flce, cross_entropy=not _flce,
         )
     except ImportError:
         pass  # liger optional — train without if not installed
