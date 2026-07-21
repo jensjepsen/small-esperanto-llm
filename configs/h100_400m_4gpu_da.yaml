@@ -22,14 +22,19 @@ training:
   #     --config h100_400m_4gpu_da \
   #     --output-dir /workspace/runs/v1_danish_400m \
   #     --tokenizer jensjepsen/danish-tokenizer \
-  #     --pretokenized-dataset jensjepsen/danish-pretokenized-16k
+  #     --pretokenized-dataset \
+  #       jensjepsen/danish-pretokenized-16k \
+  #       jensjepsen/danish-pretokenized-16k-supp \
+  #       jensjepsen/danish-math-pretokenized-16k \
+  #     --no-use-benchmarks
   #
-  # Add --pretokenized-dataset-supp jensjepsen/danish-pretokenized-16k-supp
-  # to concat the recovered shards 3+95 (needs the concat call in train.py).
-  #
-  # Expected wall (30B tokens/epoch × 2 epochs): ~22-26h on 4×H100.
-  # Danish corpus is ~15-20× EO's, so 2 epochs already >> Chinchilla-optimal.
-  num_train_epochs: 2
+  # Streaming IterableDataset requires max_steps (num_train_epochs won't
+  # work — no __len__). 364,000 steps × (64 seq × 4 GPU × 512 tok) = 47.7B
+  # tokens = 1 pass through the largest source (main), with proportional
+  # interleave weights giving ~91% coverage of every source.
+  # Measured 3.68 it/s on 1×H100 → ~3.4 it/s on 4×H100 DDP → ~30h wall.
+  # Corpus ~52.4B unique tokens → ~6× Chinchilla-optimal for 400M.
+  max_steps: 364000
   per_device_train_batch_size: 64
   per_device_eval_batch_size: 32
   gradient_accumulation_steps: 1

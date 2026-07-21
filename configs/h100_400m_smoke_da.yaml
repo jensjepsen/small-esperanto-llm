@@ -48,5 +48,5 @@ training:
   group_by_length: false
   optim: adamw_8bit
   torch_compile: true
-  torch_compile_mode: default
+  torch_compile_mode: reduce-overhead
   gradient_checkpointing: false

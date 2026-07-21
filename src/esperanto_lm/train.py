@@ -261,8 +261,37 @@ def main():
 
             # interleave_datasets round-robins across streams; concatenate
             # would exhaust one repo before touching next → bad shuffling.
+            # Weights are size-proportional so `all_exhausted` matches
+            # "every source seen once" rather than upsampling small ones
+            # to the largest's size (default uniform weights would give
+            # 3× overexposure to 2M-row supplement vs 93M-row main).
             if len(train_parts) > 1:
+                from huggingface_hub import HfApi
+                hf_api = HfApi()
+                sizes = []
+                for repo in repos:
+                    info = hf_api.dataset_info(repo)
+                    ds_info = (getattr(info.card_data, "dataset_info", None)
+                               if info.card_data else None)
+                    if isinstance(ds_info, dict):
+                        ds_info = [ds_info]
+                    n_rows = None
+                    for cfg in (ds_info or []):
+                        for s in cfg.get("splits", []):
+                            if s.get("name") == "train":
+                                n_rows = s.get("num_examples")
+                                break
+                    if not n_rows:
+                        raise RuntimeError(f"No train row count for {repo}")
+                    sizes.append(n_rows)
+                total = sum(sizes)
+                probabilities = [s / total for s in sizes]
+                console.print(
+                    "[bold]Interleave weights (size-proportional):[/] "
+                    + ", ".join(f"{r.split('/')[-1]}={p:.3f}" for r, p in zip(repos, probabilities))
+                )
                 train_tok = interleave_datasets(train_parts,
+                                                probabilities=probabilities,
                                                 stopping_strategy="all_exhausted")
             else:
                 train_tok = train_parts[0]
