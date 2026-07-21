@@ -54,7 +54,8 @@ HF_LIBERAFOLIO = "jensjepsen/liberafolio"
 HF_FINEWEB = "HuggingFaceFW/fineweb-2"
 HF_FINEWEB_CONFIG = "epo_Latn"
 HF_WIKI_GAPS = "jensjepsen/esperanto-wiki-gaps"
-HF_ALGEBRA_PRETRAIN = "jensjepsen/esperanto-algebra-pretrain"
+HF_WIKISOURCE = "jensjepsen/esperanto-wikisource"
+HF_ALGEBRA_PRETRAIN = "jensjepsen/esperanto-algebra-pretrain-v4-easy"
 VOCAB_SIZE = 8_000
 MAX_LENGTH = 512
 SPECIAL_TOKENS = ["<s>", "</s>", "<unk>", "<pad>"]
@@ -299,6 +300,19 @@ def load_algebra_pretrain_dataset() -> Dataset | None:
         return None
 
 
+def load_wikisource_dataset() -> Dataset:
+    """Load native EO Wikisource (Vikifontaro) mainspace articles.
+
+    Public-domain EO literature, translations, and essays — high-signal
+    native EO writing. See scripts/fetch_eo_wikisource.py.
+
+    Raises on failure — if `--use-wikisource` is passed, we should train
+    on this source or fail loudly. No silent drop.
+    """
+    ds = load_dataset(HF_WIKISOURCE, split="train")
+    return ds.select_columns(["text"])
+
+
 def load_benchmark_qa_dataset() -> Dataset | None:
     """Load benchmark train splits as raw Q/A text for pretraining.
 
@@ -376,6 +390,7 @@ def load_combined_dataset(
     use_fineweb: bool = False,
     use_sentences: bool = False,
     use_wiki_gaps: bool = False,
+    use_wikisource: bool = False,
     use_algebra: bool = False,
     min_article_length: int = 0,
 ) -> DatasetDict:
@@ -471,6 +486,12 @@ def load_combined_dataset(
             extra_train.append(wg_splits["train"])
             extra_test.append(wg_splits["test"])
 
+    if use_wikisource:
+        wikisource = load_wikisource_dataset()
+        ws_splits = wikisource.train_test_split(test_size=0.05, seed=42)
+        extra_train.append(ws_splits["train"])
+        extra_test.append(ws_splits["test"])
+
     if use_algebra:
         algebra = load_algebra_pretrain_dataset()
         if algebra is not None:
@@ -544,8 +565,40 @@ def _wrap_tokenizer(
 
 
 def load_tokenizer(tokenizer_dir: Path = TOKENIZER_DIR) -> PreTrainedTokenizerFast:
-    """Load a previously saved tokenizer."""
-    return PreTrainedTokenizerFast.from_pretrained(str(tokenizer_dir))
+    """Load a previously saved tokenizer.
+
+    Accepts:
+      - a local dir containing tokenizer_config.json + tokenizer.json
+        (from a prior save_pretrained call)
+      - an HF Hub repo id (e.g. 'jensjepsen/danish-tokenizer')
+      - a local dir containing only tokenizer.json (raw), in which
+        case we construct PreTrainedTokenizerFast with standard special
+        tokens on the fly.
+    """
+    try:
+        tok = PreTrainedTokenizerFast.from_pretrained(str(tokenizer_dir))
+    except Exception:
+        # Raw tokenizer.json — wrap with standard <pad>/<unk>/<s>/</s>
+        tok = PreTrainedTokenizerFast(
+            tokenizer_file=str(Path(tokenizer_dir) / "tokenizer.json"),
+            bos_token="<s>", eos_token="</s>",
+            unk_token="<unk>", pad_token="<pad>",
+        )
+    # Defensive: HF repos that only ship tokenizer.json (no config json)
+    # will load without pad_token set. Trainer's collator then crashes.
+    if tok.pad_token is None:
+        # Prefer explicit <pad> if present in vocab, else fall back to eos.
+        if "<pad>" in tok.get_vocab():
+            tok.pad_token = "<pad>"
+        else:
+            tok.pad_token = tok.eos_token
+    if tok.bos_token is None and "<s>" in tok.get_vocab():
+        tok.bos_token = "<s>"
+    if tok.eos_token is None and "</s>" in tok.get_vocab():
+        tok.eos_token = "</s>"
+    if tok.unk_token is None and "<unk>" in tok.get_vocab():
+        tok.unk_token = "<unk>"
+    return tok
 
 
 def filter_short_articles(dataset, min_length: int):
