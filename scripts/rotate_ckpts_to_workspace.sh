@@ -2,10 +2,15 @@
 # Keep the latest N training checkpoints copied to /workspace so they're
 # reachable via the pod's S3-compatible endpoint from outside.
 #
+# Preserves the FULL resume-capable checkpoint (weights + optimizer +
+# scheduler + per-rank RNG + trainer_state + training_args). At ~2.6 GB
+# per ckpt × KEEP=4 = ~10 GB, well under the 30 GB /workspace quota.
+# Skipping to inference-only would save ~1 GB/ckpt but forfeits smooth
+# resume-from-checkpoint if the pod dies.
+#
 # Runs as a background daemon on the pod. Skips already-synced files
-# (cp -n) so it's cheap after the first pass. Removes any workspace
-# checkpoints that fall out of the "latest N" window to stay under the
-# 30 GB /workspace quota.
+# so it's cheap after the first pass. Removes any workspace checkpoints
+# that fall out of the "latest N" window.
 #
 # Usage on pod: nohup bash scripts/rotate_ckpts_to_workspace.sh </dev/null >/tmp/ckpt_rotate.log 2>&1 &
 set -uo pipefail
@@ -14,8 +19,10 @@ SRC="${SRC:-/tmp/runs/v1_danish_400m}"
 WORK="${WORK:-/workspace}"
 KEEP="${KEEP:-4}"
 INTERVAL="${INTERVAL:-180}"   # seconds between passes
+# Fixed-name files (rng_state_*.pth handled separately as it's per-rank)
 FILES=(config.json generation_config.json special_tokens_map.json
        tokenizer.json tokenizer_config.json trainer_state.json
+       training_args.bin scheduler.pt optimizer.pt
        model.safetensors)
 
 ts() { date -Iseconds; }
@@ -43,8 +50,17 @@ while true; do
         cp "$src/$f" "$dst/$f" && newly_synced=1
       fi
     done
+    # rng_state_<rank>.pth — one per DDP rank, count varies with world_size
+    for rng in "$src"/rng_state_*.pth; do
+      [ -f "$rng" ] || continue
+      base=$(basename "$rng")
+      if [ ! -f "$dst/$base" ]; then
+        cp "$rng" "$dst/$base" && newly_synced=1
+      fi
+    done
     if [ "$newly_synced" = 1 ]; then
-      log "synced $ck → $dst"
+      sz=$(du -sh "$dst" 2>/dev/null | cut -f1)
+      log "synced $ck → $dst ($sz)"
     fi
   done
 
