@@ -1,6 +1,6 @@
-"""Log-prob multiple-choice eval on Danish ARC + HellaSwag.
+"""Log-prob multiple-choice eval on Danish ARC + HellaSwag + Citizen tests.
 
-Runs quickly (~5 min for both on a 400M model on a single modern GPU).
+Runs quickly (~7 min for all three on a 400M model on a single modern GPU).
 Appends results to a CSV so you can plot a trajectory across checkpoints.
 
 Usage:
@@ -93,6 +93,37 @@ def eval_hellaswag(model, tok, k_samples=1000, seed=42, verbose=True):
     return correct / n, n
 
 
+def eval_citizen(model, tok, verbose=True):
+    """Danish citizenship (indfødsret) + civics (medborgerskab) MC test.
+
+    Reported random baseline is weighted by choice count (2- vs 3-choice mix)
+    so it's meaningful without needing external context.
+    """
+    ds = load_dataset("alexandrainst/danish-citizen-tests", split="train")
+    n = len(ds)
+    correct = 0
+    from collections import Counter
+    counts = Counter()
+    t0 = time.time()
+    for i, row in enumerate(ds):
+        prompt = f"Spørgsmål: {row['question']}\nSvar:"
+        opts = {k: row[f"option_{k.lower()}"] for k in "ABC"
+                if row[f"option_{k.lower()}"] is not None}
+        counts[len(opts)] += 1
+        scores = {}
+        for k, text in opts.items():
+            lp, ntok = score_choice(model, tok, prompt, text)
+            scores[k] = lp / max(ntok, 1)
+        pred = max(scores, key=scores.get)
+        if pred == row["answer"]:
+            correct += 1
+        if verbose and (i + 1) % 100 == 0:
+            elapsed = time.time() - t0
+            print(f"  CIT {i+1}/{n} acc={correct/(i+1):.3f} eta={elapsed*(n-i-1)/(i+1):.0f}s")
+    baseline = sum(counts[k] / n * (1 / k) for k in counts)
+    return correct / n, n, baseline
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True, help="Path to HF checkpoint directory")
@@ -103,6 +134,7 @@ def main():
     ap.add_argument("--hs-samples", type=int, default=1000)
     ap.add_argument("--skip-arc", action="store_true")
     ap.add_argument("--skip-hs", action="store_true")
+    ap.add_argument("--skip-cit", action="store_true")
     args = ap.parse_args()
 
     print(f"Loading model from {args.ckpt}")
@@ -126,9 +158,20 @@ def main():
         row["hs_da_acc"] = round(hs_acc, 4)
         row["hs_da_n"] = hs_n
 
+    if not args.skip_cit:
+        print(f"\n=== danish-citizen-tests (720) ===")
+        cit_acc, cit_n, cit_baseline = eval_citizen(model, tok)
+        print(f"Citizen: {cit_acc:.4f} ({int(cit_acc*cit_n)}/{cit_n}) — random baseline {cit_baseline:.4f}")
+        row["cit_acc"] = round(cit_acc, 4)
+        row["cit_n"] = cit_n
+        row["cit_baseline"] = round(cit_baseline, 4)
+
     # Append to CSV (create with header if missing)
     os.makedirs(os.path.dirname(args.csv), exist_ok=True) if os.path.dirname(args.csv) else None
-    fieldnames = ["step", "timestamp", "arc_da_acc", "arc_da_n", "hs_da_acc", "hs_da_n"]
+    fieldnames = ["step", "timestamp",
+                  "arc_da_acc", "arc_da_n",
+                  "hs_da_acc", "hs_da_n",
+                  "cit_acc", "cit_n", "cit_baseline"]
     exists = os.path.exists(args.csv)
     with open(args.csv, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
