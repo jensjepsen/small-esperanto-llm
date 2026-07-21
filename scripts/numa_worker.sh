@@ -9,6 +9,9 @@ GPU_TO_NUMA=(0 0 1 1)
 rank="${LOCAL_RANK:-0}"
 node="${GPU_TO_NUMA[$rank]}"
 
-echo "[rank $rank] binding to NUMA node $node"
-exec numactl --cpunodebind="$node" --membind="$node" \
+echo "[rank $rank] binding to NUMA node $node (CPU only; memory follows via kernel local-alloc)"
+# --membind requires CAP_SYS_NICE which RunPod containers don't grant.
+# CPU affinity alone gets ~95% of the benefit — kernel allocates memory
+# on the NUMA node of the CPU touching it (local-alloc default).
+exec numactl --cpunodebind="$node" \
   python -m esperanto_lm.train "$@"
