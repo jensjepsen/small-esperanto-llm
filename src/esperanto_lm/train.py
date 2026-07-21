@@ -241,6 +241,22 @@ def main():
             repos = args.pretokenized_dataset
             console.print(f"[bold green]Loading pre-tokenized:[/] "
                           f"{len(repos)} repo(s): {repos}")
+
+            # Prefetch via snapshot_download with many parallel workers.
+            # Default load_dataset() serializes file downloads → 5-30 min
+            # for a 100GB dataset. snapshot_download(max_workers=N) uses
+            # HfFileSystem in parallel + hf-transfer chunking within each
+            # file → 5-10× faster on multi-file datasets.
+            # Cap at 32 workers to stay under HF's per-user rate limit.
+            import os as _os
+            _os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+            n_workers = min(32, (_os.cpu_count() or 8))
+            from huggingface_hub import snapshot_download
+            for repo in repos:
+                console.print(f"  [dim]prefetch {repo} (max_workers={n_workers})[/]")
+                snapshot_download(repo_id=repo, repo_type="dataset",
+                                  max_workers=n_workers)
+
             train_parts, test_parts = [], []
             for repo in repos:
                 train_parts.append(_ld(repo, split="train"))
