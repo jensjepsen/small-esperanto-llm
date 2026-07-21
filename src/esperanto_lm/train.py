@@ -257,15 +257,31 @@ def main():
                 snapshot_download(repo_id=repo, repo_type="dataset",
                                   max_workers=n_workers)
 
-            # num_proc parallelizes parquet → arrow conversion. Without it,
-            # `Generating train split` is single-threaded and grinds at
-            # ~15k rows/s (~2h for a 90M-row dataset).
+            # Bypass HF's builder + arrow-cachification entirely. The files
+            # are already parquet with the correct schema; feed them to
+            # load_dataset("parquet", data_files=...) which streams parquet
+            # directly. Much faster than the repo-aware builder that copies
+            # into HF's arrow cache with num_proc-coordination overhead
+            # (was stalling at ~5.7GB written after 5+ min).
+            from huggingface_hub import HfApi, snapshot_download as _sd
             train_parts, test_parts = [], []
+            hf_api = HfApi()
             for repo in repos:
-                train_parts.append(_ld(repo, split="train", num_proc=n_workers))
-                try:
-                    test_parts.append(_ld(repo, split="test", num_proc=n_workers))
-                except Exception:
+                info = hf_api.dataset_info(repo, files_metadata=True)
+                snap = Path(_sd(repo_id=repo, repo_type="dataset",
+                                max_workers=n_workers))
+                pq_files = sorted(str(snap / f.rfilename) for f in info.siblings
+                                  if f.rfilename.endswith(".parquet"))
+                if not pq_files:
+                    raise RuntimeError(f"{repo}: no parquet files found")
+                console.print(f"  [dim]{repo}: {len(pq_files)} parquet shards[/]")
+                # Simple heuristic: files matching train/test.
+                train_files = [f for f in pq_files if "test" not in Path(f).name.lower()]
+                test_files = [f for f in pq_files if "test" in Path(f).name.lower()]
+                train_parts.append(_ld("parquet", data_files=train_files, split="train"))
+                if test_files:
+                    test_parts.append(_ld("parquet", data_files=test_files, split="train"))
+                else:
                     console.print(f"  [dim]{repo}: no test split — skipping[/]")
             train_tok = (concatenate_datasets(train_parts)
                          if len(train_parts) > 1 else train_parts[0])
