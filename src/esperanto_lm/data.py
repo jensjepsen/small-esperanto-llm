@@ -565,40 +565,8 @@ def _wrap_tokenizer(
 
 
 def load_tokenizer(tokenizer_dir: Path = TOKENIZER_DIR) -> PreTrainedTokenizerFast:
-    """Load a previously saved tokenizer.
-
-    Accepts:
-      - a local dir containing tokenizer_config.json + tokenizer.json
-        (from a prior save_pretrained call)
-      - an HF Hub repo id (e.g. 'jensjepsen/danish-tokenizer')
-      - a local dir containing only tokenizer.json (raw), in which
-        case we construct PreTrainedTokenizerFast with standard special
-        tokens on the fly.
-    """
-    try:
-        tok = PreTrainedTokenizerFast.from_pretrained(str(tokenizer_dir))
-    except Exception:
-        # Raw tokenizer.json — wrap with standard <pad>/<unk>/<s>/</s>
-        tok = PreTrainedTokenizerFast(
-            tokenizer_file=str(Path(tokenizer_dir) / "tokenizer.json"),
-            bos_token="<s>", eos_token="</s>",
-            unk_token="<unk>", pad_token="<pad>",
-        )
-    # Defensive: HF repos that only ship tokenizer.json (no config json)
-    # will load without pad_token set. Trainer's collator then crashes.
-    if tok.pad_token is None:
-        # Prefer explicit <pad> if present in vocab, else fall back to eos.
-        if "<pad>" in tok.get_vocab():
-            tok.pad_token = "<pad>"
-        else:
-            tok.pad_token = tok.eos_token
-    if tok.bos_token is None and "<s>" in tok.get_vocab():
-        tok.bos_token = "<s>"
-    if tok.eos_token is None and "</s>" in tok.get_vocab():
-        tok.eos_token = "</s>"
-    if tok.unk_token is None and "<unk>" in tok.get_vocab():
-        tok.unk_token = "<unk>"
-    return tok
+    """Load a previously saved tokenizer."""
+    return PreTrainedTokenizerFast.from_pretrained(str(tokenizer_dir))
 
 
 def filter_short_articles(dataset, min_length: int):
