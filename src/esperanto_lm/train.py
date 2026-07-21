@@ -257,11 +257,14 @@ def main():
                 snapshot_download(repo_id=repo, repo_type="dataset",
                                   max_workers=n_workers)
 
+            # num_proc parallelizes parquet → arrow conversion. Without it,
+            # `Generating train split` is single-threaded and grinds at
+            # ~15k rows/s (~2h for a 90M-row dataset).
             train_parts, test_parts = [], []
             for repo in repos:
-                train_parts.append(_ld(repo, split="train"))
+                train_parts.append(_ld(repo, split="train", num_proc=n_workers))
                 try:
-                    test_parts.append(_ld(repo, split="test"))
+                    test_parts.append(_ld(repo, split="test", num_proc=n_workers))
                 except Exception:
                     console.print(f"  [dim]{repo}: no test split — skipping[/]")
             train_tok = (concatenate_datasets(train_parts)
