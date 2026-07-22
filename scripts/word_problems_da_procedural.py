@@ -706,8 +706,33 @@ class ConsecParams:
 
 
 def _consec_steps(p: ConsecParams) -> tuple[list[Step], str]:
-    """Compute the middle, then locate the ordinal term."""
+    """Compute the middle, then locate the ordinal term.
+
+    For even N with step=1 the true mean is a half-integer, so we use the
+    algebraic derivation S = N*a + N(N-1)/2 → a = (S - N(N-1)/2) / N instead
+    of the mean-based chain (which would round the mean and teach wrong math).
+    """
     kind_word = {"any": "heltal", "even": "lige tal", "odd": "ulige tal"}[p.kind]
+
+    if p.N % 2 == 0 and p.step == 1:
+        offset = p.N * (p.N - 1) // 2
+        num = p.S - offset
+        steps = [
+            Step(pre=f"For {p.N} på hinanden følgende heltal a, a+1, ..., a+{p.N - 1} "
+                     f"er summen {p.N}·a + {offset}, så {p.N}·a = summen minus {offset}:",
+                 expr=f"{p.S} - {offset}", result=str(num),
+                 post=f"altså {p.N}·a = {num}."),
+            Step(pre="Vi løser for det mindste tal a:",
+                 expr=f"{num} / {p.N}", result=str(p.smallest),
+                 post=f"altså det mindste er {p.smallest}."),
+            Step(pre=f"Det {p.ordinal} tal er det mindste plus "
+                     f"{p.ord_idx} * {p.step}:",
+                 expr=f"{p.smallest} + {p.ord_idx} * {p.step}",
+                 result=str(p.answer),
+                 post=f"altså det {p.ordinal} er {p.answer}."),
+        ]
+        return steps, str(p.answer)
+
     steps = [
         Step(pre=f"Middeltallet af {p.N} på hinanden følgende {kind_word} er "
                  "summen divideret med antallet:",
