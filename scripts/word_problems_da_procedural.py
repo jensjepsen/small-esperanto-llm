@@ -149,6 +149,16 @@ NAMES = [
     "Peter", "Pernille", "Rasmus", "Rikke", "Søren", "Sofie",
 ]
 
+# Danish possessive: names ending in s/x/z take just an apostrophe (Jens' hus),
+# not an -s (never "Jenss"). We rewrite `<name>s` → `<name>'` for known names.
+_S_ENDING_NAMES = tuple(n for n in NAMES if n[-1].lower() in "sxz")
+
+
+def fix_possessives(text: str) -> str:
+    for n in _S_ENDING_NAMES:
+        text = text.replace(f"{n}s", f"{n}'")
+    return text
+
 
 @dataclass
 class Step:
@@ -224,107 +234,255 @@ class Problem:
 
 # ── RATIO type ──────────────────────────────────────────────────────────
 
-RATIO_QUESTION_TEMPLATES = [
-    "{name_a} og {name_b} deler {total} {obj_pl} i forholdet {a}:{b}. "
-    "Hvor mange {obj_pl} får {who}?",
-    "Der er {total} {obj_pl}, som skal fordeles mellem {name_a} og {name_b} "
-    "i forholdet {a}:{b}. Hvor mange {obj_pl} får {who}?",
-    "{name_a} og {name_b} har tilsammen {total} {obj_pl}. "
-    "De deler dem i forholdet {a}:{b}. Hvor mange får {who}?",
-    "En kasse med {total} {obj_pl} deles i forholdet {a}:{b} mellem "
-    "{name_a} og {name_b}. Hvor mange får {who}?",
-    "Ved en fest deler {name_a} og {name_b} {total} {obj_pl} i "
-    "forholdet {a}:{b}. Hvor mange får {who}?",
-    # Extended templates for diversity
-    "{name_a} og {name_b} er søskende. Deres far vil dele {total} {obj_pl} "
-    "mellem dem i forholdet {a}:{b}. Hvor mange får {who}?",
-    "På en skoleudflugt får {name_a} og {name_b} udleveret i alt {total} "
-    "{obj_pl} i forholdet {a}:{b}. Hvor mange får {who}?",
-    "Efter et arrangement skal {name_a} og {name_b} dele {total} {obj_pl} "
-    "mellem sig efter forholdet {a}:{b}. Hvor mange får {who}?",
-    "En pose indeholder {total} {obj_pl}, som {name_a} og {name_b} deler "
-    "i forholdet {a}:{b}. Hvor mange får {who}?",
-    "{name_a} og {name_b} bytter {total} {obj_pl} efter forholdet {a}:{b}. "
-    "Hvor mange får {who} ud af byttet?",
-    "Til en fælles fejring har {name_a} og {name_b} indkøbt {total} {obj_pl}. "
-    "De deler dem i forholdet {a}:{b}. Hvor mange får {who}?",
-    "På markedet køber {name_a} og {name_b} sammen {total} {obj_pl} og "
-    "deler dem i forholdet {a}:{b}. Hvor mange får {who}?",
-    "Efter en høst deler {name_a} og {name_b} {total} {obj_pl} i "
-    "forholdet {a}:{b}. Hvor mange får {who}?",
-    "Et arvedelt bo omfatter {total} {obj_pl}, som fordeles mellem "
-    "{name_a} og {name_b} i forholdet {a}:{b}. Hvor mange får {who}?",
-    "På en workshop deler {name_a} og {name_b} {total} {obj_pl} "
-    "i forholdet {a}:{b}. Hvor mange får {who}?",
-    "Efter en fælles indkøbstur deler {name_a} og {name_b} {total} {obj_pl} "
-    "i forholdet {a}:{b}. Hvor mange får {who}?",
-    "På en spejderlejr fordeles {total} {obj_pl} mellem {name_a} og {name_b} "
-    "i forholdet {a}:{b}. Hvor mange får {who}?",
-    "{name_a} og {name_b} har vundet {total} {obj_pl} i en konkurrence. "
-    "De aftaler at dele dem i forholdet {a}:{b}. Hvor mange får {who}?",
+# Preambles reused across all 5 ask kinds. `{sharers}` is a Danish name-list
+# like "Anna og Bo" (2-way) or "Anna, Bo og Cecilie" (3-way). `{ratio}` is
+# "3:5" or "1:2:3". The question tail depends on the ask kind.
+_RATIO_PREAMBLES = [
+    "{sharers} deler {total} {obj_pl} i forholdet {ratio}.",
+    "Der er {total} {obj_pl}, som skal fordeles mellem {sharers} "
+    "i forholdet {ratio}.",
+    "{sharers} har tilsammen {total} {obj_pl}. De deler dem i forholdet {ratio}.",
+    "En kasse med {total} {obj_pl} deles i forholdet {ratio} mellem {sharers}.",
+    "Ved en fest deler {sharers} {total} {obj_pl} i forholdet {ratio}.",
+    "På en skoleudflugt får {sharers} udleveret i alt {total} {obj_pl} "
+    "i forholdet {ratio}.",
+    "Efter et arrangement skal {sharers} dele {total} {obj_pl} mellem sig "
+    "efter forholdet {ratio}.",
+    "En pose indeholder {total} {obj_pl}, som {sharers} deler i forholdet "
+    "{ratio}.",
+    "Til en fælles fejring har {sharers} indkøbt {total} {obj_pl}. De deler "
+    "dem i forholdet {ratio}.",
+    "På markedet køber {sharers} sammen {total} {obj_pl} og deler dem "
+    "i forholdet {ratio}.",
+    "Efter en høst deler {sharers} {total} {obj_pl} i forholdet {ratio}.",
+    "Et arvedelt bo omfatter {total} {obj_pl}, som fordeles mellem {sharers} "
+    "i forholdet {ratio}.",
+    "På en workshop deler {sharers} {total} {obj_pl} i forholdet {ratio}.",
+    "{sharers} har vundet {total} {obj_pl} i en konkurrence. De aftaler at "
+    "dele dem i forholdet {ratio}.",
 ]
+
+_RATIO_TAILS = {
+    "direct":    ["Hvor mange {obj_pl} får {who}?",
+                  "Hvor mange får {who}?",
+                  "Hvor mange {obj_pl} tilfalder {who}?"],
+    "larger":    ["Hvor mange {obj_pl} får den, der får mest?",
+                  "Hvad er den største andel i {obj_pl}?",
+                  "Hvor mange {obj_pl} udgør den største andel?"],
+    "smaller":   ["Hvor mange {obj_pl} får den, der får mindst?",
+                  "Hvad er den mindste andel i {obj_pl}?",
+                  "Hvor mange {obj_pl} udgør den mindste andel?"],
+    "diff":      ["Hvor mange flere {obj_pl} får den ene end den anden?",
+                  "Hvor stor er forskellen mellem den største og den "
+                  "mindste andel (i {obj_pl})?",
+                  "Hvor mange flere {obj_pl} har den, der får mest, "
+                  "sammenlignet med den, der får mindst?"],
+}
+
+# given-one changes the givens: total is not stated, one person's share is.
+_RATIO_GIVEN_ONE_TEMPLATES = [
+    "{sharers} deler et antal {obj_pl} i forholdet {ratio}. {given_name} "
+    "får {given_val} {obj_pl}. Hvor mange {obj_pl} deler de i alt?",
+    "Der fordeles nogle {obj_pl} mellem {sharers} i forholdet {ratio}. "
+    "{given_name} får {given_val} {obj_pl}. Hvor mange {obj_pl} er der i alt?",
+    "{sharers} har delt et parti {obj_pl} i forholdet {ratio}. Vi ved, at "
+    "{given_name} fik {given_val} {obj_pl}. Hvor mange {obj_pl} var der "
+    "i alt at dele?",
+    "Ved en deling af {obj_pl} i forholdet {ratio} mellem {sharers} fik "
+    "{given_name} {given_val} {obj_pl}. Hvor mange {obj_pl} er der i alt?",
+    "{sharers} fordeler et ukendt antal {obj_pl} i forholdet {ratio}. "
+    "{given_name} får {given_val} {obj_pl}. Hvor mange {obj_pl} var der "
+    "at dele?",
+]
+
+
+def _da_names_list(names: list[str]) -> str:
+    """'Anna og Bo' or 'Anna, Bo og Cecilie'."""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} og {names[1]}"
+    return ", ".join(names[:-1]) + f" og {names[-1]}"
 
 @dataclass
 class RatioParams:
-    a: int
-    b: int
-    total: int
-    per_part: int
-    who: str        # name of person we ask about
-    who_ratio: int  # their ratio number (a or b)
+    ratios: tuple           # e.g. (2, 3) or (1, 2, 3)
+    names: tuple            # tuple of names, same length as ratios
+    total: int              # total distributed (given except for given-one)
+    per_part: int           # value of one ratio unit
+    ask: str                # "direct" | "larger" | "smaller" | "diff" | "given-one"
+    ask_idx: int            # for direct: which index; for given-one: which index we know
+    given_val: int          # for given-one: parts[ask_idx]. else 0.
     obj_pl: str
-    name_a: str
-    name_b: str
+    answer: int
+
+    @property
+    def parts(self):
+        return [r * self.per_part for r in self.ratios]
+
+    @property
+    def sum_r(self):
+        return sum(self.ratios)
+
+    @property
+    def n(self):
+        return len(self.ratios)
+
+
+def _ratio_num_word(n: int) -> str:
+    return "1 del" if n == 1 else f"{n} dele"
 
 
 def _ratio_steps_parts(p: RatioParams) -> tuple[list[Step], str]:
-    """Direct 'parts' approach: sum of ratios → per part → who × per part."""
-    sum_r = p.a + p.b
-    who_word = "1 del" if p.who_ratio == 1 else f"{p.who_ratio} dele"
+    """Sum of ratios → per part → dispatch to ask-specific final step."""
+    ratios_str = " + ".join(str(r) for r in p.ratios)
     steps = [
         Step(pre="Summen af forholdstallene er",
-             expr=f"{p.a} + {p.b}", result=str(sum_r),
-             post=f"så vi har {sum_r} lige store dele."),
-        Step(pre="En del svarer til totalen divideret med antal dele:",
-             expr=f"{p.total} / {sum_r}", result=str(p.per_part),
-             post=f"altså {p.per_part} {p.obj_pl} per del."),
-        Step(pre=f"{p.who} får {who_word}, altså",
-             expr=f"{p.per_part} * {p.who_ratio}",
-             result=str(p.per_part * p.who_ratio),
-             post=f"i alt {p.per_part * p.who_ratio} {p.obj_pl}."),
+             expr=ratios_str, result=str(p.sum_r),
+             post=f"så vi har {p.sum_r} lige store dele."),
     ]
-    return steps, str(p.per_part * p.who_ratio)
+    if p.ask == "given-one":
+        # We know one person's share and need the total. Skip the per-part step
+        # since we can compute it directly from given_val.
+        given_r = p.ratios[p.ask_idx]
+        steps.append(Step(
+            pre=f"{p.names[p.ask_idx]} får {given_r} af de {p.sum_r} dele, "
+                f"altså er én del {p.given_val} divideret med {given_r}:",
+            expr=f"{p.given_val} / {given_r}", result=str(p.per_part),
+            post=f"altså {p.per_part} {p.obj_pl} per del."))
+        steps.append(Step(
+            pre="Totalen er én del gange antal dele:",
+            expr=f"{p.per_part} * {p.sum_r}", result=str(p.answer),
+            post=f"i alt {p.answer} {p.obj_pl}."))
+        return steps, str(p.answer)
+
+    steps.append(Step(
+        pre="En del svarer til totalen divideret med antal dele:",
+        expr=f"{p.total} / {p.sum_r}", result=str(p.per_part),
+        post=f"altså {p.per_part} {p.obj_pl} per del."))
+
+    if p.ask == "direct":
+        r = p.ratios[p.ask_idx]
+        steps.append(Step(
+            pre=f"{p.names[p.ask_idx]} får {_ratio_num_word(r)}, altså",
+            expr=f"{p.per_part} * {r}", result=str(p.answer),
+            post=f"i alt {p.answer} {p.obj_pl}."))
+    elif p.ask == "larger":
+        rmax = max(p.ratios)
+        steps.append(Step(
+            pre=f"Den største andel er {rmax} af {p.sum_r} dele, altså",
+            expr=f"{p.per_part} * {rmax}", result=str(p.answer),
+            post=f"i alt {p.answer} {p.obj_pl}."))
+    elif p.ask == "smaller":
+        rmin = min(p.ratios)
+        steps.append(Step(
+            pre=f"Den mindste andel er {rmin} af {p.sum_r} dele, altså",
+            expr=f"{p.per_part} * {rmin}", result=str(p.answer),
+            post=f"i alt {p.answer} {p.obj_pl}."))
+    elif p.ask == "diff":
+        rmax, rmin = max(p.ratios), min(p.ratios)
+        diff_r = rmax - rmin
+        steps.append(Step(
+            pre=f"Forskellen mellem den største og den mindste andel er "
+                f"({rmax} - {rmin}) dele, altså",
+            expr=f"{p.per_part} * ({rmax} - {rmin})", result=str(p.answer),
+            post=f"altså {p.answer} {p.obj_pl}."))
+    else:
+        raise ValueError(p.ask)
+    return steps, str(p.answer)
 
 
 def _ratio_steps_fraction(p: RatioParams) -> tuple[list[Step], str]:
-    """Direct fraction: who gets who_ratio / (a+b) of the total."""
-    sum_r = p.a + p.b
-    ans = p.total * p.who_ratio // sum_r
-    steps = [
-        Step(pre=f"Da forholdet er {p.a}:{p.b}, får {p.who} en brøkdel af "
-                 f"totalen på {p.who_ratio}/{sum_r}. Vi udregner:",
-             expr=f"{p.total} * {p.who_ratio} / {sum_r}", result=str(ans),
-             post=f"altså {ans} {p.obj_pl}."),
-    ]
-    return steps, str(ans)
+    """Direct fraction approach; for given-one we cannot use fraction (total unknown),
+    fall back to parts."""
+    if p.ask == "given-one":
+        return _ratio_steps_parts(p)
+    if p.ask == "direct":
+        r = p.ratios[p.ask_idx]
+        who = p.names[p.ask_idx]
+        return [
+            Step(pre=f"Da forholdet er {':'.join(map(str, p.ratios))}, får "
+                     f"{who} en brøkdel af totalen på {r}/{p.sum_r}. "
+                     f"Vi udregner:",
+                 expr=f"{p.total} * {r} / {p.sum_r}", result=str(p.answer),
+                 post=f"altså {p.answer} {p.obj_pl}."),
+        ], str(p.answer)
+    if p.ask == "larger":
+        rmax = max(p.ratios)
+        return [
+            Step(pre=f"Den største andel udgør brøkdelen {rmax}/{p.sum_r} "
+                     f"af totalen. Vi udregner:",
+                 expr=f"{p.total} * {rmax} / {p.sum_r}",
+                 result=str(p.answer),
+                 post=f"altså {p.answer} {p.obj_pl}."),
+        ], str(p.answer)
+    if p.ask == "smaller":
+        rmin = min(p.ratios)
+        return [
+            Step(pre=f"Den mindste andel udgør brøkdelen {rmin}/{p.sum_r} "
+                     f"af totalen. Vi udregner:",
+                 expr=f"{p.total} * {rmin} / {p.sum_r}",
+                 result=str(p.answer),
+                 post=f"altså {p.answer} {p.obj_pl}."),
+        ], str(p.answer)
+    if p.ask == "diff":
+        rmax, rmin = max(p.ratios), min(p.ratios)
+        return [
+            Step(pre=f"Forskellen udgør brøkdelen ({rmax} - {rmin})/{p.sum_r} "
+                     f"af totalen. Vi udregner:",
+                 expr=f"{p.total} * ({rmax} - {rmin}) / {p.sum_r}",
+                 result=str(p.answer),
+                 post=f"altså {p.answer} {p.obj_pl}."),
+        ], str(p.answer)
+    raise ValueError(p.ask)
 
 
 def _ratio_steps_algebra(p: RatioParams) -> tuple[list[Step], str]:
-    """Algebra: let x be one part; solve (a+b)x = total, then who's share = ratio*x."""
-    sum_r = p.a + p.b
-    ans = p.per_part * p.who_ratio
+    """Algebra: let x be one part; solve sum_r * x = total (or use given_val)."""
+    if p.ask == "given-one":
+        given_r = p.ratios[p.ask_idx]
+        who = p.names[p.ask_idx]
+        return [
+            Step(pre=f"Lad x være værdien af én del. Så får {who} = {given_r}x, "
+                     f"og vi ved at {given_r}x = {p.given_val}. Vi løser for x:",
+                 expr=f"{p.given_val} / {given_r}", result=str(p.per_part),
+                 post=f"altså x = {p.per_part}."),
+            Step(pre=f"Totalen er summen af alle andele = {p.sum_r}x:",
+                 expr=f"{p.sum_r} * {p.per_part}", result=str(p.answer),
+                 post=f"altså {p.answer} {p.obj_pl} i alt."),
+        ], str(p.answer)
+
+    coefs = " + ".join(f"{r}x" for r in p.ratios)
     steps = [
-        Step(pre=f"Lad x være værdien af én del. "
-                 f"{p.name_a} får {p.a}x, {p.name_b} får {p.b}x, "
-                 f"så totalen er {p.a}x + {p.b}x = {sum_r}x = {p.total}. "
-                 f"Vi løser for x:",
-             expr=f"{p.total} / {sum_r}", result=str(p.per_part),
+        Step(pre=f"Lad x være værdien af én del. Så er totalen "
+                 f"{coefs} = {p.sum_r}x = {p.total}. Vi løser for x:",
+             expr=f"{p.total} / {p.sum_r}", result=str(p.per_part),
              post=f"altså x = {p.per_part}."),
-        Step(pre=f"{p.who}s andel er {p.who_ratio}x:",
-             expr=f"{p.who_ratio} * {p.per_part}", result=str(ans),
-             post=f"i alt {ans} {p.obj_pl}."),
     ]
-    return steps, str(ans)
+    if p.ask == "direct":
+        r = p.ratios[p.ask_idx]
+        who = p.names[p.ask_idx]
+        steps.append(Step(pre=f"{who}s andel er {r}x:",
+                          expr=f"{r} * {p.per_part}", result=str(p.answer),
+                          post=f"i alt {p.answer} {p.obj_pl}."))
+    elif p.ask == "larger":
+        rmax = max(p.ratios)
+        steps.append(Step(pre=f"Den største andel er {rmax}x:",
+                          expr=f"{rmax} * {p.per_part}", result=str(p.answer),
+                          post=f"i alt {p.answer} {p.obj_pl}."))
+    elif p.ask == "smaller":
+        rmin = min(p.ratios)
+        steps.append(Step(pre=f"Den mindste andel er {rmin}x:",
+                          expr=f"{rmin} * {p.per_part}", result=str(p.answer),
+                          post=f"i alt {p.answer} {p.obj_pl}."))
+    elif p.ask == "diff":
+        rmax, rmin = max(p.ratios), min(p.ratios)
+        steps.append(Step(pre=f"Forskellen mellem største og mindste andel "
+                              f"er ({rmax} - {rmin})x:",
+                          expr=f"({rmax} - {rmin}) * {p.per_part}",
+                          result=str(p.answer),
+                          post=f"altså {p.answer} {p.obj_pl}."))
+    return steps, str(p.answer)
 
 
 _RATIO_STEPS = {
@@ -334,30 +492,64 @@ _RATIO_STEPS = {
 }
 
 
+_RATIOS_2 = [(a, b) for a in range(1, 8) for b in range(1, 8) if a != b]
+_RATIOS_3 = [(1, 2, 3), (2, 3, 5), (1, 1, 2), (1, 3, 4), (2, 3, 4), (1, 2, 4)]
+
+
 def sample_ratio(rng: random.Random) -> Problem:
     obj = rng.choice(NOUNS)
-    a = rng.randint(1, 7)
-    b = rng.randint(1, 7)
-    while a == b:
-        b = rng.randint(1, 7)
+    # 2-way biased over 3-way (matches EO taste of asymmetry).
+    ratios = rng.choice(_RATIOS_2 * 3 + _RATIOS_3)
+    n = len(ratios)
+    names = tuple(rng.sample(NAMES, n))
     per_part = rng.randint(2, 50)
-    total = per_part * (a + b)
+    total = per_part * sum(ratios)
 
-    name_a, name_b = rng.sample(NAMES, 2)
-    who_is_a = rng.random() < 0.5
-    who_name = name_a if who_is_a else name_b
-    who_ratio = a if who_is_a else b
+    ask_choices = ["direct", "larger", "smaller", "given-one"]
+    if n == 2:
+        ask_choices.append("diff")
+    ask = rng.choice(ask_choices)
 
-    p = RatioParams(a=a, b=b, total=total, per_part=per_part,
-                    who=who_name, who_ratio=who_ratio,
-                    obj_pl=obj[3], name_a=name_a, name_b=name_b)
+    parts = [r * per_part for r in ratios]
+    ask_idx = rng.randint(0, n - 1)
 
-    q_tpl = rng.choice(RATIO_QUESTION_TEMPLATES)
-    question = q_tpl.format(
-        name_a=name_a, name_b=name_b,
-        total=total, obj_pl=obj[3],
-        a=a, b=b, who=who_name,
-    )
+    if ask == "direct":
+        answer = parts[ask_idx]
+        given_val = 0
+    elif ask == "larger":
+        answer = max(parts)
+        given_val = 0
+    elif ask == "smaller":
+        answer = min(parts)
+        given_val = 0
+    elif ask == "diff":
+        answer = max(parts) - min(parts)
+        given_val = 0
+    elif ask == "given-one":
+        answer = total
+        given_val = parts[ask_idx]
+    else:
+        raise ValueError(ask)
+
+    p = RatioParams(ratios=ratios, names=names, total=total, per_part=per_part,
+                    ask=ask, ask_idx=ask_idx, given_val=given_val,
+                    obj_pl=obj[3], answer=answer)
+
+    sharers = _da_names_list(list(names))
+    ratio_str = ":".join(str(r) for r in ratios)
+    if ask == "given-one":
+        q_tpl = rng.choice(_RATIO_GIVEN_ONE_TEMPLATES)
+        question = q_tpl.format(sharers=sharers, obj_pl=obj[3],
+                                ratio=ratio_str, given_name=names[ask_idx],
+                                given_val=given_val)
+    else:
+        preamble = rng.choice(_RATIO_PREAMBLES)
+        tail = rng.choice(_RATIO_TAILS[ask])
+        who = names[ask_idx] if ask == "direct" else ""
+        question = (preamble + " " + tail).format(
+            sharers=sharers, total=total, obj_pl=obj[3],
+            ratio=ratio_str, who=who,
+        )
 
     strategy = rng.choice(list(_RATIO_STEPS))
     steps, final = _RATIO_STEPS[strategy](p)
@@ -370,10 +562,12 @@ def sample_ratio(rng: random.Random) -> Problem:
         chain_da=chain,
         answer=final,
         params={
-            "a": a, "b": b, "total": total, "per_part": per_part,
-            "who": who_name, "who_ratio": who_ratio, "object": obj[0],
+            "ratios": list(ratios), "names": list(names),
+            "total": total, "per_part": per_part,
+            "ask": ask, "ask_idx": ask_idx, "given_val": given_val,
+            "object": obj[0],
         },
-        strategy=strategy,
+        strategy=f"{strategy}_{ask}_n{n}",
         steps=[asdict(s) for s in steps],
         funcall=funcall,
     )
@@ -434,11 +628,35 @@ PERCENT_QUESTION_TEMPLATES = {
         "Prisen på {item_indef} er {price} kr eksklusive moms på {pct}%. "
         "Hvad skal kunden betale?",
     ],
+    "of_amount": [
+        "Hvad er {pct}% af {price} kr?",
+        "Beregn {pct}% af {price} kr.",
+        "{name} skal udregne {pct}% af {price} kr. Hvad er resultatet?",
+        "{pct}% af et beløb på {price} kr — hvor mange kroner er det?",
+        "En andel på {pct}% af {price} kr — hvad svarer det til i kroner?",
+        "Hvor stort er {pct}% af {price} kr?",
+        "En fond bevilger {pct}% af en samlet ramme på {price} kr. "
+        "Hvor mange kroner er det?",
+    ],
+    "saving": [
+        "{item_indef_cap} nedsættes med {pct}% fra {price} kr. Hvor mange "
+        "kroner sparer {name}?",
+        "Ved et udsalg gives {pct}% rabat på {item_indef} til {price} kr. "
+        "Hvor mange kroner spares?",
+        "{name} køber {item_indef} med {pct}% rabat fra normalprisen "
+        "{price} kr. Hvor stor er besparelsen i kroner?",
+        "En medlemsrabat på {pct}% på {item_indef} til {price} kr. Hvor meget "
+        "sparer {name} i kroner?",
+        "Under sommerudsalget gives {pct}% rabat på {item_indef} til {price} kr. "
+        "Hvor mange kroner spares?",
+        "{name} bruger en kupon på {pct}% ved køb af {item_indef} til "
+        "{price} kr. Hvor mange kroner spares på købet?",
+    ],
 }
 
 @dataclass
 class PercentParams:
-    kind: str          # "discount" | "markup" | "tax"
+    kind: str          # "discount" | "markup" | "tax" | "of_amount" | "saving"
     price: int
     pct: int
     change: int
@@ -446,33 +664,60 @@ class PercentParams:
 
 
 def _percent_steps_direct(p: PercentParams) -> tuple[list[Step], str]:
-    """Two-step: change = price*pct/100, then answer = price ± change."""
+    """Two-step: change = price*pct/100, then answer = price ± change.
+
+    Also handles of-amount and saving: those return the change amount itself,
+    so we stop after step 1 with the noun matched to the op.
+    """
     if p.kind == "discount":
-        name = "Rabatten"
+        change_noun = "Rabatten"
         op_word = "-"
         op_desc = "trukket fra"
     elif p.kind == "markup":
-        name = "Fortjenesten"
+        change_noun = "Fortjenesten"
         op_word = "+"
         op_desc = "lagt til"
-    else:  # tax
-        name = "Momsen"
+    elif p.kind == "tax":
+        change_noun = "Momsen"
         op_word = "+"
         op_desc = "lagt til"
-    steps = [
-        Step(pre=f"{name} udgør {p.pct}% af {p.price} kr:",
+    elif p.kind == "of_amount":
+        change_noun = "Beløbet"
+        op_word = None
+        op_desc = None
+    elif p.kind == "saving":
+        change_noun = "Besparelsen"
+        op_word = None
+        op_desc = None
+    else:
+        raise ValueError(p.kind)
+
+    if op_word is None:
+        # single step — the "change" is the answer
+        return [
+            Step(pre=f"{change_noun} udgør {p.pct}% af {p.price} kr:",
+                 expr=f"{p.price} * {p.pct} / 100", result=str(p.change),
+                 post=f"altså {p.change} kr."),
+        ], str(p.answer)
+
+    return [
+        Step(pre=f"{change_noun} udgør {p.pct}% af {p.price} kr:",
              expr=f"{p.price} * {p.pct} / 100", result=str(p.change),
              post=f"altså {p.change} kr {op_desc}."),
         Step(pre="Den samlede pris bliver derfor",
              expr=f"{p.price} {op_word} {p.change}",
              result=str(p.answer),
              post=f"i alt {p.answer} kr."),
-    ]
-    return steps, str(p.answer)
+    ], str(p.answer)
 
 
 def _percent_steps_compound(p: PercentParams) -> tuple[list[Step], str]:
-    """One-step compound: answer = price * (100 ± pct) / 100."""
+    """One-step compound: answer = price * (100 ± pct) / 100.
+
+    For of-amount / saving fall back to _percent_steps_direct (there is no
+    natural compound form for those)."""
+    if p.kind in ("of_amount", "saving"):
+        return _percent_steps_direct(p)
     if p.kind == "discount":
         sign = "-"
         desc = f"Kunden skal betale (100 - {p.pct})% af {p.price} kr:"
@@ -495,7 +740,7 @@ _PERCENT_STEPS = {
 
 
 def sample_percent(rng: random.Random) -> Problem:
-    kind = rng.choice(["discount", "markup", "tax"])
+    kind = rng.choice(["discount", "markup", "tax", "of_amount", "saving"])
     while True:
         # Multiples of 10 kroner from 50 to 5000 — most divisibility hits fast.
         price = rng.randint(5, 500) * 10
@@ -503,7 +748,12 @@ def sample_percent(rng: random.Random) -> Problem:
         if price * pct % 100 == 0:
             break
     change = price * pct // 100
-    answer = price - change if kind == "discount" else price + change
+    if kind == "discount":
+        answer = price - change
+    elif kind in ("markup", "tax"):
+        answer = price + change
+    else:  # of_amount, saving
+        answer = change
 
     item_indef, item_def = rng.choice(COMMODITIES)
     item_indef_cap = item_indef[0].upper() + item_indef[1:]
@@ -537,75 +787,130 @@ def sample_percent(rng: random.Random) -> Problem:
 
 # ── INVERSE_RATE ────────────────────────────────────────────────────────
 
-INVERSE_RATE_TEMPLATES = [
-    "{n1} arbejdere kan udføre et stykke arbejde på {t1} timer. Hvor lang tid "
-    "tager det, hvis {n2} arbejdere skal udføre samme arbejde?",
-    "En opgave kan løses af {n1} personer på {t1} timer. Hvor lang tid tager "
-    "det for {n2} personer at løse den samme opgave?",
-    "Det tager {n1} malere {t1} dage at male et hus. Hvor mange dage tager "
-    "det {n2} malere at male det samme hus?",
-    "En gruppe på {n1} personer kan tømme en tank på {t1} minutter. Hvor "
-    "mange minutter tager det {n2} personer?",
-    "Hvis {n1} maskiner producerer en ordre på {t1} timer, hvor mange timer "
-    "tager det så {n2} maskiner at producere den samme ordre?",
-    "{n1} kokke kan tilberede en menu på {t1} timer. Hvor lang tid vil {n2} "
-    "kokke bruge på den samme menu?",
-    "{n1} landmænd kan høste en mark på {t1} dage. Hvor mange dage tager det "
-    "{n2} landmænd at høste den samme mark?",
-    "Et rengøringsfirma med {n1} medarbejdere rengør et hotel på {t1} timer. "
-    "Hvor lang tid tager det med {n2} medarbejdere?",
-    "{n1} bagere kan færdiggøre en ordre på {t1} timer. Hvor lang tid tager "
-    "det, hvis {n2} bagere arbejder på samme ordre?",
-    "En pumpe med {n1} indløb tømmer bassinet på {t1} minutter. Hvor mange "
-    "minutter tager det med {n2} indløb?",
-    "Med {n1} håndværkere kan et projekt afsluttes på {t1} dage. Hvor mange "
-    "dage varer det med {n2} håndværkere?",
-    "En avisrute betjenes af {n1} bude på {t1} timer. Hvor lang tid tager "
-    "den samme rute for {n2} bude?",
-    "Et budfirma med {n1} chauffører leverer alle pakker på {t1} timer. "
-    "Hvor lang tid tager det med {n2} chauffører?",
-    "{n1} musikere kan gennemføre et program på {t1} minutter. Hvis {n2} "
-    "musikere skal spille det samme program, hvor lang tid tager det?",
-    "Et bygefirma med {n1} arbejdere færdiggør et projekt på {t1} dage. "
-    "Hvor mange dage tager samme projekt med {n2} arbejdere?",
-    "En kontorafdeling med {n1} sagsbehandlere afvikler alle sager på {t1} "
-    "timer. Hvor lang tid tager det med {n2} sagsbehandlere?",
-    "Et kokketeam på {n1} personer laver en firmafrokost på {t1} timer. "
-    "Hvor lang tid tager det for {n2} kokke?",
-]
+INVERSE_RATE_TEMPLATES = {
+    # find-time: given n1,t1,n2 → find t2. answer = t2.
+    "find_time": [
+        "{n1} arbejdere kan udføre et stykke arbejde på {t1} timer. Hvor lang tid "
+        "tager det, hvis {n2} arbejdere skal udføre samme arbejde?",
+        "En opgave kan løses af {n1} personer på {t1} timer. Hvor lang tid tager "
+        "det for {n2} personer at løse den samme opgave?",
+        "Det tager {n1} malere {t1} dage at male et hus. Hvor mange dage tager "
+        "det {n2} malere at male det samme hus?",
+        "En gruppe på {n1} personer kan tømme en tank på {t1} minutter. Hvor "
+        "mange minutter tager det {n2} personer?",
+        "Hvis {n1} maskiner producerer en ordre på {t1} timer, hvor mange timer "
+        "tager det så {n2} maskiner at producere den samme ordre?",
+        "{n1} kokke kan tilberede en menu på {t1} timer. Hvor lang tid vil {n2} "
+        "kokke bruge på den samme menu?",
+        "{n1} landmænd kan høste en mark på {t1} dage. Hvor mange dage tager det "
+        "{n2} landmænd at høste den samme mark?",
+        "Et rengøringsfirma med {n1} medarbejdere rengør et hotel på {t1} timer. "
+        "Hvor lang tid tager det med {n2} medarbejdere?",
+        "{n1} bagere kan færdiggøre en ordre på {t1} timer. Hvor lang tid tager "
+        "det, hvis {n2} bagere arbejder på samme ordre?",
+        "En pumpe med {n1} indløb tømmer bassinet på {t1} minutter. Hvor mange "
+        "minutter tager det med {n2} indløb?",
+        "Med {n1} håndværkere kan et projekt afsluttes på {t1} dage. Hvor mange "
+        "dage varer det med {n2} håndværkere?",
+        "En avisrute betjenes af {n1} bude på {t1} timer. Hvor lang tid tager "
+        "den samme rute for {n2} bude?",
+        "Et budfirma med {n1} chauffører leverer alle pakker på {t1} timer. "
+        "Hvor lang tid tager det med {n2} chauffører?",
+        "{n1} musikere kan gennemføre et program på {t1} minutter. Hvis {n2} "
+        "musikere skal spille det samme program, hvor lang tid tager det?",
+        "Et bygefirma med {n1} arbejdere færdiggør et projekt på {t1} dage. "
+        "Hvor mange dage tager samme projekt med {n2} arbejdere?",
+        "En kontorafdeling med {n1} sagsbehandlere afvikler alle sager på {t1} "
+        "timer. Hvor lang tid tager det med {n2} sagsbehandlere?",
+        "Et kokketeam på {n1} personer laver en firmafrokost på {t1} timer. "
+        "Hvor lang tid tager det for {n2} kokke?",
+    ],
+    # find-workers: given n1,t1,t2 → find n2 (workers needed).
+    "find_workers": [
+        "{n1} arbejdere kan udføre et stykke arbejde på {t1} timer. Hvor mange "
+        "arbejdere skal der til for at gøre det på {t2} timer?",
+        "En opgave kan løses af {n1} personer på {t1} timer. Hvor mange personer "
+        "skal der til, hvis opgaven skal være færdig efter {t2} timer?",
+        "Det tager {n1} malere {t1} dage at male et hus. Hvor mange malere skal "
+        "der til for at male huset på {t2} dage?",
+        "Hvis {n1} maskiner producerer en ordre på {t1} timer, hvor mange "
+        "maskiner er nødvendige for at gøre det på {t2} timer?",
+        "{n1} kokke kan tilberede en menu på {t1} timer. Hvor mange kokke kræver "
+        "det for at gøre det færdigt på {t2} timer?",
+        "Et rengøringsfirma med {n1} medarbejdere rengør et hotel på {t1} timer. "
+        "Hvor mange medarbejdere skal der til for at gøre det på {t2} timer?",
+        "{n1} bagere kan færdiggøre en ordre på {t1} timer. Hvor mange bagere "
+        "skal der til for at gøre det færdigt på {t2} timer?",
+        "En pumpe med {n1} indløb tømmer bassinet på {t1} minutter. Hvor mange "
+        "indløb kræves for at tømme det på {t2} minutter?",
+        "Med {n1} håndværkere kan et projekt afsluttes på {t1} dage. Hvor mange "
+        "håndværkere skal der til for at afslutte det på {t2} dage?",
+        "En avisrute betjenes af {n1} bude på {t1} timer. Hvor mange bude skal "
+        "der til, hvis samme rute skal klares på {t2} timer?",
+        "{n1} landmænd kan høste en mark på {t1} dage. Hvor mange landmænd skal "
+        "der til, hvis marken skal høstes på {t2} dage?",
+        "{n1} musikere kan gennemføre et program på {t1} minutter. Hvor mange "
+        "musikere skal der til, hvis programmet skal gennemføres på {t2} minutter?",
+        "Et budfirma med {n1} chauffører leverer alle pakker på {t1} timer. "
+        "Hvor mange chauffører kræves for at gøre det på {t2} timer?",
+        "Et kokketeam på {n1} personer laver en firmafrokost på {t1} timer. "
+        "Hvor mange kokke skal der til for at gøre det på {t2} timer?",
+    ],
+}
 
 @dataclass
 class InvRateParams:
     n1: int
     t1: int
-    n2: int
+    n2: int         # "the other known" — count of workers for find_time; else derived
+    t2: int         # "the other known" — target time for find_workers; else derived
     work: int
+    ask: str        # "find_time" | "find_workers"
     answer: int
 
 
 def _inv_steps_constant_product(p: InvRateParams) -> tuple[list[Step], str]:
-    unit = "time" if p.answer == 1 else "timer"
-    steps = [
+    if p.ask == "find_time":
+        unit = "time" if p.answer == 1 else "timer"
+        return [
+            Step(pre="Det samlede arbejde svarer til antal personer gange tid:",
+                 expr=f"{p.n1} * {p.t1}", result=str(p.work),
+                 post=f"altså {p.work} personetimer i alt."),
+            Step(pre=f"Med {p.n2} personer bliver tiden det samlede arbejde "
+                     "divideret med det nye antal:",
+                 expr=f"{p.work} / {p.n2}", result=str(p.answer),
+                 post=f"altså {p.answer} {unit}."),
+        ], str(p.answer)
+    # find_workers
+    unit = "person" if p.answer == 1 else "personer"
+    return [
         Step(pre="Det samlede arbejde svarer til antal personer gange tid:",
              expr=f"{p.n1} * {p.t1}", result=str(p.work),
              post=f"altså {p.work} personetimer i alt."),
-        Step(pre=f"Med {p.n2} personer bliver tiden det samlede arbejde "
-                 "divideret med det nye antal:",
-             expr=f"{p.work} / {p.n2}", result=str(p.answer),
+        Step(pre=f"For at gøre det på {p.t2} tidsenheder skal antallet af "
+                 "personer være arbejdet divideret med den nye tid:",
+             expr=f"{p.work} / {p.t2}", result=str(p.answer),
              post=f"altså {p.answer} {unit}."),
-    ]
-    return steps, str(p.answer)
+    ], str(p.answer)
 
 
 def _inv_steps_equation(p: InvRateParams) -> tuple[list[Step], str]:
-    unit = "time" if p.answer == 1 else "timer"
-    steps = [
+    if p.ask == "find_time":
+        unit = "time" if p.answer == 1 else "timer"
+        return [
+            Step(pre="Da arbejdet er omvendt proportionalt med antal personer, "
+                     f"gælder {p.n1} * {p.t1} = {p.n2} * t. Vi løser for t:",
+                 expr=f"{p.n1} * {p.t1} / {p.n2}", result=str(p.answer),
+                 post=f"altså t = {p.answer} {unit}."),
+        ], str(p.answer)
+    # find_workers
+    unit = "person" if p.answer == 1 else "personer"
+    return [
         Step(pre="Da arbejdet er omvendt proportionalt med antal personer, "
-                 f"gælder {p.n1} * {p.t1} = {p.n2} * t. Vi løser for t:",
-             expr=f"{p.n1} * {p.t1} / {p.n2}", result=str(p.answer),
-             post=f"altså t = {p.answer} {unit}."),
-    ]
-    return steps, str(p.answer)
+                 f"gælder {p.n1} * {p.t1} = n * {p.t2}. Vi løser for n:",
+             expr=f"{p.n1} * {p.t1} / {p.t2}", result=str(p.answer),
+             post=f"altså n = {p.answer} {unit}."),
+    ], str(p.answer)
 
 
 _INV_STEPS = {
@@ -615,21 +920,34 @@ _INV_STEPS = {
 
 
 def sample_inverse_rate(rng: random.Random) -> Problem:
+    ask = rng.choice(["find_time", "find_workers"])
     while True:
         n1 = rng.randint(2, 20)
         t1 = rng.randint(2, 40)
-        n2 = rng.randint(2, 20)
-        if n2 == n1:
-            continue
         work = n1 * t1
-        if work % n2 == 0:
-            answer = work // n2
-            if 1 <= answer <= 200:
-                break
+        if ask == "find_time":
+            n2 = rng.randint(2, 20)
+            if n2 == n1:
+                continue
+            if work % n2 == 0:
+                answer = work // n2
+                t2 = answer
+                if 1 <= answer <= 200:
+                    break
+        else:  # find_workers
+            t2 = rng.randint(2, 40)
+            if t2 == t1:
+                continue
+            if work % t2 == 0:
+                answer = work // t2
+                n2 = answer
+                if 1 <= answer <= 200:
+                    break
 
-    q_tpl = rng.choice(INVERSE_RATE_TEMPLATES)
-    question = q_tpl.format(n1=n1, t1=t1, n2=n2)
-    p = InvRateParams(n1=n1, t1=t1, n2=n2, work=work, answer=answer)
+    q_tpl = rng.choice(INVERSE_RATE_TEMPLATES[ask])
+    question = q_tpl.format(n1=n1, t1=t1, n2=n2, t2=t2)
+    p = InvRateParams(n1=n1, t1=t1, n2=n2, t2=t2, work=work,
+                      ask=ask, answer=answer)
     strategy = rng.choice(list(_INV_STEPS))
     steps, final = _INV_STEPS[strategy](p)
     chain = render_prose(steps, final)
@@ -640,8 +958,9 @@ def sample_inverse_rate(rng: random.Random) -> Problem:
         question_da=question,
         chain_da=chain,
         answer=final,
-        params={"n1": n1, "t1": t1, "n2": n2, "work": work},
-        strategy=strategy,
+        params={"n1": n1, "t1": t1, "n2": n2, "t2": t2, "work": work,
+                "ask": ask},
+        strategy=f"{strategy}_{ask}",
         steps=[asdict(s) for s in steps],
         funcall=funcall,
     )
@@ -848,25 +1167,25 @@ COIN_DENOMS = [
 
 COIN_TEMPLATES = [
     "{name} har tilsammen {C} mønter fordelt på {d1_pl} og {d2_pl}. Den "
-    "samlede værdi er {V} kr. Hvor mange {d1_pl} har {name}?",
+    "samlede værdi er {V} kr. Hvor mange {ask_pl} har {name}?",
     "I en pengekasse ligger der {C} mønter, som enten er {d1_pl} eller "
-    "{d2_pl}. Værdien er {V} kr. Hvor mange {d1_pl} er der?",
+    "{d2_pl}. Værdien er {V} kr. Hvor mange {ask_pl} er der?",
     "En kasserer optæller {C} mønter i {d1_pl} og {d2_pl}. Beløbet er "
-    "{V} kr. Hvor mange {d1_pl} er der?",
+    "{V} kr. Hvor mange {ask_pl} er der?",
     "{name} tømmer sin sparegris og finder {C} mønter i to slags: {d1_pl} "
-    "og {d2_pl}. Værdien er {V} kr. Hvor mange {d1_pl} har {name}?",
+    "og {d2_pl}. Værdien er {V} kr. Hvor mange {ask_pl} har {name}?",
     "En pose indeholder {C} mønter, som fordeler sig på {d1_pl} og {d2_pl}. "
-    "Den samlede sum er {V} kr. Hvor mange {d1_pl} er der i posen?",
+    "Den samlede sum er {V} kr. Hvor mange {ask_pl} er der i posen?",
     "I en samling af {C} mønter — alle enten {d1_pl} eller {d2_pl} — "
-    "er den samlede værdi {V} kr. Bestem antallet af {d1_pl}.",
+    "er den samlede værdi {V} kr. Bestem antallet af {ask_pl}.",
     "{name} har sparet op i alt {V} kr fordelt på {C} mønter af to typer: "
-    "{d1_pl} og {d2_pl}. Hvor mange {d1_pl} er det?",
+    "{d1_pl} og {d2_pl}. Hvor mange {ask_pl} er det?",
     "En vekseler har {C} mønter i {d1_pl} og {d2_pl} med en samlet værdi på "
-    "{V} kr. Hvor mange {d1_pl} er der?",
+    "{V} kr. Hvor mange {ask_pl} er der?",
     "Efter en indsamling er der {C} mønter i {d1_pl} og {d2_pl}, i alt "
-    "{V} kr. Hvor mange {d1_pl} er indsamlet?",
+    "{V} kr. Hvor mange {ask_pl} er indsamlet?",
     "En butik har {C} mønter til byttepenge — kun {d1_pl} og {d2_pl}. "
-    "Værdien er {V} kr. Hvor mange {d1_pl} er der?",
+    "Værdien er {V} kr. Hvor mange {ask_pl} er der?",
 ]
 
 @dataclass
@@ -883,6 +1202,18 @@ class CoinParams:
     diff: int
     step: int
     a: int
+    b: int
+    ask: str      # "d1" | "d2"
+    answer: int
+
+
+def _coin_final_step(p: CoinParams) -> Step | None:
+    """If we solved for a and the question asks for b (d2), add a step."""
+    if p.ask == "d1":
+        return None
+    return Step(pre=f"Antal {p.d2_pl} = {p.C} - a:",
+                expr=f"{p.C} - {p.a}", result=str(p.b),
+                post=f"altså {p.b} {p.d2_pl}.")
 
 
 def _coin_steps_substitution(p: CoinParams) -> tuple[list[Step], str]:
@@ -899,7 +1230,10 @@ def _coin_steps_substitution(p: CoinParams) -> tuple[list[Step], str]:
              result=str(p.a),
              post=f"altså a = {p.a}."),
     ]
-    return steps, str(p.a)
+    final = _coin_final_step(p)
+    if final is not None:
+        steps.append(final)
+    return steps, str(p.answer)
 
 
 def _coin_steps_if_all_d2(p: CoinParams) -> tuple[list[Step], str]:
@@ -915,7 +1249,10 @@ def _coin_steps_if_all_d2(p: CoinParams) -> tuple[list[Step], str]:
              expr=f"{p.diff} / {p.step}", result=str(p.a),
              post=f"altså {p.a} {p.d1_pl}."),
     ]
-    return steps, str(p.a)
+    final = _coin_final_step(p)
+    if final is not None:
+        steps.append(final)
+    return steps, str(p.answer)
 
 
 _COIN_STEPS = {
@@ -935,13 +1272,18 @@ def sample_coin(rng: random.Random) -> Problem:
     step = d2 - d1
     name = rng.choice(NAMES)
 
+    ask = rng.choice(["d1", "d2"])
+    ask_pl = d1_pl if ask == "d1" else d2_pl
+    answer = a if ask == "d1" else b
+
     q_tpl = rng.choice(COIN_TEMPLATES)
     question = q_tpl.format(name=name, C=C, V=V,
-                            d1_pl=d1_pl, d2_pl=d2_pl)
+                            d1_pl=d1_pl, d2_pl=d2_pl, ask_pl=ask_pl)
 
     p = CoinParams(d1=d1, d2=d2, d1_sg=d1_sg, d2_sg=d2_sg,
                    d1_pl=d1_pl, d2_pl=d2_pl,
-                   C=C, V=V, d2C=d2C, diff=diff, step=step, a=a)
+                   C=C, V=V, d2C=d2C, diff=diff, step=step,
+                   a=a, b=b, ask=ask, answer=answer)
     strategy = rng.choice(list(_COIN_STEPS))
     steps, final = _COIN_STEPS[strategy](p)
     chain = render_prose(steps, final)
@@ -953,8 +1295,8 @@ def sample_coin(rng: random.Random) -> Problem:
         chain_da=chain,
         answer=final,
         params={"d1": d1, "d2": d2, "C": C, "V": V, "a": a, "b": b,
-                "name": name},
-        strategy=strategy,
+                "name": name, "ask": ask},
+        strategy=f"{strategy}_{ask}",
         steps=[asdict(s) for s in steps],
         funcall=funcall,
     )
@@ -962,29 +1304,102 @@ def sample_coin(rng: random.Random) -> Problem:
 
 # ── AGE ─────────────────────────────────────────────────────────────────
 
-AGE_TEMPLATES = [
-    "{name_a} er {X} år, og {name_b} er {Y} år. Om hvor mange år vil "
-    "{name_a} være {k} gange så gammel som {name_b}?",
-    "Lige nu er {name_a} {X} år, mens {name_b} er {Y} år gammel. Om hvor "
-    "mange år er {name_a}s alder {k} gange {name_b}s?",
-    "{name_a} er i dag {X} år, {name_b} er {Y} år. Hvornår (om hvor mange "
-    "år) vil forholdet mellem deres aldre være {k}:1?",
-    "{name_a}s alder er {X} år, og {name_b}s alder er {Y} år. Om hvor "
-    "mange år vil {name_a} være {k} gange så gammel som {name_b}?",
-    "For nuværende er {name_a} {X} år og {name_b} {Y} år. "
-    "Efter hvor mange år bliver {name_a}s alder {k} gange {name_b}s?",
-    "{name_a} og {name_b} er hhv. {X} og {Y} år gamle. Om hvor mange år "
-    "vil {name_a} være præcis {k} gange så gammel som {name_b}?",
-    "I dag er {name_a} {X} år, og {name_b} er {Y} år. Bestem antallet af "
-    "år, indtil {name_a} er {k} gange så gammel som {name_b}.",
-    "Nu er {name_a} {X} år og {name_b} {Y} år. Om hvor mange år er "
-    "{name_a} nøjagtig {k} gange så gammel som {name_b}?",
-    "Aldersforskellen mellem {name_a} ({X} år) og {name_b} ({Y} år) betyder, "
-    "at {name_a} om nogle år vil være {k} gange så gammel som {name_b}. "
-    "Hvor mange år er der tale om?",
-    "{name_a} er {X} år og {name_b} er {Y} år i år. "
-    "Hvor mange år går der, før {name_a}s alder er {k} gange {name_b}s?",
-]
+# Simple-now templates: X = k * Y right now, ask about Y or X or a future age.
+AGE_SIMPLE_NOW_TEMPLATES = {
+    # ask "young": given X and k, find Y (the younger age). X is stated.
+    "young": [
+        "{name_a} er {k} gange så gammel som {name_b}. {name_a} er {X} år. "
+        "Hvor gammel er {name_b}?",
+        "{name_a} er {X} år, og {name_a}s alder er {k} gange {name_b}s. "
+        "Hvor gammel er {name_b}?",
+        "Forholdet mellem {name_a}s og {name_b}s alder er {k}:1. {name_a} er "
+        "{X} år. Hvor gammel er {name_b}?",
+        "{name_a} er præcis {k} gange så gammel som {name_b}. Hvis {name_a} "
+        "er {X} år, hvor gammel er {name_b} så?",
+        "Hvis {name_a} er {k} gange så gammel som {name_b} og {name_a} netop "
+        "er fyldt {X} år, hvor gammel er {name_b}?",
+    ],
+    # ask "old": given Y and k, find X. Y is stated.
+    "old": [
+        "{name_a} er {k} gange så gammel som {name_b}. {name_b} er {Y} år. "
+        "Hvor gammel er {name_a}?",
+        "{name_b} er {Y} år, og {name_a}s alder er {k} gange {name_b}s. "
+        "Hvor gammel er {name_a}?",
+        "Forholdet mellem {name_a}s og {name_b}s alder er {k}:1. {name_b} er "
+        "{Y} år. Hvor gammel er {name_a}?",
+        "{name_a} er præcis {k} gange så gammel som {name_b}. Hvis {name_b} "
+        "er {Y} år, hvor gammel er {name_a} så?",
+        "Hvis {name_a} er {k} gange så gammel som {name_b} og {name_b} netop "
+        "er fyldt {Y} år, hvor gammel er {name_a}?",
+    ],
+    # ask "future": given Y and k (and thus X = k*Y), ask "in T years, how old
+    # will name_b be?" answer = Y + T
+    "future": [
+        "{name_a} er {k} gange så gammel som {name_b}. {name_b} er {Y} år i "
+        "dag. Hvor gammel er {name_b} om {future_t} år?",
+        "{name_b} er {Y} år, og {name_a} er {k} gange så gammel. Hvor gammel "
+        "vil {name_b} være om {future_t} år?",
+        "Forholdet mellem {name_a}s og {name_b}s alder er {k}:1. {name_b} er "
+        "{Y} år. Hvor gammel er {name_b} om {future_t} år?",
+        "Hvis {name_a} er {k} gange så gammel som {name_b}, og {name_b} er "
+        "{Y} år i dag, hvor gammel er {name_b} så om {future_t} år?",
+    ],
+}
+
+AGE_TEMPLATES = {
+    # "t": ask for number of years until the condition holds
+    "t": [
+        "{name_a} er {X} år, og {name_b} er {Y} år. Om hvor mange år vil "
+        "{name_a} være {k} gange så gammel som {name_b}?",
+        "Lige nu er {name_a} {X} år, mens {name_b} er {Y} år gammel. Om hvor "
+        "mange år er {name_a}s alder {k} gange {name_b}s?",
+        "{name_a} er i dag {X} år, {name_b} er {Y} år. Hvornår (om hvor mange "
+        "år) vil forholdet mellem deres aldre være {k}:1?",
+        "{name_a}s alder er {X} år, og {name_b}s alder er {Y} år. Om hvor "
+        "mange år vil {name_a} være {k} gange så gammel som {name_b}?",
+        "For nuværende er {name_a} {X} år og {name_b} {Y} år. "
+        "Efter hvor mange år bliver {name_a}s alder {k} gange {name_b}s?",
+        "{name_a} og {name_b} er hhv. {X} og {Y} år gamle. Om hvor mange år "
+        "vil {name_a} være præcis {k} gange så gammel som {name_b}?",
+        "I dag er {name_a} {X} år, og {name_b} er {Y} år. Bestem antallet af "
+        "år, indtil {name_a} er {k} gange så gammel som {name_b}.",
+        "Nu er {name_a} {X} år og {name_b} {Y} år. Om hvor mange år er "
+        "{name_a} nøjagtig {k} gange så gammel som {name_b}?",
+        "Aldersforskellen mellem {name_a} ({X} år) og {name_b} ({Y} år) betyder, "
+        "at {name_a} om nogle år vil være {k} gange så gammel som {name_b}. "
+        "Hvor mange år er der tale om?",
+        "{name_a} er {X} år og {name_b} er {Y} år i år. "
+        "Hvor mange år går der, før {name_a}s alder er {k} gange {name_b}s?",
+    ],
+    # "age_a": ask A's age at the point the condition holds (X + t)
+    "age_a": [
+        "{name_a} er {X} år, og {name_b} er {Y} år. Hvor gammel vil {name_a} "
+        "være, når {name_a} er {k} gange så gammel som {name_b}?",
+        "Lige nu er {name_a} {X} år og {name_b} {Y} år. Hvor mange år vil "
+        "{name_a} være, når forholdet mellem deres aldre er {k}:1?",
+        "{name_a} er i dag {X} år og {name_b} {Y} år. Hvor gammel er "
+        "{name_a} på det tidspunkt, hvor {name_a}s alder er {k} gange "
+        "{name_b}s?",
+        "I dag er {name_a} {X} år og {name_b} {Y} år. Bestem {name_a}s alder "
+        "den dag, {name_a} bliver præcis {k} gange så gammel som {name_b}.",
+        "For nuværende er {name_a} {X} år og {name_b} {Y} år. Hvor gammel "
+        "vil {name_a} være, når {name_a}s alder er {k} gange {name_b}s?",
+    ],
+    # "age_b": ask B's age at the point the condition holds (Y + t)
+    "age_b": [
+        "{name_a} er {X} år, og {name_b} er {Y} år. Hvor gammel vil {name_b} "
+        "være på det tidspunkt, hvor {name_a} er {k} gange så gammel som "
+        "{name_b}?",
+        "Lige nu er {name_a} {X} år og {name_b} {Y} år. Hvor gammel bliver "
+        "{name_b}, når {name_a} er {k} gange så gammel som {name_b}?",
+        "{name_a} er i dag {X} år og {name_b} {Y} år. Hvor mange år er "
+        "{name_b}, når {name_a}s alder er {k} gange {name_b}s?",
+        "I dag er {name_a} {X} år og {name_b} {Y} år. Angiv {name_b}s alder "
+        "den dag, {name_a} bliver præcis {k} gange så gammel som {name_b}.",
+        "For nuværende er {name_a} {X} år og {name_b} {Y} år. Hvor gammel "
+        "vil {name_b} være, når {name_a}s alder er {k} gange {name_b}s?",
+    ],
+}
 
 @dataclass
 class AgeParams:
@@ -996,7 +1411,25 @@ class AgeParams:
     kY: int
     num: int
     denom: int
+    kind: str       # "time_shift" | "simple_now"
+    t: int          # years until the condition holds (time_shift) OR future_t (simple_now future)
+    ask: str        # time_shift: "t"|"age_a"|"age_b" ;  simple_now: "young"|"old"|"future"
     answer: int
+
+
+def _age_final_step(p: AgeParams) -> Step | None:
+    """After t is known, add a step to compute the requested quantity."""
+    if p.ask == "t":
+        return None
+    if p.ask == "age_a":
+        return Step(pre=f"{p.name_a}s alder på det tidspunkt er {p.X} + t:",
+                    expr=f"{p.X} + {p.t}", result=str(p.answer),
+                    post=f"altså {p.name_a} er {p.answer} år.")
+    if p.ask == "age_b":
+        return Step(pre=f"{p.name_b}s alder på det tidspunkt er {p.Y} + t:",
+                    expr=f"{p.Y} + {p.t}", result=str(p.answer),
+                    post=f"altså {p.name_b} er {p.answer} år.")
+    raise ValueError(p.ask)
 
 
 def _age_steps_expand(p: AgeParams) -> tuple[list[Step], str]:
@@ -1010,9 +1443,12 @@ def _age_steps_expand(p: AgeParams) -> tuple[list[Step], str]:
         Step(pre=f"Vi flytter så alle t-led til den ene side: "
                  f"({p.k} - 1)t = {p.X} - {p.kY}. Vi udregner:",
              expr=f"({p.X} - {p.kY}) / ({p.k} - 1)",
-             result=str(p.answer),
-             post=f"altså t = {p.answer}."),
+             result=str(p.t),
+             post=f"altså t = {p.t}."),
     ]
+    final_step = _age_final_step(p)
+    if final_step is not None:
+        steps.append(final_step)
     return steps, str(p.answer)
 
 
@@ -1025,39 +1461,98 @@ def _age_steps_ratio(p: AgeParams) -> tuple[list[Step], str]:
         Step(pre=f"Så {p.X} + t = {p.kY} + {p.k}t, hvilket giver "
                  f"({p.k} - 1)t = {p.X} - {p.kY}. Vi udregner:",
              expr=f"({p.X} - {p.kY}) / ({p.k} - 1)",
-             result=str(p.answer),
-             post=f"altså t = {p.answer}."),
+             result=str(p.t),
+             post=f"altså t = {p.t}."),
     ]
+    final_step = _age_final_step(p)
+    if final_step is not None:
+        steps.append(final_step)
     return steps, str(p.answer)
+
+
+def _age_steps_simple_now(p: AgeParams) -> tuple[list[Step], str]:
+    """X = k * Y. Given the two known quantities, compute the third.
+
+    ask="young": know X and k, find Y = X / k.
+    ask="old":   know Y and k, find X = k * Y.
+    ask="future": know Y and k, add future_t. answer = Y + t.
+    """
+    if p.ask == "young":
+        return [
+            Step(pre=f"Da {p.name_a} er {p.k} gange så gammel som {p.name_b} "
+                     f"og {p.name_a} er {p.X} år, er {p.name_b}s alder "
+                     f"{p.X} divideret med {p.k}:",
+                 expr=f"{p.X} / {p.k}", result=str(p.Y),
+                 post=f"altså {p.name_b} er {p.Y} år."),
+        ], str(p.answer)
+    if p.ask == "old":
+        return [
+            Step(pre=f"Da {p.name_a} er {p.k} gange så gammel som {p.name_b} "
+                     f"og {p.name_b} er {p.Y} år, er {p.name_a}s alder "
+                     f"{p.k} gange {p.Y}:",
+                 expr=f"{p.k} * {p.Y}", result=str(p.X),
+                 post=f"altså {p.name_a} er {p.X} år."),
+        ], str(p.answer)
+    if p.ask == "future":
+        return [
+            Step(pre=f"{p.name_b} er {p.Y} år i dag. Om {p.t} år er "
+                     f"{p.name_b}s alder {p.Y} + {p.t}:",
+                 expr=f"{p.Y} + {p.t}", result=str(p.answer),
+                 post=f"altså {p.name_b} er {p.answer} år om {p.t} år."),
+        ], str(p.answer)
+    raise ValueError(p.ask)
 
 
 _AGE_STEPS = {
     "expand": _age_steps_expand,
     "ratio": _age_steps_ratio,
+    "simple_now": _age_steps_simple_now,
 }
 
 
 def sample_age(rng: random.Random) -> Problem:
-    while True:
-        Y = rng.randint(2, 35)
-        k = rng.randint(2, 5)
-        t = rng.randint(1, 30)
-        X = k * (Y + t) - t
-        if 3 <= X <= 120 and X > Y and X != Y:
-            break
-
-    kY = k * Y
-    num = X - kY
-    denom = k - 1
-    answer = t
-
+    kind = rng.choice(["time_shift", "time_shift", "simple_now"])  # bias existing
     name_a, name_b = rng.sample(NAMES, 2)
-    q_tpl = rng.choice(AGE_TEMPLATES)
-    question = q_tpl.format(name_a=name_a, name_b=name_b, X=X, Y=Y, k=k)
+
+    if kind == "time_shift":
+        while True:
+            Y = rng.randint(2, 35)
+            k = rng.randint(2, 5)
+            t = rng.randint(1, 30)
+            X = k * (Y + t) - t
+            if 3 <= X <= 120 and X > Y and X != Y:
+                break
+        kY = k * Y
+        num = X - kY
+        denom = k - 1
+        ask = rng.choice(["t", "age_a", "age_b"])
+        answer = {"t": t, "age_a": X + t, "age_b": Y + t}[ask]
+        q_tpl = rng.choice(AGE_TEMPLATES[ask])
+        question = q_tpl.format(name_a=name_a, name_b=name_b, X=X, Y=Y, k=k)
+        strategy = rng.choice(["expand", "ratio"])
+    else:  # simple_now: X = k * Y right now
+        while True:
+            k = rng.randint(2, 6)
+            Y = rng.randint(3, 40)
+            X = k * Y
+            if 6 <= X <= 120:
+                break
+        ask = rng.choice(["young", "old", "future"])
+        future_t = rng.choice([3, 5, 10, 15, 20]) if ask == "future" else 0
+        answer = {"young": Y, "old": X, "future": Y + future_t}[ask]
+        # Fields not used by simple_now, keep zero for schema stability
+        kY = k * Y
+        num = 0
+        denom = 0
+        t = future_t
+        q_tpl = rng.choice(AGE_SIMPLE_NOW_TEMPLATES[ask])
+        question = q_tpl.format(name_a=name_a, name_b=name_b, X=X, Y=Y, k=k,
+                                future_t=future_t)
+        strategy = "simple_now"
 
     p = AgeParams(name_a=name_a, name_b=name_b, X=X, Y=Y, k=k, kY=kY,
-                  num=num, denom=denom, answer=answer)
-    strategy = rng.choice(list(_AGE_STEPS))
+                  num=num, denom=denom, kind=kind, t=t, ask=ask,
+                  answer=answer)
     steps, final = _AGE_STEPS[strategy](p)
     chain = render_prose(steps, final)
     funcall = render_funcall(question, steps, final)
@@ -1067,8 +1562,9 @@ def sample_age(rng: random.Random) -> Problem:
         question_da=question,
         chain_da=chain,
         answer=final,
-        params={"name_a": name_a, "name_b": name_b, "X": X, "Y": Y, "k": k},
-        strategy=strategy,
+        params={"name_a": name_a, "name_b": name_b, "X": X, "Y": Y, "k": k,
+                "kind": kind, "t": t, "ask": ask},
+        strategy=f"{strategy}_{ask}",
         steps=[asdict(s) for s in steps],
         funcall=funcall,
     )
@@ -1076,7 +1572,8 @@ def sample_age(rng: random.Random) -> Problem:
 
 # ── MIXTURE ─────────────────────────────────────────────────────────────
 
-MIXTURE_TEMPLATES = [
+MIXTURE_TEMPLATES = {}
+MIXTURE_TEMPLATES["blend"] = [
     "En kemiker blander {V1} ml opløsning med {C1}% koncentration med "
     "{V2} ml opløsning med {C2}% koncentration. Hvad er koncentrationen "
     "i den samlede blanding (i procent)?",
@@ -1107,19 +1604,64 @@ MIXTURE_TEMPLATES = [
     "maling (%)?",
 ]
 
+# dilute: start with V1 ml at C1%, add water to reach C2%. C2 < C1. answer = ml water.
+MIXTURE_TEMPLATES["dilute"] = [
+    "En kemiker har {V1} ml opløsning med {C1}% koncentration. Hvor meget vand "
+    "skal tilsættes for at reducere koncentrationen til {C2}%?",
+    "{V1} ml af en {C1}%-opløsning skal fortyndes til {C2}%. Hvor mange "
+    "milliliter vand skal tilsættes?",
+    "På et laboratorium har man {V1} ml væske med {C1}% aktivt stof. Man "
+    "ønsker at fortynde den til {C2}%. Hvor meget vand skal tilsættes?",
+    "En løsning på {V1} ml indeholder {C1}% salt. Hvor mange ml rent vand "
+    "skal tilsættes for at nå ned på {C2}%?",
+    "Man har {V1} ml juice med {C1}% frugtindhold og vil fortynde den til "
+    "{C2}%. Hvor meget vand skal tilsættes?",
+    "En pool indeholder {V1} liter vand med {C1}% klor. Hvor mange liter "
+    "rent vand skal tilsættes for at bringe klorindholdet ned til {C2}%?",
+    "En bartender har {V1} ml drink med {C1}% alkohol og vil have den fortyndet "
+    "til {C2}%. Hvor meget vand skal tilsættes?",
+    "En parfumist har {V1} ml essens med {C1}% duftkoncentration og "
+    "ønsker at få {C2}% koncentration. Hvor meget opløsningsmiddel skal "
+    "tilsættes?",
+]
+
+# concentrate: start with V1 ml at C1%, add pure solute (100%) to reach C2%. C2 > C1. answer = amount of solute.
+MIXTURE_TEMPLATES["concentrate"] = [
+    "En kemiker har {V1} ml opløsning med {C1}% koncentration. Hvor meget "
+    "rent stof skal tilsættes for at hæve koncentrationen til {C2}%?",
+    "{V1} ml af en {C1}%-opløsning skal opkoncentreres til {C2}%. Hvor "
+    "mange gram rent stof skal tilsættes?",
+    "På et laboratorium har man {V1} ml væske med {C1}% aktivt stof. Man "
+    "ønsker at hæve indholdet til {C2}%. Hvor meget rent stof skal tilsættes?",
+    "En løsning på {V1} ml indeholder {C1}% salt. Hvor meget rent salt skal "
+    "tilsættes for at nå op på {C2}%?",
+    "Man har {V1} ml sirup med {C1}% sukker og vil have {C2}% sukker. Hvor "
+    "meget rent sukker skal tilsættes?",
+    "En parfumist har {V1} ml essens med {C1}% duftkoncentration og "
+    "ønsker at opnå {C2}%. Hvor meget rent duftstof skal tilsættes?",
+    "Man har {V1} ml opløsning med {C1}% aktivstof og skal have den "
+    "koncentreret til {C2}%. Hvor meget rent aktivstof kræves?",
+    "En brygger har {V1} liter brygsats med {C1}% sukker og vil hæve den "
+    "til {C2}%. Hvor meget rent sukker skal tilsættes?",
+]
+
 @dataclass
 class MixtureParams:
+    kind: str        # "blend" | "dilute" | "concentrate"
     V1: int
-    V2: int
+    V2: int          # 0 for dilute/concentrate
     C1: int
     C2: int
-    m1: int
-    m2: int
+    m1: int          # amount of solute in solution 1
+    m2: int          # blend: solute in sol 2. dilute/concentrate: not used
     msum: int
     msum100: int
     v1c1: int
     v2c2: int
     vsum: int
+    v1c1_full: int   # for dilute: V1*C1 (used in "target volume" step)
+    diff: int        # for concentrate: V1*(C2-C1)
+    denom: int       # for concentrate: 100 - C2
     answer: int
 
 
@@ -1164,22 +1706,74 @@ def _mixture_steps_weighted(p: MixtureParams) -> tuple[list[Step], str]:
     return steps, str(p.answer)
 
 
+def _mixture_steps_dilute(p: MixtureParams) -> tuple[list[Step], str]:
+    """V1 ml at C1% + x ml water → same solute, lower concentration C2.
+
+    solute = V1 * C1 / 100. final volume = solute / (C2/100) = V1*C1/C2.
+    water added = final volume - V1 = V1*C1/C2 - V1 = V1*(C1 - C2)/C2.
+    We render with two integer steps (target volume, then delta) which
+    guarantees exact arithmetic when C1*V1 is divisible by C2.
+    """
+    target_vol = p.v1c1_full // p.C2  # V1*C1 / C2 = target total volume
+    return [
+        Step(pre=f"Mængden af stof er uændret. For {p.V1} ml med {p.C1}% er "
+                 "stofmængden volumen gange procent:",
+             expr=f"{p.V1} * {p.C1}", result=str(p.v1c1_full),
+             post=f"altså tæller = {p.v1c1_full} (i procent-ml-enheder)."),
+        Step(pre=f"For at nå {p.C2}% skal totalvolumen være tæller divideret "
+                 f"med den nye procent:",
+             expr=f"{p.v1c1_full} / {p.C2}", result=str(target_vol),
+             post=f"altså totalvolumen skal være {target_vol} ml."),
+        Step(pre="Vandet der skal tilsættes er totalvolumen minus den "
+                 "oprindelige volumen:",
+             expr=f"{target_vol} - {p.V1}", result=str(p.answer),
+             post=f"altså {p.answer} ml vand."),
+    ], str(p.answer)
+
+
+def _mixture_steps_concentrate(p: MixtureParams) -> tuple[list[Step], str]:
+    """V1 ml at C1% + x g pure solute (100%) → C2%.
+
+    From (V1*C1 + 100*x) / (V1 + x) = C2 →
+    x = V1*(C2 - C1) / (100 - C2). We emit two integer steps: numerator = V1*diff
+    and division by (100 - C2).
+    """
+    return [
+        Step(pre=f"Tilsæt x gram rent stof. Ligningen "
+                 f"({p.V1}·{p.C1} + 100·x) / ({p.V1} + x) = {p.C2} "
+                 f"omskrives til x·(100 - {p.C2}) = {p.V1}·({p.C2} - {p.C1}). "
+                 f"Vi finder højresiden:",
+             expr=f"{p.V1} * ({p.C2} - {p.C1})", result=str(p.diff),
+             post=f"altså tæller = {p.diff}."),
+        Step(pre=f"Nævneren er 100 - {p.C2}:",
+             expr=f"100 - {p.C2}", result=str(p.denom),
+             post=f"altså nævner = {p.denom}."),
+        Step(pre="Vi løser for x:",
+             expr=f"{p.diff} / {p.denom}", result=str(p.answer),
+             post=f"altså x = {p.answer} gram rent stof."),
+    ], str(p.answer)
+
+
 _MIX_STEPS = {
     "amounts": _mixture_steps_amounts,
     "weighted": _mixture_steps_weighted,
+    "dilute": _mixture_steps_dilute,
+    "concentrate": _mixture_steps_concentrate,
 }
 
 
-def sample_mixture(rng: random.Random) -> Problem:
+_MIXTURE_VOLS = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500,
+                 600, 700, 800, 1000]
+_MIXTURE_CONCS = [2, 4, 5, 6, 8, 10, 12, 15, 16, 18, 20, 22, 25,
+                  28, 30, 35, 40, 45, 50, 60, 70, 80]
+
+
+def _sample_blend(rng):
     while True:
-        V1 = rng.choice([50, 100, 150, 200, 250, 300, 350, 400, 450, 500,
-                         600, 700, 800, 1000])
-        V2 = rng.choice([50, 100, 150, 200, 250, 300, 350, 400, 450, 500,
-                         600, 700, 800, 1000])
-        C1 = rng.choice([2, 4, 5, 6, 8, 10, 12, 15, 16, 18, 20, 22, 25,
-                         28, 30, 35, 40, 45, 50, 60, 70, 80])
-        C2 = rng.choice([2, 4, 5, 6, 8, 10, 12, 15, 16, 18, 20, 22, 25,
-                         28, 30, 35, 40, 45, 50, 60, 70, 80])
+        V1 = rng.choice(_MIXTURE_VOLS)
+        V2 = rng.choice(_MIXTURE_VOLS)
+        C1 = rng.choice(_MIXTURE_CONCS)
+        C2 = rng.choice(_MIXTURE_CONCS)
         if C1 == C2:
             continue
         v1c1 = V1 * C1
@@ -1189,21 +1783,78 @@ def sample_mixture(rng: random.Random) -> Problem:
             answer = (v1c1 + v2c2) // vsum
             if answer != C1 and answer != C2:
                 break
-
     m1 = V1 * C1 // 100 if V1 * C1 % 100 == 0 else None
     m2 = V2 * C2 // 100 if V2 * C2 % 100 == 0 else None
     if m1 is None or m2 is None:
-        return sample_mixture(rng)
+        return _sample_blend(rng)
     msum = m1 + m2
     msum100 = v1c1 + v2c2
+    return MixtureParams(kind="blend", V1=V1, V2=V2, C1=C1, C2=C2,
+                         m1=m1, m2=m2, msum=msum, msum100=msum100,
+                         v1c1=v1c1, v2c2=v2c2, vsum=vsum,
+                         v1c1_full=0, diff=0, denom=0, answer=answer)
 
-    q_tpl = rng.choice(MIXTURE_TEMPLATES)
-    question = q_tpl.format(V1=V1, V2=V2, C1=C1, C2=C2)
 
-    p = MixtureParams(V1=V1, V2=V2, C1=C1, C2=C2, m1=m1, m2=m2,
-                      msum=msum, msum100=msum100,
-                      v1c1=v1c1, v2c2=v2c2, vsum=vsum, answer=answer)
-    strategy = rng.choice(list(_MIX_STEPS))
+def _sample_dilute(rng):
+    """Add water: C2 < C1, answer = target_vol - V1 with integer arithmetic."""
+    for _ in range(200):
+        V1 = rng.choice(_MIXTURE_VOLS)
+        C1 = rng.choice(_MIXTURE_CONCS)
+        C2 = rng.choice(_MIXTURE_CONCS)
+        if C2 >= C1:
+            continue
+        v1c1_full = V1 * C1                 # target volume numerator
+        if v1c1_full % C2 != 0:
+            continue
+        target_vol = v1c1_full // C2
+        answer = target_vol - V1
+        if 10 <= answer <= 5000:
+            return MixtureParams(kind="dilute", V1=V1, V2=0, C1=C1, C2=C2,
+                                 m1=0, m2=0, msum=0, msum100=0,
+                                 v1c1=v1c1_full, v2c2=0, vsum=0,
+                                 v1c1_full=v1c1_full, diff=0, denom=0,
+                                 answer=answer)
+    # fallback
+    return _sample_dilute(rng)
+
+
+def _sample_concentrate(rng):
+    """Add pure solute: C2 > C1, answer = V1*(C2-C1)/(100-C2)."""
+    for _ in range(200):
+        V1 = rng.choice(_MIXTURE_VOLS)
+        C1 = rng.choice(_MIXTURE_CONCS)
+        C2 = rng.choice(_MIXTURE_CONCS)
+        if C2 <= C1 or C2 >= 100:
+            continue
+        diff_num = V1 * (C2 - C1)
+        denom = 100 - C2
+        if diff_num % denom != 0:
+            continue
+        answer = diff_num // denom
+        if 5 <= answer <= 3000:
+            return MixtureParams(kind="concentrate", V1=V1, V2=0, C1=C1, C2=C2,
+                                 m1=0, m2=0, msum=0, msum100=0,
+                                 v1c1=0, v2c2=0, vsum=0,
+                                 v1c1_full=0, diff=diff_num, denom=denom,
+                                 answer=answer)
+    return _sample_concentrate(rng)
+
+
+def sample_mixture(rng: random.Random) -> Problem:
+    kind = rng.choice(["blend", "blend", "dilute", "concentrate"])
+    if kind == "blend":
+        p = _sample_blend(rng)
+        strategy = rng.choice(["amounts", "weighted"])
+        q_tpl = rng.choice(MIXTURE_TEMPLATES["blend"])
+        question = q_tpl.format(V1=p.V1, V2=p.V2, C1=p.C1, C2=p.C2)
+        params = {"kind": "blend", "V1": p.V1, "V2": p.V2, "C1": p.C1, "C2": p.C2}
+    else:
+        p = _sample_dilute(rng) if kind == "dilute" else _sample_concentrate(rng)
+        strategy = kind
+        q_tpl = rng.choice(MIXTURE_TEMPLATES[kind])
+        question = q_tpl.format(V1=p.V1, C1=p.C1, C2=p.C2)
+        params = {"kind": kind, "V1": p.V1, "C1": p.C1, "C2": p.C2}
+
     steps, final = _MIX_STEPS[strategy](p)
     chain = render_prose(steps, final)
     funcall = render_funcall(question, steps, final)
@@ -1213,8 +1864,8 @@ def sample_mixture(rng: random.Random) -> Problem:
         question_da=question,
         chain_da=chain,
         answer=final,
-        params={"V1": V1, "V2": V2, "C1": C1, "C2": C2},
-        strategy=strategy,
+        params=params,
+        strategy=f"mixture_{strategy}",
         steps=[asdict(s) for s in steps],
         funcall=funcall,
     )
@@ -1223,7 +1874,9 @@ def sample_mixture(rng: random.Random) -> Problem:
 # ── DISTANCE ────────────────────────────────────────────────────────────
 
 DISTANCE_TEMPLATES = {
-    "simple": [
+    # "simple" was single-ask (find d). Split into three asks. Each subdict has
+    # its own templates so we can phrase the unknown correctly.
+    "simple_d": [
         "En bil kører med {R} km/t i {T} timer. Hvor langt har den kørt?",
         "{name} cykler {R} km/t i {T} timer. Hvor mange kilometer har "
         "{name} tilbagelagt?",
@@ -1237,6 +1890,48 @@ DISTANCE_TEMPLATES = {
         "En lastbil kører {T} timer med {R} km/t. Hvor langt kommer den?",
         "En sportsudøver træner med en jævn fart på {R} km/t i {T} timer. "
         "Hvor mange kilometer tilbagelægges?",
+    ],
+    "simple_r": [
+        "En bil tilbagelægger {D} km på {T} timer. Hvad er gennemsnitsfarten "
+        "i km/t?",
+        "{name} cykler {D} km på {T} timer. Hvad er {name}s gennemsnitsfart "
+        "i km/t?",
+        "Et tog tilbagelægger en strækning på {D} km på {T} timer. Hvad er "
+        "farten i km/t?",
+        "En bus kører {D} km på {T} timer. Hvad er gennemsnitsfarten i km/t?",
+        "{name} løber {D} km på {T} timer. Hvad er farten i km/t?",
+        "Et fly tilbagelægger {D} km på {T} timer. Hvad er den gennemsnitlige "
+        "fart i km/t?",
+        "En lastbil kører {D} km på {T} timer. Hvad er dens fart i km/t?",
+    ],
+    "simple_t": [
+        "En bil skal køre {D} km med en fart på {R} km/t. Hvor mange timer "
+        "tager det?",
+        "{name} cykler {D} km med {R} km/t. Hvor mange timer tager turen?",
+        "Et tog kører en strækning på {D} km med {R} km/t. Hvor lang tid "
+        "tager turen?",
+        "En bus skal tilbagelægge {D} km med en fart på {R} km/t. Hvor mange "
+        "timer varer turen?",
+        "{name} løber {D} km med en fart på {R} km/t. Hvor lang tid tager "
+        "det?",
+        "Et fly skal flyve {D} km med en gennemsnitsfart på {R} km/t. "
+        "Hvor mange timer tager turen?",
+        "En lastbil skal køre {D} km med {R} km/t. Hvor lang tid tager det?",
+    ],
+    "average": [
+        "{name} kører {D1} km med {R1} km/t og derefter {D2} km med {R2} km/t. "
+        "Hvad er gennemsnitsfarten for hele turen i km/t?",
+        "En bilist tilbagelægger {D1} km med {R1} km/t og herefter {D2} km "
+        "med {R2} km/t. Hvad er gennemsnitsfarten på hele strækningen?",
+        "På første del af turen kører {name} {D1} km med {R1} km/t. På anden "
+        "del kører {name} {D2} km med {R2} km/t. Hvad er gennemsnitsfarten "
+        "for hele turen (km/t)?",
+        "Et tog kører {D1} km med {R1} km/t og derefter {D2} km med {R2} km/t. "
+        "Hvad er togets gennemsnitsfart over hele strækningen i km/t?",
+        "En cyklist tilbagelægger {D1} km med {R1} km/t og herefter {D2} km "
+        "med {R2} km/t. Hvad er den gennemsnitlige fart i km/t?",
+        "{name} løber {D1} km med {R1} km/t og derefter {D2} km med {R2} km/t. "
+        "Hvad er den gennemsnitlige fart i km/t?",
     ],
     "meeting": [
         "To biler starter samtidig fra hver sin ende af en {D} km lang "
@@ -1283,6 +1978,21 @@ DISTANCE_TEMPLATES = {
 class DistanceSimple:
     R: int
     T: int
+    D: int
+    ask: str        # "d" | "r" | "t"
+    answer: int
+
+
+@dataclass
+class DistanceAverage:
+    R1: int
+    R2: int
+    T1: int
+    T2: int
+    D1: int
+    D2: int
+    Dsum: int
+    Tsum: int
     answer: int
 
 
@@ -1306,10 +2016,46 @@ class DistanceCatchup:
 
 
 def _dist_simple(p: DistanceSimple) -> tuple[list[Step], str]:
+    if p.ask == "d":
+        return [
+            Step(pre="Distancen udregnes som fart gange tid:",
+                 expr=f"{p.R} * {p.T}", result=str(p.D),
+                 post=f"altså {p.D} km."),
+        ], str(p.answer)
+    if p.ask == "r":
+        return [
+            Step(pre="Farten udregnes som distance divideret med tid:",
+                 expr=f"{p.D} / {p.T}", result=str(p.R),
+                 post=f"altså {p.R} km/t."),
+        ], str(p.answer)
+    # ask == "t"
+    unit = "time" if p.T == 1 else "timer"
+    return [
+        Step(pre="Tiden udregnes som distance divideret med fart:",
+             expr=f"{p.D} / {p.R}", result=str(p.T),
+             post=f"altså {p.T} {unit}."),
+    ], str(p.answer)
+
+
+def _dist_average(p: DistanceAverage) -> tuple[list[Step], str]:
+    hr = lambda n: "time" if n == 1 else "timer"
     steps = [
-        Step(pre="Distancen udregnes som fart gange tid:",
-             expr=f"{p.R} * {p.T}", result=str(p.answer),
-             post=f"altså {p.answer} km."),
+        Step(pre="Tiden for første del er distance divideret med fart:",
+             expr=f"{p.D1} / {p.R1}", result=str(p.T1),
+             post=f"altså {p.T1} {hr(p.T1)}."),
+        Step(pre="Tiden for anden del:",
+             expr=f"{p.D2} / {p.R2}", result=str(p.T2),
+             post=f"altså {p.T2} {hr(p.T2)}."),
+        Step(pre="Samlet distance:",
+             expr=f"{p.D1} + {p.D2}", result=str(p.Dsum),
+             post=f"altså {p.Dsum} km."),
+        Step(pre="Samlet tid:",
+             expr=f"{p.T1} + {p.T2}", result=str(p.Tsum),
+             post=f"altså {p.Tsum} {hr(p.Tsum)}."),
+        Step(pre="Gennemsnitsfarten er samlet distance divideret med "
+                 "samlet tid:",
+             expr=f"{p.Dsum} / {p.Tsum}", result=str(p.answer),
+             post=f"altså {p.answer} km/t."),
     ]
     return steps, str(p.answer)
 
@@ -1347,20 +2093,53 @@ _DIST_STEPS = {
     "simple": _dist_simple,
     "meeting": _dist_meeting,
     "catchup": _dist_catchup,
+    "average": _dist_average,
 }
 
 
 def sample_distance(rng: random.Random) -> Problem:
-    kind = rng.choice(["simple", "meeting", "catchup"])
+    kind = rng.choice(["simple", "meeting", "catchup", "average"])
     if kind == "simple":
-        R = rng.choice([25, 30, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100, 110, 120])
+        R = rng.choice([25, 30, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90,
+                        100, 110, 120])
         T = rng.randint(2, 15)
-        answer = R * T
+        D = R * T
+        ask = rng.choice(["d", "r", "t"])
+        answer = {"d": D, "r": R, "t": T}[ask]
         name = rng.choice(NAMES)
-        q_tpl = rng.choice(DISTANCE_TEMPLATES["simple"])
-        question = q_tpl.format(R=R, T=T, name=name)
-        p = DistanceSimple(R=R, T=T, answer=answer)
-        params = {"kind": "simple", "R": R, "T": T}
+        tpl_key = f"simple_{ask}"
+        q_tpl = rng.choice(DISTANCE_TEMPLATES[tpl_key])
+        question = q_tpl.format(R=R, T=T, D=D, name=name)
+        p = DistanceSimple(R=R, T=T, D=D, ask=ask, answer=answer)
+        params = {"kind": "simple", "R": R, "T": T, "D": D, "ask": ask}
+        strategy = f"simple_{ask}"
+    elif kind == "average":
+        # Two legs at different speeds. Need t1, t2 integer AND avg integer.
+        for _ in range(200):
+            R1 = rng.choice([20, 30, 40, 50, 60, 70, 80, 90, 100])
+            R2 = rng.choice([20, 30, 40, 50, 60, 70, 80, 90, 100])
+            if R1 == R2:
+                continue
+            T1 = rng.randint(1, 6)
+            T2 = rng.randint(1, 6)
+            D1 = R1 * T1
+            D2 = R2 * T2
+            Dsum = D1 + D2
+            Tsum = T1 + T2
+            if Dsum % Tsum == 0:
+                answer = Dsum // Tsum
+                if answer != R1 and answer != R2 and answer >= 10:
+                    break
+        else:
+            return sample_distance(rng)
+        name = rng.choice(NAMES)
+        q_tpl = rng.choice(DISTANCE_TEMPLATES["average"])
+        question = q_tpl.format(D1=D1, D2=D2, R1=R1, R2=R2, name=name)
+        p = DistanceAverage(R1=R1, R2=R2, T1=T1, T2=T2, D1=D1, D2=D2,
+                            Dsum=Dsum, Tsum=Tsum, answer=answer)
+        params = {"kind": "average", "R1": R1, "R2": R2,
+                  "D1": D1, "D2": D2, "T1": T1, "T2": T2, "name": name}
+        strategy = "average"
     elif kind == "meeting":
         while True:
             Ra = rng.choice([25, 30, 40, 45, 50, 60, 70, 80, 90, 100])
@@ -1380,6 +2159,7 @@ def sample_distance(rng: random.Random) -> Problem:
         p = DistanceMeeting(D=D, Ra=Ra, Rb=Rb, Rsum=Rsum, answer=answer)
         params = {"kind": "meeting", "D": D, "Ra": Ra, "Rb": Rb,
                   "name_a": name_a, "name_b": name_b}
+        strategy = "meeting"
     else:  # catchup
         while True:
             Ra = rng.choice([15, 20, 25, 30, 35, 40, 45, 50, 55, 60])
@@ -1400,9 +2180,9 @@ def sample_distance(rng: random.Random) -> Problem:
                             lead=lead, answer=answer)
         params = {"kind": "catchup", "Ra": Ra, "Rb": Rb, "T0": T0,
                   "name_a": name_a, "name_b": name_b}
+        strategy = "catchup"
 
-    strategy = kind
-    steps, final = _DIST_STEPS[strategy](p)
+    steps, final = _DIST_STEPS[kind](p)
     chain = render_prose(steps, final)
     funcall = render_funcall(question, steps, final)
 
@@ -1412,7 +2192,7 @@ def sample_distance(rng: random.Random) -> Problem:
         chain_da=chain,
         answer=final,
         params=params,
-        strategy=f"distance_{kind}",
+        strategy=f"distance_{strategy}",
         steps=[asdict(s) for s in steps],
         funcall=funcall,
     )
@@ -1465,6 +2245,12 @@ def main():
     with args.out.open("w") as f:
         while written < args.n:
             p = SAMPLERS[args.type](rng)
+            p.question_da = fix_possessives(p.question_da)
+            p.chain_da = fix_possessives(p.chain_da)
+            if p.funcall:
+                for msg in p.funcall:
+                    if isinstance(msg.get("content"), str):
+                        msg["content"] = fix_possessives(msg["content"])
             key = (p.question_da[:60], p.answer)
             attempts_since_last += 1
             if key in seen:
