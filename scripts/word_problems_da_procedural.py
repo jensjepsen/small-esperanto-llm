@@ -1,0 +1,1458 @@
+"""Danish procedural word problems (all 8 EO types).
+
+Math by construction; language by annotated lexicon (no morphology rules).
+Output schema matches word_problems_procedural.py so downstream code is
+interchangeable.
+
+Design decisions:
+  * Nouns carry their full paradigm inline — Danish's irregular gender +
+    definite formation makes rule-based morphology brittle. Lookup wins.
+  * Commodities for percent problems ship as (indef, def_sg) pairs so we
+    don't need to derive "cyklen" from "cykel" (syncope) programmatically.
+  * Adding a type = one sampler function + prose templates, ~80-100 lines.
+  * Prose templates are chosen at random per row → surface-form diversity.
+  * Dedup via (question-prefix, answer) key so we don't emit exact repeats.
+
+Usage:
+    uv run python scripts/word_problems_da_procedural.py \\
+        --type ratio --n 200 --out data/word_problems_da/ratio.jsonl
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import random
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+# ── Danish lexicon ────────────────────────────────────────────────────────
+
+# Countable nouns for ratio problems.
+# (indef_sg, gender, def_sg, indef_pl, def_pl)
+NOUNS = [
+    ("æble",       "et", "æblet",       "æbler",       "æblerne"),
+    ("banan",      "en", "bananen",     "bananer",     "bananerne"),
+    ("pære",       "en", "pæren",       "pærer",       "pærerne"),
+    ("bog",        "en", "bogen",       "bøger",       "bøgerne"),
+    ("kage",       "en", "kagen",       "kager",       "kagerne"),
+    ("blomst",     "en", "blomsten",    "blomster",    "blomsterne"),
+    ("bold",       "en", "bolden",      "bolde",       "boldene"),
+    ("kort",       "et", "kortet",      "kort",        "kortene"),
+    ("mønt",       "en", "mønten",      "mønter",      "mønterne"),
+    ("frimærke",   "et", "frimærket",   "frimærker",   "frimærkerne"),
+    ("stol",       "en", "stolen",      "stole",       "stolene"),
+    ("bord",       "et", "bordet",      "borde",       "bordene"),
+    ("plante",     "en", "planten",     "planter",     "planterne"),
+    ("bolsje",     "et", "bolsjet",     "bolsjer",     "bolsjerne"),
+    ("nød",        "en", "nødden",      "nødder",      "nødderne"),
+    ("agurk",      "en", "agurken",     "agurker",     "agurkerne"),
+    ("tomat",      "en", "tomaten",     "tomater",     "tomaterne"),
+    ("kylling",    "en", "kyllingen",   "kyllinger",   "kyllingerne"),
+    ("perle",      "en", "perlen",      "perler",      "perlerne"),
+    ("terning",    "en", "terningen",   "terninger",   "terningerne"),
+    # Expanded pool (household + food + school + toys)
+    ("kartoffel",  "en", "kartoflen",   "kartofler",   "kartoflerne"),
+    ("gulerod",    "en", "guleroden",   "gulerødder",  "gulerødderne"),
+    ("appelsin",   "en", "appelsinen",  "appelsiner",  "appelsinerne"),
+    ("citron",     "en", "citronen",    "citroner",    "citronerne"),
+    ("kop",        "en", "koppen",      "kopper",      "kopperne"),
+    ("tallerken",  "en", "tallerkenen", "tallerkener", "tallerkenerne"),
+    ("skål",       "en", "skålen",      "skåle",       "skålene"),
+    ("gaffel",     "en", "gaflen",      "gafler",      "gaflerne"),
+    ("kniv",       "en", "kniven",      "knive",       "knivene"),
+    ("ske",        "en", "skeen",       "skeer",       "skeerne"),
+    ("glas",       "et", "glasset",     "glas",        "glassene"),
+    ("pen",        "en", "pennen",      "penne",       "pennene"),
+    ("blyant",     "en", "blyanten",    "blyanter",    "blyanterne"),
+    ("lineal",     "en", "linealen",    "linealer",    "linealerne"),
+    ("hæfte",      "et", "hæftet",      "hæfter",      "hæfterne"),
+    ("tegning",    "en", "tegningen",   "tegninger",   "tegningerne"),
+    ("ballon",     "en", "ballonen",    "balloner",    "ballonerne"),
+    ("klods",      "en", "klodsen",     "klodser",     "klodserne"),
+    ("sten",       "en", "stenen",      "sten",        "stenene"),
+    ("musling",    "en", "muslingen",   "muslinger",   "muslingerne"),
+    ("fugl",       "en", "fuglen",      "fugle",       "fuglene"),
+    ("kanin",      "en", "kaninen",     "kaniner",     "kaninerne"),
+    ("kat",        "en", "katten",      "katte",       "kattene"),
+    ("hund",       "en", "hunden",      "hunde",       "hundene"),
+    ("fisk",       "en", "fisken",      "fisk",        "fiskene"),
+    ("lys",        "et", "lyset",       "lys",         "lysene"),
+    ("ring",       "en", "ringen",      "ringe",       "ringene"),
+    ("brik",       "en", "brikken",     "brikker",     "brikkerne"),
+    ("kugle",      "en", "kuglen",      "kugler",      "kuglerne"),
+    ("nøgle",      "en", "nøglen",      "nøgler",      "nøglerne"),
+    ("pose",       "en", "posen",       "poser",       "poserne"),
+    ("æg",         "et", "ægget",       "æg",          "æggene"),
+    ("brød",       "et", "brødet",      "brød",        "brødene"),
+    ("bolle",      "en", "bollen",      "boller",      "bollerne"),
+]
+
+# Commodities for percent problems. (indef, def) pairs — no morphology rules,
+# just lookup. Def form is used when we refer back ("Hvad koster den nu?").
+COMMODITIES = [
+    ("en bog",          "bogen"),
+    ("en cykel",        "cyklen"),
+    ("en telefon",      "telefonen"),
+    ("en jakke",        "jakken"),
+    ("en billet",       "billetten"),
+    ("en middag",       "middagen"),
+    ("en kop kaffe",    "kaffen"),
+    ("en kjole",        "kjolen"),
+    ("en tablet",       "tabletten"),
+    ("en computer",     "computeren"),
+    ("en støvsuger",    "støvsugeren"),
+    ("en sofa",         "sofaen"),
+    ("et fjernsyn",     "fjernsynet"),
+    ("et køleskab",     "køleskabet"),
+    ("et abonnement",   "abonnementet"),
+    ("et par bukser",   "bukserne"),
+    ("et par sko",      "skoene"),
+    ("en kaffemaskine", "kaffemaskinen"),
+    ("en lampe",        "lampen"),
+    ("en cykelhjelm",   "cykelhjelmen"),
+    ("et par briller",  "brillerne"),
+    ("en trøje",        "trøjen"),
+    ("en skjorte",      "skjorten"),
+    ("et par handsker", "handskerne"),
+    ("et halstørklæde", "halstørklædet"),
+    ("en hat",          "hatten"),
+    ("et par støvler",  "støvlerne"),
+    ("en pengepung",    "pengepungen"),
+    ("en taske",        "tasken"),
+    ("en rygsæk",       "rygsækken"),
+    ("et kamera",       "kameraet"),
+    ("et smykke",       "smykket"),
+    ("en cykellygte",   "cykellygten"),
+    ("en cykellås",     "cykellåsen"),
+    ("et skateboard",   "skateboardet"),
+    ("en mikroovn",     "mikroovnen"),
+    ("en brødrister",   "brødristeren"),
+    ("en radio",        "radioen"),
+    ("et videospil",    "videospillet"),
+    ("en pude",         "puden"),
+    ("et tæppe",        "tæppet"),
+    ("en spejlrefleks", "spejlrefleksen"),
+    ("en el-scooter",   "el-scooteren"),
+    ("en gasgrill",     "gasgrillen"),
+    ("en havemøbelsæt", "havemøbelsættet"),
+    ("en løbehjul",     "løbehjulet"),
+    ("en musikafspiller","musikafspilleren"),
+    ("en spillekonsol", "spillekonsollen"),
+]
+
+NAMES = [
+    "Anders", "Anne", "Bo", "Britta", "Christian", "Cecilie",
+    "Daniel", "Ditte", "Emil", "Emma", "Frederik", "Freja",
+    "Gustav", "Grethe", "Henrik", "Helle", "Ivan", "Ida",
+    "Jens", "Julie", "Kasper", "Karina", "Lars", "Louise",
+    "Mads", "Mette", "Niels", "Nina", "Oliver", "Olivia",
+    "Peter", "Pernille", "Rasmus", "Rikke", "Søren", "Sofie",
+]
+
+
+@dataclass
+class Step:
+    """One arithmetic step in a chain of reasoning.
+
+    `expr` is a sympy-evaluable arithmetic string (e.g. "36 / 4"). `result`
+    is the ground-truth value. `pre`/`post` are natural-language narration
+    with the constraint that `pre` MUST NOT mention `result` (so the same
+    step data can be rendered as a tool-call: the assistant emits `pre` +
+    `expr`, the tool returns `result`, the assistant then emits `post`).
+    """
+    pre: str = ""
+    expr: str = ""
+    result: str = ""
+    post: str = ""
+
+
+def render_prose(steps: list[Step], final: str) -> str:
+    """Inline prose: `{pre} {expr} = {result}. {post}` per step + `#### N`."""
+    lines = []
+    for s in steps:
+        parts = []
+        if s.pre:
+            parts.append(s.pre)
+        if s.expr:
+            parts.append(f"{s.expr} = {s.result}.")
+        if s.post:
+            parts.append(s.post)
+        line = " ".join(p.strip() for p in parts if p).strip()
+        if line:
+            lines.append(line)
+    lines.append(f"#### {final}")
+    return "\n".join(lines)
+
+
+def render_funcall(question: str, steps: list[Step], final: str) -> list[dict]:
+    """Multi-turn messages: system+user pose the problem; each Step becomes
+    an assistant turn that emits `pre` + a tool_call, followed by a tool
+    response with `result`, and the assistant continues with `post`. The
+    final assistant turn concludes with the answer."""
+    messages: list[dict] = [
+        {"role": "user", "content": f"Spørgsmål: {question}"},
+    ]
+    for s in steps:
+        assistant_pre = s.pre.strip()
+        if assistant_pre:
+            messages.append({"role": "assistant", "content": assistant_pre})
+        messages.append({
+            "role": "assistant",
+            "tool_calls": [{"type": "calculator", "expr": s.expr}],
+        })
+        messages.append({
+            "role": "tool", "name": "calculator", "content": s.result,
+        })
+        if s.post.strip():
+            messages.append({"role": "assistant", "content": s.post.strip()})
+    messages.append({"role": "assistant", "content": f"#### {final}"})
+    return messages
+
+
+@dataclass
+class Problem:
+    type: str
+    question_da: str
+    chain_da: str
+    answer: str
+    params: dict
+    strategy: str
+    # Compositional artifacts (may be empty for types not yet refactored)
+    steps: list[dict] | None = None  # serialized [{pre,expr,result,post}]
+    funcall: list[dict] | None = None
+
+
+# ── RATIO type ──────────────────────────────────────────────────────────
+
+RATIO_QUESTION_TEMPLATES = [
+    "{name_a} og {name_b} deler {total} {obj_pl} i forholdet {a}:{b}. "
+    "Hvor mange {obj_pl} får {who}?",
+    "Der er {total} {obj_pl}, som skal fordeles mellem {name_a} og {name_b} "
+    "i forholdet {a}:{b}. Hvor mange {obj_pl} får {who}?",
+    "{name_a} og {name_b} har tilsammen {total} {obj_pl}. "
+    "De deler dem i forholdet {a}:{b}. Hvor mange får {who}?",
+    "En kasse med {total} {obj_pl} deles i forholdet {a}:{b} mellem "
+    "{name_a} og {name_b}. Hvor mange får {who}?",
+    "Ved en fest deler {name_a} og {name_b} {total} {obj_pl} i "
+    "forholdet {a}:{b}. Hvor mange får {who}?",
+    # Extended templates for diversity
+    "{name_a} og {name_b} er søskende. Deres far vil dele {total} {obj_pl} "
+    "mellem dem i forholdet {a}:{b}. Hvor mange får {who}?",
+    "På en skoleudflugt får {name_a} og {name_b} udleveret i alt {total} "
+    "{obj_pl} i forholdet {a}:{b}. Hvor mange får {who}?",
+    "Efter et arrangement skal {name_a} og {name_b} dele {total} {obj_pl} "
+    "mellem sig efter forholdet {a}:{b}. Hvor mange får {who}?",
+    "En pose indeholder {total} {obj_pl}, som {name_a} og {name_b} deler "
+    "i forholdet {a}:{b}. Hvor mange får {who}?",
+    "{name_a} og {name_b} bytter {total} {obj_pl} efter forholdet {a}:{b}. "
+    "Hvor mange får {who} ud af byttet?",
+    "Til en fælles fejring har {name_a} og {name_b} indkøbt {total} {obj_pl}. "
+    "De deler dem i forholdet {a}:{b}. Hvor mange får {who}?",
+    "På markedet køber {name_a} og {name_b} sammen {total} {obj_pl} og "
+    "deler dem i forholdet {a}:{b}. Hvor mange får {who}?",
+    "Efter en høst deler {name_a} og {name_b} {total} {obj_pl} i "
+    "forholdet {a}:{b}. Hvor mange får {who}?",
+    "Et arvedelt bo omfatter {total} {obj_pl}, som fordeles mellem "
+    "{name_a} og {name_b} i forholdet {a}:{b}. Hvor mange får {who}?",
+    "På en workshop deler {name_a} og {name_b} {total} {obj_pl} "
+    "i forholdet {a}:{b}. Hvor mange får {who}?",
+    "Efter en fælles indkøbstur deler {name_a} og {name_b} {total} {obj_pl} "
+    "i forholdet {a}:{b}. Hvor mange får {who}?",
+    "På en spejderlejr fordeles {total} {obj_pl} mellem {name_a} og {name_b} "
+    "i forholdet {a}:{b}. Hvor mange får {who}?",
+    "{name_a} og {name_b} har vundet {total} {obj_pl} i en konkurrence. "
+    "De aftaler at dele dem i forholdet {a}:{b}. Hvor mange får {who}?",
+]
+
+@dataclass
+class RatioParams:
+    a: int
+    b: int
+    total: int
+    per_part: int
+    who: str        # name of person we ask about
+    who_ratio: int  # their ratio number (a or b)
+    obj_pl: str
+    name_a: str
+    name_b: str
+
+
+def _ratio_steps_parts(p: RatioParams) -> tuple[list[Step], str]:
+    """Direct 'parts' approach: sum of ratios → per part → who × per part."""
+    sum_r = p.a + p.b
+    who_word = "1 del" if p.who_ratio == 1 else f"{p.who_ratio} dele"
+    steps = [
+        Step(pre="Summen af forholdstallene er",
+             expr=f"{p.a} + {p.b}", result=str(sum_r),
+             post=f"så vi har {sum_r} lige store dele."),
+        Step(pre="En del svarer til totalen divideret med antal dele:",
+             expr=f"{p.total} / {sum_r}", result=str(p.per_part),
+             post=f"altså {p.per_part} {p.obj_pl} per del."),
+        Step(pre=f"{p.who} får {who_word}, altså",
+             expr=f"{p.per_part} * {p.who_ratio}",
+             result=str(p.per_part * p.who_ratio),
+             post=f"i alt {p.per_part * p.who_ratio} {p.obj_pl}."),
+    ]
+    return steps, str(p.per_part * p.who_ratio)
+
+
+def _ratio_steps_fraction(p: RatioParams) -> tuple[list[Step], str]:
+    """Direct fraction: who gets who_ratio / (a+b) of the total."""
+    sum_r = p.a + p.b
+    ans = p.total * p.who_ratio // sum_r
+    steps = [
+        Step(pre=f"Da forholdet er {p.a}:{p.b}, får {p.who} en brøkdel af "
+                 f"totalen på {p.who_ratio}/{sum_r}. Vi udregner:",
+             expr=f"{p.total} * {p.who_ratio} / {sum_r}", result=str(ans),
+             post=f"altså {ans} {p.obj_pl}."),
+    ]
+    return steps, str(ans)
+
+
+def _ratio_steps_algebra(p: RatioParams) -> tuple[list[Step], str]:
+    """Algebra: let x be one part; solve (a+b)x = total, then who's share = ratio*x."""
+    sum_r = p.a + p.b
+    ans = p.per_part * p.who_ratio
+    steps = [
+        Step(pre=f"Lad x være værdien af én del. "
+                 f"{p.name_a} får {p.a}x, {p.name_b} får {p.b}x, "
+                 f"så totalen er {p.a}x + {p.b}x = {sum_r}x = {p.total}. "
+                 f"Vi løser for x:",
+             expr=f"{p.total} / {sum_r}", result=str(p.per_part),
+             post=f"altså x = {p.per_part}."),
+        Step(pre=f"{p.who}s andel er {p.who_ratio}x:",
+             expr=f"{p.who_ratio} * {p.per_part}", result=str(ans),
+             post=f"i alt {ans} {p.obj_pl}."),
+    ]
+    return steps, str(ans)
+
+
+_RATIO_STEPS = {
+    "parts": _ratio_steps_parts,
+    "fraction": _ratio_steps_fraction,
+    "algebra": _ratio_steps_algebra,
+}
+
+
+def sample_ratio(rng: random.Random) -> Problem:
+    obj = rng.choice(NOUNS)
+    a = rng.randint(1, 5)
+    b = rng.randint(1, 5)
+    while a == b:
+        b = rng.randint(1, 5)
+    per_part = rng.randint(2, 20)
+    total = per_part * (a + b)
+
+    name_a, name_b = rng.sample(NAMES, 2)
+    who_is_a = rng.random() < 0.5
+    who_name = name_a if who_is_a else name_b
+    who_ratio = a if who_is_a else b
+
+    p = RatioParams(a=a, b=b, total=total, per_part=per_part,
+                    who=who_name, who_ratio=who_ratio,
+                    obj_pl=obj[3], name_a=name_a, name_b=name_b)
+
+    q_tpl = rng.choice(RATIO_QUESTION_TEMPLATES)
+    question = q_tpl.format(
+        name_a=name_a, name_b=name_b,
+        total=total, obj_pl=obj[3],
+        a=a, b=b, who=who_name,
+    )
+
+    strategy = rng.choice(list(_RATIO_STEPS))
+    steps, final = _RATIO_STEPS[strategy](p)
+    chain = render_prose(steps, final)
+    funcall = render_funcall(question, steps, final)
+
+    return Problem(
+        type="ratio",
+        question_da=question,
+        chain_da=chain,
+        answer=final,
+        params={
+            "a": a, "b": b, "total": total, "per_part": per_part,
+            "who": who_name, "who_ratio": who_ratio, "object": obj[0],
+        },
+        strategy=strategy,
+        steps=[asdict(s) for s in steps],
+        funcall=funcall,
+    )
+
+
+# ── PERCENT type ────────────────────────────────────────────────────────
+
+PERCENT_QUESTION_TEMPLATES = {
+    "discount": [
+        "{item_indef_cap} koster normalt {price} kr. I dag er der {pct}% "
+        "rabat. Hvad koster {item_def} nu?",
+        "{name} vil købe {item_indef}. Prisen er {price} kr, men der er "
+        "{pct}% rabat. Hvor meget skal {name} betale?",
+        "{item_indef_cap} sælges med {pct}% rabat. Den normale pris er "
+        "{price} kr. Hvad er tilbudsprisen?",
+        "I forbindelse med januarudsalget nedsættes {item_indef} fra {price} "
+        "kr med {pct}%. Hvad er den nye pris?",
+        "{name} finder {item_indef} til {price} kr, og der er {pct}% rabat "
+        "i kassen. Hvad kommer den til at koste?",
+        "En butik giver {pct}% rabat på {item_indef} til vejledende pris "
+        "{price} kr. Hvad koster {item_def}?",
+        "{item_indef_cap} nedsættes med {pct}% i sommerudsalget. "
+        "Den oprindelige pris var {price} kr. Hvad er den nye pris?",
+        "Til Black Friday sælges {item_indef} med {pct}% rabat fra normalprisen "
+        "{price} kr. Hvad koster {item_def} nu?",
+        "{name} bruger en rabatkupon på {pct}% ved køb af {item_indef} til "
+        "{price} kr. Hvad ender {name} med at betale?",
+        "En medlemsrabat på {pct}% bringer prisen på {item_indef} ned fra "
+        "{price} kr. Hvad koster {item_def} for medlemmet?",
+    ],
+    "markup": [
+        "{item_indef_cap} har en indkøbspris på {price} kr. Butikken lægger "
+        "{pct}% oveni. Hvad er salgsprisen?",
+        "{name} vil videresælge {item_indef} med {pct}% fortjeneste. "
+        "Indkøbsprisen var {price} kr. Hvad er salgsprisen?",
+        "En importør køber {item_indef} for {price} kr og pålægger {pct}% "
+        "avance. Hvad bliver udsalgsprisen?",
+        "{name} sælger {item_indef} med {pct}% avance. Indkøbsprisen var "
+        "{price} kr. Hvad koster {item_def} i {name}s butik?",
+        "En grossist køber {item_indef} for {price} kr og videresælger den "
+        "med {pct}% fortjeneste. Hvad er videresalgsprisen?",
+        "{name} har hjemtaget {item_indef} for {price} kr og lægger {pct}% "
+        "oveni til dækning af omkostninger. Hvad er den nye pris?",
+        "Efter {pct}% avance på indkøbsprisen {price} kr sælges "
+        "{item_indef} i butikken. Hvad er butikkens pris?",
+    ],
+    "tax": [
+        "{item_indef_cap} koster {price} kr før moms. Der lægges {pct}% moms "
+        "oveni. Hvad er den samlede pris?",
+        "{name} køber {item_indef} til {price} kr eksklusive {pct}% moms. "
+        "Hvad er den samlede pris?",
+        "På en faktura står {item_indef} til {price} kr eksklusive moms. "
+        "Momssatsen er {pct}%. Hvad er beløbet inklusive moms?",
+        "{item_indef_cap} sælges business-to-business til {price} kr plus "
+        "{pct}% moms. Hvad er den samlede pris?",
+        "Efter tillæg af {pct}% moms på nettoprisen {price} kr, "
+        "hvad koster {item_def} inklusive moms?",
+        "Prisen på {item_indef} er {price} kr eksklusive moms på {pct}%. "
+        "Hvad skal kunden betale?",
+    ],
+}
+
+@dataclass
+class PercentParams:
+    kind: str          # "discount" | "markup" | "tax"
+    price: int
+    pct: int
+    change: int
+    answer: int
+
+
+def _percent_steps_direct(p: PercentParams) -> tuple[list[Step], str]:
+    """Two-step: change = price*pct/100, then answer = price ± change."""
+    if p.kind == "discount":
+        name = "Rabatten"
+        op_word = "-"
+        op_desc = "trukket fra"
+    elif p.kind == "markup":
+        name = "Fortjenesten"
+        op_word = "+"
+        op_desc = "lagt til"
+    else:  # tax
+        name = "Momsen"
+        op_word = "+"
+        op_desc = "lagt til"
+    steps = [
+        Step(pre=f"{name} udgør {p.pct}% af {p.price} kr:",
+             expr=f"{p.price} * {p.pct} / 100", result=str(p.change),
+             post=f"altså {p.change} kr {op_desc}."),
+        Step(pre="Den samlede pris bliver derfor",
+             expr=f"{p.price} {op_word} {p.change}",
+             result=str(p.answer),
+             post=f"i alt {p.answer} kr."),
+    ]
+    return steps, str(p.answer)
+
+
+def _percent_steps_compound(p: PercentParams) -> tuple[list[Step], str]:
+    """One-step compound: answer = price * (100 ± pct) / 100."""
+    if p.kind == "discount":
+        sign = "-"
+        desc = f"Kunden skal betale (100 - {p.pct})% af {p.price} kr:"
+    else:  # markup or tax
+        sign = "+"
+        desc = f"Slutbeløbet svarer til (100 + {p.pct})% af {p.price} kr:"
+    steps = [
+        Step(pre=desc,
+             expr=f"{p.price} * (100 {sign} {p.pct}) / 100",
+             result=str(p.answer),
+             post=f"altså {p.answer} kr."),
+    ]
+    return steps, str(p.answer)
+
+
+_PERCENT_STEPS = {
+    "direct": _percent_steps_direct,
+    "compound": _percent_steps_compound,
+}
+
+
+def sample_percent(rng: random.Random) -> Problem:
+    kind = rng.choice(["discount", "markup", "tax"])
+    while True:
+        price = rng.choice([100, 200, 250, 300, 400, 500, 600, 750,
+                            800, 1000, 1200, 1500, 2000, 2500])
+        pct = rng.choice([5, 10, 15, 20, 25, 30, 40, 50])
+        if price * pct % 100 == 0:
+            break
+    change = price * pct // 100
+    answer = price - change if kind == "discount" else price + change
+
+    item_indef, item_def = rng.choice(COMMODITIES)
+    item_indef_cap = item_indef[0].upper() + item_indef[1:]
+    name = rng.choice(NAMES)
+
+    q_tpl = rng.choice(PERCENT_QUESTION_TEMPLATES[kind])
+    question = q_tpl.format(
+        item_indef=item_indef, item_indef_cap=item_indef_cap,
+        item_def=item_def, price=price, pct=pct, name=name,
+    )
+
+    p = PercentParams(kind=kind, price=price, pct=pct,
+                      change=change, answer=answer)
+    strategy = rng.choice(list(_PERCENT_STEPS))
+    steps, final = _PERCENT_STEPS[strategy](p)
+    chain = render_prose(steps, final)
+    funcall = render_funcall(question, steps, final)
+
+    return Problem(
+        type="percent",
+        question_da=question,
+        chain_da=chain,
+        answer=final,
+        params={"kind": kind, "price": price, "pct": pct,
+                "change": change, "item": item_indef, "name": name},
+        strategy=f"percent_{kind}_{strategy}",
+        steps=[asdict(s) for s in steps],
+        funcall=funcall,
+    )
+
+
+# ── INVERSE_RATE ────────────────────────────────────────────────────────
+
+INVERSE_RATE_TEMPLATES = [
+    "{n1} arbejdere kan udføre et stykke arbejde på {t1} timer. Hvor lang tid "
+    "tager det, hvis {n2} arbejdere skal udføre samme arbejde?",
+    "En opgave kan løses af {n1} personer på {t1} timer. Hvor lang tid tager "
+    "det for {n2} personer at løse den samme opgave?",
+    "Det tager {n1} malere {t1} dage at male et hus. Hvor mange dage tager "
+    "det {n2} malere at male det samme hus?",
+    "En gruppe på {n1} personer kan tømme en tank på {t1} minutter. Hvor "
+    "mange minutter tager det {n2} personer?",
+    "Hvis {n1} maskiner producerer en ordre på {t1} timer, hvor mange timer "
+    "tager det så {n2} maskiner at producere den samme ordre?",
+    "{n1} kokke kan tilberede en menu på {t1} timer. Hvor lang tid vil {n2} "
+    "kokke bruge på den samme menu?",
+    "{n1} landmænd kan høste en mark på {t1} dage. Hvor mange dage tager det "
+    "{n2} landmænd at høste den samme mark?",
+    "Et rengøringsfirma med {n1} medarbejdere rengør et hotel på {t1} timer. "
+    "Hvor lang tid tager det med {n2} medarbejdere?",
+    "{n1} bagere kan færdiggøre en ordre på {t1} timer. Hvor lang tid tager "
+    "det, hvis {n2} bagere arbejder på samme ordre?",
+    "En pumpe med {n1} indløb tømmer bassinet på {t1} minutter. Hvor mange "
+    "minutter tager det med {n2} indløb?",
+    "Med {n1} håndværkere kan et projekt afsluttes på {t1} dage. Hvor mange "
+    "dage varer det med {n2} håndværkere?",
+    "En avisrute betjenes af {n1} bude på {t1} timer. Hvor lang tid tager "
+    "den samme rute for {n2} bude?",
+    "Et budfirma med {n1} chauffører leverer alle pakker på {t1} timer. "
+    "Hvor lang tid tager det med {n2} chauffører?",
+    "{n1} musikere kan gennemføre et program på {t1} minutter. Hvis {n2} "
+    "musikere skal spille det samme program, hvor lang tid tager det?",
+    "Et bygefirma med {n1} arbejdere færdiggør et projekt på {t1} dage. "
+    "Hvor mange dage tager samme projekt med {n2} arbejdere?",
+    "En kontorafdeling med {n1} sagsbehandlere afvikler alle sager på {t1} "
+    "timer. Hvor lang tid tager det med {n2} sagsbehandlere?",
+    "Et kokketeam på {n1} personer laver en firmafrokost på {t1} timer. "
+    "Hvor lang tid tager det for {n2} kokke?",
+]
+
+@dataclass
+class InvRateParams:
+    n1: int
+    t1: int
+    n2: int
+    work: int
+    answer: int
+
+
+def _inv_steps_constant_product(p: InvRateParams) -> tuple[list[Step], str]:
+    unit = "time" if p.answer == 1 else "timer"
+    steps = [
+        Step(pre="Det samlede arbejde svarer til antal personer gange tid:",
+             expr=f"{p.n1} * {p.t1}", result=str(p.work),
+             post=f"altså {p.work} personetimer i alt."),
+        Step(pre=f"Med {p.n2} personer bliver tiden det samlede arbejde "
+                 "divideret med det nye antal:",
+             expr=f"{p.work} / {p.n2}", result=str(p.answer),
+             post=f"altså {p.answer} {unit}."),
+    ]
+    return steps, str(p.answer)
+
+
+def _inv_steps_equation(p: InvRateParams) -> tuple[list[Step], str]:
+    unit = "time" if p.answer == 1 else "timer"
+    steps = [
+        Step(pre="Da arbejdet er omvendt proportionalt med antal personer, "
+                 f"gælder {p.n1} * {p.t1} = {p.n2} * t. Vi løser for t:",
+             expr=f"{p.n1} * {p.t1} / {p.n2}", result=str(p.answer),
+             post=f"altså t = {p.answer} {unit}."),
+    ]
+    return steps, str(p.answer)
+
+
+_INV_STEPS = {
+    "constant_product": _inv_steps_constant_product,
+    "equation": _inv_steps_equation,
+}
+
+
+def sample_inverse_rate(rng: random.Random) -> Problem:
+    while True:
+        n1 = rng.randint(2, 20)
+        t1 = rng.randint(2, 40)
+        n2 = rng.randint(2, 20)
+        if n2 == n1:
+            continue
+        work = n1 * t1
+        if work % n2 == 0:
+            answer = work // n2
+            if 1 <= answer <= 200:
+                break
+
+    q_tpl = rng.choice(INVERSE_RATE_TEMPLATES)
+    question = q_tpl.format(n1=n1, t1=t1, n2=n2)
+    p = InvRateParams(n1=n1, t1=t1, n2=n2, work=work, answer=answer)
+    strategy = rng.choice(list(_INV_STEPS))
+    steps, final = _INV_STEPS[strategy](p)
+    chain = render_prose(steps, final)
+    funcall = render_funcall(question, steps, final)
+
+    return Problem(
+        type="inverse_rate",
+        question_da=question,
+        chain_da=chain,
+        answer=final,
+        params={"n1": n1, "t1": t1, "n2": n2, "work": work},
+        strategy=strategy,
+        steps=[asdict(s) for s in steps],
+        funcall=funcall,
+    )
+
+
+# ── CONSECUTIVE ─────────────────────────────────────────────────────────
+
+CONSECUTIVE_TEMPLATES = {
+    "any": [
+        "Summen af {N} på hinanden følgende heltal er {S}. Hvad er det "
+        "{ordinal}?",
+        "{N} heltal, som følger lige efter hinanden, har summen {S}. "
+        "Hvad er det {ordinal}?",
+        "Find det {ordinal} af {N} på hinanden følgende heltal, der har "
+        "summen {S}.",
+        "{N} tal i træk lægger sammen til {S}. Hvilket tal er det {ordinal}?",
+        "Hvis {N} på hinanden følgende heltal har en samlet sum på {S}, "
+        "hvad er så det {ordinal} tal?",
+        "Der er {N} heltal i træk, hvis sum udgør {S}. Angiv det {ordinal} "
+        "tal i rækken.",
+        "En række af {N} på hinanden følgende heltal summer til {S}. "
+        "Bestem det {ordinal} tal.",
+    ],
+    "even": [
+        "Summen af {N} på hinanden følgende lige tal er {S}. Hvad er det "
+        "{ordinal}?",
+        "{N} lige tal i træk giver tilsammen {S}. Hvad er det {ordinal}?",
+        "Hvis {N} på hinanden følgende lige heltal har sum {S}, "
+        "hvad er så det {ordinal} tal?",
+        "Der findes {N} lige tal i træk med summen {S}. Angiv det {ordinal}.",
+        "Bestem det {ordinal} af {N} på hinanden følgende lige tal, som "
+        "sammenlagt giver {S}.",
+    ],
+    "odd": [
+        "Summen af {N} på hinanden følgende ulige tal er {S}. Hvad er det "
+        "{ordinal}?",
+        "{N} ulige tal i træk giver tilsammen {S}. Hvad er det {ordinal}?",
+        "Hvis {N} på hinanden følgende ulige heltal har sum {S}, "
+        "hvad er så det {ordinal} tal?",
+        "Der findes {N} ulige tal i træk med summen {S}. Angiv det {ordinal}.",
+        "Bestem det {ordinal} af {N} på hinanden følgende ulige tal, som "
+        "sammenlagt giver {S}.",
+    ],
+}
+
+ORDINALS = ["første", "andet", "tredje", "fjerde", "femte"]
+
+
+@dataclass
+class ConsecParams:
+    kind: str
+    N: int
+    step: int
+    smallest: int
+    largest: int
+    mid: int
+    half_span: int
+    S: int
+    ordinal: str
+    ord_idx: int
+    answer: int
+
+
+def _consec_steps(p: ConsecParams) -> tuple[list[Step], str]:
+    """Compute the middle, then locate the ordinal term."""
+    kind_word = {"any": "heltal", "even": "lige tal", "odd": "ulige tal"}[p.kind]
+    steps = [
+        Step(pre=f"Middeltallet af {p.N} på hinanden følgende {kind_word} er "
+                 "summen divideret med antallet:",
+             expr=f"{p.S} / {p.N}", result=str(p.mid),
+             post=f"altså {p.mid}."),
+    ]
+    if p.step == 2:
+        span_desc = ("Da tallene er lige og på hinanden følgende, er "
+                     "afstanden mellem hvert tal 2.")
+        if p.kind == "odd":
+            span_desc = ("Da tallene er ulige og på hinanden følgende, er "
+                         "afstanden mellem hvert tal 2.")
+        steps.append(Step(pre=span_desc,
+                          expr=f"{p.smallest} + ({p.N} - 1) * {p.step}",
+                          result=str(p.largest),
+                          post=f"altså det mindste er {p.smallest}, "
+                               f"det største er {p.largest}."))
+    else:
+        steps.append(Step(pre="Det mindste tal er middeltallet minus halve "
+                              "spændvidde:",
+                          expr=f"{p.mid} - {p.half_span}",
+                          result=str(p.smallest),
+                          post=f"altså det mindste er {p.smallest}."))
+    steps.append(Step(pre=f"Det {p.ordinal} tal er det mindste plus "
+                          f"{p.ord_idx} * {p.step}:",
+                      expr=f"{p.smallest} + {p.ord_idx} * {p.step}",
+                      result=str(p.answer),
+                      post=f"altså det {p.ordinal} er {p.answer}."))
+    return steps, str(p.answer)
+
+
+_CONSEC_STEPS = {
+    "mean_and_span": _consec_steps,
+}
+
+
+def sample_consecutive(rng: random.Random) -> Problem:
+    kind = rng.choice(["any", "even", "odd"])
+    N = rng.choice([3, 4, 5])
+    step = 1 if kind == "any" else 2
+    # Wider midpoint range → much bigger param space
+    if kind == "any":
+        mid = rng.randint(5, 200)
+    elif kind == "even":
+        mid = rng.choice(range(6, 200, 2)) if N % 2 == 1 else rng.choice(range(5, 199, 2))
+    else:  # odd
+        mid = rng.choice(range(5, 201, 2)) if N % 2 == 1 else rng.choice(range(6, 200, 2))
+
+    # Total = N * mid (if N is odd) OR = N * mid.5 (needs adjustment for even N)
+    # Simplify: for odd N, middle is a real integer; for even N, "middle" is between two
+    if N % 2 == 1:
+        half_span = (N // 2) * step
+        smallest = mid - half_span
+        largest = mid + half_span
+        S = N * mid
+    else:
+        # For even N, middle sits between term N/2 and term N/2+1
+        half = N // 2
+        smallest = mid - (half - 1) * step - step // 1  # approximate; regen below
+        # simpler: build directly from smallest
+        smallest = rng.randint(3, 30)
+        if kind == "even" and smallest % 2 != 0:
+            smallest += 1
+        if kind == "odd" and smallest % 2 == 0:
+            smallest += 1
+        largest = smallest + (N - 1) * step
+        S = sum(range(smallest, largest + 1, step))
+        mid = (smallest + largest) // 2  # for reporting only
+        half_span = (largest - smallest) // 2
+
+    # For chain rendering we need integer half_span for even-N cases too; skip if not
+    if smallest < 1 or largest > 500:
+        # regenerate: return a fresh sample
+        return sample_consecutive(rng)
+
+    ord_idx = rng.randint(0, N - 1)
+    ordinal = ORDINALS[ord_idx]
+    answer = smallest + ord_idx * step
+
+    q_tpl = rng.choice(CONSECUTIVE_TEMPLATES[kind])
+    question = q_tpl.format(N=N, S=S, ordinal=ordinal)
+
+    p = ConsecParams(kind=kind, N=N, step=step, smallest=smallest,
+                     largest=largest, mid=mid, half_span=half_span,
+                     S=S, ordinal=ordinal, ord_idx=ord_idx, answer=answer)
+    strategy = "mean_and_span"
+    steps, final = _CONSEC_STEPS[strategy](p)
+    chain = render_prose(steps, final)
+    funcall = render_funcall(question, steps, final)
+
+    return Problem(
+        type="consecutive",
+        question_da=question,
+        chain_da=chain,
+        answer=final,
+        params={"kind": kind, "N": N, "step": step, "smallest": smallest,
+                "largest": largest, "sum": S, "which": ordinal},
+        strategy=f"consec_{kind}_{strategy}",
+        steps=[asdict(s) for s in steps],
+        funcall=funcall,
+    )
+
+
+# ── COIN ────────────────────────────────────────────────────────────────
+
+COIN_DENOMS = [
+    (5, 10, "5-krone", "10-krone", "5-kroner", "10-kroner"),
+    (10, 20, "10-krone", "20-krone", "10-kroner", "20-kroner"),
+    (20, 50, "20-krone", "50-krone", "20-kroner", "50-kroner"),
+    (50, 100, "50-krone", "100-krone", "50-kroner", "100-kroner"),
+    (100, 500, "100-krone", "500-krone", "100-kroner", "500-kroner"),
+]
+
+COIN_TEMPLATES = [
+    "{name} har tilsammen {C} mønter fordelt på {d1_pl} og {d2_pl}. Den "
+    "samlede værdi er {V} kr. Hvor mange {d1_pl} har {name}?",
+    "I en pengekasse ligger der {C} mønter, som enten er {d1_pl} eller "
+    "{d2_pl}. Værdien er {V} kr. Hvor mange {d1_pl} er der?",
+    "En kasserer optæller {C} mønter i {d1_pl} og {d2_pl}. Beløbet er "
+    "{V} kr. Hvor mange {d1_pl} er der?",
+    "{name} tømmer sin sparegris og finder {C} mønter i to slags: {d1_pl} "
+    "og {d2_pl}. Værdien er {V} kr. Hvor mange {d1_pl} har {name}?",
+    "En pose indeholder {C} mønter, som fordeler sig på {d1_pl} og {d2_pl}. "
+    "Den samlede sum er {V} kr. Hvor mange {d1_pl} er der i posen?",
+    "I en samling af {C} mønter — alle enten {d1_pl} eller {d2_pl} — "
+    "er den samlede værdi {V} kr. Bestem antallet af {d1_pl}.",
+    "{name} har sparet op i alt {V} kr fordelt på {C} mønter af to typer: "
+    "{d1_pl} og {d2_pl}. Hvor mange {d1_pl} er det?",
+    "En vekseler har {C} mønter i {d1_pl} og {d2_pl} med en samlet værdi på "
+    "{V} kr. Hvor mange {d1_pl} er der?",
+    "Efter en indsamling er der {C} mønter i {d1_pl} og {d2_pl}, i alt "
+    "{V} kr. Hvor mange {d1_pl} er indsamlet?",
+    "En butik har {C} mønter til byttepenge — kun {d1_pl} og {d2_pl}. "
+    "Værdien er {V} kr. Hvor mange {d1_pl} er der?",
+]
+
+@dataclass
+class CoinParams:
+    d1: int
+    d2: int
+    d1_sg: str
+    d2_sg: str
+    d1_pl: str
+    d2_pl: str
+    C: int
+    V: int
+    d2C: int
+    diff: int
+    step: int
+    a: int
+
+
+def _coin_steps_substitution(p: CoinParams) -> tuple[list[Step], str]:
+    steps = [
+        Step(pre=f"Lad a være antal {p.d1_pl} og b antal {p.d2_pl}. "
+                 f"Vi har a + b = {p.C} og {p.d1} * a + {p.d2} * b = {p.V}. "
+                 f"Fra første ligning: b = {p.C} - a. Indsat:",
+             expr=f"{p.d1} * a + {p.d2} * ({p.C} - a)",
+             result=f"{p.V}",
+             post=f"altså ligningen bliver: {p.d1}a + {p.d2C} - {p.d2}a = {p.V}."),
+        Step(pre=f"Vi flytter over og isolerer a: "
+                 f"({p.d1} - {p.d2}) * a = {p.V} - {p.d2C}. Vi udregner:",
+             expr=f"({p.V} - {p.d2C}) / ({p.d1} - {p.d2})",
+             result=str(p.a),
+             post=f"altså a = {p.a}."),
+    ]
+    return steps, str(p.a)
+
+
+def _coin_steps_if_all_d2(p: CoinParams) -> tuple[list[Step], str]:
+    steps = [
+        Step(pre=f"Hvis alle {p.C} mønter var {p.d2_pl}, ville værdien være",
+             expr=f"{p.C} * {p.d2}", result=str(p.d2C),
+             post=f"altså {p.d2C} kr."),
+        Step(pre=f"Den faktiske værdi er {p.V} kr, så forskellen er",
+             expr=f"{p.d2C} - {p.V}", result=str(p.diff),
+             post=f"altså {p.diff} kr mindre end 'kun {p.d2_pl}'-scenariet."),
+        Step(pre=f"Hver {p.d1_sg} bidrager med {p.d2} - {p.d1} = {p.step} kr "
+                 f"mindre end en {p.d2_sg}. Antallet af {p.d1_pl}:",
+             expr=f"{p.diff} / {p.step}", result=str(p.a),
+             post=f"altså {p.a} {p.d1_pl}."),
+    ]
+    return steps, str(p.a)
+
+
+_COIN_STEPS = {
+    "substitution": _coin_steps_substitution,
+    "if_all_d2": _coin_steps_if_all_d2,
+}
+
+
+def sample_coin(rng: random.Random) -> Problem:
+    d1, d2, d1_sg, d2_sg, d1_pl, d2_pl = rng.choice(COIN_DENOMS)
+    a = rng.randint(1, 15)
+    b = rng.randint(1, 15)
+    C = a + b
+    V = d1 * a + d2 * b
+    d2C = d2 * C
+    diff = d2C - V
+    step = d2 - d1
+    name = rng.choice(NAMES)
+
+    q_tpl = rng.choice(COIN_TEMPLATES)
+    question = q_tpl.format(name=name, C=C, V=V,
+                            d1_pl=d1_pl, d2_pl=d2_pl)
+
+    p = CoinParams(d1=d1, d2=d2, d1_sg=d1_sg, d2_sg=d2_sg,
+                   d1_pl=d1_pl, d2_pl=d2_pl,
+                   C=C, V=V, d2C=d2C, diff=diff, step=step, a=a)
+    strategy = rng.choice(list(_COIN_STEPS))
+    steps, final = _COIN_STEPS[strategy](p)
+    chain = render_prose(steps, final)
+    funcall = render_funcall(question, steps, final)
+
+    return Problem(
+        type="coin",
+        question_da=question,
+        chain_da=chain,
+        answer=final,
+        params={"d1": d1, "d2": d2, "C": C, "V": V, "a": a, "b": b,
+                "name": name},
+        strategy=strategy,
+        steps=[asdict(s) for s in steps],
+        funcall=funcall,
+    )
+
+
+# ── AGE ─────────────────────────────────────────────────────────────────
+
+AGE_TEMPLATES = [
+    "{name_a} er {X} år, og {name_b} er {Y} år. Om hvor mange år vil "
+    "{name_a} være {k} gange så gammel som {name_b}?",
+    "Lige nu er {name_a} {X} år, mens {name_b} er {Y} år gammel. Om hvor "
+    "mange år er {name_a}s alder {k} gange {name_b}s?",
+    "{name_a} er i dag {X} år, {name_b} er {Y} år. Hvornår (om hvor mange "
+    "år) vil forholdet mellem deres aldre være {k}:1?",
+    "{name_a}s alder er {X} år, og {name_b}s alder er {Y} år. Om hvor "
+    "mange år vil {name_a} være {k} gange så gammel som {name_b}?",
+    "For nuværende er {name_a} {X} år og {name_b} {Y} år. "
+    "Efter hvor mange år bliver {name_a}s alder {k} gange {name_b}s?",
+    "{name_a} og {name_b} er hhv. {X} og {Y} år gamle. Om hvor mange år "
+    "vil {name_a} være præcis {k} gange så gammel som {name_b}?",
+    "I dag er {name_a} {X} år, og {name_b} er {Y} år. Bestem antallet af "
+    "år, indtil {name_a} er {k} gange så gammel som {name_b}.",
+    "Nu er {name_a} {X} år og {name_b} {Y} år. Om hvor mange år er "
+    "{name_a} nøjagtig {k} gange så gammel som {name_b}?",
+    "Aldersforskellen mellem {name_a} ({X} år) og {name_b} ({Y} år) betyder, "
+    "at {name_a} om nogle år vil være {k} gange så gammel som {name_b}. "
+    "Hvor mange år er der tale om?",
+    "{name_a} er {X} år og {name_b} er {Y} år i år. "
+    "Hvor mange år går der, før {name_a}s alder er {k} gange {name_b}s?",
+]
+
+@dataclass
+class AgeParams:
+    name_a: str
+    name_b: str
+    X: int
+    Y: int
+    k: int
+    kY: int
+    num: int
+    denom: int
+    answer: int
+
+
+def _age_steps_expand(p: AgeParams) -> tuple[list[Step], str]:
+    steps = [
+        Step(pre=f"Lad t være antal år. Om t år er {p.name_a} {p.X} + t og "
+                 f"{p.name_b} {p.Y} + t. Vi ønsker "
+                 f"{p.X} + t = {p.k} * ({p.Y} + t). "
+                 f"Højreside udregnes: {p.k}({p.Y} + t) =",
+             expr=f"{p.k} * {p.Y}", result=str(p.kY),
+             post=f"altså {p.X} + t = {p.kY} + {p.k}t."),
+        Step(pre=f"Vi flytter så alle t-led til den ene side: "
+                 f"({p.k} - 1)t = {p.X} - {p.kY}. Vi udregner:",
+             expr=f"({p.X} - {p.kY}) / ({p.k} - 1)",
+             result=str(p.answer),
+             post=f"altså t = {p.answer}."),
+    ]
+    return steps, str(p.answer)
+
+
+def _age_steps_ratio(p: AgeParams) -> tuple[list[Step], str]:
+    steps = [
+        Step(pre=f"Om t år skal forholdet ({p.X} + t) / ({p.Y} + t) = {p.k}. "
+                 f"Vi ganger op og udregner {p.k} * {p.Y}:",
+             expr=f"{p.k} * {p.Y}", result=str(p.kY),
+             post=f"altså kY = {p.kY}."),
+        Step(pre=f"Så {p.X} + t = {p.kY} + {p.k}t, hvilket giver "
+                 f"({p.k} - 1)t = {p.X} - {p.kY}. Vi udregner:",
+             expr=f"({p.X} - {p.kY}) / ({p.k} - 1)",
+             result=str(p.answer),
+             post=f"altså t = {p.answer}."),
+    ]
+    return steps, str(p.answer)
+
+
+_AGE_STEPS = {
+    "expand": _age_steps_expand,
+    "ratio": _age_steps_ratio,
+}
+
+
+def sample_age(rng: random.Random) -> Problem:
+    while True:
+        Y = rng.randint(2, 20)
+        k = rng.randint(2, 4)
+        t = rng.randint(1, 15)
+        X = k * (Y + t) - t
+        if 3 <= X <= 80 and X > Y and X != Y:
+            break
+
+    kY = k * Y
+    num = X - kY
+    denom = k - 1
+    answer = t
+
+    name_a, name_b = rng.sample(NAMES, 2)
+    q_tpl = rng.choice(AGE_TEMPLATES)
+    question = q_tpl.format(name_a=name_a, name_b=name_b, X=X, Y=Y, k=k)
+
+    p = AgeParams(name_a=name_a, name_b=name_b, X=X, Y=Y, k=k, kY=kY,
+                  num=num, denom=denom, answer=answer)
+    strategy = rng.choice(list(_AGE_STEPS))
+    steps, final = _AGE_STEPS[strategy](p)
+    chain = render_prose(steps, final)
+    funcall = render_funcall(question, steps, final)
+
+    return Problem(
+        type="age",
+        question_da=question,
+        chain_da=chain,
+        answer=final,
+        params={"name_a": name_a, "name_b": name_b, "X": X, "Y": Y, "k": k},
+        strategy=strategy,
+        steps=[asdict(s) for s in steps],
+        funcall=funcall,
+    )
+
+
+# ── MIXTURE ─────────────────────────────────────────────────────────────
+
+MIXTURE_TEMPLATES = [
+    "En kemiker blander {V1} ml opløsning med {C1}% koncentration med "
+    "{V2} ml opløsning med {C2}% koncentration. Hvad er koncentrationen "
+    "i den samlede blanding (i procent)?",
+    "{V1} ml af en {C1}%-opløsning blandes med {V2} ml af en {C2}%-"
+    "opløsning. Hvad er koncentrationen i den nye blanding (%)?",
+    "Man hælder {V1} ml væske med {C1}% saltindhold sammen med {V2} ml "
+    "væske med {C2}% saltindhold. Hvad bliver saltindholdet i blandingen "
+    "(%)?",
+    "På et laboratorium blandes {V1} ml med {C1}% aktivt stof og {V2} ml "
+    "med {C2}% aktivt stof. Hvad er indholdet af aktivt stof i den samlede "
+    "blanding (%)?",
+    "En bartender blander {V1} ml juice med {C1}% frugtindhold med {V2} ml "
+    "af en anden juice med {C2}% frugtindhold. Hvad er frugtindholdet i "
+    "den blandede drink (%)?",
+    "I en pool tilsættes {V1} liter vand med {C1}% klorindhold til {V2} liter "
+    "vand med {C2}% klorindhold. Hvad er klorindholdet i den samlede mængde "
+    "(%)? (svar i procent)",
+    "En landmand blander {V1} liter foder med {C1}% proteinindhold med {V2} "
+    "liter foder med {C2}% proteinindhold. Hvad er proteinindholdet i den "
+    "endelige blanding (%)?",
+    "På et bryggeri kombineres {V1} liter øl med {C1}% alkohol med {V2} liter "
+    "øl med {C2}% alkohol. Hvad er alkoholprocenten i blandingen?",
+    "En parfumist rører {V1} ml essens med {C1}% duftkoncentration sammen med "
+    "{V2} ml essens med {C2}% duftkoncentration. Hvad er duftkoncentrationen "
+    "i den nye essens (%)?",
+    "Et malingfirma blander {V1} ml maling med {C1}% pigment med {V2} ml "
+    "maling med {C2}% pigment. Hvad er pigmentindholdet i den samlede "
+    "maling (%)?",
+]
+
+@dataclass
+class MixtureParams:
+    V1: int
+    V2: int
+    C1: int
+    C2: int
+    m1: int
+    m2: int
+    msum: int
+    msum100: int
+    v1c1: int
+    v2c2: int
+    vsum: int
+    answer: int
+
+
+def _mixture_steps_amounts(p: MixtureParams) -> tuple[list[Step], str]:
+    steps = [
+        Step(pre="Mængden af stof i blanding 1 er volumen gange koncentration "
+                 "divideret med 100:",
+             expr=f"{p.V1} * {p.C1} / 100", result=str(p.m1),
+             post=f"altså {p.m1} enheder stof."),
+        Step(pre="Mængden af stof i blanding 2:",
+             expr=f"{p.V2} * {p.C2} / 100", result=str(p.m2),
+             post=f"altså {p.m2} enheder stof."),
+        Step(pre="Samlet mængde stof:",
+             expr=f"{p.m1} + {p.m2}", result=str(p.msum),
+             post=f"altså {p.msum} enheder."),
+        Step(pre="Samlet volumen:",
+             expr=f"{p.V1} + {p.V2}", result=str(p.vsum),
+             post=f"altså {p.vsum} ml."),
+        Step(pre="Koncentrationen bliver den samlede mængde stof divideret "
+                 "med den samlede volumen, ganget med 100:",
+             expr=f"{p.msum} / {p.vsum} * 100", result=str(p.answer),
+             post=f"altså {p.answer}%."),
+    ]
+    return steps, str(p.answer)
+
+
+def _mixture_steps_weighted(p: MixtureParams) -> tuple[list[Step], str]:
+    steps = [
+        Step(pre="Vægtet gennemsnit af koncentrationerne udregnes som "
+                 f"({p.V1}*{p.C1} + {p.V2}*{p.C2}) / ({p.V1} + {p.V2}). "
+                 "Vi finder tælleren:",
+             expr=f"{p.V1} * {p.C1} + {p.V2} * {p.C2}",
+             result=str(p.msum100),
+             post=f"altså tæller = {p.msum100}."),
+        Step(pre="Nævneren:",
+             expr=f"{p.V1} + {p.V2}", result=str(p.vsum),
+             post=f"altså nævner = {p.vsum}."),
+        Step(pre="Koncentrationen bliver:",
+             expr=f"{p.msum100} / {p.vsum}", result=str(p.answer),
+             post=f"altså {p.answer}%."),
+    ]
+    return steps, str(p.answer)
+
+
+_MIX_STEPS = {
+    "amounts": _mixture_steps_amounts,
+    "weighted": _mixture_steps_weighted,
+}
+
+
+def sample_mixture(rng: random.Random) -> Problem:
+    while True:
+        V1 = rng.choice([50, 100, 150, 200, 250, 300, 350, 400, 450, 500,
+                         600, 700, 800, 1000])
+        V2 = rng.choice([50, 100, 150, 200, 250, 300, 350, 400, 450, 500,
+                         600, 700, 800, 1000])
+        C1 = rng.choice([2, 4, 5, 6, 8, 10, 12, 15, 16, 18, 20, 22, 25,
+                         28, 30, 35, 40, 45, 50, 60, 70, 80])
+        C2 = rng.choice([2, 4, 5, 6, 8, 10, 12, 15, 16, 18, 20, 22, 25,
+                         28, 30, 35, 40, 45, 50, 60, 70, 80])
+        if C1 == C2:
+            continue
+        v1c1 = V1 * C1
+        v2c2 = V2 * C2
+        vsum = V1 + V2
+        if (v1c1 + v2c2) % vsum == 0:
+            answer = (v1c1 + v2c2) // vsum
+            if answer != C1 and answer != C2:
+                break
+
+    m1 = V1 * C1 // 100 if V1 * C1 % 100 == 0 else None
+    m2 = V2 * C2 // 100 if V2 * C2 % 100 == 0 else None
+    if m1 is None or m2 is None:
+        return sample_mixture(rng)
+    msum = m1 + m2
+    msum100 = v1c1 + v2c2
+
+    q_tpl = rng.choice(MIXTURE_TEMPLATES)
+    question = q_tpl.format(V1=V1, V2=V2, C1=C1, C2=C2)
+
+    p = MixtureParams(V1=V1, V2=V2, C1=C1, C2=C2, m1=m1, m2=m2,
+                      msum=msum, msum100=msum100,
+                      v1c1=v1c1, v2c2=v2c2, vsum=vsum, answer=answer)
+    strategy = rng.choice(list(_MIX_STEPS))
+    steps, final = _MIX_STEPS[strategy](p)
+    chain = render_prose(steps, final)
+    funcall = render_funcall(question, steps, final)
+
+    return Problem(
+        type="mixture",
+        question_da=question,
+        chain_da=chain,
+        answer=final,
+        params={"V1": V1, "V2": V2, "C1": C1, "C2": C2},
+        strategy=strategy,
+        steps=[asdict(s) for s in steps],
+        funcall=funcall,
+    )
+
+
+# ── DISTANCE ────────────────────────────────────────────────────────────
+
+DISTANCE_TEMPLATES = {
+    "simple": [
+        "En bil kører med {R} km/t i {T} timer. Hvor langt har den kørt?",
+        "{name} cykler {R} km/t i {T} timer. Hvor mange kilometer har "
+        "{name} tilbagelagt?",
+        "Et tog kører i {T} timer med en gennemsnitsfart på {R} km/t. "
+        "Hvor lang er strækningen?",
+        "En bus kører {R} km/t i {T} timer. Hvor langt bevæger den sig?",
+        "{name} løber i {T} timer med en fart på {R} km/t. Hvor mange "
+        "kilometer har {name} løbet?",
+        "Et fly holder en gennemsnitsfart på {R} km/t i {T} timer. "
+        "Hvor lang er strækningen tilbagelagt?",
+        "En lastbil kører {T} timer med {R} km/t. Hvor langt kommer den?",
+        "En sportsudøver træner med en jævn fart på {R} km/t i {T} timer. "
+        "Hvor mange kilometer tilbagelægges?",
+    ],
+    "meeting": [
+        "To biler starter samtidig fra hver sin ende af en {D} km lang "
+        "strækning og kører mod hinanden. Den ene kører {Ra} km/t, den "
+        "anden {Rb} km/t. Om hvor mange timer mødes de?",
+        "{name_a} kører {Ra} km/t fra by A mod by B, og {name_b} kører "
+        "{Rb} km/t fra by B mod by A. Byerne ligger {D} km fra hinanden. "
+        "Om hvor mange timer mødes de?",
+        "To tog kører imod hinanden på en {D} km lang strækning. "
+        "Det ene tog kører {Ra} km/t, det andet {Rb} km/t. Om hvor mange "
+        "timer mødes togene?",
+        "{name_a} og {name_b} står {D} km fra hinanden og cykler mod hinanden "
+        "med {Ra} km/t og {Rb} km/t. Hvor lang tid går der, før de møder "
+        "hinanden?",
+        "Fra hver sin ende af en {D} km lang landevej starter {name_a} og "
+        "{name_b} på cykel mod hinanden med {Ra} km/t og {Rb} km/t. Om hvor "
+        "mange timer mødes de?",
+        "To skibe sejler mod hinanden på en {D} km lang rute. Farterne er "
+        "{Ra} km/t og {Rb} km/t. Om hvor mange timer møder de hinanden?",
+    ],
+    "catchup": [
+        "{name_a} går af sted med {Ra} km/t. Efter {T0} timer starter "
+        "{name_b} fra samme sted og kører {Rb} km/t i samme retning. "
+        "Om hvor mange timer indhenter {name_b} {name_a}?",
+        "En cyklist kører {Ra} km/t. Efter {T0} timer starter en anden "
+        "cyklist samme rute med {Rb} km/t. Hvor mange timer bruger "
+        "den anden cyklist på at indhente den første?",
+        "{name_a} tager af sted med {Ra} km/t. {T0} timer senere kører "
+        "{name_b} samme rute med {Rb} km/t. Om hvor mange timer indhenter "
+        "{name_b} {name_a}?",
+        "En bus kører {Ra} km/t fra terminalen. {T0} timer senere kører en "
+        "hurtigere bus fra samme terminal med {Rb} km/t. Hvor mange timer "
+        "efter afgang indhenter den den første?",
+        "Et fragtskib forlader havnen med {Ra} km/t. {T0} timer senere "
+        "sætter et hurtigere skib af sted med {Rb} km/t i samme retning. "
+        "Hvor lang tid går der, før det hurtigere skib indhenter det første?",
+        "En motorcyklist kører {Ra} km/t. {T0} timer senere jagter en anden "
+        "motorcyklist med {Rb} km/t. Om hvor mange timer indhenter den anden "
+        "den første?",
+    ],
+}
+
+@dataclass
+class DistanceSimple:
+    R: int
+    T: int
+    answer: int
+
+
+@dataclass
+class DistanceMeeting:
+    D: int
+    Ra: int
+    Rb: int
+    Rsum: int
+    answer: int
+
+
+@dataclass
+class DistanceCatchup:
+    Ra: int
+    Rb: int
+    T0: int
+    Rdiff: int
+    lead: int
+    answer: int
+
+
+def _dist_simple(p: DistanceSimple) -> tuple[list[Step], str]:
+    steps = [
+        Step(pre="Distancen udregnes som fart gange tid:",
+             expr=f"{p.R} * {p.T}", result=str(p.answer),
+             post=f"altså {p.answer} km."),
+    ]
+    return steps, str(p.answer)
+
+
+def _dist_meeting(p: DistanceMeeting) -> tuple[list[Step], str]:
+    unit = "time" if p.answer == 1 else "timer"
+    steps = [
+        Step(pre="De to køretøjer nærmer sig hinanden med en samlet fart på",
+             expr=f"{p.Ra} + {p.Rb}", result=str(p.Rsum),
+             post=f"altså {p.Rsum} km/t sammenlagt."),
+        Step(pre="Mødetidspunktet findes ved at dele afstanden med den samlede fart:",
+             expr=f"{p.D} / {p.Rsum}", result=str(p.answer),
+             post=f"altså {p.answer} {unit}."),
+    ]
+    return steps, str(p.answer)
+
+
+def _dist_catchup(p: DistanceCatchup) -> tuple[list[Step], str]:
+    unit = "time" if p.answer == 1 else "timer"
+    steps = [
+        Step(pre="Ved den anden's afgang har den første et forspring på",
+             expr=f"{p.Ra} * {p.T0}", result=str(p.lead),
+             post=f"altså {p.lead} km."),
+        Step(pre="Relativ fart mellem den anden og den første er",
+             expr=f"{p.Rb} - {p.Ra}", result=str(p.Rdiff),
+             post=f"altså {p.Rdiff} km/t netto ind på forspringet."),
+        Step(pre="Indhentningstid = forspring / relativ fart:",
+             expr=f"{p.lead} / {p.Rdiff}", result=str(p.answer),
+             post=f"altså {p.answer} {unit}."),
+    ]
+    return steps, str(p.answer)
+
+
+_DIST_STEPS = {
+    "simple": _dist_simple,
+    "meeting": _dist_meeting,
+    "catchup": _dist_catchup,
+}
+
+
+def sample_distance(rng: random.Random) -> Problem:
+    kind = rng.choice(["simple", "meeting", "catchup"])
+    if kind == "simple":
+        R = rng.choice([30, 40, 50, 60, 70, 80, 90, 100])
+        T = rng.randint(2, 8)
+        answer = R * T
+        name = rng.choice(NAMES)
+        q_tpl = rng.choice(DISTANCE_TEMPLATES["simple"])
+        question = q_tpl.format(R=R, T=T, name=name)
+        p = DistanceSimple(R=R, T=T, answer=answer)
+        params = {"kind": "simple", "R": R, "T": T}
+    elif kind == "meeting":
+        while True:
+            Ra = rng.choice([30, 40, 50, 60, 70, 80])
+            Rb = rng.choice([30, 40, 50, 60, 70, 80])
+            if Ra == Rb:
+                continue
+            Rsum = Ra + Rb
+            answer_num = rng.randint(2, 6)
+            D = Rsum * answer_num
+            if D <= 800:
+                answer = answer_num
+                break
+        name_a, name_b = rng.sample(NAMES, 2)
+        q_tpl = rng.choice(DISTANCE_TEMPLATES["meeting"])
+        question = q_tpl.format(D=D, Ra=Ra, Rb=Rb,
+                                name_a=name_a, name_b=name_b)
+        p = DistanceMeeting(D=D, Ra=Ra, Rb=Rb, Rsum=Rsum, answer=answer)
+        params = {"kind": "meeting", "D": D, "Ra": Ra, "Rb": Rb,
+                  "name_a": name_a, "name_b": name_b}
+    else:  # catchup
+        while True:
+            Ra = rng.choice([20, 30, 40, 50])
+            Rb = rng.choice([40, 50, 60, 70, 80, 90])
+            if Rb <= Ra:
+                continue
+            T0 = rng.randint(1, 5)
+            Rdiff = Rb - Ra
+            lead = Ra * T0
+            if lead % Rdiff == 0 and 1 <= lead // Rdiff <= 12:
+                answer = lead // Rdiff
+                break
+        name_a, name_b = rng.sample(NAMES, 2)
+        q_tpl = rng.choice(DISTANCE_TEMPLATES["catchup"])
+        question = q_tpl.format(Ra=Ra, Rb=Rb, T0=T0,
+                                name_a=name_a, name_b=name_b)
+        p = DistanceCatchup(Ra=Ra, Rb=Rb, T0=T0, Rdiff=Rdiff,
+                            lead=lead, answer=answer)
+        params = {"kind": "catchup", "Ra": Ra, "Rb": Rb, "T0": T0,
+                  "name_a": name_a, "name_b": name_b}
+
+    strategy = kind
+    steps, final = _DIST_STEPS[strategy](p)
+    chain = render_prose(steps, final)
+    funcall = render_funcall(question, steps, final)
+
+    return Problem(
+        type="distance",
+        question_da=question,
+        chain_da=chain,
+        answer=final,
+        params=params,
+        strategy=f"distance_{kind}",
+        steps=[asdict(s) for s in steps],
+        funcall=funcall,
+    )
+
+
+# ── Driver ──────────────────────────────────────────────────────────────
+
+SAMPLERS = {
+    "ratio": sample_ratio,
+    "percent": sample_percent,
+    "inverse_rate": sample_inverse_rate,
+    "consecutive": sample_consecutive,
+    "coin": sample_coin,
+    "age": sample_age,
+    "mixture": sample_mixture,
+    "distance": sample_distance,
+}
+
+# Master dispatch: type_name → strategy_name → step_fn(params) → (list[Step], str)
+# Useful downstream if you want to regenerate steps from params without
+# re-running the whole sample_X (e.g. for funcall variants at SFT time).
+STEPS_BY_TYPE = {
+    "ratio": _RATIO_STEPS,
+    "percent": _PERCENT_STEPS,
+    "inverse_rate": _INV_STEPS,
+    "consecutive": _CONSEC_STEPS,
+    "coin": _COIN_STEPS,
+    "age": _AGE_STEPS,
+    "mixture": _MIX_STEPS,
+    "distance": _DIST_STEPS,
+}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--type", required=True, choices=list(SAMPLERS))
+    ap.add_argument("--n", type=int, default=100)
+    ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--max-attempts-per-row", type=int, default=100,
+                    help="give up after this many dedup misses per emitted row")
+    args = ap.parse_args()
+
+    rng = random.Random(args.seed)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+
+    seen: set[tuple[str, str]] = set()
+    written = 0
+    attempts_since_last = 0
+    with args.out.open("w") as f:
+        while written < args.n:
+            p = SAMPLERS[args.type](rng)
+            key = (p.question_da[:60], p.answer)
+            attempts_since_last += 1
+            if key in seen:
+                if attempts_since_last > args.max_attempts_per_row:
+                    print(f"stopping early: dedup pool exhausted after {written}")
+                    break
+                continue
+            seen.add(key)
+            attempts_since_last = 0
+            f.write(json.dumps(asdict(p), ensure_ascii=False) + "\n")
+            written += 1
+    print(f"Wrote {written} → {args.out}")
+
+
+if __name__ == "__main__":
+    main()
