@@ -336,11 +336,11 @@ _RATIO_STEPS = {
 
 def sample_ratio(rng: random.Random) -> Problem:
     obj = rng.choice(NOUNS)
-    a = rng.randint(1, 5)
-    b = rng.randint(1, 5)
+    a = rng.randint(1, 7)
+    b = rng.randint(1, 7)
     while a == b:
-        b = rng.randint(1, 5)
-    per_part = rng.randint(2, 20)
+        b = rng.randint(1, 7)
+    per_part = rng.randint(2, 50)
     total = per_part * (a + b)
 
     name_a, name_b = rng.sample(NAMES, 2)
@@ -497,9 +497,9 @@ _PERCENT_STEPS = {
 def sample_percent(rng: random.Random) -> Problem:
     kind = rng.choice(["discount", "markup", "tax"])
     while True:
-        price = rng.choice([100, 200, 250, 300, 400, 500, 600, 750,
-                            800, 1000, 1200, 1500, 2000, 2500])
-        pct = rng.choice([5, 10, 15, 20, 25, 30, 40, 50])
+        # Multiples of 10 kroner from 50 to 5000 — most divisibility hits fast.
+        price = rng.randint(5, 500) * 10
+        pct = rng.randint(2, 75)
         if price * pct % 100 == 0:
             break
     change = price * pct // 100
@@ -926,8 +926,8 @@ _COIN_STEPS = {
 
 def sample_coin(rng: random.Random) -> Problem:
     d1, d2, d1_sg, d2_sg, d1_pl, d2_pl = rng.choice(COIN_DENOMS)
-    a = rng.randint(1, 15)
-    b = rng.randint(1, 15)
+    a = rng.randint(1, 30)
+    b = rng.randint(1, 30)
     C = a + b
     V = d1 * a + d2 * b
     d2C = d2 * C
@@ -1039,11 +1039,11 @@ _AGE_STEPS = {
 
 def sample_age(rng: random.Random) -> Problem:
     while True:
-        Y = rng.randint(2, 20)
-        k = rng.randint(2, 4)
-        t = rng.randint(1, 15)
+        Y = rng.randint(2, 35)
+        k = rng.randint(2, 5)
+        t = rng.randint(1, 30)
         X = k * (Y + t) - t
-        if 3 <= X <= 80 and X > Y and X != Y:
+        if 3 <= X <= 120 and X > Y and X != Y:
             break
 
     kY = k * Y
@@ -1353,8 +1353,8 @@ _DIST_STEPS = {
 def sample_distance(rng: random.Random) -> Problem:
     kind = rng.choice(["simple", "meeting", "catchup"])
     if kind == "simple":
-        R = rng.choice([30, 40, 50, 60, 70, 80, 90, 100])
-        T = rng.randint(2, 8)
+        R = rng.choice([25, 30, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100, 110, 120])
+        T = rng.randint(2, 15)
         answer = R * T
         name = rng.choice(NAMES)
         q_tpl = rng.choice(DISTANCE_TEMPLATES["simple"])
@@ -1363,14 +1363,14 @@ def sample_distance(rng: random.Random) -> Problem:
         params = {"kind": "simple", "R": R, "T": T}
     elif kind == "meeting":
         while True:
-            Ra = rng.choice([30, 40, 50, 60, 70, 80])
-            Rb = rng.choice([30, 40, 50, 60, 70, 80])
+            Ra = rng.choice([25, 30, 40, 45, 50, 60, 70, 80, 90, 100])
+            Rb = rng.choice([25, 30, 40, 45, 50, 60, 70, 80, 90, 100])
             if Ra == Rb:
                 continue
             Rsum = Ra + Rb
-            answer_num = rng.randint(2, 6)
+            answer_num = rng.randint(2, 12)
             D = Rsum * answer_num
-            if D <= 800:
+            if D <= 2000:
                 answer = answer_num
                 break
         name_a, name_b = rng.sample(NAMES, 2)
@@ -1382,14 +1382,14 @@ def sample_distance(rng: random.Random) -> Problem:
                   "name_a": name_a, "name_b": name_b}
     else:  # catchup
         while True:
-            Ra = rng.choice([20, 30, 40, 50])
-            Rb = rng.choice([40, 50, 60, 70, 80, 90])
+            Ra = rng.choice([15, 20, 25, 30, 35, 40, 45, 50, 55, 60])
+            Rb = rng.choice([30, 40, 45, 50, 55, 60, 70, 75, 80, 90, 100, 110, 120])
             if Rb <= Ra:
                 continue
-            T0 = rng.randint(1, 5)
+            T0 = rng.randint(1, 10)
             Rdiff = Rb - Ra
             lead = Ra * T0
-            if lead % Rdiff == 0 and 1 <= lead // Rdiff <= 12:
+            if lead % Rdiff == 0 and 1 <= lead // Rdiff <= 24:
                 answer = lead // Rdiff
                 break
         name_a, name_b = rng.sample(NAMES, 2)
