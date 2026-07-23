@@ -25,6 +25,23 @@ import re
 from pathlib import Path
 
 from rich.console import Console
+
+# Liger kernel — monkey-patches transformers' Llama classes with fused
+# CUDA kernels (RoPE, RMSNorm, SwiGLU, Fused-Linear Cross-Entropy).
+# Must run BEFORE `from transformers import AutoModelForCausalLM` to
+# reach the classes at import time. `fused_linear_cross_entropy=True`
+# swaps the LM head → optimizer state from a non-Liger run won't
+# resume cleanly, so we only apply it on fresh SFT-from-base runs.
+try:
+    from liger_kernel.transformers import apply_liger_kernel_to_llama
+    apply_liger_kernel_to_llama(
+        rope=True, rms_norm=True, swiglu=True,
+        fused_linear_cross_entropy=True, cross_entropy=False,
+    )
+    _LIGER_ON = True
+except ImportError:
+    _LIGER_ON = False
+
 from transformers import (
     AutoModelForCausalLM,
     PreTrainedTokenizerFast,
@@ -81,10 +98,13 @@ def load_sft_data(path: Path, max_examples: int = 0) -> list[str]:
     return conversations
 
 
-def _build_preprocess_and_tokenize(tokenizer, special_tokens, max_length):
+def _build_preprocess_and_tokenize(tokenizer, special_tokens, max_length,
+                                    morpheme_preprocess: bool = True):
     """Return a tokenize fn that yields {input_ids, attention_mask}.
-    Morpheme-preprocesses non-special-token text spans, leaves special
-    tokens intact for the tokenizer to map to single ids.
+    When morpheme_preprocess=True (EO default), decomposes non-special text
+    spans into space-separated morphemes with <w> word boundaries. When False
+    (Danish and other non-EO), passes text through unchanged so it tokenizes
+    the same way the pretrain did.
     """
     pat = "(" + "|".join(
         re.escape(t) for t in sorted(special_tokens, key=len, reverse=True)
@@ -97,12 +117,13 @@ def _build_preprocess_and_tokenize(tokenizer, special_tokens, max_length):
         for part in parts:
             if part in special_tokens:
                 processed.append(part)
-            elif part.strip():
+            elif part.strip() and morpheme_preprocess:
                 processed.append(_morpheme_preprocess(part.strip()))
             else:
                 processed.append(part)
+        joiner = " " if morpheme_preprocess else ""
         return tokenizer(
-            " ".join(processed),
+            joiner.join(processed),
             max_length=max_length,
             truncation=True,
             padding=False,
@@ -278,6 +299,10 @@ def main():
     parser.add_argument("--optim", default="adamw_torch_fused")
     parser.add_argument("--attn-impl", default="auto",
                         choices=["auto", "flash_attention_2", "sdpa", "eager"])
+    parser.add_argument("--no-morpheme-preprocess", action="store_true",
+                        help="Skip morpheme preprocessing (Danish and other "
+                             "non-Esperanto languages). Default (off) applies "
+                             "morpheme decomposition matching EO pretrain.")
     args = parser.parse_args()
 
     if args.output_dir:
@@ -329,7 +354,7 @@ def main():
                 attn_impl = "sdpa"
         except ImportError:
             attn_impl = "sdpa"
-    console.print(f"[bold]Attention impl:[/] {attn_impl}")
+    console.print(f"[bold]Attention impl:[/] {attn_impl}   [bold]Liger:[/] {_LIGER_ON}")
     model = AutoModelForCausalLM.from_pretrained(
         args.checkpoint, attn_implementation=attn_impl)
 
@@ -420,7 +445,8 @@ def main():
             f"(id={assistant_id}); tool-result spans masked: {mask_tool}")
 
         tokenize_fn = _build_preprocess_and_tokenize(
-            tokenizer, special_tokens, args.max_length)
+            tokenizer, special_tokens, args.max_length,
+            morpheme_preprocess=not args.no_morpheme_preprocess)
         label_fn = _build_label_masker(
             assistant_id, tr_open_id, tr_close_id, unk_id)
 
