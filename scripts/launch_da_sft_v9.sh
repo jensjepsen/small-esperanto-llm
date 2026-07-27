@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Danish SFT v9 (mix11-if-v3-wp-reworded-rephrase) — v8 base with IF-v3
-# swap, wp-reworded-v1 re-added, and a rephrase-instruction dataset added.
+# Danish SFT v9 (mix10-if-v3-wp-reworded) — v8 base with IF-v3 swap
+# and wp-reworded-v1 re-added.
 #
 # Deltas from v8:
 #   SWAP jensjepsen/danish-instruction-following-v2:sft:train
@@ -19,21 +19,17 @@
 #     reworded-v1 alone (not wp-v2) gives natural-language surface variety
 #     without the templated question shapes that made wp-v2 identifiable.
 #
-#   ADD  jensjepsen/danish-rephrase-wp-v1
-#     ~392k rephrase-instruction rows built from wp-reworded-v1's
-#     (q_orig, q_new) pairs. Both directions (orig→new AND new→orig) with
-#     ~80 varied instruction templates (imperative/polite/question/roleplay).
-#     Fills the "rephrase this sentence" capability gap probed on v6
-#     (which currently returns verbatim copies on rephrase asks). Math-WP
-#     domain only for now — general-purpose rephrase deferred pending v9
-#     eval.
+# Considered but NOT included: jensjepsen/danish-rephrase-wp-v1 (392k rows,
+# built from wp-reworded's q_orig↔q_new pairs). Would have pushed mix to
+# ~1.5M rows; deferred to keep mix size comparable to v8. Available on HF
+# for a follow-up run if v9 evals show a rephrase-capability gap.
 #
 # Kept: (v8's 8 sources) metamath-gsm, algebra-v5, arith-chain-v1,
 # wiki-grounded-v3, text-to-question-v2, sciq, gsm8k, wiki-closedqa-v1
-# — plus the three changes above = 11 total sources.
+# — plus the two changes above = 10 total sources.
 #
 # Same optimizer/schedule as v5/v6/v7/v8.
-# Total ~1.5M rows across 11 sources (v8 was ~984k).
+# Total ~1.1M rows across 10 sources (v8 was ~984k).
 # Output written to overlay (/root), not /workspace — pod-quota isolation.
 
 set -euo pipefail
@@ -46,7 +42,7 @@ export ESPLLM_NUM_PROC=8
 uv run python -u scripts/train_sft_packed.py \
   --checkpoint jensjepsen/danish-lm-400m-base-ckpt310k \
   --tokenizer jensjepsen/danish-tokenizer \
-  --output-dir /root/runs/sft/da_v9_mix11_ifv3_wpreworded_rephrase \
+  --output-dir /root/runs/sft/da_v9_mix10_ifv3_wpreworded \
   --no-morpheme-preprocess \
   --sft-data \
     jensjepsen/danish-metamath-gsm:sft \
@@ -59,7 +55,6 @@ uv run python -u scripts/train_sft_packed.py \
     jensjepsen/danish-instruction-following-v3:sft:train \
     jensjepsen/danish-wiki-closedqa-v1:sft \
     jensjepsen/danish-word-problems-reworded-v1 \
-    jensjepsen/danish-rephrase-wp-v1:sft \
   --epochs 2 \
   --batch-size 32 \
   --gradient-accumulation 1 \
@@ -70,5 +65,5 @@ uv run python -u scripts/train_sft_packed.py \
   --save-fraction-of-epoch 0.25 \
   --save-total-limit 3 \
   --wandb-project danish-lm-sft \
-  --wandb-run-name da_v9_sft_mix11_ifv3_wpreworded_rephrase \
-  --wandb-tags sft da v9 mix11 no-morpheme if-v3 wp-reworded rephrase-wp wiki-closedqa
+  --wandb-run-name da_v9_sft_mix10_ifv3_wpreworded \
+  --wandb-tags sft da v9 mix10 no-morpheme if-v3 wp-reworded wiki-closedqa
