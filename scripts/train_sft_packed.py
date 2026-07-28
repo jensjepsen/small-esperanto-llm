@@ -286,7 +286,13 @@ def main():
                              "pin_memory thread during eval on some GPUs "
                              "(e.g. Blackwell 5090 under load).")
     parser.add_argument("--save-total-limit", type=int, default=3)
-    parser.add_argument("--no-best", action="store_true")
+    parser.add_argument("--best-eval-ckpt", action="store_true",
+                        help="If set, /final = best-eval-loss checkpoint via "
+                             "HF Trainer's load_best_model_at_end. Default "
+                             "OFF — /final = last checkpoint. Rationale: DA "
+                             "v12 A/B showed best-eval-loss ckpt was weaker "
+                             "on 4/5 downstream metrics than the last ckpt "
+                             "(project_v12_best_ckpt_selection).")
     parser.add_argument(
         "--lr-scheduler", type=str, default="cosine_with_min_lr",
         choices=["cosine_with_min_lr", "constant",
@@ -591,7 +597,7 @@ def main():
         save_steps=save_steps,
         dataloader_pin_memory=not args.no_pin_memory,
         save_total_limit=args.save_total_limit,
-        load_best_model_at_end=not args.no_best,
+        load_best_model_at_end=args.best_eval_ckpt,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         logging_steps=50,
