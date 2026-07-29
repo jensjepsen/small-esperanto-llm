@@ -195,15 +195,29 @@ class DownstreamEvalCallback(TrainerCallback):
 
     def on_evaluate(self, args, state, control, model=None, metrics=None,
                     **kwargs):
-        if model is None or metrics is None:
+        if model is None:
             return control
         model.eval()
         t0 = time.time()
+        downstream_metrics = {}
         for name in self.evals:
             score = getattr(self, f"_score_{name}")(model)
-            metrics[f"eval_downstream_{name}"] = score
+            key = f"eval_downstream_{name}"
+            downstream_metrics[key] = score
+            if metrics is not None:
+                metrics[key] = score  # for HF logging on same-step
             print(f"  [downstream] {name}: {100*score:.1f}%", flush=True)
         elapsed = time.time() - t0
         print(f"  [downstream] {len(self.evals)} evals in {elapsed:.0f}s "
               f"(n={self.n} each, bs={self.bs})", flush=True)
+        # Explicit wandb.log() — Trainer's built-in log already fired for
+        # the eval metrics dict BEFORE on_evaluate ran, so mutating `metrics`
+        # doesn't reach wandb. Push our downstream metrics directly at the
+        # current global_step.
+        try:
+            import wandb
+            if wandb.run is not None:
+                wandb.log(downstream_metrics, step=state.global_step)
+        except ImportError:
+            pass
         return control
