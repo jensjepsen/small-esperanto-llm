@@ -298,6 +298,16 @@ def main():
         choices=["cosine_with_min_lr", "constant",
                  "constant_with_warmup", "linear", "cosine"])
     parser.add_argument("--warmup-steps", type=int, default=100)
+    parser.add_argument("--downstream-evals", nargs="*",
+                        default=["gsm8k", "sciq", "citgen"],
+                        choices=["gsm8k", "sciq", "citgen"],
+                        help="Run these downstream evals on every eval step. "
+                             "Empty list disables. See "
+                             "esperanto_lm.downstream_eval_callback.")
+    parser.add_argument("--downstream-n", type=int, default=100,
+                        help="Rows per downstream eval (subsample).")
+    parser.add_argument("--downstream-batch-size", type=int, default=32,
+                        help="Batch size for downstream generation.")
     parser.add_argument("--wandb-project", default="jepsen/espllm")
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-tags", nargs="*", default=None)
@@ -612,6 +622,18 @@ def main():
     from transformers import default_data_collator
 
     console.print("[bold green]Starting packed SFT training...")
+    callbacks = []
+    if args.downstream_evals:
+        from esperanto_lm.downstream_eval_callback import DownstreamEvalCallback
+        callbacks.append(DownstreamEvalCallback(
+            tokenizer=tokenizer,
+            evals=args.downstream_evals,
+            n_per_eval=args.downstream_n,
+            batch_size=args.downstream_batch_size,
+        ))
+        console.print(f"[green]Downstream evals every eval step: "
+                      f"{args.downstream_evals} (n={args.downstream_n})")
+
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -619,6 +641,7 @@ def main():
         eval_dataset=eval_dataset,
         data_collator=default_data_collator,
         tokenizer=tokenizer,
+        callbacks=callbacks,
     )
 
     trainer.train(resume_from_checkpoint=args.resume or None)
