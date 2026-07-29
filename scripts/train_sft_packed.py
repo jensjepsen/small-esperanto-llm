@@ -255,7 +255,8 @@ def main():
                         help="Local JSONL files or HF Hub dataset names.")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--tokenizer", type=str, default="tokenizer_morpheme")
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--epochs", type=float, default=3.0,
+                        help="Can be fractional (e.g. 0.2 for a short anneal).")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--gradient-accumulation", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
