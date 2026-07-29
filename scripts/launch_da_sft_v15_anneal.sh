@@ -53,10 +53,10 @@ uv run python -u scripts/train_sft_packed.py \
   --lr-scheduler linear \
   --warmup-steps 0 \
   --save-steps 400 \
-  --save-total-limit 6 \
+  --save-total-limit 2 \
   --downstream-evals gsm8k sciq citgen \
-  --downstream-n 200 \
   --downstream-batch-size 32 \
+  --top-k-downstream 3 \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_v15_anneal_from_v14_e3 \
   --wandb-tags sft da v15 anneal from-v14-e3 short lr-1e-5 linear-decay

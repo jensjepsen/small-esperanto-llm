@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Danish SFT v14 (mix12-if-v3-wpv2-stem-broad, 5 epochs) — schedule probe.
+# Danish SFT v16 (mix12, 3 epochs, constant LR + warmup) — schedule probe.
 #
-# Same 12-source mix as v12/v13. Goal: gauge where the returns stop by
-# running longer and monitoring downstream evals during training (via the
-# new DownstreamEvalCallback — eval_downstream_{gsm8k,sciq,citgen} metrics
-# every quarter-epoch). Ships /final = last ckpt (load_best_model_at_end
-# default flipped OFF post-v12).
+# Companion to v14 (5-epoch cosine) & v15 (anneal). Isolates the schedule
+# variable: constant LR (no decay) for the whole run so we can see whether
+# v14's late-stage GSM drift was caused by too-hot cosine tail or by
+# overtraining itself. Fixed LR + warmup = simpler baseline.
 #
-# Rationale for 5 epochs: v12 (3ep) beat v11 (2ep) despite an eval-loss
-# spike after epoch 2. Downstream metrics kept improving through epoch 3.
-# 5 epochs tells us if the trend continues, plateaus, or reverses. With
-# in-training downstream evals we'll SEE the trajectory instead of guessing.
+# LR chosen 3e-5 (~60% of v14's 5e-5 cosine peak) so total "gradient budget"
+# per pass is comparable to v14 at eq epoch count (cosine averages ~60% peak).
+# Warmup 200 steps matches v14.
 #
-# Cosine LR still — could switch to constant/WSD later if we see gains.
-# Total ~1.37M rows × 5 epochs = ~6.8M example passes. Runtime ~5h on 5090.
+# Full-set downstream evals every 0.25 epoch (~8-12 min overhead each);
+# top-3 by mean-downstream preserved into best/ so save_total_limit=2
+# rolls the recent pool while the actually-good ckpts persist.
+#
+# Runtime ~4h train + ~1.5h downstream eval overhead on 5090.
 
 set -euo pipefail
 cd /root/espllm
@@ -25,7 +26,7 @@ export ESPLLM_NUM_PROC=8
 uv run python -u scripts/train_sft_packed.py \
   --checkpoint jensjepsen/danish-lm-400m-base-ckpt310k \
   --tokenizer jensjepsen/danish-tokenizer \
-  --output-dir /root/runs/sft/da_v14_mix12_5e \
+  --output-dir /root/runs/sft/da_v16_mix12_3e_constlr \
   --no-morpheme-preprocess \
   --sft-data \
     jensjepsen/danish-metamath-gsm:sft \
@@ -40,12 +41,12 @@ uv run python -u scripts/train_sft_packed.py \
     jensjepsen/danish-word-problems-v2 \
     jensjepsen/danish-wiki-closedqa-stem-v1:sft \
     jensjepsen/danish-wiki-broadqa-stem-v1:sft \
-  --epochs 5 \
+  --epochs 3 \
   --batch-size 32 \
   --gradient-accumulation 1 \
-  --learning-rate 5e-5 \
+  --learning-rate 3e-5 \
   --max-length 512 \
-  --lr-scheduler cosine_with_min_lr \
+  --lr-scheduler constant_with_warmup \
   --warmup-steps 200 \
   --save-fraction-of-epoch 0.25 \
   --save-total-limit 2 \
@@ -53,5 +54,5 @@ uv run python -u scripts/train_sft_packed.py \
   --downstream-batch-size 32 \
   --top-k-downstream 3 \
   --wandb-project danish-lm-sft \
-  --wandb-run-name da_v14_sft_mix12_5e \
-  --wandb-tags sft da v14 mix12 no-morpheme if-v3 wp-v2 wiki-closedqa stem stem-broad epochs-5 downstream-eval schedule-probe
+  --wandb-run-name da_v16_sft_mix12_3e_constlr \
+  --wandb-tags sft da v16 mix12 no-morpheme if-v3 wp-v2 wiki-closedqa stem stem-broad epochs-3 downstream-eval full-set top3 constant-lr warmup-200 lr-3e-5 schedule-probe

@@ -16,11 +16,19 @@ Adds metrics to the eval-loss dict:
   eval_downstream_citgen  — citizen-tests generative accuracy
 
 These show up in wandb and stdout alongside eval_loss. Overhead: ~1-2 min
-per eval step with n=100 rows and bs=32 on a 5090.
+per eval step with n=100 rows and bs=32 on a 5090; ~8-12 min with full set.
+
+Top-K preservation: with top_k>0 and output_dir set, on each eval the
+callback ranks the current ckpt by mean-downstream and, when the next
+save fires for that step, moves checkpoint-N → best/step-N-agg-XX.XX so
+it survives HF Trainer's save_total_limit rotation.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
 import time
 import unicodedata
 
@@ -81,23 +89,47 @@ class DownstreamEvalCallback(TrainerCallback):
     logs them (and wandb picks them up)."""
 
     def __init__(self, tokenizer, evals=("gsm8k", "sciq", "citgen"),
-                 n_per_eval=100, batch_size=32, max_new_gsm=300,
-                 max_new_short=48, seed=42):
+                 n_per_eval=None, batch_size=32, max_new_gsm=300,
+                 max_new_short=48, seed=42, top_k=0, output_dir=None):
+        """n_per_eval: None or 0 = use full test set (default, no sampling bias).
+        Non-zero = randomly subsample with a rotating seed per eval step so
+        bias averages out across the trajectory rather than being pinned to
+        one lucky/unlucky subset. Never use fixed shuffle(seed=42)+first-N
+        — that repeatedly hits the same biased subset (see memory
+        `project_v15_callback_subsample_bias`).
+
+        top_k > 0 + output_dir: preserve the top-K checkpoints ranked by
+        mean downstream accuracy. On save, mv checkpoint-N → best/step-N-
+        agg-XX.XX so HF's save_total_limit rotation never touches them.
+        Displaced ckpts are moved back to checkpoint-N so they can rotate
+        normally."""
         self.tokenizer = tokenizer
         self.evals = tuple(evals)
-        self.n = n_per_eval
+        self.n = n_per_eval  # None or 0 = full set
         self.bs = batch_size
         self.max_new_gsm = max_new_gsm
         self.max_new_short = max_new_short
         self.seed = seed
         self._cache = {}  # eval_name → list of (prompt, gold) tuples
         self._end_id = tokenizer.convert_tokens_to_ids(END)
+        self.top_k = top_k
+        self.output_dir = output_dir
+        self.top: list[tuple[float, int]] = []  # (agg_score, step), desc by score
+        self._preserve_pending: tuple[int, float] | None = None
+        self._demote_pending: list[int] = []
 
     # ── dataset loaders (called lazily on first eval) ──────────────────────
 
-    def _load_gsm8k(self):
+    def _maybe_subsample(self, ds, step: int):
+        if not self.n:
+            return ds  # full set
+        # Rotate seed by training step so different subsets each eval —
+        # bias averages out across the trajectory.
+        return ds.shuffle(seed=self.seed + step).select(range(min(self.n, len(ds))))
+
+    def _load_gsm8k(self, step: int = 0):
         ds = load_dataset("jensjepsen/danish-gsm8k", "sft", split="test")
-        ds = ds.shuffle(seed=self.seed).select(range(min(self.n, len(ds))))
+        ds = self._maybe_subsample(ds, step)
         items = []
         for r in ds:
             q = r["messages"][0]["content"]
@@ -105,14 +137,14 @@ class DownstreamEvalCallback(TrainerCallback):
             items.append((q, gold))
         return items
 
-    def _load_sciq(self):
+    def _load_sciq(self, step: int = 0):
         ds = load_dataset("jensjepsen/danish-sciq", "default", split="test")
-        ds = ds.shuffle(seed=self.seed).select(range(min(self.n, len(ds))))
+        ds = self._maybe_subsample(ds, step)
         return [(r["da_question"], r["da_correct_answer"]) for r in ds]
 
-    def _load_citgen(self):
+    def _load_citgen(self, step: int = 0):
         ds = load_dataset("alexandrainst/danish-citizen-tests", split="train")
-        ds = ds.shuffle(seed=self.seed).select(range(min(self.n, len(ds))))
+        ds = self._maybe_subsample(ds, step)
         items = []
         for r in ds:
             gold_letter = r["answer"]
@@ -208,8 +240,9 @@ class DownstreamEvalCallback(TrainerCallback):
                 metrics[key] = score  # for HF logging on same-step
             print(f"  [downstream] {name}: {100*score:.1f}%", flush=True)
         elapsed = time.time() - t0
+        n_label = "full" if not self.n else str(self.n)
         print(f"  [downstream] {len(self.evals)} evals in {elapsed:.0f}s "
-              f"(n={self.n} each, bs={self.bs})", flush=True)
+              f"(n={n_label} each, bs={self.bs})", flush=True)
         # Explicit wandb.log() — Trainer's built-in log already fired for
         # the eval metrics dict BEFORE on_evaluate ran, so mutating `metrics`
         # doesn't reach wandb. Push our downstream metrics directly at the
@@ -220,4 +253,93 @@ class DownstreamEvalCallback(TrainerCallback):
                 wandb.log(downstream_metrics, step=state.global_step)
         except ImportError:
             pass
+
+        # Top-K bookkeeping: decide if this ckpt deserves preservation.
+        # NOTE ordering: HF Trainer flow at an eval+save step is
+        #   on_evaluate → _save_checkpoint (save+rotate) → on_save
+        # We handle demotions HERE (before rotation) so a demoted ckpt
+        # moved back to checkpoint-N is eligible for the imminent rotation.
+        # Preservation of the current step is deferred to on_save because
+        # checkpoint-<current> doesn't exist yet at eval time.
+        if self.top_k > 0 and self.output_dir and downstream_metrics:
+            agg = sum(downstream_metrics.values()) / len(downstream_metrics)
+            step = state.global_step
+            all_scores = self.top + [(agg, step)]
+            all_scores.sort(key=lambda x: (-x[0], -x[1]))
+            new_top = all_scores[:self.top_k]
+            new_steps = {s for _, s in new_top}
+            old_steps = {s for _, s in self.top}
+            demoted = old_steps - new_steps
+            self.top = new_top
+            self._write_best_json(agg_metric_name="mean_downstream")
+            if step in new_steps:
+                self._preserve_pending = (step, agg)
+                print(f"  [downstream] step-{step} enters top-{self.top_k} "
+                      f"(agg={agg:.3f})", flush=True)
+            # Demote now, before rotation runs during _save_checkpoint.
+            for dstep in sorted(demoted):
+                self._demote(dstep)
+        return control
+
+    def on_save(self, args, state, control, **kwargs):
+        """Post-rotation. Move newly-top-K current ckpt to best/ so future
+        rotations don't touch it."""
+        if self.top_k <= 0 or not self.output_dir:
+            return control
+        if self._preserve_pending is not None:
+            step, agg = self._preserve_pending
+            self._preserve_pending = None
+            src = os.path.join(self.output_dir, f"checkpoint-{step}")
+            dst = os.path.join(self.output_dir, "best",
+                               f"step-{step}-agg-{agg:.3f}")
+            if os.path.isdir(src) and not os.path.exists(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                try:
+                    shutil.move(src, dst)
+                    print(f"  [downstream] preserved: {src} → {dst}",
+                          flush=True)
+                except Exception as e:
+                    print(f"  [downstream] preserve failed for step-{step}: "
+                          f"{e}", flush=True)
+        return control
+
+    def _demote(self, step: int):
+        """Move best/step-N-* back to checkpoint-N so rotation can prune it."""
+        best_dir = os.path.join(self.output_dir, "best")
+        if not os.path.isdir(best_dir):
+            return
+        matches = [d for d in os.listdir(best_dir)
+                   if d.startswith(f"step-{step}-")]
+        for d in matches:
+            src = os.path.join(best_dir, d)
+            dst = os.path.join(self.output_dir, f"checkpoint-{step}")
+            if os.path.exists(dst):
+                shutil.rmtree(src)
+                continue
+            try:
+                shutil.move(src, dst)
+                print(f"  [downstream] demoted: {src} → {dst}", flush=True)
+            except Exception as e:
+                print(f"  [downstream] demote failed for step-{step}: {e}",
+                      flush=True)
+
+    def _write_best_json(self, agg_metric_name: str = "mean_downstream"):
+        path = os.path.join(self.output_dir, "best_ckpts.json")
+        payload = {
+            "metric": agg_metric_name,
+            "evals": list(self.evals),
+            "top": [{"step": s, "agg": a} for a, s in self.top],
+        }
+        try:
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            print(f"  [downstream] failed to write {path}: {e}", flush=True)
+
+    def on_train_end(self, args, state, control, **kwargs):
+        if self.top_k <= 0 or not self.top:
+            return control
+        print("\n  [downstream] top-K by mean-downstream:", flush=True)
+        for i, (agg, step) in enumerate(self.top, 1):
+            print(f"    {i}. step-{step}  agg={agg:.3f}", flush=True)
         return control

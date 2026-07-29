@@ -305,10 +305,22 @@ def main():
                         help="Run these downstream evals on every eval step. "
                              "Empty list disables. See "
                              "esperanto_lm.downstream_eval_callback.")
-    parser.add_argument("--downstream-n", type=int, default=100,
-                        help="Rows per downstream eval (subsample).")
+    parser.add_argument("--downstream-n", type=int, default=0,
+                        help="Rows per downstream eval. 0 = full test set "
+                             "(default, no sampling bias). Non-zero: random "
+                             "subsample, seed rotated per eval step so bias "
+                             "averages out. NEVER use fixed shuffle(seed)+"
+                             "first-N — v15 investigation showed a specific "
+                             "seed pinned the first 200 GSM rows to an ~8pp-"
+                             "easier subset than the full set. "
+                             "(project_v15_callback_subsample_bias)")
     parser.add_argument("--downstream-batch-size", type=int, default=32,
                         help="Batch size for downstream generation.")
+    parser.add_argument("--top-k-downstream", type=int, default=0,
+                        help="Preserve the top-K checkpoints ranked by mean "
+                             "downstream accuracy (moved into best/ so HF's "
+                             "save_total_limit rotation can't delete them). "
+                             "0 disables. Requires --downstream-evals.")
     parser.add_argument("--wandb-project", default="jepsen/espllm")
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-tags", nargs="*", default=None)
@@ -631,9 +643,14 @@ def main():
             evals=args.downstream_evals,
             n_per_eval=args.downstream_n,
             batch_size=args.downstream_batch_size,
+            top_k=args.top_k_downstream,
+            output_dir=output_dir if args.top_k_downstream > 0 else None,
         ))
+        n_label = "full" if not args.downstream_n else str(args.downstream_n)
         console.print(f"[green]Downstream evals every eval step: "
-                      f"{args.downstream_evals} (n={args.downstream_n})")
+                      f"{args.downstream_evals} (n={n_label})"
+                      + (f" — preserving top-{args.top_k_downstream} in best/"
+                         if args.top_k_downstream > 0 else ""))
 
     trainer = Trainer(
         model=model,
