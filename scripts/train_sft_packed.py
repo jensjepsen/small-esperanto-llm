@@ -324,6 +324,17 @@ def main():
     parser.add_argument("--wandb-project", default="jepsen/espllm")
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-tags", nargs="*", default=None)
+    parser.add_argument("--wandb-run-id", default=None,
+                        help="Resume the given wandb run id (sets "
+                             "WANDB_RESUME=allow). Use with --wandb-step-"
+                             "offset to make continuation-run steps line up "
+                             "past the parent run's endpoint.")
+    parser.add_argument("--wandb-step-offset", type=int, default=0,
+                        help="Add this to every wandb-logged step (both "
+                             "HF Trainer's built-in logs and the downstream "
+                             "callback). Set to sum of prior training-phase "
+                             "step counts so a continuation chart is "
+                             "gapless past those phases.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--resume-optim-from", type=str, default=None,
                         help="Path to a checkpoint dir. Loads optimizer.pt "
@@ -364,8 +375,25 @@ def main():
         os.environ.setdefault("WANDB_PROJECT", project)
         if entity:
             os.environ.setdefault("WANDB_ENTITY", entity)
+        # Resume the parent run when asked so continuation charts are one line
+        if args.wandb_run_id:
+            os.environ["WANDB_RESUME"] = "allow"
+            os.environ["WANDB_RUN_ID"] = args.wandb_run_id
+        # Bump every wandb.log(step=...) by --wandb-step-offset so a new
+        # phase (fresh HF Trainer starting at global_step=0) lands past the
+        # parent run's endpoint instead of overwriting its early steps.
+        if args.wandb_step_offset:
+            _wandb_orig_log = wandb.log
+            _step_offset = args.wandb_step_offset
+            def _offset_log(data, step=None, **kw):
+                if step is not None:
+                    step = step + _step_offset
+                return _wandb_orig_log(data, step=step, **kw)
+            wandb.log = _offset_log
         wandb.init(
             entity=entity, project=project,
+            id=args.wandb_run_id,
+            resume="allow" if args.wandb_run_id else None,
             name=args.wandb_run_name or Path(output_dir).name,
             tags=args.wandb_tags,
             config={
