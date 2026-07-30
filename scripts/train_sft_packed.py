@@ -325,6 +325,14 @@ def main():
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-tags", nargs="*", default=None)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resume-optim-from", type=str, default=None,
+                        help="Path to a checkpoint dir. Loads optimizer.pt "
+                             "AFTER Trainer init, but does NOT touch the LR "
+                             "scheduler, global step, or RNG state. Intended "
+                             "for anneal-from-constant-LR runs: reuse the "
+                             "well-conditioned Adam moments from the base, "
+                             "start a fresh linear-decay schedule from step 0. "
+                             "Mutually exclusive with --resume.")
     parser.add_argument("--optim", default="adamw_torch_fused")
     parser.add_argument("--attn-impl", default="auto",
                         choices=["auto", "flash_attention_2", "sdpa", "eager"])
@@ -661,6 +669,25 @@ def main():
         tokenizer=tokenizer,
         callbacks=callbacks,
     )
+
+    if args.resume and args.resume_optim_from:
+        raise ValueError("--resume and --resume-optim-from are mutually "
+                         "exclusive; pick one.")
+
+    if args.resume_optim_from:
+        # HF's optimizer is created lazily on first train step. Force create
+        # here so we can load state into it before .train() begins.
+        trainer.create_optimizer()
+        optim_path = Path(args.resume_optim_from) / "optimizer.pt"
+        if not optim_path.is_file():
+            raise FileNotFoundError(
+                f"--resume-optim-from: no optimizer.pt at {optim_path}")
+        console.print(f"[bold cyan]Loading optimizer state from {optim_path}"
+                      f" (scheduler/step/RNG stay fresh)")
+        # weights_only=False needed for adamw_torch_fused's pickled state
+        state = torch.load(str(optim_path), map_location="cpu",
+                           weights_only=False)
+        trainer.optimizer.load_state_dict(state)
 
     trainer.train(resume_from_checkpoint=args.resume or None)
 
