@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Danish SFT v19 — 4th "epoch" from v18/final on same constant LR (3e-5).
+# Danish SFT v19 — 4th epoch of v16, from v16-final (ckpt-32112),
+# same constant LR 3e-5. NOT from v18 (that was a separate anneal branch).
 #
 # Story so far:
-#   v16 = 3ep constant LR 3e-5, base=danish-lm-400m-base-ckpt310k (peak
-#         agg 0.183 at ckpt-29436, wandered off peak; final 0.177)
-#   v18 = 0.2ep linear anneal 1e-5→0 from v16-29436 (beat v12: agg 0.195)
-#   v19 = 1 more epoch of constant 3e-5 from v18/final. Isolates whether
-#         the model has more headroom on plain constant training after
-#         the anneal reset the loss surface, or whether v18's ~epoch-2.75
-#         anneal was the true peak.
+#   v16 = 3ep constant LR 3e-5, base=danish-lm-400m-base-ckpt310k
+#         (peak agg 0.183 at ckpt-29436, wandered off peak; final 0.177)
+#   v18 = separate branch: 0.2ep linear anneal from v16-29436 → agg 0.195
+#   v19 = MAIN v16 line continued — another epoch of plain constant 3e-5
+#         from v16's actual final ckpt-32112. Tests whether v16's tail-of-
+#         epoch-3 drift reverses or continues under more of the same LR.
 #
-# Continues v16's wandb run (id=1l1ak676) with step offset 34263 so the
-# chart is one contiguous constant-LR line past the v18 anneal detour.
+# Continues v16's wandb run (id=1l1ak676) with step offset 32121 so the
+# chart is one contiguous constant-LR line — as if v16 had trained 4
+# epochs from the start. (v18 is a sibling branch, not on this chart.)
 #
-# Runtime ~3.5h on 5090 (10.7k steps + 4 downstream evals).
+# Ckpt fetched from HF subfolder (pod is fresh). Runtime ~3.5h on 5090.
 
 set -euo pipefail
 cd /root/espllm
@@ -22,7 +23,13 @@ export WANDB_PROJECT=danish-lm-sft
 export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export ESPLLM_NUM_PROC=8
 
-CKPT=${CKPT:-/root/runs/sft/da_v18_anneal_from_v16_peak/final}
+CKPT=${CKPT:-/root/hf_v16_32112/step-32112-agg-0.177}
+
+if [[ ! -f "$CKPT/model.safetensors" ]]; then
+  echo "==> Fetching v16-32112 ckpt from HF..."
+  uv run --no-project --with huggingface_hub \
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('jensjepsen/danish-lm-400m-sft-v16', allow_patterns=['step-32112-agg-0.177/*'], local_dir='/root/hf_v16_32112')"
+fi
 
 uv run python -u scripts/train_sft_packed.py \
   --checkpoint "$CKPT" \
@@ -56,5 +63,5 @@ uv run python -u scripts/train_sft_packed.py \
   --top-k-downstream 3 \
   --wandb-project danish-lm-sft \
   --wandb-run-id 1l1ak676 \
-  --wandb-step-offset 34263 \
-  --wandb-tags sft da v19 epoch4-constlr from-v18-final continues-v16 lr-3e-5 full-set top3
+  --wandb-step-offset 32121 \
+  --wandb-tags sft da v19 epoch4-constlr from-v16-final continues-v16 lr-3e-5 full-set top3
