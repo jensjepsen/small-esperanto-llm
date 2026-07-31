@@ -300,8 +300,8 @@ def main():
                  "constant_with_warmup", "linear", "cosine"])
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--downstream-evals", nargs="*",
-                        default=["gsm8k", "sciq", "citgen"],
-                        choices=["gsm8k", "sciq", "citgen"],
+                        default=["gsm8k", "sciq", "citgen", "citmc"],
+                        choices=["gsm8k", "sciq", "citgen", "citmc"],
                         help="Run these downstream evals on every eval step. "
                              "Empty list disables. See "
                              "esperanto_lm.downstream_eval_callback.")

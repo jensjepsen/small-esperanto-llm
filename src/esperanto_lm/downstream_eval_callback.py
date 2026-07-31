@@ -154,6 +154,22 @@ class DownstreamEvalCallback(TrainerCallback):
             items.append((r["question"], gold_text))
         return items
 
+    def _load_citmc(self, step: int = 0):
+        """Cit-MC: same source as cit-gen, but formatted as a labeled A/B/C/D
+        MC and scored by matching the emitted letter to the gold letter."""
+        ds = load_dataset("alexandrainst/danish-citizen-tests", split="train")
+        ds = self._maybe_subsample(ds, step)
+        items = []
+        for r in ds:
+            gold_letter = r["answer"]
+            if not gold_letter:
+                continue
+            opts = {ll: r.get(f"option_{ll}") for ll in ["a", "b", "c", "d"]}
+            if not all(opts.values()):
+                continue
+            items.append((r["question"], opts, gold_letter.upper()))
+        return items
+
     def _get(self, name: str):
         if name not in self._cache:
             loader = getattr(self, f"_load_{name}")
@@ -221,6 +237,26 @@ class DownstreamEvalCallback(TrainerCallback):
         outs = self._generate(model, prompts, self.max_new_short)
         n_ok = sum(1 for out, (_, gold) in zip(outs, items)
                    if _matches_text(out, gold))
+        return n_ok / len(items)
+
+    def _score_citmc(self, model) -> float:
+        """A/B/C/D MC on citizen-tests. Uses the same prompt shape as the
+        wiki-mc-letters training data ('Svar med bogstavet...'). Scored
+        by first A-D letter in the emission, case-insensitive."""
+        items = self._get("citmc")
+        prompts = []
+        for q, opts, _ in items:
+            opts_str = "\n".join(f"{lab.upper()}) {opts[lab]}"
+                                 for lab in ["a", "b", "c", "d"])
+            body = (f"{q}\n\n{opts_str}\n\n"
+                    f"Svar med bogstavet på det korrekte svar.")
+            prompts.append(f"{USER}{body}{END}{ASST}")
+        outs = self._generate(model, prompts, 8)
+        n_ok = 0
+        for out, (_, _, gold) in zip(outs, items):
+            m = re.search(r"[A-Da-d]", out)
+            if m and m.group(0).upper() == gold:
+                n_ok += 1
         return n_ok / len(items)
 
     # ── HF Trainer hook ────────────────────────────────────────────────────

@@ -48,7 +48,7 @@ uv run python -u scripts/train_sft_packed.py \
   --warmup-steps 200 \
   --save-fraction-of-epoch 0.25 \
   --save-total-limit 2 \
-  --downstream-evals gsm8k sciq citgen \
+  --downstream-evals gsm8k sciq citgen citmc \
   --downstream-batch-size 32 \
   --top-k-downstream 3 \
   --wandb-project danish-lm-sft \
