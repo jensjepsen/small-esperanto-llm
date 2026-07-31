@@ -264,7 +264,9 @@ class DownstreamEvalCallback(TrainerCallback):
         n_ok = 0
         for out, (_, opts, gold) in zip(outs, items):
             present = "".join(sorted(opts))  # e.g. "ABC"
-            m = re.search(f"[{present}{present.lower()}]", out)
+            # Anchor to word boundaries so "match" doesn't match "A" etc.
+            # Case-insensitive matches "b) foo" or "Svar: B".
+            m = re.search(rf"\b[{present}]\b", out, re.IGNORECASE)
             if m and m.group(0).upper() == gold:
                 n_ok += 1
         return n_ok / len(items)
