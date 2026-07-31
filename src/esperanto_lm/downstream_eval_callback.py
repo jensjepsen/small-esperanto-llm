@@ -155,19 +155,26 @@ class DownstreamEvalCallback(TrainerCallback):
         return items
 
     def _load_citmc(self, step: int = 0):
-        """Cit-MC: same source as cit-gen, but formatted as a labeled A/B/C/D
-        MC and scored by matching the emitted letter to the gold letter."""
+        """Cit-MC: same source as cit-gen, formatted as labeled MC. The
+        citizen-tests dataset has variable option count (2, 3, sometimes 4)
+        with missing options as None — keep only present options and skip
+        rows where the gold letter isn't present."""
         ds = load_dataset("alexandrainst/danish-citizen-tests", split="train")
         ds = self._maybe_subsample(ds, step)
         items = []
         for r in ds:
-            gold_letter = r["answer"]
+            gold_letter = r.get("answer")
             if not gold_letter:
                 continue
-            opts = {ll: r.get(f"option_{ll}") for ll in ["a", "b", "c", "d"]}
-            if not all(opts.values()):
+            gold_letter = gold_letter.upper()
+            opts = {}
+            for ll in ["a", "b", "c", "d"]:
+                val = r.get(f"option_{ll}")
+                if val:
+                    opts[ll.upper()] = val
+            if len(opts) < 2 or gold_letter not in opts:
                 continue
-            items.append((r["question"], opts, gold_letter.upper()))
+            items.append((r["question"], opts, gold_letter))
         return items
 
     def _get(self, name: str):
@@ -240,21 +247,24 @@ class DownstreamEvalCallback(TrainerCallback):
         return n_ok / len(items)
 
     def _score_citmc(self, model) -> float:
-        """A/B/C/D MC on citizen-tests. Uses the same prompt shape as the
-        wiki-mc-letters training data ('Svar med bogstavet...'). Scored
-        by first A-D letter in the emission, case-insensitive."""
+        """MC on citizen-tests. Uses the wiki-mc-letters prompt shape.
+        opts is a dict of {label:text} with only present options (usually
+        A/B or A/B/C, occasionally A/B/C/D). Scored by first present-letter
+        in emission, case-insensitive."""
         items = self._get("citmc")
+        if not items:
+            return 0.0
         prompts = []
         for q, opts, _ in items:
-            opts_str = "\n".join(f"{lab.upper()}) {opts[lab]}"
-                                 for lab in ["a", "b", "c", "d"])
+            opts_str = "\n".join(f"{lab}) {opts[lab]}" for lab in sorted(opts))
             body = (f"{q}\n\n{opts_str}\n\n"
                     f"Svar med bogstavet på det korrekte svar.")
             prompts.append(f"{USER}{body}{END}{ASST}")
         outs = self._generate(model, prompts, 8)
         n_ok = 0
-        for out, (_, _, gold) in zip(outs, items):
-            m = re.search(r"[A-Da-d]", out)
+        for out, (_, opts, gold) in zip(outs, items):
+            present = "".join(sorted(opts))  # e.g. "ABC"
+            m = re.search(f"[{present}{present.lower()}]", out)
             if m and m.group(0).upper() == gold:
                 n_ok += 1
         return n_ok / len(items)
