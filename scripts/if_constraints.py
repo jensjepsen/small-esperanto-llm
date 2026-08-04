@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import random
 import re
+import json
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Callable
@@ -989,6 +990,80 @@ ifeval_two_responses_6star = Constraint(
 )
 
 
+def _check_json_format(text: str, _p) -> bool:
+    t = (text.strip()
+             .removeprefix("```json")
+             .removeprefix("```Json")
+             .removeprefix("```JSON")
+             .removeprefix("```")
+             .removesuffix("```")
+             .strip())
+    try:
+        json.loads(t)
+    except (ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
+ifeval_json_format = Constraint(
+    name="ifeval_json_format",
+    render_variants=[
+        lambda p: "Hele svaret skal være i JSON-format. Du må gerne indpakke det i markdown-kodeblokke (```json … ```).",
+        lambda p: "Formatér hele svaret som gyldigt JSON (evt. inde i ``` blokke).",
+        lambda p: "Svaret skal være ét stykke gyldigt JSON — ingen prosa udenfor. Markdown-kodefencer er tilladt.",
+        lambda p: "Returner svaret som JSON og kun JSON.",
+    ],
+    check=_check_json_format,
+    tags=frozenset({"format:json"}),
+    sample=lambda rng, ctx: {},
+)
+
+
+_CONSTRAINED_OPTIONS_DA = ("Mit svar er ja.", "Mit svar er nej.", "Mit svar er måske.")
+
+ifeval_constrained_response = Constraint(
+    name="ifeval_constrained_response",
+    render_variants=[
+        lambda p: f'Svar med én af følgende muligheder: {", ".join(repr(o) for o in _CONSTRAINED_OPTIONS_DA)}',
+        lambda p: f'Dit svar skal indeholde nøjagtig én af disse tre sætninger: {", ".join(_CONSTRAINED_OPTIONS_DA)}',
+        lambda p: f'Vælg et af følgende svar: {" / ".join(_CONSTRAINED_OPTIONS_DA)}',
+        lambda p: f'Besvar spørgsmålet med præcis én af: {_CONSTRAINED_OPTIONS_DA[0]!r} / {_CONSTRAINED_OPTIONS_DA[1]!r} / {_CONSTRAINED_OPTIONS_DA[2]!r}',
+    ],
+    check=lambda t, p: any(opt in t.strip() for opt in _CONSTRAINED_OPTIONS_DA),
+    tags=frozenset({"format:constrained_choice"}),
+    sample=lambda rng, ctx: {},
+)
+
+
+_POSTSCRIPT_MARKERS_DA = ("P.S.", "P.P.S.")
+
+
+def _check_postscript(text: str, params: dict) -> bool:
+    marker = params["marker"]
+    tl = text.lower()
+    if marker == "P.P.S.":
+        pat = r"\s*p\.\s?p\.\s?s.*$"
+    elif marker == "P.S.":
+        pat = r"\s*p\.\s?s\..*$"
+    else:
+        pat = r"\s*" + re.escape(marker.lower()) + r".*$"
+    return bool(re.findall(pat, tl, flags=re.MULTILINE))
+
+
+ifeval_postscript = Constraint(
+    name="ifeval_postscript",
+    render_variants=[
+        lambda p: f"Tilføj eksplicit et postscript i slutningen af svaret der starter med {p['marker']}",
+        lambda p: f"Afslut svaret med et postskriptum der begynder med {p['marker']}",
+        lambda p: f"Efter selve svaret, tilføj et P.S. — det skal begynde med {p['marker']}",
+        lambda p: f"I slutningen af dit svar: tilføj en linje der starter med {p['marker']} og indeholder en efterskrift.",
+    ],
+    check=_check_postscript,
+    tags=frozenset({"format:postscript", "structure:closing"}),
+    sample=lambda rng, ctx: {"marker": rng.choice(_POSTSCRIPT_MARKERS_DA)},
+)
+
+
 ALL: list[Constraint] = [
     # Length
     exactly_n_sentences, at_most_n_sentences, at_least_n_sentences,
@@ -1016,6 +1091,8 @@ ALL: list[Constraint] = [
     answer_only_letter,
     # Google IFEval-aligned (v4+; parallel with older ~mismatched variants)
     ifeval_highlighted_min_n, ifeval_repeat_prompt, ifeval_two_responses_6star,
+    # Google IFEval families we didn't have before
+    ifeval_json_format, ifeval_constrained_response, ifeval_postscript,
 ]
 
 SOLO_PROBABILITY = 0.5
