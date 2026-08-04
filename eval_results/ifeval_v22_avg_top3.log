@@ -1,0 +1,89 @@
+warning: The `tool.uv.dev-dependencies` field (used in `pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+loading jensjepsen/danish-lm-400m-sft-v22/avg-top3
+rows: 541
+This is a friendly reminder - the current text generation call will exceed the model's predefined maximum length (512). Depending on the model, you may observe exceptions, performance degradation, or nothing at all.
+  8/541  prompt-strict=25.0%  prompt-loose=25.0%  inst-strict=38.5%  inst-loose=38.5%
+  16/541  prompt-strict=33.3%  prompt-loose=33.3%  inst-strict=40.9%  inst-loose=40.9%
+  24/541  prompt-strict=21.7%  prompt-loose=21.7%  inst-strict=30.3%  inst-loose=30.3%
+  32/541  prompt-strict=16.1%  prompt-loose=16.1%  inst-strict=22.2%  inst-loose=24.4%
+  40/541  prompt-strict=20.5%  prompt-loose=20.5%  inst-strict=25.0%  inst-loose=26.7%
+  48/541  prompt-strict=19.1%  prompt-loose=19.1%  inst-strict=22.5%  inst-loose=23.9%
+  56/541  prompt-strict=18.2%  prompt-loose=18.2%  inst-strict=20.5%  inst-loose=21.7%
+  64/541  prompt-strict=15.9%  prompt-loose=17.5%  inst-strict=20.0%  inst-loose=22.1%
+  72/541  prompt-strict=15.5%  prompt-loose=16.9%  inst-strict=21.1%  inst-loose=22.9%
+  80/541  prompt-strict=15.2%  prompt-loose=16.5%  inst-strict=21.8%  inst-loose=24.2%
+  88/541  prompt-strict=14.9%  prompt-loose=16.1%  inst-strict=25.0%  inst-loose=27.1%
+  96/541  prompt-strict=14.7%  prompt-loose=15.8%  inst-strict=26.1%  inst-loose=28.1%
+  104/541  prompt-strict=13.6%  prompt-loose=14.6%  inst-strict=25.2%  inst-loose=27.0%
+  112/541  prompt-strict=13.6%  prompt-loose=14.5%  inst-strict=25.6%  inst-loose=27.8%
+  120/541  prompt-strict=14.4%  prompt-loose=15.3%  inst-strict=26.6%  inst-loose=28.7%
+  128/541  prompt-strict=14.4%  prompt-loose=15.2%  inst-strict=27.3%  inst-loose=29.3%
+  136/541  prompt-strict=15.0%  prompt-loose=15.8%  inst-strict=27.1%  inst-loose=29.0%
+  144/541  prompt-strict=16.3%  prompt-loose=17.0%  inst-strict=28.1%  inst-loose=29.9%
+  152/541  prompt-strict=16.1%  prompt-loose=16.8%  inst-strict=28.1%  inst-loose=29.9%
+  160/541  prompt-strict=15.9%  prompt-loose=16.6%  inst-strict=27.6%  inst-loose=29.3%
+  168/541  prompt-strict=15.8%  prompt-loose=16.4%  inst-strict=28.2%  inst-loose=29.7%
+  176/541  prompt-strict=15.0%  prompt-loose=15.6%  inst-strict=27.9%  inst-loose=29.4%
+  184/541  prompt-strict=15.5%  prompt-loose=16.0%  inst-strict=28.3%  inst-loose=29.7%
+  192/541  prompt-strict=16.6%  prompt-loose=17.1%  inst-strict=28.8%  inst-loose=30.1%
+  200/541  prompt-strict=16.4%  prompt-loose=17.4%  inst-strict=29.4%  inst-loose=31.0%
+  208/541  prompt-strict=16.3%  prompt-loose=17.2%  inst-strict=29.1%  inst-loose=30.7%
+  216/541  prompt-strict=16.6%  prompt-loose=17.5%  inst-strict=29.8%  inst-loose=31.3%
+  224/541  prompt-strict=16.5%  prompt-loose=17.4%  inst-strict=29.8%  inst-loose=31.3%
+  232/541  prompt-strict=16.9%  prompt-loose=18.2%  inst-strict=29.6%  inst-loose=31.3%
+  240/541  prompt-strict=17.2%  prompt-loose=18.5%  inst-strict=29.8%  inst-loose=31.5%
+  248/541  prompt-strict=17.9%  prompt-loose=19.2%  inst-strict=30.1%  inst-loose=31.7%
+  256/541  prompt-strict=18.1%  prompt-loose=19.4%  inst-strict=30.2%  inst-loose=31.7%
+  264/541  prompt-strict=18.0%  prompt-loose=19.1%  inst-strict=29.7%  inst-loose=31.3%
+  272/541  prompt-strict=17.8%  prompt-loose=18.9%  inst-strict=29.2%  inst-loose=30.7%
+  280/541  prompt-strict=18.4%  prompt-loose=19.5%  inst-strict=29.7%  inst-loose=31.2%
+  288/541  prompt-strict=17.9%  prompt-loose=18.9%  inst-strict=29.3%  inst-loose=30.7%
+  296/541  prompt-strict=19.2%  prompt-loose=20.2%  inst-strict=30.2%  inst-loose=31.6%
+  304/541  prompt-strict=19.0%  prompt-loose=20.1%  inst-strict=30.4%  inst-loose=31.8%
+  312/541  prompt-strict=18.9%  prompt-loose=19.9%  inst-strict=30.6%  inst-loose=31.9%
+  320/541  prompt-strict=18.4%  prompt-loose=19.7%  inst-strict=30.1%  inst-loose=31.8%
+  328/541  prompt-strict=18.2%  prompt-loose=19.5%  inst-strict=30.0%  inst-loose=31.7%
+  336/541  prompt-strict=19.0%  prompt-loose=20.2%  inst-strict=30.9%  inst-loose=32.5%
+  344/541  prompt-strict=20.1%  prompt-loose=21.3%  inst-strict=31.8%  inst-loose=33.3%
+  352/541  prompt-strict=20.5%  prompt-loose=21.9%  inst-strict=31.8%  inst-loose=33.6%
+  360/541  prompt-strict=20.6%  prompt-loose=22.3%  inst-strict=31.9%  inst-loose=33.8%
+  368/541  prompt-strict=20.4%  prompt-loose=22.1%  inst-strict=31.9%  inst-loose=33.8%
+  376/541  prompt-strict=19.9%  prompt-loose=21.6%  inst-strict=31.8%  inst-loose=33.6%
+  384/541  prompt-strict=20.3%  prompt-loose=21.9%  inst-strict=32.0%  inst-loose=33.8%
+  392/541  prompt-strict=20.2%  prompt-loose=21.7%  inst-strict=31.8%  inst-loose=33.6%
+  400/541  prompt-strict=19.7%  prompt-loose=21.3%  inst-strict=31.6%  inst-loose=33.3%
+  408/541  prompt-strict=19.3%  prompt-loose=20.9%  inst-strict=31.3%  inst-loose=33.0%
+  416/541  prompt-strict=19.5%  prompt-loose=21.2%  inst-strict=31.7%  inst-loose=33.5%
+  424/541  prompt-strict=19.9%  prompt-loose=21.5%  inst-strict=31.9%  inst-loose=33.7%
+  432/541  prompt-strict=20.0%  prompt-loose=21.6%  inst-strict=32.2%  inst-loose=34.0%
+  440/541  prompt-strict=19.6%  prompt-loose=21.2%  inst-strict=31.9%  inst-loose=33.6%
+  448/541  prompt-strict=19.5%  prompt-loose=21.3%  inst-strict=31.9%  inst-loose=33.7%
+  456/541  prompt-strict=19.3%  prompt-loose=21.1%  inst-strict=32.1%  inst-loose=33.8%
+  464/541  prompt-strict=19.6%  prompt-loose=21.4%  inst-strict=32.7%  inst-loose=34.4%
+  472/541  prompt-strict=19.3%  prompt-loose=21.0%  inst-strict=32.5%  inst-loose=34.2%
+  480/541  prompt-strict=19.0%  prompt-loose=20.7%  inst-strict=32.2%  inst-loose=33.8%
+  488/541  prompt-strict=18.7%  prompt-loose=20.3%  inst-strict=32.0%  inst-loose=33.7%
+  496/541  prompt-strict=19.0%  prompt-loose=20.7%  inst-strict=32.2%  inst-loose=33.8%
+  504/541  prompt-strict=19.3%  prompt-loose=20.9%  inst-strict=32.3%  inst-loose=33.9%
+  512/541  prompt-strict=19.6%  prompt-loose=21.2%  inst-strict=32.6%  inst-loose=34.2%
+  520/541  prompt-strict=19.7%  prompt-loose=21.3%  inst-strict=32.9%  inst-loose=34.4%
+  528/541  prompt-strict=19.4%  prompt-loose=21.0%  inst-strict=32.7%  inst-loose=34.2%
+  536/541  prompt-strict=19.5%  prompt-loose=21.0%  inst-strict=32.6%  inst-loose=34.1%
+  541/541  prompt-strict=19.5%  prompt-loose=21.0%  inst-strict=32.6%  inst-loose=34.1%
+
+=== ifeval-da  n=519 ===
+  prompt-strict:  101/519 = 19.5%
+  prompt-loose:   109/519 = 21.0%
+  inst-strict:    259/795 = 32.6%
+  inst-loose:     271/795 = 34.1%
+
+Per-family (strict):
+   29.4%   48/163  keywords
+    9.5%   14/148  detectable_format
+   27.3%   39/143  length_constraints
+   70.1%   47/ 67  startend
+   98.5%   65/ 66  punctuation
+   31.8%   21/ 66  language
+    1.6%    1/ 64  combination
+   24.5%   13/ 53  detectable_content
+   44.0%   11/ 25  change_case
