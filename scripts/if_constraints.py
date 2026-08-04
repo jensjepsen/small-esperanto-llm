@@ -1032,6 +1032,14 @@ ifeval_constrained_response = Constraint(
     check=lambda t, p: any(opt in t.strip() for opt in _CONSTRAINED_OPTIONS_DA),
     tags=frozenset({"format:constrained_choice"}),
     sample=lambda rng, ctx: {},
+    # "Answer with ja/nej/måske" only makes semantic sense on question-shaped
+    # seeds — MC rows or short factual questions. Long wiki-summary seeds
+    # give the model a hopeless task (override the natural answer with a
+    # 3-option override), leading to lots of wasted retries.
+    applicable=lambda ctx: (
+        bool((ctx or {}).get("mc_choices"))
+        or len(((ctx or {}).get("task_text") or "")) < 240
+    ),
 )
 
 
