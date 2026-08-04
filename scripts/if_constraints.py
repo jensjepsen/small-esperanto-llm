@@ -906,6 +906,89 @@ answer_only_letter = Constraint(
 # Registry + combo picker
 # ────────────────────────────────────────────────────────────────────────────
 
+# ────────────────────────────────────────────────────────────────────────────
+# Google IFEval-aligned constraints. These match Google's verifiers in
+# scripts/ifeval_google/instructions.py exactly, unlike our older
+# {n_bold_sections, n_italic_sections, repeat_prompt_prefix, two_responses_split}
+# which have subtly-different semantics. Kept in parallel so v3 back-compat
+# holds; use these in v4+ to teach behaviour that transfers to ifeval-da.
+# ────────────────────────────────────────────────────────────────────────────
+
+# Combined italic (*x*) + bold (**x**) matcher; matches google's regex.
+_HIGHLIGHT_STAR_RE = re.compile(r"\*[^\n\*]*\*")
+_HIGHLIGHT_DOUBLE_RE = re.compile(r"\*\*[^\n\*]*\*\*")
+
+
+def _count_highlighted(text: str) -> int:
+    n = 0
+    for m in _HIGHLIGHT_STAR_RE.findall(text):
+        if m.strip("*").strip():
+            n += 1
+    for m in _HIGHLIGHT_DOUBLE_RE.findall(text):
+        if m.removeprefix("**").removesuffix("**").strip():
+            n += 1
+    return n
+
+
+ifeval_highlighted_min_n = Constraint(
+    name="ifeval_highlighted_min_n",
+    render_variants=[
+        lambda p: f"Fremhæv mindst {plur(p['n'], 'sektion', 'sektioner')} i dit svar med markdown, dvs. *fremhævet sektion*.",
+        lambda p: f"Brug markdown til at fremhæve mindst {p['n']} steder i svaret (fx *sådan* eller **sådan**).",
+        lambda p: f"Dit svar skal indeholde mindst {p['n']} markdown-fremhævede afsnit (*…* eller **…**).",
+        lambda p: f"Marker mindst {plur(p['n'], 'passage', 'passager')} i svaret med markdown-fremhævning (*…*).",
+    ],
+    check=lambda t, p: _count_highlighted(t) >= p["n"],
+    tags=frozenset({"format:highlight"}),
+    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4])},
+)
+
+
+ifeval_repeat_prompt = Constraint(
+    name="ifeval_repeat_prompt",
+    render_variants=[
+        lambda p: f'Gentag først anmodningen ord for ord uden ændring, og giv derefter dit svar. Anmodningen der skal gentages: "{p["prompt_to_repeat"]}"',
+        lambda p: f'Skriv først dette ordret (uden ændringer), og derefter dit egentlige svar: "{p["prompt_to_repeat"]}"',
+        lambda p: f'Din besvarelse skal begynde med at gengive dette præcis ord for ord, og derefter komme med svaret: "{p["prompt_to_repeat"]}"',
+        lambda p: f'Først: gentag denne tekst uden ét ord ændret. Derefter: dit svar. Tekst: "{p["prompt_to_repeat"]}"',
+    ],
+    check=lambda t, p: (bool(p["prompt_to_repeat"])
+                        and t.strip().lower().startswith(
+                            p["prompt_to_repeat"].strip().lower())),
+    # Uses the seed task as the "prompt to repeat" — pulled from ctx by sample.
+    # Applicable only when ctx has a non-empty task_text.
+    sample=lambda rng, ctx: {"prompt_to_repeat": (ctx or {}).get("task_text", "")},
+    applicable=lambda ctx: bool((ctx or {}).get("task_text", "").strip()),
+    tags=frozenset({"format:echo"}),
+)
+
+
+def _check_two_responses_6star(text: str, _p) -> bool:
+    parts = text.split("******")
+    valid = []
+    for i, r in enumerate(parts):
+        if not r.strip():
+            if i not in (0, len(parts) - 1):
+                return False
+        else:
+            valid.append(r)
+    return len(valid) == 2 and valid[0].strip() != valid[1].strip()
+
+
+ifeval_two_responses_6star = Constraint(
+    name="ifeval_two_responses_6star",
+    render_variants=[
+        lambda p: 'Giv to forskellige svar. Kun svarene skal være adskilt med præcis seks stjerner: ******.',
+        lambda p: 'Lever to alternative besvarelser. Adskil dem med "******" (seks stjerner). Selve svarene skal være forskellige.',
+        lambda p: 'Skriv to versioner af svaret — adskilt af separatoren ****** (seks stjerner). Ingen ekstra tekst omkring separatoren.',
+        lambda p: 'Præsentér to indbyrdes forskellige svar, adskilt af nøjagtig seks asterisker: ******.',
+    ],
+    check=_check_two_responses_6star,
+    tags=frozenset({"format:split_responses", "structure:sections"}),
+    sample=lambda rng, ctx: {},
+)
+
+
 ALL: list[Constraint] = [
     # Length
     exactly_n_sentences, at_most_n_sentences, at_least_n_sentences,
@@ -931,6 +1014,8 @@ ALL: list[Constraint] = [
     entire_in_quotes, no_commas, two_responses_split,
     # MC-only (solo)
     answer_only_letter,
+    # Google IFEval-aligned (v4+; parallel with older ~mismatched variants)
+    ifeval_highlighted_min_n, ifeval_repeat_prompt, ifeval_two_responses_6star,
 ]
 
 SOLO_PROBABILITY = 0.5
