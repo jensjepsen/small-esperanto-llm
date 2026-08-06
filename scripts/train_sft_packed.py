@@ -296,6 +296,12 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--gradient-accumulation", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
+    parser.add_argument("--torch-compile", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Wrap model with torch.compile (~10-20% wall win). "
+                             "Packed SFT has constant seq shape so recompiles "
+                             "are rare. Disable with --no-torch-compile if a "
+                             "Liger/compile interaction misbehaves.")
     parser.add_argument("--max-length", type=int, default=None,
                         help="Per-row truncation AND packed-sequence length. "
                              "Default: auto-detected from the loaded model's "
@@ -711,6 +717,8 @@ def main():
         weight_decay=0.01,
         fp16=not use_bf16 and torch.cuda.is_available(),
         bf16=use_bf16,
+        torch_compile=args.torch_compile,
+        torch_compile_mode="default" if args.torch_compile else None,
         eval_strategy="steps",
         eval_steps=eval_steps,
         save_strategy="steps",
