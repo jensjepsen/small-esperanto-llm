@@ -32,7 +32,7 @@ from transformers import TrainerCallback
 
 class LongShortPerplexityCallback(TrainerCallback):
     def __init__(self, tokenizer, cache_dir: str,
-                 n_docs: int = 32,
+                 n_docs: int = 128,
                  max_len: int = 2048,
                  short_len: int = 512,
                  batch_size: int = 4,

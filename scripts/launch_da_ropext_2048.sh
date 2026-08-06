@@ -47,7 +47,7 @@ uv run torchrun --nproc_per_node=1 -m esperanto_lm.train \
   --rope-extend-theta 500000 \
   --min-doc-tokens 2048 \
   --long-short-eval \
-  --long-short-eval-docs 32 \
+  --long-short-eval-docs 128 \
   --long-short-eval-short-len 512 \
   --long-short-eval-batch-size 16 \
   --output-dir "${OUTPUT_DIR:-/workspace/runs/da_ropext_2048_v1}" \

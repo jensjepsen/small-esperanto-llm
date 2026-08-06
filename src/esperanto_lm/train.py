@@ -237,8 +237,10 @@ def main():
              "both regression and extension progress live in wandb.",
     )
     parser.add_argument(
-        "--long-short-eval-docs", type=int, default=32,
-        help="Number of held-out docs for the long/short eval (default 32).",
+        "--long-short-eval-docs", type=int, default=128,
+        help="Number of held-out docs for the long/short eval (default 128; "
+             "32 was too noisy — one outlier-hard doc bin can make the whole "
+             "trajectory look like it's regressing when it's actually not).",
     )
     parser.add_argument(
         "--long-short-eval-short-len", type=int, default=512,
