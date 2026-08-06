@@ -72,17 +72,53 @@ def _clean_gsm8k_markers(text: str) -> str:
     return re.sub(r"<<[^>]*>>", "", text)
 
 
+_WORLD_ROLES = {"user", "tool_result", "tool"}
+_MODEL_ROLES = {"assistant", "tool_call"}
+
+
 def format_conversation(messages: list[dict]) -> str:
+    """Render a chat-format message list into the flat token stream the
+    trainer consumes.
+
+    Roles:
+      user         → `<|user|> {content}`
+      assistant    → `<|assistant|> {content}` (+ `<|end|>` when next turn is world-provided)
+      tool_call    → `<|tool_call|>{content}<|/tool_call|>` (+ `<|end|>` when next turn is world-provided)
+      tool_result  → `<|tool_result|>{content}<|/tool_result|>`  (no `<|end|>`, world-provided)
+      tool         → same as tool_result (legacy alias)
+
+    `<|end|>` is emitted after a MODEL-generated turn iff the next turn is
+    WORLD-provided (or the conversation ends). This keeps reasoning +
+    tool_call as a single autoregressive burst (`<|assistant|> reasoning
+    <|tool_call|>{...}<|/tool_call|> <|end|>`) so the model learns to
+    stream from reasoning straight into the call without an artificial stop.
+
+    Unknown roles raise — silent drops used to be a footgun.
+    """
     parts = []
-    for msg in messages:
-        content = _clean_gsm8k_markers(msg["content"])
+    for i, msg in enumerate(messages):
         role = msg["role"]
+        content = _clean_gsm8k_markers(msg["content"])
+        next_role = messages[i + 1]["role"] if i + 1 < len(messages) else None
+        needs_end = role in _MODEL_ROLES and (
+            next_role is None or next_role in _WORLD_ROLES)
+
         if role == "user":
             parts.append(f"{USER_TOKEN} {content}")
         elif role == "assistant":
-            parts.append(f"{ASSISTANT_TOKEN} {content} {END_TOKEN}")
-        elif role == "tool":
-            parts.append(content)
+            block = f"{ASSISTANT_TOKEN} {content}"
+            if needs_end:
+                block += f" {END_TOKEN}"
+            parts.append(block)
+        elif role == "tool_call":
+            block = f"{TOOL_CALL_OPEN}{content}{TOOL_CALL_CLOSE}"
+            if needs_end:
+                block += f" {END_TOKEN}"
+            parts.append(block)
+        elif role in ("tool_result", "tool"):
+            parts.append(f"{TOOL_RESULT_OPEN}{content}{TOOL_RESULT_CLOSE}")
+        else:
+            raise ValueError(f"unknown message role: {role!r}")
     return " ".join(parts)
 
 
@@ -260,8 +296,15 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--gradient-accumulation", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
-    parser.add_argument("--max-length", type=int, default=512,
-                        help="Per-row truncation AND packed-sequence length.")
+    parser.add_argument("--max-length", type=int, default=None,
+                        help="Per-row truncation AND packed-sequence length. "
+                             "Default: auto-detected from the loaded model's "
+                             "config.max_position_embeddings (so a 512-context "
+                             "base uses 512, a 2048-context base uses 2048). "
+                             "Explicit values are capped at the model's "
+                             "max_position_embeddings — the trainer errors out "
+                             "if you request more, since RoPE at unseen positions "
+                             "produces noise.")
     parser.add_argument("--max-examples", type=int, default=0,
                         help="Cap total examples (split evenly across sources). "
                              "0 = no cap.")
@@ -422,6 +465,24 @@ def main():
     console.print(f"[bold]Attention impl:[/] {attn_impl}   [bold]Liger:[/] {_LIGER_ON}")
     model = AutoModelForCausalLM.from_pretrained(
         args.checkpoint, attn_implementation=attn_impl)
+
+    # Resolve --max-length against the model's own position-embedding ceiling.
+    # Autodetect when unset; error out when a user request exceeds what RoPE
+    # was trained for (positions past model.config.max_position_embeddings
+    # produce noise on this arch).
+    model_max_pos = int(model.config.max_position_embeddings)
+    if args.max_length is None:
+        args.max_length = model_max_pos
+        console.print(f"[bold]max_length auto-set to model's max_position_embeddings = {args.max_length}")
+    elif args.max_length > model_max_pos:
+        raise SystemExit(
+            f"--max-length={args.max_length} exceeds the model's "
+            f"max_position_embeddings={model_max_pos}. RoPE past that position "
+            f"produces noise (see project_rope_extension memory). "
+            f"Either drop --max-length to ≤{model_max_pos} or use a checkpoint "
+            f"whose config was already RoPE-extended.")
+    else:
+        console.print(f"[bold]max_length={args.max_length}  (model supports up to {model_max_pos})")
 
     console.print(f"[bold green]Loading tokenizer from {args.tokenizer}...")
     tokenizer = load_tokenizer(Path(args.tokenizer))
