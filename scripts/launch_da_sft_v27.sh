@@ -73,6 +73,7 @@ uv run python -u scripts/train_sft_packed.py \
   --downstream-evals gsm8k sciq citgen citmc \
   --downstream-batch-size 32 \
   --top-k-downstream 3 \
+  --no-torch-compile \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_v27_sft_mix14_flatten_3e \
   --wandb-tags sft da v27 mix14 ropext2048 if-v4 tool-calls mc-letters constant-lr epochs-3 flatten-packing torch-compile downstream-eval full-set top3
