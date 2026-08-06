@@ -34,7 +34,7 @@
 set -euo pipefail
 cd "${ESPLLM_ROOT:-/root/espllm}"
 
-export WANDB_PROJECT=danish-lm-ropext
+export WANDB_PROJECT=danish-lm-pretrain
 export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export ESPLLM_NUM_PROC=8
 
