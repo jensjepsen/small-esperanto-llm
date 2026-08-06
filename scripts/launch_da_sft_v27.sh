@@ -35,6 +35,9 @@
 set -euo pipefail
 cd /root/espllm
 
+# uv install target from setup_vastai.sh — nohup shells don't inherit it.
+export PATH="$HOME/.local/bin:$PATH"
+
 export WANDB_PROJECT=danish-lm-sft
 export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export ESPLLM_NUM_PROC=8
