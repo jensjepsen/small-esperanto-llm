@@ -210,6 +210,55 @@ def main():
         default=None,
         help="Push final model to HF Hub (e.g. 'jensjepsen/esperanto-llm-small')",
     )
+    parser.add_argument(
+        "--min-doc-tokens", type=int, default=0,
+        help="If >0, filter the pretokenized streaming source to only docs "
+             "with `len(input_ids) >= min_doc_tokens` before chunking. Useful "
+             "for RoPE-extension continued pretrain — filtering to docs "
+             "≥ max_length (e.g. 2048) ensures each training chunk is a "
+             "coherent long span, not stitched fragments of short docs.",
+    )
+    parser.add_argument(
+        "--rope-extend-theta", type=float, default=None,
+        help="RoPE-extension continued pretrain: after --from-pretrained "
+             "loads the base, bump the model's rope_theta to this value "
+             "(e.g. 500000 for a 4× extension), set max_position_embeddings "
+             "to the YAML's value, and re-instantiate every LlamaRotaryEmbedding "
+             "module so the new theta takes effect. Only meaningful with "
+             "--from-pretrained; ignored otherwise.",
+    )
+    parser.add_argument(
+        "--long-short-eval",
+        action="store_true",
+        help="Attach LongShortPerplexityCallback: measures eval/short_nll "
+             "(positions [0, --short-len)) and eval/long_nll (positions "
+             "[--short-len, model.max_position_embeddings)) on every eval "
+             "step. Use during RoPE-extension continued pretraining to see "
+             "both regression and extension progress live in wandb.",
+    )
+    parser.add_argument(
+        "--long-short-eval-docs", type=int, default=32,
+        help="Number of held-out docs for the long/short eval (default 32).",
+    )
+    parser.add_argument(
+        "--long-short-eval-short-len", type=int, default=512,
+        help="Split point between 'short' and 'long' halves (default 512, "
+             "matching the base's original max_position_embeddings).",
+    )
+    parser.add_argument(
+        "--long-short-eval-batch-size", type=int, default=4,
+        help="Batch size for the long/short eval (default 4).",
+    )
+    parser.add_argument(
+        "--long-short-eval-cache-dir", type=str,
+        default="data/long_short_eval_cache",
+        help="Where to persist the held-out tokenized docs across restarts.",
+    )
+    parser.add_argument(
+        "--long-short-eval-dataset", type=str,
+        default="jensjepsen/danish-pretrain",
+        help="HF dataset to sample held-out long docs from (streaming).",
+    )
     args = parser.parse_args()
 
     output_dir = args.output_dir or f"runs/{args.config}"
@@ -233,6 +282,35 @@ def main():
         model = create_model(model_config)
     n_params = count_parameters(model)
     console.print(f"[bold]Parameters:[/] {n_params:,}")
+
+    # RoPE extension: raise theta + max_position on the loaded model and
+    # rebuild every rotary_emb module so the new frequencies take effect.
+    # Must run BEFORE gradient_checkpointing / Liger patches wrap the model,
+    # otherwise the rotary_emb replacement won't propagate through the wrapper.
+    if args.from_pretrained and args.rope_extend_theta is not None:
+        new_theta = args.rope_extend_theta
+        new_max = model_config.max_position_embeddings
+        console.print(f"[bold yellow]RoPE extension:[/] theta "
+                      f"{model.config.rope_theta} → {new_theta}, "
+                      f"max_position_embeddings {model.config.max_position_embeddings} → {new_max}")
+        model.config.rope_theta = new_theta
+        model.config.max_position_embeddings = new_max
+        from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
+        device = next(model.parameters()).device
+        # Transformers ≥4.45 moved rotary_emb to the top-level model.model
+        # (one shared instance). Older versions had one per attention layer.
+        # Handle both.
+        replaced = 0
+        if hasattr(model.model, "rotary_emb"):
+            model.model.rotary_emb = LlamaRotaryEmbedding(model.config).to(device)
+            replaced += 1
+        for layer in model.model.layers:
+            attn = getattr(layer, "self_attn", None)
+            if attn is not None and hasattr(attn, "rotary_emb"):
+                attn.rotary_emb = LlamaRotaryEmbedding(model.config).to(device)
+                replaced += 1
+        console.print(f"[bold]Rebuilt {replaced} LlamaRotaryEmbedding module(s) "
+                      f"with the new theta.")
 
     max_length = model_config.max_position_embeddings
     console.print(f"[bold]Chunk length:[/] {max_length}")
@@ -309,6 +387,18 @@ def main():
                 # Advance train past the same rows so we don't train on eval.
                 train_tok = train_tok.skip(1000)
 
+            # Optional long-doc filter (used for RoPE extension). Docs
+            # already ≥ max_length yield at least one chunk that's a single
+            # contiguous span, not a stitching of short docs.
+            if args.min_doc_tokens > 0:
+                threshold = args.min_doc_tokens
+                console.print(f"[bold]Filtering pretokenized stream to docs "
+                              f"≥{threshold} tokens[/]")
+                train_tok = train_tok.filter(
+                    lambda r: len(r["input_ids"]) >= threshold)
+                eval_source = eval_source.filter(
+                    lambda r: len(r["input_ids"]) >= threshold)
+
             # chunk_dataset uses .map(num_proc=...) which is incompatible
             # with streaming. For streaming, apply a lightweight per-batch
             # chunker that only uses batched=True (no num_proc).
@@ -359,6 +449,22 @@ def main():
         eval_dataset=eval_dataset,
         data_collator=data_collator,
     )
+
+    if args.long_short_eval:
+        from esperanto_lm.long_short_eval_callback import LongShortPerplexityCallback
+        max_len = model_config.max_position_embeddings
+        console.print(f"[bold green]Attaching long/short eval callback:[/] "
+                      f"short=[0,{args.long_short_eval_short_len}) "
+                      f"long=[{args.long_short_eval_short_len},{max_len})")
+        trainer.add_callback(LongShortPerplexityCallback(
+            tokenizer=tokenizer,
+            cache_dir=args.long_short_eval_cache_dir,
+            n_docs=args.long_short_eval_docs,
+            max_len=max_len,
+            short_len=args.long_short_eval_short_len,
+            batch_size=args.long_short_eval_batch_size,
+            dataset_name=args.long_short_eval_dataset,
+        ))
 
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
