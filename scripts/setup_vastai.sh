@@ -39,10 +39,13 @@ if [ "$CUDA_MAJOR" = "13" ]; then
     export UV_TORCH_BACKEND=cu128
     echo "Using UV_TORCH_BACKEND=cu128 (CUDA 13 driver)"
 elif [ "$CUDA_MAJOR" = "12" ] && [ "${GPU_CAP_MAJOR:-0}" -ge 10 ] 2>/dev/null; then
-    # Blackwell or newer needs cu128 wheels with torch>=2.6.
+    # Blackwell or newer needs cu128 wheels. Pin torch to 2.8.* — that's the
+    # newest series with prebuilt flash-attn wheels for cu128+py311. Torch
+    # 2.9/2.10 have no flash-attn wheel (would source-compile ~2h+); Blackwell
+    # sm_120 support requires flash-attn ≥ 2.8.3 which is cu128-only.
     export UV_TORCH_BACKEND=cu128
-    sed -i 's/torch>=2.3.0/torch>=2.6.0,<2.11/' pyproject.toml
-    echo "Using UV_TORCH_BACKEND=cu128 with torch>=2.6 (Blackwell+ GPU detected)"
+    sed -i 's/torch>=2.3.0,<2.11/torch==2.8.*/' pyproject.toml
+    echo "Using UV_TORCH_BACKEND=cu128 with torch==2.8.* (Blackwell+ GPU, flash-attn wheel compat)"
 elif [ "$CUDA_MAJOR" = "12" ]; then
     # Pre-Blackwell on CUDA 12.x driver — cu126 is fine and keeps the older torch range.
     export UV_TORCH_BACKEND=cu126
@@ -61,6 +64,20 @@ rm -f uv.lock
 # 30-40% throughput boost when present)
 uv python pin 3.11
 uv sync --extra train
+
+# Flash-attn: install via prebuilt wheel (--no-build-isolation reuses the
+# venv's torch instead of resolving a fresh one in an isolation env, which
+# would trigger a ~2h source compile). Wheel picks correct combo from the
+# pinned torch version. Needed for varlen packing in SFT
+# (DataCollatorWithFlattening) and for the fastest attention path in
+# pretrain. Only installed when the pinned torch has wheels; skip on the
+# `auto` backend where wheels may not exist.
+if [ "$UV_TORCH_BACKEND" = "cu128" ] || [ "$UV_TORCH_BACKEND" = "cu126" ]; then
+    echo "=== Installing flash-attn ==="
+    uv pip install setuptools wheel packaging
+    uv pip install flash-attn --no-build-isolation
+    uv run python -c "import flash_attn; print(f'flash-attn OK ({flash_attn.__version__})')"
+fi
 
 # Verify Liger kernel actually applies. Install can succeed while
 # `apply_liger_kernel_to_llama` raises at runtime (transformers version
