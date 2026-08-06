@@ -62,6 +62,9 @@ training:
   dataloader_pin_memory: true
   group_by_length: false
   optim: adamw_8bit
-  torch_compile: true
-  torch_compile_mode: default
+  # torch_compile disabled: the rebuilt LlamaRotaryEmbedding module
+  # crashes dynamo's fake-tensor dispatch during initial compile
+  # ("TypeError: unsupported operand type(s) for *: 'torch.dtype' and
+  # 'FakeTensor'"). ~15% wall cost; wall estimate becomes ~2.5h.
+  torch_compile: false
   gradient_checkpointing: false
