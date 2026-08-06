@@ -302,6 +302,21 @@ def main():
                              "Packed SFT has constant seq shape so recompiles "
                              "are rare. Disable with --no-torch-compile if a "
                              "Liger/compile interaction misbehaves.")
+    parser.add_argument("--flatten-packing", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Use HF's DataCollatorWithFlattening (varlen "
+                             "packing via flash_attn_varlen_func + per-sample "
+                             "position_ids) instead of our custom pre-packer. "
+                             "Eliminates cross-sample attention contamination "
+                             "and per-sample RoPE drift; per HF, up to 2× "
+                             "throughput. NOTE: batch-size semantics change — "
+                             "under flattening, --batch-size N = N rows per "
+                             "flattened micro-batch (not N packed max_length "
+                             "sequences), so you may want to raise it 4-8× to "
+                             "match tokens/step. Requires flash_attn_2 "
+                             "(--attn-impl auto picks it on Ampere+). "
+                             "--no-flatten-packing falls back to legacy "
+                             "pre-packing with cross-sample attention.")
     parser.add_argument("--max-length", type=int, default=None,
                         help="Per-row truncation AND packed-sequence length. "
                              "Default: auto-detected from the loaded model's "
@@ -649,32 +664,53 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.init()
         _ = torch.cuda.device_count()
-    pack_workers = min(_num_proc(), max(1, os.cpu_count() - 2))
-    console.print(f"[bold green]Packing into max_length sequences "
-                  f"(parallel, workers={pack_workers})...")
-    train_shuffled = splits["train"].shuffle(seed=0)
-    test_shuffled = splits["test"].shuffle(seed=0)
-    train_packed = _pack_rows(
-        train_shuffled, args.max_length, eos_id, pad_id, num_proc=pack_workers)
-    test_packed = _pack_rows(
-        test_shuffled, args.max_length, eos_id, pad_id, num_proc=pack_workers)
+    if args.flatten_packing:
+        # Varlen path: skip pre-packing entirely. Feed tokenized (unpacked)
+        # rows to the trainer; DataCollatorWithFlattening flattens each
+        # batch into one long sequence at collate time and passes cu_seqlens
+        # to flash_attn_varlen_func for correct per-sample attention +
+        # per-sample position_ids (RoPE sees each conversation starting at 0).
+        train_shuffled = splits["train"].shuffle(seed=0)
+        test_shuffled = splits["test"].shuffle(seed=0)
+        train_dataset = train_shuffled
+        eval_dataset = test_shuffled
+        console.print(f"[bold green]Flatten-packing enabled (varlen via "
+                      f"DataCollatorWithFlattening).[/]")
+        train_completion_tokens = sum(
+            (1 if l != -100 else 0)
+            for ex in train_shuffled for l in ex["labels"]
+        )
+        console.print(
+            f"[bold]Rows:[/] train={len(train_shuffled):,}  "
+            f"eval={len(test_shuffled):,}  "
+            f"train_completion_tokens={train_completion_tokens:,}")
+    else:
+        pack_workers = min(_num_proc(), max(1, os.cpu_count() - 2))
+        console.print(f"[bold green]Packing into max_length sequences "
+                      f"(legacy pre-packer, workers={pack_workers})...")
+        train_shuffled = splits["train"].shuffle(seed=0)
+        test_shuffled = splits["test"].shuffle(seed=0)
+        train_packed = _pack_rows(
+            train_shuffled, args.max_length, eos_id, pad_id, num_proc=pack_workers)
+        test_packed = _pack_rows(
+            test_shuffled, args.max_length, eos_id, pad_id, num_proc=pack_workers)
 
-    train_dataset = Dataset.from_list(train_packed)
-    eval_dataset = Dataset.from_list(test_packed)
+        train_dataset = Dataset.from_list(train_packed)
+        eval_dataset = Dataset.from_list(test_packed)
 
-    # Packing efficiency: token count vs theoretical max
-    total_train_tokens = sum(
-        (1 if l != -100 else 0)
-        for ex in train_packed for l in ex["labels"]
-    )
-    total_train_slots = len(train_packed) * args.max_length
-    console.print(
-        f"[bold]Post-pack:[/] train={len(train_packed):,} packed sequences "
-        f"({args.max_length} tok each); eval={len(test_packed):,}")
-    console.print(
-        f"[bold]Train completion-token utilization:[/] "
-        f"{total_train_tokens:,} / {total_train_slots:,} = "
-        f"{100 * total_train_tokens / total_train_slots:.1f}%")
+        # Packing efficiency: token count vs theoretical max
+        total_train_tokens = sum(
+            (1 if l != -100 else 0)
+            for ex in train_packed for l in ex["labels"]
+        )
+        total_train_slots = len(train_packed) * args.max_length
+        console.print(
+            f"[bold]Post-pack:[/] train={len(train_packed):,} packed sequences "
+            f"({args.max_length} tok each); eval={len(test_packed):,}")
+        console.print(
+            f"[bold]Train completion-token utilization:[/] "
+            f"{total_train_tokens:,} / {total_train_slots:,} = "
+            f"{100 * total_train_tokens / total_train_slots:.1f}%")
 
     import torch
     use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
@@ -734,10 +770,29 @@ def main():
         optim=args.optim,
     )
 
-    # Default collator. Packed rows already have correct input_ids,
-    # attention_mask, and labels with -100 in the right places —
-    # nothing to do at collate time but stack into a batch tensor.
-    from transformers import default_data_collator
+    # Data collator: pick based on --flatten-packing.
+    #   flatten (default): DataCollatorWithFlattening — packs the batch's
+    #     rows into one long sequence at collate time, emits position_ids
+    #     and flash_attn_kwargs (cu_seqlens) so FA2 does correct varlen
+    #     attention with no cross-sample contamination. Requires
+    #     attn_implementation="flash_attention_2" (see attn_impl above).
+    #   legacy: default_data_collator — our custom pre-packed rows already
+    #     have input_ids/attention_mask/labels sized to max_length; just
+    #     stack them into a batch tensor.
+    if args.flatten_packing:
+        from transformers import DataCollatorWithFlattening
+        data_collator = DataCollatorWithFlattening(
+            return_flash_attn_kwargs=True,
+            return_position_ids=True,
+        )
+        if attn_impl != "flash_attention_2":
+            console.print(f"[bold yellow]WARNING:[/] --flatten-packing wants "
+                          f"attn_implementation=flash_attention_2 but got "
+                          f"{attn_impl!r}. Varlen packing may fall back to "
+                          f"padded attention and lose the perf/quality win.")
+    else:
+        from transformers import default_data_collator
+        data_collator = default_data_collator
 
     console.print("[bold green]Starting packed SFT training...")
     callbacks = []
@@ -762,7 +817,7 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        data_collator=default_data_collator,
+        data_collator=data_collator,
         tokenizer=tokenizer,
         callbacks=callbacks,
     )
