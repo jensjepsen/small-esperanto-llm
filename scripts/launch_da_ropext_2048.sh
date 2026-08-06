@@ -38,7 +38,7 @@ export WANDB_PROJECT=danish-lm-pretrain
 export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export ESPLLM_NUM_PROC=8
 
-torchrun --nproc_per_node=1 -m esperanto_lm.train \
+uv run torchrun --nproc_per_node=1 -m esperanto_lm.train \
   --config da_400m_ropext_2048 \
   --from-pretrained jensjepsen/danish-lm-400m-base-ckpt310k \
   --rope-extend-theta 500000 \
