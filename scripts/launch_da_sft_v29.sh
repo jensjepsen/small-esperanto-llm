@@ -49,7 +49,7 @@ uv run python -u scripts/train_sft_packed.py \
     jensjepsen/danish-reason-v1 \
     jensjepsen/danish-textman-v1 \
   --epochs 3 --batch-size 128 --gradient-accumulation 1 \
-  --optim paged_adamw_8bit \
+  --optim adamw_bnb_8bit \
   --learning-rate 3e-5 --lr-scheduler constant_with_warmup --warmup-steps 500 \
   --save-fraction-of-epoch 0.25 --save-total-limit 2 \
   --downstream-evals gsm8k sciq citgen citmc --downstream-batch-size 32 --top-k-downstream 7 \
