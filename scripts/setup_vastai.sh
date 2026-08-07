@@ -65,17 +65,29 @@ rm -f uv.lock
 uv python pin 3.11
 uv sync --extra train
 
-# Flash-attn: install via prebuilt wheel (--no-build-isolation reuses the
-# venv's torch instead of resolving a fresh one in an isolation env, which
-# would trigger a ~2h source compile). Wheel picks correct combo from the
-# pinned torch version. Needed for varlen packing in SFT
-# (DataCollatorWithFlattening) and for the fastest attention path in
-# pretrain. Only installed when the pinned torch has wheels; skip on the
-# `auto` backend where wheels may not exist.
-if [ "$UV_TORCH_BACKEND" = "cu128" ] || [ "$UV_TORCH_BACKEND" = "cu126" ]; then
+# Flash-attn: install prebuilt wheel from GitHub releases. `pip install
+# flash-attn` from PyPI is SOURCE-ONLY (2-3h compile). The GitHub release
+# assets have per-(torch, cuda, cxx11abi, cpython) binary wheels — download
+# the matching one by URL. Works identically on 5090 (Blackwell) and H100
+# (Hopper) as long as UV_TORCH_BACKEND=cu128 (both need cu128 wheels).
+#
+# Wheel name pattern:
+#   flash_attn-{VER}+cu12torch{TORCH_MM}cxx11abi{ABI}-cp{PY}-cp{PY}-linux_x86_64.whl
+# where TORCH_MM is e.g. "2.8" (major.minor) and ABI is TRUE/FALSE matching
+# `torch.compiled_with_cxx11_abi()`.
+if [ "$UV_TORCH_BACKEND" = "cu128" ]; then
     echo "=== Installing flash-attn ==="
     uv pip install setuptools wheel packaging
-    uv pip install flash-attn --no-build-isolation
+    # Query the pinned torch version + ABI + python version to build the
+    # correct wheel URL. This avoids any source compile path.
+    TORCH_MM=$(uv run python -c "import torch, re; print(re.match(r'(\d+\.\d+)', torch.__version__).group(1))")
+    TORCH_ABI=$(uv run python -c "import torch; print('TRUE' if torch.compiled_with_cxx11_abi() else 'FALSE')")
+    PY_CP=$(uv run python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+    FA_VER=${FA_VER:-2.8.3}
+    WHEEL="https://github.com/Dao-AILab/flash-attention/releases/download/v${FA_VER}/flash_attn-${FA_VER}+cu12torch${TORCH_MM}cxx11abi${TORCH_ABI}-${PY_CP}-${PY_CP}-linux_x86_64.whl"
+    echo "  torch=${TORCH_MM}  abi=${TORCH_ABI}  py=${PY_CP}  fa=${FA_VER}"
+    echo "  wheel: ${WHEEL}"
+    uv pip install "${WHEEL}"
     uv run python -c "import flash_attn; print(f'flash-attn OK ({flash_attn.__version__})')"
 fi
 
