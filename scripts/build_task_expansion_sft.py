@@ -124,7 +124,7 @@ def textman_rows(raw, wrappers, pools, rng):
         ("textman_rewrite",         "rewrite",         lambda i: i["rewrite"],           {}),
         ("textman_style_transfer",  "style_transfer",  lambda i: i["style_transfer"]["text"],
                                                                                           {"style": raw["style_target"]}),
-        ("textman_extraction",      "extraction",      lambda i: json.dumps(i["extraction"], ensure_ascii=False, indent=2),
+        ("textman_extraction",      "extraction",      lambda i: json.dumps(i["extraction"], ensure_ascii=False, separators=(',', ':')),
                                                                                           {}),
         ("textman_elaborate",       "elaborate",       lambda i: f"KILDEPASSAGE: {i['elaborate'].get('source_passage','')}\n\nUDVIDET:\n{i['elaborate']['expanded']}",
                                                                                           {}),
@@ -163,12 +163,22 @@ def main():
     ap.add_argument("--templates", type=Path,
                     default=Path("data/task_expansion_v1/prompt_templates.json"))
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--max-tokens", type=int, default=2048,
+                    help="Drop rows whose (prompt + answer) exceeds this. "
+                         "Set 0 to disable filtering.")
+    ap.add_argument("--tokenizer", default="jensjepsen/danish-tokenizer")
     args = ap.parse_args()
 
     templates = json.loads(args.templates.read_text())
     wrappers = templates["wrapper"]
     args.out_dir.mkdir(parents=True, exist_ok=True)
     counts = {}
+
+    tok = None
+    if args.max_tokens > 0:
+        from transformers import AutoTokenizer
+        print(f"Loading tokenizer {args.tokenizer} for length filter...", flush=True)
+        tok = AutoTokenizer.from_pretrained(args.tokenizer)
 
     for name, build in BUILDERS.items():
         src = args.data_dir / f"{name}.jsonl"
@@ -177,6 +187,7 @@ def main():
             print(f"  {name}: SKIP (no {src})")
             continue
         subtype_counts = {}
+        dropped = {}
         n = 0
         with dst.open("w") as out:
             for line in src.open():
@@ -184,15 +195,23 @@ def main():
                 if raw.get("reject"): continue
                 rng = random.Random(f"{args.seed}:{name}:{raw['orig_idx']}")
                 for row in build(raw, wrappers, templates, rng):
+                    if tok is not None:
+                        n_tok = (len(tok(row["messages"][0]["content"]).input_ids)
+                                 + len(tok(row["messages"][1]["content"]).input_ids))
+                        if n_tok > args.max_tokens:
+                            dropped[row["subtype"]] = dropped.get(row["subtype"], 0) + 1
+                            continue
                     out.write(json.dumps(row, ensure_ascii=False) + "\n")
                     subtype_counts[row["subtype"]] = subtype_counts.get(row["subtype"], 0) + 1
                     n += 1
-        counts[name] = (n, subtype_counts)
-        print(f"  {name}: {n:,} SFT rows")
+        counts[name] = (n, subtype_counts, dropped)
+        print(f"  {name}: {n:,} SFT rows kept, {sum(dropped.values()):,} dropped (>{args.max_tokens} tok)")
         for st, c in sorted(subtype_counts.items()):
-            print(f"    {st}: {c:,}")
+            d = dropped.get(st, 0)
+            drop_pct = 100*d/(c+d) if c+d else 0
+            print(f"    {st}: {c:,}  (dropped {d}, {drop_pct:.1f}%)")
 
-    total = sum(n for n, _ in counts.values())
+    total = sum(n for n, _, _ in counts.values())
     print(f"\nTotal: {total:,} rows across {len(counts)} datasets → {args.out_dir}")
 
 
