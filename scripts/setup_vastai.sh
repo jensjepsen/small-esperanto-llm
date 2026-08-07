@@ -36,8 +36,12 @@ GPU_CAP_MAJOR=$(echo "$GPU_CAP" | cut -d. -f1)
 echo "Detected CUDA driver: ${CUDA_VERSION:-none}  GPU compute cap: ${GPU_CAP:-none}"
 
 if [ "$CUDA_MAJOR" = "13" ]; then
+    # CUDA 13 driver → cu128 wheels. Pin torch to 2.8.* so flash-attn has
+    # a matching prebuilt wheel (2.9/2.10 have none — would source-compile).
     export UV_TORCH_BACKEND=cu128
-    echo "Using UV_TORCH_BACKEND=cu128 (CUDA 13 driver)"
+    sed -i 's/torch>=2.3.0,<2.11/torch==2.8.*/' pyproject.toml
+    sed -i 's/torch>=2.3.0$/torch==2.8.*/' pyproject.toml
+    echo "Using UV_TORCH_BACKEND=cu128 with torch==2.8.* (CUDA 13 driver, flash-attn wheel compat)"
 elif [ "$CUDA_MAJOR" = "12" ] && [ "${GPU_CAP_MAJOR:-0}" -ge 10 ] 2>/dev/null; then
     # Blackwell or newer needs cu128 wheels. Pin torch to 2.8.* — that's the
     # newest series with prebuilt flash-attn wheels for cu128+py311. Torch
