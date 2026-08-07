@@ -484,8 +484,15 @@ def main():
         except ImportError:
             attn_impl = "sdpa"
     console.print(f"[bold]Attention impl:[/] {attn_impl}   [bold]Liger:[/] {_LIGER_ON}")
+    # Load weights in bf16 on bf16-capable hardware — halves weight memory and
+    # matches the compute dtype (Trainer already runs bf16 mixed precision on
+    # H100/A100). Loading fp32 wastes ~800MB of weights + activations that
+    # get autocast to bf16 anyway. Falls back to fp32 on older GPUs (Pascal etc.).
+    _load_dtype = (torch.bfloat16
+                   if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+                   else None)
     model = AutoModelForCausalLM.from_pretrained(
-        args.checkpoint, attn_implementation=attn_impl)
+        args.checkpoint, attn_implementation=attn_impl, torch_dtype=_load_dtype)
 
     # Resolve --max-length against the model's own position-embedding ceiling.
     # Autodetect when unset; error out when a user request exceeds what RoPE
