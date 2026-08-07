@@ -66,7 +66,7 @@ uv run python -u scripts/train_sft_packed.py \
     jensjepsen/danish-wiki-closedqa-stem-v1:sft \
     jensjepsen/danish-wiki-broadqa-stem-v1:sft \
     jensjepsen/danish-wiki-mc-letters-v1 \
-  --epochs 3 --batch-size 64 --gradient-accumulation 2 \
+  --epochs 3 --batch-size 128 --gradient-accumulation 1 \
   --learning-rate 3e-5 --lr-scheduler constant_with_warmup --warmup-steps 500 \
   --save-fraction-of-epoch 0.25 --save-total-limit 2 \
   --downstream-evals gsm8k sciq citgen citmc --downstream-batch-size 32 --top-k-downstream 3 \
