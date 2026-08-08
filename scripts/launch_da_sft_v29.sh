@@ -29,7 +29,7 @@ export ESPLLM_NUM_PROC=8
 uv run python -u scripts/train_sft_packed.py \
   --checkpoint jensjepsen/danish-lm-400m-base-ropext2048-v1 \
   --tokenizer jensjepsen/danish-tokenizer \
-  --output-dir /root/runs/sft/da_v29_mix16_taskexp_ropext_3e \
+  --output-dir /workspace/runs/sft/da_v29_mix16_taskexp_ropext_3e \
   --no-morpheme-preprocess \
   --sft-data \
     jensjepsen/danish-metamath-gsm:sft \
