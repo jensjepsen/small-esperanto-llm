@@ -484,16 +484,13 @@ def main():
         except ImportError:
             attn_impl = "sdpa"
     console.print(f"[bold]Attention impl:[/] {attn_impl}   [bold]Liger:[/] {_LIGER_ON}")
-    # Load weights in bf16 on bf16-capable hardware — halves weight memory and
-    # matches the compute dtype (Trainer already runs bf16 mixed precision on
-    # H100/A100). Loading fp32 wastes ~800MB of weights + activations that
-    # get autocast to bf16 anyway. Falls back to fp32 on older GPUs (Pascal etc.).
-    import torch as _t2
-    _load_dtype = (_t2.bfloat16
-                   if _t2.cuda.is_available() and _t2.cuda.is_bf16_supported()
-                   else None)
+    # Load weights in fp32 (default). Trainer's bf16=True enables mixed
+    # precision compute via autocast, but master weights + optim states stay
+    # fp32 for numerical stability. Downcasting fp32 base ckpts to bf16 at
+    # load loses precision (23-bit → 7-bit mantissa) and visibly slows early
+    # SFT convergence on ropext base (tested v29, 2026-08-08).
     model = AutoModelForCausalLM.from_pretrained(
-        args.checkpoint, attn_implementation=attn_impl, torch_dtype=_load_dtype)
+        args.checkpoint, attn_implementation=attn_impl)
 
     # Resolve --max-length against the model's own position-embedding ceiling.
     # Autodetect when unset; error out when a user request exceeds what RoPE
