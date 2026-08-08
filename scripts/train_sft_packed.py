@@ -488,8 +488,9 @@ def main():
     # matches the compute dtype (Trainer already runs bf16 mixed precision on
     # H100/A100). Loading fp32 wastes ~800MB of weights + activations that
     # get autocast to bf16 anyway. Falls back to fp32 on older GPUs (Pascal etc.).
-    _load_dtype = (torch.bfloat16
-                   if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    import torch as _t2
+    _load_dtype = (_t2.bfloat16
+                   if _t2.cuda.is_available() and _t2.cuda.is_bf16_supported()
                    else None)
     model = AutoModelForCausalLM.from_pretrained(
         args.checkpoint, attn_implementation=attn_impl, torch_dtype=_load_dtype)
