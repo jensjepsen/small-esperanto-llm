@@ -61,7 +61,8 @@ def main():
         if want and name not in want: continue
         print(f"\n{'='*80}\n▶ {name}\n{'='*80}", flush=True)
         wrapped = f"{USER}{prompt}{END}{ASST}"
-        enc = tok(wrapped, return_tensors="pt", add_special_tokens=False).to("cuda")
+        enc = tok(wrapped, return_tensors="pt", add_special_tokens=False,
+                  return_token_type_ids=False).to("cuda")
         streamer = TextStreamer(tok, skip_prompt=True, skip_special_tokens=True)
         with torch.no_grad():
             model.generate(**enc, max_new_tokens=args.max_new, do_sample=False,
