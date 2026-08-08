@@ -92,12 +92,44 @@ def probes_for(passage_key):
     return []
 
 
+GENERIC_PROBES = [
+    ("rc-multi_fact",       "Læs følgende artikel og besvar spørgsmålet.\n\nARTIKEL ({title}):\n{text}\n\nSpørgsmål: Sammenfat de tre vigtigste pointer artiklen gør."),
+    ("rc-numeric-lookup",   "Baseret på nedenstående tekst, hvad er det største tal eller den seneste dato der nævnes, og hvad refererer det til?\n\nTekst:\n{text}"),
+    ("rc-attribution",      "{text}\n\n---\nHvem eller hvad er hovedpersonen/emnet i artiklen, og hvilke andre navngivne personer, steder eller institutioner er nævnt?"),
+    ("reason-causal",       "Læs følgende og forklar hvorfor.\n\n{text}\n\nHvad er den vigtigste årsag-virkning-sammenhæng artiklen beskriver? Forklar mekanismen."),
+    ("reason-fact_check",   "Er følgende påstand SAND eller FALSK ifølge teksten? Begrund.\nPåstand: Artiklens hovedperson/emne blev grundlagt/født i det 20. århundrede.\n\nTekst:\n{text}"),
+    ("reason-analogy",      "Baseret på artiklen om {title}:\n{text}\n\nLav en analogi der forklarer artiklens hovedemne ved at sammenligne med noget mere velkendt. Forklar hvor analogien holder og hvor den bryder sammen."),
+    ("textman-summary",     "Opsummer artiklen i 3 bulletpoints.\n\nARTIKEL ({title}):\n{text}"),
+    ("textman-extraction",  "Udtræk personer, steder, datoer og tal som JSON med nøglerne people, places, dates, numbers.\n\n{text}"),
+    ("textman-style_casual",f"Omskriv artiklens indledning i afslappet talesprog.\n\n{{text}}"),
+    ("textman-tweet",       "{text}\n\nOmskriv artiklens essens som en tweet på under 280 tegn."),
+]
+
+
+def wiki_article(idx, min_chars=2000, max_chars=4500):
+    """Pull a real DA wiki article by index (skips ones outside length window)."""
+    from datasets import load_dataset
+    ds = load_dataset("wikimedia/wikipedia", "20231101.da", split="train",
+                      streaming=False)
+    import random
+    rng = random.Random(idx)
+    idxs = list(range(len(ds))); rng.shuffle(idxs)
+    for i in idxs:
+        r = ds[i]
+        if min_chars <= len(r["text"]) <= max_chars:
+            return r["title"], r["text"]
+    raise SystemExit(f"no wiki article found in [{min_chars},{max_chars}] chars")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ckpt")
     ap.add_argument("--max-new", type=int, default=350)
     ap.add_argument("--passages", default=None,
-                    help="Comma-separated passage keys (default: all)")
+                    help="Comma-separated passage keys (default: all built-in)")
+    ap.add_argument("--wiki", default=None,
+                    help="Comma-separated wiki seeds, each fetches a real DA "
+                         "wiki article via that RNG seed (skips built-in probes).")
     ap.add_argument("--only", default=None, help="Comma-separated probe names")
     args = ap.parse_args()
 
@@ -108,9 +140,31 @@ def main():
     end_id = tok.convert_tokens_to_ids(END)
     eos_ids = [tok.eos_token_id] + ([end_id] if end_id != tok.unk_token_id else [])
 
-    passages = args.passages.split(",") if args.passages else list(PASSAGES.keys())
     want = set(args.only.split(",")) if args.only else None
 
+    if args.wiki:
+        # Real wiki article mode — use GENERIC_PROBES with the fetched article.
+        for seed in args.wiki.split(","):
+            title, text = wiki_article(int(seed))
+            print(f"\n\n{'#'*80}\n#  WIKI (seed={seed}): {title}  ({len(text)} chars)\n{'#'*80}",
+                  flush=True)
+            print(f"[TEXT PREVIEW]\n{text[:400]}...\n", flush=True)
+            for name, tpl in GENERIC_PROBES:
+                if want and name not in want: continue
+                prompt = tpl.format(title=title, text=text)
+                print(f"\n{'='*80}\n▶ [{title}] {name}\n{'='*80}", flush=True)
+                wrapped = f"{USER}{prompt}{END}{ASST}"
+                enc = tok(wrapped, return_tensors="pt", add_special_tokens=False,
+                          return_token_type_ids=False).to("cuda")
+                streamer = TextStreamer(tok, skip_prompt=True, skip_special_tokens=True)
+                with torch.no_grad():
+                    model.generate(**enc, max_new_tokens=args.max_new, do_sample=False,
+                                   pad_token_id=tok.pad_token_id, eos_token_id=eos_ids,
+                                   streamer=streamer)
+                sys.stdout.flush()
+        return
+
+    passages = args.passages.split(",") if args.passages else list(PASSAGES.keys())
     for pkey in passages:
         print(f"\n\n{'#'*80}\n#  PASSAGE: {pkey}\n{'#'*80}", flush=True)
         for name, prompt in probes_for(pkey):
