@@ -28,10 +28,11 @@ mellem de fem stater med isbjørnbestande: Canada, USA, Rusland, Norge og Danmar
 
 PROBES = [
     ("rc-multi_fact",       f"Læs artiklen og besvar spørgsmålet.\n\nARTIKEL:\n{PASSAGE_TEXT}\n\nSpørgsmål: Hvordan hænger klimaændringer sammen med isbjørnens fasteperiode?"),
-    ("rc-numeric",          f"Baseret på nedenstående tekst, hvor mange kilogram er en gennemsnitlig han-isbjørn tungere end en hun-isbjørn?\n\nTekst:\n{PASSAGE_TEXT}"),
+    ("rc-numeric-lookup",   f"Baseret på nedenstående tekst, hvor mange delbestande er den samlede isbjørnbestand fordelt på, og hvad er den samlede bestandsestimat?\n\nTekst:\n{PASSAGE_TEXT}"),
+    ("rc-numeric-derive",   f"Baseret på nedenstående tekst, hvor mange kilogram er en gennemsnitlig han-isbjørn tungere end en hun-isbjørn?\n\nTekst:\n{PASSAGE_TEXT}"),
     ("rc-attribution",      f"{PASSAGE_TEXT}\n\n---\nHvem har klassificeret isbjørnen som 'sårbar', og hvornår blev den internationale beskyttelsesaftale indgået?"),
     ("reason-causal",       f"Læs følgende og forklar hvorfor.\n\n{PASSAGE_TEXT}\n\nHvorfor er en enkelt sæl så vigtig for isbjørnens energibalance?"),
-    ("reason-multi_step",   f"ARTIKEL: {PASSAGE_TEXT}\n\nHvis en hun-isbjørn vejer omkring halvt så meget som en han og hanner vejer 350-700 kg, hvor meget vejer en hun så typisk? Vis dine trin."),
+    ("reason-multi_step",   f"ARTIKEL: {PASSAGE_TEXT}\n\nHvis isbjørnen får energi fra sæler og en enkelt sæl dækker to uger, og der er 52 uger i et år, hvor mange sæler skal isbjørnen minimum fange på et år for at overleve? Vis dine trin."),
     ("reason-fact_check",   f"Nedenstående er en artikel om {PASSAGE_TITLE}:\n{PASSAGE_TEXT}\n\nEr følgende påstand SAND eller FALSK ifølge teksten? Begrund.\nPåstand: Isbjørnen er verdens største rovdyr til lands."),
     ("reason-analogy",      f"Baseret på artiklen om {PASSAGE_TITLE}:\n{PASSAGE_TEXT}\n\nLav en analogi der forklarer isbjørnens afhængighed af havisen ved at sammenligne med noget mere velkendt. Forklar hvor analogien holder og hvor den bryder sammen."),
     ("textman-summary",     f"Opsummer artiklen i 3 bulletpoints.\n\nARTIKEL:\n{PASSAGE_TEXT}"),
