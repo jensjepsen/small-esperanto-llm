@@ -606,9 +606,14 @@ def main():
 
         console.print("[bold green]Tokenizing + computing labels...")
         from datasets import Dataset
+        import pyarrow as pa
         from esperanto_lm.data import num_proc
 
-        raw_ds = Dataset.from_dict({"text": conversations})
+        # Use pa.large_string so the total byte size can exceed int32 (2 GiB).
+        # Default pa.string() overflows once conversations total > 2 GiB
+        # (~2M rows × ~1KB avg — hits with the v30 19-source mix).
+        table = pa.table({"text": pa.array(conversations, type=pa.large_string())})
+        raw_ds = Dataset(table)
 
         def _tok_with_labels(row):
             enc = tokenize_fn(row["text"])
