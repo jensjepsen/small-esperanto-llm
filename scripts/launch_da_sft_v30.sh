@@ -29,10 +29,23 @@ export WANDB_PROJECT=danish-lm-sft
 export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export ESPLLM_NUM_PROC=8
 
+# Fast disk everything (overlay), EXCEPT checkpoints on persistent /workspace.
+# HF datasets/model caches on overlay:
+export HF_HOME=/root/hf-cache
+export HF_DATASETS_CACHE=/root/hf-cache/datasets
+mkdir -p "$HF_HOME"
+
+# Checkpoints go to /workspace; prep_cache (~5GB tokenised splits) stays
+# on overlay via symlink to avoid MooseFS write penalty during tokenise.
+OUT=/workspace/runs/sft/da_v30_mix19_stemreason_ropext_3e
+mkdir -p "$OUT"
+mkdir -p /root/prep_cache_v30
+[ -L "$OUT/prep_cache" ] || ln -sfn /root/prep_cache_v30 "$OUT/prep_cache"
+
 uv run python -u scripts/train_sft_packed.py \
   --checkpoint jensjepsen/danish-lm-400m-base-ropext2048-v1 \
   --tokenizer jensjepsen/danish-tokenizer \
-  --output-dir /workspace/runs/sft/da_v30_mix19_stemreason_ropext_3e \
+  --output-dir "$OUT" \
   --no-morpheme-preprocess \
   --sft-data \
     jensjepsen/danish-metamath-gsm:sft \
