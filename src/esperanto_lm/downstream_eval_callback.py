@@ -374,16 +374,15 @@ class DownstreamEvalCallback(TrainerCallback):
         return self._score_mc_letter(model, self._get("gpqa"))
 
     def _score_chrf(self, model, name: str, max_new: int) -> float:
-        """ChrF++ vs single reference. Loaded lazily to avoid sacrebleu at
-        import time. Returns mean corpus-level ChrF++ score (0..100)."""
+        """ChrF++ vs single reference. Returns 0..1 (matches accuracy metrics
+        for consistent aggregation — the callback pipeline *100s to percent)."""
         from sacrebleu.metrics import CHRF
         items = self._get(name)
         prompts = [q for q, _ in items]
         golds = [g for _, g in items]
         outs = self._generate(model, prompts, max_new)
         chrf = CHRF(word_order=2)  # ChrF++
-        # sacrebleu expects list of refs per hyp
-        return chrf.corpus_score(outs, [golds]).score
+        return chrf.corpus_score(outs, [golds]).score / 100.0
 
     def _score_textman_summary(self, model) -> float:
         return self._score_chrf(model, "textman_summary", max_new=200)
