@@ -57,9 +57,9 @@ uv run python -u scripts/train_sft_packed.py \
   --epochs 3 --batch-size 128 --gradient-accumulation 1 \
   --optim adamw_bnb_8bit \
   --learning-rate 3e-5 --lr-scheduler constant_with_warmup --warmup-steps 500 \
-  --save-fraction-of-epoch 0.25 --save-total-limit 2 \
+  --save-fraction-of-epoch 0.05 --save-total-limit 2 \
   --downstream-evals gsm8k sciq citgen citmc piqa arc gpqa textman_summary textman_rewrite \
-  --downstream-batch-size 128 --top-k-downstream 7 \
+  --downstream-batch-size 256 --top-k-downstream 7 \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_v30_sft_mix19_stemreason_ropext_3e \
   --wandb-tags sft da v30 mix19 ropext2048 if-v4 mc-letters task-expansion stem-reasoning stem-factcheck stem-taskgen constant-lr epochs-3 flatten-packing \
