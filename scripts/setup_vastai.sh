@@ -79,7 +79,7 @@ uv sync --extra train
 #   flash_attn-{VER}+cu12torch{TORCH_MM}cxx11abi{ABI}-cp{PY}-cp{PY}-linux_x86_64.whl
 # where TORCH_MM is e.g. "2.8" (major.minor) and ABI is TRUE/FALSE matching
 # `torch.compiled_with_cxx11_abi()`.
-if [ "$UV_TORCH_BACKEND" = "cu128" ]; then
+if [ "$UV_TORCH_BACKEND" = "cu128" ] || [ "$UV_TORCH_BACKEND" = "cu126" ]; then
     echo "=== Installing flash-attn ==="
     uv pip install setuptools wheel packaging
     # Query the pinned torch version + ABI + python version to build the
