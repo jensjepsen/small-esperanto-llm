@@ -154,6 +154,78 @@ class DownstreamEvalCallback(TrainerCallback):
             items.append((r["question"], gold_text))
         return items
 
+    def _load_piqa(self, step: int = 0):
+        """Danish PIQA — 100 human-authored items, 2-option MC (A/B)."""
+        ds = load_dataset("mrlbenchmarks/global-piqa-nonparallel", "dan_latn",
+                          split="test")
+        ds = self._maybe_subsample(ds, step)
+        items = []
+        for r in ds:
+            opts = {"A": r["solution0"].strip(), "B": r["solution1"].strip()}
+            gold = "A" if r["label"] == 0 else "B"
+            items.append((r["prompt"].strip(), opts, gold))
+        return items
+
+    def _load_arc(self, step: int = 0):
+        """ARC-DA — alexandrainst/m_arc:da:test (1167 rows, 4-5 option MC)."""
+        ds = load_dataset("alexandrainst/m_arc", "da", split="test")
+        ds = self._maybe_subsample(ds, step)
+        items = []
+        for r in ds:
+            opts = {}
+            for ll in "abcde":
+                v = r.get(f"option_{ll}")
+                if v: opts[ll.upper()] = v
+            gold = r["answer"].upper()
+            if gold not in opts: continue
+            items.append((r["instruction"], opts, gold))
+        return items
+
+    def _load_gpqa(self, step: int = 0):
+        """GPQA-Diamond-DA — translated 4-choice MC. Shuffled per-row for
+        stable A/B/C/D positioning (correct answer's slot deterministic
+        per pageid via seed)."""
+        import random as _rnd
+        ds = load_dataset("jensjepsen/danish-gpqa-diamond-v1", split="train")
+        ds = self._maybe_subsample(ds, step)
+        items = []
+        for r in ds:
+            answers = list(r["answers_da"])  # [correct, w1, w2, w3]
+            rng = _rnd.Random(self.seed + r["orig_idx"])
+            idxs = list(range(4)); rng.shuffle(idxs)
+            opts = {}
+            gold = None
+            for slot, orig in enumerate(idxs):
+                lab = "ABCD"[slot]
+                opts[lab] = answers[orig]
+                if orig == 0: gold = lab
+            items.append((r["question_da"], opts, gold))
+        return items
+
+    def _load_textman_summary(self, step: int = 0):
+        """Textman summary val — reference-based (ChrF++ vs gold summary)."""
+        ds = load_dataset("jensjepsen/danish-textman-v1", split="validation")
+        ds = ds.filter(lambda r: r["subtype"] == "textman_summary")
+        ds = self._maybe_subsample(ds, step)
+        items = []
+        for r in ds:
+            prompt = r["messages"][0]["content"]
+            gold = r["messages"][1]["content"]
+            items.append((prompt, gold))
+        return items
+
+    def _load_textman_rewrite(self, step: int = 0):
+        """Textman rewrite val — reference-based (ChrF++ vs gold rewrite)."""
+        ds = load_dataset("jensjepsen/danish-textman-v1", split="validation")
+        ds = ds.filter(lambda r: r["subtype"] == "textman_rewrite")
+        ds = self._maybe_subsample(ds, step)
+        items = []
+        for r in ds:
+            prompt = r["messages"][0]["content"]
+            gold = r["messages"][1]["content"]
+            items.append((prompt, gold))
+        return items
+
     def _load_citmc(self, step: int = 0):
         """Cit-MC: same source as cit-gen, formatted as labeled MC. The
         citizen-tests dataset has variable option count (2, 3, sometimes 4)
@@ -270,6 +342,54 @@ class DownstreamEvalCallback(TrainerCallback):
             if m and m.group(0).upper() == gold:
                 n_ok += 1
         return n_ok / len(items)
+
+    def _score_mc_letter(self, model, items, max_new: int = 8) -> float:
+        """Shared MC-letter scorer used by piqa/arc/gpqa (and citmc-style
+        emit-single-letter tasks). items = list of (q, opts_dict, gold_letter).
+        Batched via self._generate."""
+        if not items:
+            return 0.0
+        prompts = []
+        for q, opts, _ in items:
+            opts_str = "\n".join(f"{lab}) {opts[lab]}" for lab in sorted(opts))
+            body = (f"{q}\n\n{opts_str}\n\n"
+                    f"Svar med bogstavet på det korrekte svar.")
+            prompts.append(f"{USER}{body}{END}{ASST}")
+        outs = self._generate(model, prompts, max_new)
+        n_ok = 0
+        for out, (_, opts, gold) in zip(outs, items):
+            present = "".join(sorted(opts))
+            m = re.search(rf"\b[{present}]\b", out, re.IGNORECASE)
+            if m and m.group(0).upper() == gold:
+                n_ok += 1
+        return n_ok / len(items)
+
+    def _score_piqa(self, model) -> float:
+        return self._score_mc_letter(model, self._get("piqa"))
+
+    def _score_arc(self, model) -> float:
+        return self._score_mc_letter(model, self._get("arc"))
+
+    def _score_gpqa(self, model) -> float:
+        return self._score_mc_letter(model, self._get("gpqa"))
+
+    def _score_chrf(self, model, name: str, max_new: int) -> float:
+        """ChrF++ vs single reference. Loaded lazily to avoid sacrebleu at
+        import time. Returns mean corpus-level ChrF++ score (0..100)."""
+        from sacrebleu.metrics import CHRF
+        items = self._get(name)
+        prompts = [q for q, _ in items]
+        golds = [g for _, g in items]
+        outs = self._generate(model, prompts, max_new)
+        chrf = CHRF(word_order=2)  # ChrF++
+        # sacrebleu expects list of refs per hyp
+        return chrf.corpus_score(outs, [golds]).score
+
+    def _score_textman_summary(self, model) -> float:
+        return self._score_chrf(model, "textman_summary", max_new=200)
+
+    def _score_textman_rewrite(self, model) -> float:
+        return self._score_chrf(model, "textman_rewrite", max_new=512)
 
     # ── HF Trainer hook ────────────────────────────────────────────────────
 
