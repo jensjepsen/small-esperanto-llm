@@ -26,6 +26,8 @@ uv run torchrun --nproc_per_node=1 -m esperanto_lm.train \
   --config da_400m_stem_midtrain \
   --from-pretrained jensjepsen/danish-lm-400m-base-ropext2048-v1 \
   --mc-logprob-eval \
+  --mc-logprob-n-sciq 1000 \
+  --mc-logprob-n-citmc 720 \
   --output-dir "${OUTPUT_DIR:-/workspace/runs/da_stem_midtrain_v1}" \
   --tokenizer jensjepsen/danish-tokenizer \
   --pretokenized-dataset \
