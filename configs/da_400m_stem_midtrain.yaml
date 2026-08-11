@@ -51,5 +51,5 @@ training:
   dataloader_pin_memory: true
   group_by_length: false
   optim: adamw_8bit
-  torch_compile: true
+  torch_compile: false  # Liger FLCE kernel breaks dynamo (same as ropext)
   gradient_checkpointing: false
