@@ -20,8 +20,8 @@ export ESPLLM_NUM_PROC=8
 
 uv run torchrun --nproc_per_node=1 -m esperanto_lm.train \
   --config da_400m_ropext_8048 \
-  --from-pretrained jensjepsen/danish-lm-400m-base-ropext2048-v1 \
-  --rope-extend-theta 2000000 \
+  --from-pretrained jensjepsen/danish-lm-400m-base-ckpt310k \
+  --rope-extend-theta 3000000 \
   --min-doc-tokens 8048 \
   --long-short-eval \
   --long-short-eval-docs 128 \
