@@ -1,0 +1,55 @@
+model:
+  # Same architecture as jensjepsen/danish-lm-400m-base-ropext2048-v1.
+  # We're continuing from an already-ropext-extended base; no rope changes.
+  vocab_size: 16000
+  hidden_size: 1536
+  num_hidden_layers: 16
+  num_attention_heads: 24
+  num_key_value_heads: 4
+  intermediate_size: 4096
+  max_position_embeddings: 2048
+  rms_norm_eps: 1.0e-5
+  tie_word_embeddings: true
+
+training:
+  # STEM mid-train on 1×H100 80GB.
+  #
+  # Corpus: jensjepsen/danish-vital-stem-da-tokenized-v1 — 10,031 articles,
+  # 44.6M DA tokens (Wikipedia:Vital articles/Level 5 STEM translated via
+  # gemini-2.5-flash-lite).
+  #
+  # Budget: 5 epochs = 223M tokens processed.
+  #   32 × 1 × 2048 = 65,536 tok/step
+  #   44.6M / 65,536 = 680 steps/epoch → 3400 steps for 5 epochs
+  # On 1×H100 with grad_checkpointing OFF: ~25-40 min wall.
+  #
+  # Recipe:
+  # - LR 2e-5 constant_with_warmup(100): base already well-optimized,
+  #   we're topping up STEM knowledge without wanting general drift.
+  #   Lower than ropext (3e-5) because we do want the base to stick.
+  # - Warmup 100: short continuation, no fresh start.
+  # - Eval every 100 steps → 34 evals total, see MC-logprob curve
+  #   evolve live (should see sciq_mc_logprob + citmc_logprob climb).
+  # - save_total_limit 5, save every 200 → 17 total, keep 5.
+  # - torch_compile ON (no rope-extend module hack in this run).
+  max_steps: 3400
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 1
+  warmup_steps: 100
+  lr_scheduler_type: constant_with_warmup
+  learning_rate: 2.0e-5
+  weight_decay: 0.1
+  fp16: true                    # config.py auto-promotes to bf16 on Ampere+
+  bf16: false
+  max_grad_norm: 1.0
+  eval_steps: 100
+  save_steps: 200
+  save_total_limit: 5
+  logging_steps: 25
+  dataloader_num_workers: 8
+  dataloader_pin_memory: true
+  group_by_length: false
+  optim: adamw_8bit
+  torch_compile: true
+  gradient_checkpointing: false
