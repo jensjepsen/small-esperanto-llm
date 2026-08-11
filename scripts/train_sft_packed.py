@@ -366,7 +366,8 @@ def main():
     parser.add_argument("--downstream-evals", nargs="*",
                         default=["gsm8k", "sciq", "citgen", "citmc"],
                         choices=["gsm8k", "sciq", "citgen", "citmc",
-                                 "piqa", "arc", "gpqa",
+                                 "piqa", "arc", "arc_easy", "arc_challenge",
+                                 "gpqa",
                                  "textman_summary", "textman_rewrite"],
                         help="Run these downstream evals on every eval step. "
                              "Empty list disables. See "

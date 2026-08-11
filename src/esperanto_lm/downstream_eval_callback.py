@@ -167,7 +167,9 @@ class DownstreamEvalCallback(TrainerCallback):
         return items
 
     def _load_arc(self, step: int = 0):
-        """ARC-DA — alexandrainst/m_arc:da:test (1167 rows, 4-5 option MC)."""
+        """DEPRECATED — old alexandrainst/m_arc:da:test (rough translation).
+        Kept for backward compat with pre-v31 runs. New runs should use
+        `arc_easy` and `arc_challenge` from jensjepsen/danish-arc."""
         ds = load_dataset("alexandrainst/m_arc", "da", split="test")
         ds = self._maybe_subsample(ds, step)
         items = []
@@ -180,6 +182,25 @@ class DownstreamEvalCallback(TrainerCallback):
             if gold not in opts: continue
             items.append((r["instruction"], opts, gold))
         return items
+
+    def _load_arc_danish(self, cfg: str, step: int = 0):
+        """Load jensjepsen/danish-arc (gemini-3.1-flash-lite translation) for
+        the given config (arc_easy | arc_challenge). Test split, MC-letter."""
+        ds = load_dataset("jensjepsen/danish-arc", cfg, split="test")
+        ds = self._maybe_subsample(ds, step)
+        items = []
+        for r in ds:
+            opts = {c["label"]: c["text"] for c in r["choices"]}
+            gold = r["answerKey"]
+            if gold not in opts: continue
+            items.append((r["question"], opts, gold))
+        return items
+
+    def _load_arc_easy(self, step: int = 0):
+        return self._load_arc_danish("arc_easy", step)
+
+    def _load_arc_challenge(self, step: int = 0):
+        return self._load_arc_danish("arc_challenge", step)
 
     def _load_gpqa(self, step: int = 0):
         """GPQA-Diamond-DA — translated 4-choice MC. Shuffled per-row for
@@ -370,6 +391,12 @@ class DownstreamEvalCallback(TrainerCallback):
     def _score_arc(self, model) -> float:
         return self._score_mc_letter(model, self._get("arc"))
 
+    def _score_arc_easy(self, model) -> float:
+        return self._score_mc_letter(model, self._get("arc_easy"))
+
+    def _score_arc_challenge(self, model) -> float:
+        return self._score_mc_letter(model, self._get("arc_challenge"))
+
     def _score_gpqa(self, model) -> float:
         return self._score_mc_letter(model, self._get("gpqa"))
 
@@ -406,6 +433,14 @@ class DownstreamEvalCallback(TrainerCallback):
             if metrics is not None:
                 metrics[key] = score  # for HF logging on same-step
             print(f"  [downstream] {name}: {100*score:.1f}%", flush=True)
+        # Meta-metric: if both arc splits ran, log their mean.
+        if ("arc_easy" in self.evals) and ("arc_challenge" in self.evals):
+            arc_mean = (downstream_metrics["eval_downstream_arc_easy"]
+                        + downstream_metrics["eval_downstream_arc_challenge"]) / 2
+            downstream_metrics["eval_downstream_arc_mean"] = arc_mean
+            if metrics is not None:
+                metrics["eval_downstream_arc_mean"] = arc_mean
+            print(f"  [downstream] arc_mean: {100*arc_mean:.1f}%", flush=True)
         elapsed = time.time() - t0
         n_label = "full" if not self.n else str(self.n)
         print(f"  [downstream] {len(self.evals)} evals in {elapsed:.0f}s "
