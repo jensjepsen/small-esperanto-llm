@@ -31,6 +31,7 @@ uv run torchrun --nproc_per_node=1 -m esperanto_lm.train \
   --mc-logprob-n-sciq 1000 \
   --mc-logprob-n-citmc 720 \
   --mc-logprob-n-arc 1167 \
+  --max-eval-samples 64 \
   --output-dir "${OUTPUT_DIR:-/workspace/runs/da_ropext_8048_v1}" \
   --tokenizer jensjepsen/danish-tokenizer \
   --pretokenized-dataset \

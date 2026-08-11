@@ -226,6 +226,12 @@ def main():
              "coherent long span, not stitched fragments of short docs.",
     )
     parser.add_argument(
+        "--max-eval-samples", type=int, default=0,
+        help="If >0, cap the eval_dataset to first N chunks via .take(N)/"
+             ".select(range(N)). Use to shrink HF eval_loss cost when the "
+             "real signal comes from long_short/mc-logprob callbacks.",
+    )
+    parser.add_argument(
         "--rope-extend-theta", type=float, default=None,
         help="RoPE-extension continued pretrain: after --from-pretrained "
              "loads the base, bump the model's rope_theta to this value "
@@ -432,6 +438,9 @@ def main():
 
             train_dataset = train_tok.map(_chunk_stream, batched=True, batch_size=1000)
             eval_dataset = eval_source.map(_chunk_stream, batched=True, batch_size=1000)
+            if args.max_eval_samples > 0:
+                eval_dataset = eval_dataset.take(args.max_eval_samples)
+                console.print(f"[bold]Capping eval_dataset to {args.max_eval_samples} chunks.[/]")
             console.print("[bold]Streaming pretokenized loaded (lazy).[/]")
         else:
             console.print("[bold green]Loading and tokenizing dataset...")
@@ -450,6 +459,9 @@ def main():
             console.print(f"[bold]Test examples:[/] {len(dataset['test']):,}")
             train_dataset = tokenize_and_chunk(dataset["train"], tokenizer, max_length=max_length)
             eval_dataset = tokenize_and_chunk(dataset["test"], tokenizer, max_length=max_length)
+            if args.max_eval_samples > 0 and len(eval_dataset) > args.max_eval_samples:
+                eval_dataset = eval_dataset.select(range(args.max_eval_samples))
+                console.print(f"[bold]Capping eval_dataset to {args.max_eval_samples} chunks.[/]")
 
         if args.use_benchmarks:
             console.print("[bold green]Loading benchmark Q/A pairs...")
