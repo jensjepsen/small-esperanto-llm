@@ -237,6 +237,16 @@ def main():
              "both regression and extension progress live in wandb.",
     )
     parser.add_argument(
+        "--mc-logprob-eval",
+        action="store_true",
+        help="Attach MCLogprobCallback: measures eval/sciq_mc_logprob and "
+             "eval/citmc_logprob (length-normalized log P scoring) on every "
+             "eval step. Use during STEM mid-train to track discrimination "
+             "gains without needing chat-template compliance.",
+    )
+    parser.add_argument("--mc-logprob-n-sciq", type=int, default=200)
+    parser.add_argument("--mc-logprob-n-citmc", type=int, default=300)
+    parser.add_argument(
         "--long-short-eval-docs", type=int, default=128,
         help="Number of held-out docs for the long/short eval (default 128; "
              "32 was too noisy — one outlier-hard doc bin can make the whole "
@@ -466,6 +476,17 @@ def main():
             short_len=args.long_short_eval_short_len,
             batch_size=args.long_short_eval_batch_size,
             dataset_name=args.long_short_eval_dataset,
+        ))
+
+    if args.mc_logprob_eval:
+        from esperanto_lm.mc_logprob_callback import MCLogprobCallback
+        console.print(f"[bold green]Attaching MC-logprob eval callback:[/] "
+                      f"sciq n={args.mc_logprob_n_sciq}  "
+                      f"citmc n={args.mc_logprob_n_citmc}")
+        trainer.add_callback(MCLogprobCallback(
+            tokenizer=tokenizer,
+            n_sciq=args.mc_logprob_n_sciq,
+            n_citmc=args.mc_logprob_n_citmc,
         ))
 
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
