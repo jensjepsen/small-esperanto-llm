@@ -7,10 +7,10 @@
 #   - +danish-arc:sft:train        — 6740 rows (ARC-Easy + ARC-Challenge, 2 styles each)
 #   - +danish-openbookqa:sft:train — 9914 rows (OBQA main, 2 styles each)
 #
-# Batching preserves v29's step count at 8048 seq:
-#   v29: bs=128 × seq=2048 = 262k tok/step
-#   v31: eff_bs=32 × seq=8048 = 258k tok/step  → same opt-step count
-#   → --batch-size 16 --gradient-accumulation 2 (safe on 80GB w/ FA2 varlen).
+# Batching: DataCollatorWithFlattening packs at collate time, so trainer
+# iterates raw ROWS not packs — same step count as v29 requires same eff_bs.
+#   --batch-size 32 --gradient-accumulation 4 → eff_bs=128 (matches v29)
+# At bs=16 seq=8048 the H100 was at 55% util / 44% mem — bs=32 fills it.
 #
 # Expected ~43-45k steps × 3 epochs on H100 80GB.
 set -euo pipefail
@@ -46,7 +46,7 @@ uv run python -u scripts/train_sft_packed.py \
     jensjepsen/danish-textman-v1 \
     jensjepsen/danish-arc:sft:train \
     jensjepsen/danish-openbookqa:sft:train \
-  --epochs 3 --batch-size 16 --gradient-accumulation 2 \
+  --epochs 3 --batch-size 32 --gradient-accumulation 4 \
   --optim adamw_bnb_8bit \
   --learning-rate 3e-5 --lr-scheduler constant_with_warmup --warmup-steps 500 \
   --save-fraction-of-epoch 0.25 --save-total-limit 2 \
