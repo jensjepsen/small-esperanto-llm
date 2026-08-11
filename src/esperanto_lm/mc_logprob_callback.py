@@ -97,7 +97,8 @@ class MCLogprobCallback(TrainerCallback):
 
     def on_evaluate(self, args, state, control, model=None, metrics=None,
                     **kwargs):
-        if model is None: return
+        if model is None:
+            print("[mc-logprob] SKIP: model is None", flush=True); return
         was_training = model.training
         model.eval()
         try:
@@ -105,6 +106,11 @@ class MCLogprobCallback(TrainerCallback):
             self._load_citmc()
             sciq_acc = round(self._score_items(model, self._sciq), 4)
             cit_acc  = round(self._score_items(model, self._citmc), 4)
+        except Exception as e:
+            import traceback
+            print(f"[mc-logprob] ERROR: {e}", flush=True)
+            traceback.print_exc()
+            return
         finally:
             if was_training: model.train()
         # Also mutate metrics dict (for callers that read it) but print explicitly
