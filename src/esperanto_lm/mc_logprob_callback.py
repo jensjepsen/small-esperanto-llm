@@ -97,13 +97,31 @@ class MCLogprobCallback(TrainerCallback):
 
     def on_evaluate(self, args, state, control, model=None, metrics=None,
                     **kwargs):
-        if model is None or metrics is None: return
+        if model is None: return
         was_training = model.training
         model.eval()
         try:
             self._load_sciq()
             self._load_citmc()
-            metrics["eval/sciq_mc_logprob"] = round(self._score_items(model, self._sciq), 4)
-            metrics["eval/citmc_logprob"] = round(self._score_items(model, self._citmc), 4)
+            sciq_acc = round(self._score_items(model, self._sciq), 4)
+            cit_acc  = round(self._score_items(model, self._citmc), 4)
         finally:
             if was_training: model.train()
+        # Also mutate metrics dict (for callers that read it) but print explicitly
+        # since HF Trainer already logged before on_evaluate runs.
+        if metrics is not None:
+            metrics["eval/sciq_mc_logprob"] = sciq_acc
+            metrics["eval/citmc_logprob"] = cit_acc
+        print(f"[mc-logprob] step={state.global_step}  "
+              f"sciq_mc_logprob={sciq_acc:.4f}  citmc_logprob={cit_acc:.4f}",
+              flush=True)
+        # Push to wandb if active
+        try:
+            import wandb
+            if wandb.run is not None:
+                wandb.log({"eval/sciq_mc_logprob": sciq_acc,
+                           "eval/citmc_logprob": cit_acc,
+                           "train/global_step": state.global_step},
+                          step=state.global_step)
+        except Exception:
+            pass
