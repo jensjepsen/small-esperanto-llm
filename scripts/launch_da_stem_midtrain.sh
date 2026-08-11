@@ -28,6 +28,8 @@ uv run torchrun --nproc_per_node=1 -m esperanto_lm.train \
   --mc-logprob-eval \
   --mc-logprob-n-sciq 1000 \
   --mc-logprob-n-citmc 720 \
+  --mc-logprob-n-arc 1167 \
+  --no-stream \
   --output-dir "${OUTPUT_DIR:-/workspace/runs/da_stem_midtrain_v1}" \
   --tokenizer jensjepsen/danish-tokenizer \
   --pretokenized-dataset \

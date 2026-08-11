@@ -205,6 +205,13 @@ def main():
              "tokenization phase.",
     )
     parser.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="Load --pretokenized-dataset non-streaming (fully materialized). "
+             "Use for small corpora (<100M tokens) — avoids epoch-boundary "
+             "shuffle crashes on single-shard iterable datasets.",
+    )
+    parser.add_argument(
         "--push-to-hub",
         type=str,
         default=None,
@@ -246,6 +253,7 @@ def main():
     )
     parser.add_argument("--mc-logprob-n-sciq", type=int, default=200)
     parser.add_argument("--mc-logprob-n-citmc", type=int, default=300)
+    parser.add_argument("--mc-logprob-n-arc", type=int, default=1167)
     parser.add_argument(
         "--long-short-eval-docs", type=int, default=128,
         help="Number of held-out docs for the long/short eval (default 128; "
@@ -348,11 +356,12 @@ def main():
             console.print(f"[bold green]Loading pre-tokenized (streaming):[/] "
                           f"{len(repos)} repo(s): {repos}")
 
+            streaming = not args.no_stream
             train_parts, test_parts = [], []
             for repo in repos:
-                train_parts.append(_ld(repo, split="train", streaming=True))
+                train_parts.append(_ld(repo, split="train", streaming=streaming))
                 try:
-                    test_parts.append(_ld(repo, split="test", streaming=True))
+                    test_parts.append(_ld(repo, split="test", streaming=streaming))
                 except Exception:
                     console.print(f"  [dim]{repo}: no test split — skipping[/]")
 
@@ -487,6 +496,7 @@ def main():
             tokenizer=tokenizer,
             n_sciq=args.mc_logprob_n_sciq,
             n_citmc=args.mc_logprob_n_citmc,
+            n_arc=args.mc_logprob_n_arc,
         ))
 
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)

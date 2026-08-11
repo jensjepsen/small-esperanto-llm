@@ -39,13 +39,15 @@ def _score_option_batch(model, tok, prompt: str, options: list[str], batch_size:
 
 
 class MCLogprobCallback(TrainerCallback):
-    def __init__(self, tokenizer, n_sciq: int = 200, n_citmc: int = 300):
+    def __init__(self, tokenizer, n_sciq: int = 200, n_citmc: int = 300, n_arc: int = 1167):
         self.tok = tokenizer
         self.n_sciq = n_sciq
         self.n_citmc = n_citmc
+        self.n_arc = n_arc
         self._sciq = None
         self._citmc = None
-        print(f"[mc-logprob] __init__ ok  n_sciq={n_sciq} n_citmc={n_citmc}", flush=True)
+        self._arc = None
+        print(f"[mc-logprob] __init__ ok  n_sciq={n_sciq} n_citmc={n_citmc} n_arc={n_arc}", flush=True)
 
     def _load_sciq(self):
         if self._sciq is not None: return
@@ -87,6 +89,28 @@ class MCLogprobCallback(TrainerCallback):
             if len(items) >= self.n_citmc: break
         self._citmc = items
 
+    def _load_arc(self):
+        if self._arc is not None: return
+        from datasets import load_dataset
+        ds = load_dataset("alexandrainst/m_arc", "da", split="test")
+        items = []
+        for r in ds:
+            opts = {}
+            for ll in "abcde":
+                v = r.get(f"option_{ll}")
+                if v: opts[ll.upper()] = v
+            gold = r["answer"].upper()
+            if gold not in opts: continue
+            options = list(opts.values())
+            gold_text = opts[gold]
+            items.append({
+                "prompt": f"{r['instruction'].strip()}\nSvar: ",
+                "options": options,
+                "gold_idx": options.index(gold_text),
+            })
+            if len(items) >= self.n_arc: break
+        self._arc = items
+
     def _score_items(self, model, items) -> float:
         n_ok = 0
         for it in items:
@@ -106,8 +130,10 @@ class MCLogprobCallback(TrainerCallback):
         try:
             self._load_sciq()
             self._load_citmc()
+            self._load_arc()
             sciq_acc = round(self._score_items(model, self._sciq), 4)
             cit_acc  = round(self._score_items(model, self._citmc), 4)
+            arc_acc  = round(self._score_items(model, self._arc), 4)
         except Exception as e:
             import traceback
             print(f"[mc-logprob] ERROR: {e}", flush=True)
@@ -120,15 +146,16 @@ class MCLogprobCallback(TrainerCallback):
         if metrics is not None:
             metrics["eval/sciq_mc_logprob"] = sciq_acc
             metrics["eval/citmc_logprob"] = cit_acc
+            metrics["eval/arc_logprob"] = arc_acc
         print(f"[mc-logprob] step={state.global_step}  "
-              f"sciq_mc_logprob={sciq_acc:.4f}  citmc_logprob={cit_acc:.4f}",
+              f"sciq={sciq_acc:.4f}  citmc={cit_acc:.4f}  arc={arc_acc:.4f}",
               flush=True)
-        # Push to wandb if active
         try:
             import wandb
             if wandb.run is not None:
                 wandb.log({"eval/sciq_mc_logprob": sciq_acc,
                            "eval/citmc_logprob": cit_acc,
+                           "eval/arc_logprob": arc_acc,
                            "train/global_step": state.global_step},
                           step=state.global_step)
         except Exception:
