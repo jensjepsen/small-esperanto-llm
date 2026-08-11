@@ -45,6 +45,7 @@ class MCLogprobCallback(TrainerCallback):
         self.n_citmc = n_citmc
         self._sciq = None
         self._citmc = None
+        print(f"[mc-logprob] __init__ ok  n_sciq={n_sciq} n_citmc={n_citmc}", flush=True)
 
     def _load_sciq(self):
         if self._sciq is not None: return
@@ -97,6 +98,7 @@ class MCLogprobCallback(TrainerCallback):
 
     def on_evaluate(self, args, state, control, model=None, metrics=None,
                     **kwargs):
+        print(f"[mc-logprob] on_evaluate ENTER step={state.global_step}  model={type(model).__name__ if model else None}", flush=True)
         if model is None:
             print("[mc-logprob] SKIP: model is None", flush=True); return
         was_training = model.training
