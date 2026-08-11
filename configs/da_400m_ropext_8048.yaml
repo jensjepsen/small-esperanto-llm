@@ -1,0 +1,43 @@
+model:
+  # Extend from ropext2048-v1 (already at 2048) → 8048.
+  # rope_theta stays at LlamaConfig level; --rope-extend-theta bumps at load.
+  vocab_size: 16000
+  hidden_size: 1536
+  num_hidden_layers: 16
+  num_attention_heads: 24
+  num_key_value_heads: 4
+  intermediate_size: 4096
+  max_position_embeddings: 8048
+  rms_norm_eps: 1.0e-5
+  tie_word_embeddings: true
+
+training:
+  # RoPE-extension continued pretrain 2048 → 8048 on 1×H100 80GB.
+  # For fun / secondary sanity check alongside sciq/citmc/arc MC-logprob eval.
+  #
+  # 8 × 8048 = 64,384 tok/step  → 2000 steps ≈ 130M tokens
+  # bs=8 with flash-attn2 + no grad-ckpt fits in 80GB.
+  # Wall: ~30-45 min.
+  #
+  # Recipe reuses ropext2048 pattern (theta bump, low LR).
+  max_steps: 2000
+  per_device_train_batch_size: 8
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 1
+  warmup_steps: 100
+  lr_scheduler_type: constant_with_warmup
+  learning_rate: 3.0e-5
+  weight_decay: 0.1
+  fp16: true
+  bf16: false
+  max_grad_norm: 1.0
+  eval_steps: 100
+  save_steps: 200
+  save_total_limit: 3
+  logging_steps: 25
+  dataloader_num_workers: 8
+  dataloader_pin_memory: true
+  group_by_length: false
+  optim: adamw_8bit
+  torch_compile: false  # Liger FLCE dynamo crash + rope-extend module
+  gradient_checkpointing: false
