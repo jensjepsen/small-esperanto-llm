@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import re
 import torch
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
@@ -29,6 +30,8 @@ from trl import GRPOConfig, GRPOTrainer
 from esperanto_lm.rl_rewards import (
     reward_gsm8k, reward_ifeval, _extract_num, _norm_num,
 )
+
+_NUM_RE_INT = re.compile(r"-?\d[\d,]*\.?\d*")
 
 
 # transformers 4.55+ calls _get_train_sampler(dataset); TRL <=1.10 still
@@ -48,11 +51,14 @@ class GreedyEvalCallback(TrainerCallback):
     Reports `eval_greedy_pass@1` — apples-to-apples with SFT downstream eval,
     unlike the TRL built-in sampled eval_reward."""
 
-    def __init__(self, tokenizer, prompts_and_gold, task,
+    def __init__(self, tokenizer, items, task,
                  every_n_steps: int, max_new_tokens: int = 256,
                  batch_size: int = 16):
+        """items schema:
+             gsm8k: list of (prompt, gold_answer_string)
+             ifeval: list of (prompt, constraints_list, params_json_string)"""
         self.tok = tokenizer
-        self.items = prompts_and_gold  # list of (prompt_str, gold_str_or_meta)
+        self.items = items
         self.task = task
         self.every = every_n_steps
         self.max_new = max_new_tokens
@@ -77,7 +83,7 @@ class GreedyEvalCallback(TrainerCallback):
         outs = []
         try:
             for i in range(0, len(self.items), self.bs):
-                batch = [p for p, _ in self.items[i:i + self.bs]]
+                batch = [row[0] for row in self.items[i:i + self.bs]]
                 enc = tok(batch, return_tensors="pt", padding=True,
                           add_special_tokens=False,
                           return_token_type_ids=False).to(model.device)
@@ -92,25 +98,44 @@ class GreedyEvalCallback(TrainerCallback):
                 plen = enc["input_ids"].shape[1]
                 for row in gen:
                     outs.append(tok.decode(row[plen:], skip_special_tokens=True).strip())
+                done = min(i + self.bs, len(self.items))
+                # running metric
+                if self.task == "gsm8k":
+                    n_ok = sum(1 for o, (_, g) in zip(outs, self.items[:done])
+                               if _norm_num(_extract_num(o)) is not None
+                               and _norm_num(_extract_num(o)) == _norm_num(g if g and _NUM_RE_INT.fullmatch(g.strip()) else _extract_num(g)))
+                    print(f"  [greedy-eval] {done}/{len(self.items)} acc={n_ok/done:.4f}", flush=True)
+                else:  # ifeval
+                    scores_so_far = reward_ifeval(
+                        outs, [row[1] for row in self.items[:done]],
+                        [row[2] for row in self.items[:done]])
+                    print(f"  [greedy-eval] {done}/{len(self.items)} mean_pass={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
         finally:
             tok.padding_side = prev_side
             tok.pad_token = prev_pad
-        # Score
-        n_ok = 0
+        # Final metric
         if self.task == "gsm8k":
+            n_ok = 0
             for o, (_, gold) in zip(outs, self.items):
                 pred = _norm_num(_extract_num(o))
-                target = _norm_num(gold if gold and gold.strip().replace('.', '').replace('-', '').replace(',', '').isdigit()
+                target = _norm_num(gold if gold and _NUM_RE_INT.fullmatch((gold or "").strip())
                                    else _extract_num(gold))
                 if pred is not None and pred == target:
                     n_ok += 1
-        acc = n_ok / max(1, len(self.items))
+            acc = n_ok / max(1, len(self.items))
+        else:  # ifeval
+            scores = reward_ifeval(outs,
+                                   [row[1] for row in self.items],
+                                   [row[2] for row in self.items])
+            acc = sum(scores) / max(1, len(scores))
         print(f"  [greedy-eval] step={state.global_step} {self.task}={100*acc:.2f}%",
               flush=True)
         try:
             import wandb
             if wandb.run is not None:
-                wandb.log({"eval_greedy_pass@1": acc,
+                key = ("eval_greedy_gsm8k_pass@1" if self.task == "gsm8k"
+                       else "eval_greedy_ifeval_mean_pass")
+                wandb.log({key: acc,
                            "train/global_step": state.global_step},
                           step=state.global_step)
         except Exception:
@@ -295,11 +320,15 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
     )
-    if args.greedy_eval_steps > 0 and args.task == "gsm8k":
-        gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
-        items = [(r["prompt"], r["gold"]) for r in gds]
+    if args.greedy_eval_steps > 0:
+        if args.task == "gsm8k":
+            gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
+            g_items = [(r["prompt"], r["gold"]) for r in gds]
+        else:  # ifeval
+            gds = build_ifeval_dataset("eval", max_rows=args.greedy_eval_max_rows)
+            g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
         trainer.add_callback(GreedyEvalCallback(
-            tokenizer=tok, prompts_and_gold=items, task="gsm8k",
+            tokenizer=tok, items=g_items, task=args.task,
             every_n_steps=args.greedy_eval_steps, max_new_tokens=256,
             batch_size=args.batch_size,
         ))
