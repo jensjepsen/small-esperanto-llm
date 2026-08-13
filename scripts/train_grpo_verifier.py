@@ -237,6 +237,24 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
+    # TRL builds rollout GenerationConfig from tokenizer.eos_token_id (single
+    # int). SFT models never emit their default eos (e.g. </s>); the correct
+    # stop is <|end|>. Without this swap every rollout runs to
+    # max_completion_length, torching gen time and reward signal.
+    # Also collect <|user|> as an extra chat stop (catches the model spawning
+    # a fake follow-up turn mid-completion for reward farming).
+    chat_stops = []
+    end_id = tok.convert_tokens_to_ids("<|end|>")
+    if end_id is not None and end_id != tok.unk_token_id:
+        original_eos = tok.eos_token
+        tok.eos_token = "<|end|>"
+        chat_stops.append(end_id)
+        print(f"tok.eos_token: {original_eos!r} -> '<|end|>' (id={end_id})",
+              flush=True)
+    user_id = tok.convert_tokens_to_ids("<|user|>")
+    if user_id is not None and user_id != tok.unk_token_id:
+        chat_stops.append(user_id)
+
     print(f"building dataset for task={args.task}...", flush=True)
     eval_ds = None
     if args.task == "gsm8k":
@@ -334,6 +352,17 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
     )
+    # Rebuild trainer.generation_config with the full chat_stops list so
+    # rollouts stop on any of <|end|> / <|user|>. TRL only puts a single
+    # eos_token_id in the GenerationConfig by default.
+    if len(chat_stops) > 1:
+        from transformers import GenerationConfig
+        gc = trainer.generation_config
+        cfg_gen = gc.to_dict()
+        cfg_gen["eos_token_id"] = chat_stops
+        trainer.generation_config = GenerationConfig(**cfg_gen)
+    print(f"trainer.generation_config.eos_token_id = "
+          f"{trainer.generation_config.eos_token_id}", flush=True)
     if args.greedy_eval_steps > 0:
         if args.task == "gsm8k":
             gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
@@ -343,7 +372,8 @@ def main():
             g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
         trainer.add_callback(GreedyEvalCallback(
             tokenizer=tok, items=g_items, task=args.task,
-            every_n_steps=args.greedy_eval_steps, max_new_tokens=256,
+            every_n_steps=args.greedy_eval_steps,
+            max_new_tokens=args.max_completion_length,
             batch_size=args.batch_size,
         ))
     trainer.train()
