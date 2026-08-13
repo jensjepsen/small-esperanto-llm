@@ -23,16 +23,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import re
 import torch
-# torch 2.5.x has no sm_120 kernels; RTX 5090 crashes on torch.isin
-# (called from transformers.generation._prepare_special_tokens for the
-# eos-vs-pad check). Route isin through CPU — called O(1) per generate(),
-# perf cost is negligible.
-_orig_isin = torch.isin
-def _isin_cpu_safe(elements, test_elements, *args, **kwargs):
-    if isinstance(elements, torch.Tensor) and elements.is_cuda:
-        return _orig_isin(elements.cpu(), test_elements.cpu(), *args, **kwargs).to(elements.device)
-    return _orig_isin(elements, test_elements, *args, **kwargs)
-torch.isin = _isin_cpu_safe
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
@@ -244,25 +234,26 @@ def main():
     tok_path = args.tokenizer or args.checkpoint
     print(f"loading tokenizer {tok_path}", flush=True)
     tok = AutoTokenizer.from_pretrained(tok_path)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
 
     # TRL builds rollout GenerationConfig from tokenizer.eos_token_id (single
     # int). SFT models never emit their default eos (e.g. </s>); the correct
     # stop is <|end|>. Without this swap every rollout runs to
     # max_completion_length, torching gen time and reward signal.
-    # We ALSO set pad_token to <|end|> so pad==eos — transformers' generate()
-    # then skips its eos-vs-pad isin/lt checks, which crash on RTX 5090
-    # (sm_120 kernels missing in torch 2.5.1+cu121).
+    # Also collect <|user|> as an extra chat stop (catches the model spawning
+    # a fake follow-up turn mid-completion for reward farming).
+    chat_stops = []
     end_id = tok.convert_tokens_to_ids("<|end|>")
     if end_id is not None and end_id != tok.unk_token_id:
         original_eos = tok.eos_token
         tok.eos_token = "<|end|>"
-        tok.pad_token = "<|end|>"
+        chat_stops.append(end_id)
         print(f"tok.eos_token: {original_eos!r} -> '<|end|>' (id={end_id})",
               flush=True)
-        print(f"tok.pad_token also set to '<|end|>' (skip transformers' eos-vs-pad checks)",
-              flush=True)
-    elif tok.pad_token is None:
-        tok.pad_token = tok.eos_token
+    user_id = tok.convert_tokens_to_ids("<|user|>")
+    if user_id is not None and user_id != tok.unk_token_id:
+        chat_stops.append(user_id)
 
     print(f"building dataset for task={args.task}...", flush=True)
     eval_ds = None
@@ -361,13 +352,15 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
     )
-    # NOTE: we intentionally do NOT rebuild trainer.generation_config with
-    # multi-value eos_token_id here. Passing a list triggers transformers'
-    # `torch.isin(eos_tensor, pad_tensor)` check which needs a CUDA kernel
-    # that isn't in the RTX 5090 (sm_120) build. Single-eos (<|end|>) from
-    # the tokenizer swap above is enough for correct stopping; multi-stop
-    # <|user|> for anti-reward-farming is a TODO once the pytorch is on a
-    # Blackwell-compatible build.
+    # Rebuild trainer.generation_config with the full chat_stops list so
+    # rollouts stop on any of <|end|> / <|user|>. TRL only puts a single
+    # eos_token_id in the GenerationConfig by default.
+    if len(chat_stops) > 1:
+        from transformers import GenerationConfig
+        gc = trainer.generation_config
+        cfg_gen = gc.to_dict()
+        cfg_gen["eos_token_id"] = chat_stops
+        trainer.generation_config = GenerationConfig(**cfg_gen)
     print(f"trainer.generation_config.eos_token_id = "
           f"{trainer.generation_config.eos_token_id}", flush=True)
     if args.greedy_eval_steps > 0:
