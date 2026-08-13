@@ -389,6 +389,13 @@ def main():
     ap.add_argument("--beta", type=float, default=0.04,
                     help="KL coefficient vs reference policy")
     ap.add_argument("--save-steps", type=int, default=500)
+    ap.add_argument("--save-align-eval", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Force save_steps = greedy_eval_steps so every "
+                         "saved ckpt has a matching wandb-logged eval "
+                         "point (and vice-versa) for apples-to-apples "
+                         "offline reruns. ON by default; pass "
+                         "--no-save-align-eval to disable.")
     ap.add_argument("--eval-steps", type=int, default=0,
                     help="If >0, eval on test split every N steps.")
     ap.add_argument("--eval-max-rows", type=int, default=200,
@@ -422,6 +429,14 @@ def main():
     ap.add_argument("--max-rows", type=int, default=0,
                     help="Cap training rows (0=all). Handy for smoke tests.")
     args = ap.parse_args()
+
+    # Post-parse: apply save/eval alignment if requested
+    if args.save_align_eval and args.greedy_eval_steps > 0:
+        if args.save_steps != args.greedy_eval_steps:
+            print(f"[save-align-eval] overriding save_steps "
+                  f"{args.save_steps} -> {args.greedy_eval_steps}",
+                  flush=True)
+            args.save_steps = args.greedy_eval_steps
 
     tok_path = args.tokenizer or args.checkpoint
     print(f"loading tokenizer {tok_path}", flush=True)
