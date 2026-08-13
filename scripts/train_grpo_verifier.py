@@ -27,6 +27,18 @@ from trl import GRPOConfig, GRPOTrainer
 
 from esperanto_lm.rl_rewards import reward_gsm8k, reward_ifeval
 
+
+# transformers 4.55+ calls _get_train_sampler(dataset); TRL <=1.10 still
+# overrides without the arg. Shim: accept & ignore, use the internal path.
+_orig_sampler = GRPOTrainer._get_train_sampler
+
+
+def _patched_sampler(self, *args, **kwargs):
+    return _orig_sampler(self)
+
+
+GRPOTrainer._get_train_sampler = _patched_sampler
+
 USER = "<|user|>"
 ASST = "<|assistant|>"
 END = "<|end|>"
