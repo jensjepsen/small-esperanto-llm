@@ -428,6 +428,14 @@ def main():
     ap.add_argument("--wandb-run-name", default=None)
     ap.add_argument("--max-rows", type=int, default=0,
                     help="Cap training rows (0=all). Handy for smoke tests.")
+    ap.add_argument("--resume", default=None, nargs="?", const="latest",
+                    help="Resume from a saved ckpt. Value can be a local dir "
+                         "(preloaded via `huggingface-cli download`) or "
+                         "'latest' to autodetect the newest ckpt in "
+                         "--output-dir. Passes through to HF Trainer's "
+                         "resume_from_checkpoint. Pair with "
+                         "WANDB_RUN_ID=... WANDB_RESUME=allow to keep the "
+                         "wandb chart continuous.")
     args = ap.parse_args()
 
     # Post-parse: apply save/eval alignment if requested
@@ -607,7 +615,14 @@ def main():
                 max_new_tokens=args.max_completion_length,
                 batch_size=args.batch_size,
             ))
-    trainer.train()
+    resume = args.resume
+    if resume == "latest":
+        resume = True  # HF Trainer autodetects newest ckpt in output_dir
+    if resume:
+        print(f"resuming from {resume!r}", flush=True)
+        trainer.train(resume_from_checkpoint=resume)
+    else:
+        trainer.train()
     trainer.save_model(f"{args.output_dir}/final")
 
 
