@@ -244,26 +244,25 @@ def main():
     tok_path = args.tokenizer or args.checkpoint
     print(f"loading tokenizer {tok_path}", flush=True)
     tok = AutoTokenizer.from_pretrained(tok_path)
-    if tok.pad_token is None:
-        tok.pad_token = tok.eos_token
 
     # TRL builds rollout GenerationConfig from tokenizer.eos_token_id (single
     # int). SFT models never emit their default eos (e.g. </s>); the correct
     # stop is <|end|>. Without this swap every rollout runs to
     # max_completion_length, torching gen time and reward signal.
-    # Also collect <|user|> as an extra chat stop (catches the model spawning
-    # a fake follow-up turn mid-completion for reward farming).
-    chat_stops = []
+    # We ALSO set pad_token to <|end|> so pad==eos — transformers' generate()
+    # then skips its eos-vs-pad isin/lt checks, which crash on RTX 5090
+    # (sm_120 kernels missing in torch 2.5.1+cu121).
     end_id = tok.convert_tokens_to_ids("<|end|>")
     if end_id is not None and end_id != tok.unk_token_id:
         original_eos = tok.eos_token
         tok.eos_token = "<|end|>"
-        chat_stops.append(end_id)
+        tok.pad_token = "<|end|>"
         print(f"tok.eos_token: {original_eos!r} -> '<|end|>' (id={end_id})",
               flush=True)
-    user_id = tok.convert_tokens_to_ids("<|user|>")
-    if user_id is not None and user_id != tok.unk_token_id:
-        chat_stops.append(user_id)
+        print(f"tok.pad_token also set to '<|end|>' (skip transformers' eos-vs-pad checks)",
+              flush=True)
+    elif tok.pad_token is None:
+        tok.pad_token = tok.eos_token
 
     print(f"building dataset for task={args.task}...", flush=True)
     eval_ds = None
