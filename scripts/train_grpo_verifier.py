@@ -47,6 +47,109 @@ def _patched_sampler(self, *args, **kwargs):
 GRPOTrainer._get_train_sampler = _patched_sampler
 
 
+class IFEvalDACallback(TrainerCallback):
+    """Step-triggered greedy eval on the full ifeval-da benchmark (541 rows).
+    Reports the standard 4-way IFEval metric split: prompt-strict, prompt-loose,
+    inst-strict, inst-loose. Fires every `every_n_steps`."""
+
+    def __init__(self, tokenizer, every_n_steps: int = 125,
+                 max_new_tokens: int = 512, batch_size: int = 16):
+        import time as _time
+        self.tok = tokenizer
+        self.every = int(every_n_steps)
+        self.max_new = max_new_tokens
+        self.bs = batch_size
+        self._time = _time
+        self._pending = None
+        # Precompute prompts + instruction objects once (541 rows).
+        from eval_ifeval_da import build_instructions as _bi  # noqa: E402
+        ds = load_dataset("danish-foundation-models/ifeval-da", split="train")
+        self._prompts = [f"{USER}{r['prompt']}{END}{ASST}" for r in ds]
+        self._insts = [_bi(r) for r in ds]
+
+    def on_log(self, args, state, control, logs=None, **kw):
+        if self._pending is not None and logs is not None:
+            logs.update(self._pending)
+            self._pending = None
+
+    def on_step_end(self, args, state, control, model=None, **kw):
+        if model is None or self.every <= 0:
+            return
+        if state.global_step == 0 or state.global_step % self.every != 0:
+            return
+        from eval_ifeval_da import score_row as _score  # noqa: E402
+        model.eval()
+        tok = self.tok
+        prev_side = tok.padding_side
+        prev_pad = tok.pad_token
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token
+        tok.padding_side = "left"
+        eos_ids = [tok.eos_token_id]
+        end_id = tok.convert_tokens_to_ids("<|end|>")
+        if end_id is not None and end_id != tok.unk_token_id:
+            eos_ids.append(end_id)
+        t0 = self._time.time()
+        responses: list[str] = []
+        try:
+            for i in range(0, len(self._prompts), self.bs):
+                batch = self._prompts[i:i + self.bs]
+                enc = tok(batch, return_tensors="pt", padding=True,
+                          add_special_tokens=False,
+                          return_token_type_ids=False).to(model.device)
+                with torch.no_grad():
+                    gen = model.generate(
+                        input_ids=enc["input_ids"],
+                        attention_mask=enc["attention_mask"],
+                        max_new_tokens=self.max_new,
+                        do_sample=False, num_beams=1,
+                        pad_token_id=tok.pad_token_id,
+                        eos_token_id=eos_ids, repetition_penalty=1.1)
+                plen = enc["input_ids"].shape[1]
+                for row in gen:
+                    responses.append(tok.decode(row[plen:], skip_special_tokens=True).strip())
+                done = len(responses)
+                if done % 128 == 0 or done == len(self._prompts):
+                    print(f"  [ifeval-da] step={state.global_step} gen {done}/{len(self._prompts)}",
+                          flush=True)
+        finally:
+            tok.padding_side = prev_side
+            tok.pad_token = prev_pad
+        # Score
+        p_strict = p_loose = 0
+        i_strict = i_loose = 0
+        i_tot = 0
+        rows_scored = 0
+        for resp, insts in zip(responses, self._insts):
+            if not insts:
+                continue
+            s, l = _score(resp, insts)
+            i_tot += len(insts)
+            i_strict += sum(s); i_loose += sum(l)
+            if all(s): p_strict += 1
+            if all(l): p_loose += 1
+            rows_scored += 1
+        if rows_scored == 0 or i_tot == 0:
+            model.train()
+            return
+        m = {
+            "eval_ifeval_da_prompt_strict": p_strict / rows_scored,
+            "eval_ifeval_da_prompt_loose": p_loose / rows_scored,
+            "eval_ifeval_da_inst_strict": i_strict / i_tot,
+            "eval_ifeval_da_inst_loose": i_loose / i_tot,
+        }
+        dt = self._time.time() - t0
+        print(f"  [ifeval-da] step={state.global_step}  "
+              f"prompt-strict={100*m['eval_ifeval_da_prompt_strict']:.2f}%  "
+              f"prompt-loose={100*m['eval_ifeval_da_prompt_loose']:.2f}%  "
+              f"inst-strict={100*m['eval_ifeval_da_inst_strict']:.2f}%  "
+              f"inst-loose={100*m['eval_ifeval_da_inst_loose']:.2f}%  "
+              f"({dt:.0f}s)", flush=True)
+        self._pending = m
+        model.train()
+        control.should_log = True
+
+
 class GreedyEvalCallback(TrainerCallback):
     """Every N steps, run greedy pass@1 on a fixed test-set subset and log.
     Reports `eval_greedy_pass@1` — apples-to-apples with SFT downstream eval,
@@ -452,26 +555,31 @@ def main():
         eval_task = args.greedy_eval_task
         if eval_task == "auto":
             eval_task = "ifeval-da" if args.task == "combined" else "same"
-        if args.task == "gsm8k":
-            gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
-            g_items = [(r["prompt"], r["gold"]) for r in gds]
-        elif eval_task == "ifeval-da":
-            gds = build_ifeval_da_dataset(max_rows=args.greedy_eval_max_rows)
-            g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
-        elif args.task == "combined":
-            # 'same' — greedy eval on a slice of the combined train set
-            gds = build_combined_dataset(args.combined_source,
-                                         max_rows=args.greedy_eval_max_rows)
-            g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
-        else:  # ifeval task, 'same' eval
-            gds = build_ifeval_dataset("eval", max_rows=args.greedy_eval_max_rows)
-            g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
-        trainer.add_callback(GreedyEvalCallback(
-            tokenizer=tok, items=g_items, task=args.task,
-            every_n_steps=args.greedy_eval_steps,
-            max_new_tokens=args.max_completion_length,
-            batch_size=args.batch_size,
-        ))
+        if eval_task == "ifeval-da":
+            # Full 4-metric benchmark callback (541 rows, prompt/inst strict/loose)
+            trainer.add_callback(IFEvalDACallback(
+                tokenizer=tok,
+                every_n_steps=args.greedy_eval_steps,
+                max_new_tokens=args.max_completion_length,
+                batch_size=args.batch_size,
+            ))
+        else:
+            if args.task == "gsm8k":
+                gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
+                g_items = [(r["prompt"], r["gold"]) for r in gds]
+            elif args.task == "combined":
+                gds = build_combined_dataset(args.combined_source,
+                                             max_rows=args.greedy_eval_max_rows)
+                g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
+            else:  # ifeval task
+                gds = build_ifeval_dataset("eval", max_rows=args.greedy_eval_max_rows)
+                g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
+            trainer.add_callback(GreedyEvalCallback(
+                tokenizer=tok, items=g_items, task=args.task,
+                every_n_steps=args.greedy_eval_steps,
+                max_new_tokens=args.max_completion_length,
+                batch_size=args.batch_size,
+            ))
     trainer.train()
     trainer.save_model(f"{args.output_dir}/final")
 
