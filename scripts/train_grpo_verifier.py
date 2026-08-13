@@ -214,6 +214,16 @@ def main():
                          "loss + KL + optimizer noise. Doesn't save fwd/bwd "
                          "compute (TRL still generates them) but avoids the "
                          "noise-only Adam step. Ported from train_grpo.py.")
+    ap.add_argument("--use-vllm-server", action="store_true",
+                    help="Use a separate vLLM server for rollouts (huge "
+                         "speedup — ~10-20× rollout throughput). Requires "
+                         "a running `trl vllm-serve` on a second GPU. See "
+                         "scripts/launch_grpo_vllm.sh for the 2-GPU launcher.")
+    ap.add_argument("--vllm-host", default="localhost")
+    ap.add_argument("--vllm-port", type=int, default=8000)
+    ap.add_argument("--vllm-gpu-memory-utilization", type=float, default=0.55,
+                    help="GPU mem fraction for vLLM server (only used if "
+                         "trainer + server share a GPU; irrelevant with 2 GPUs).")
     ap.add_argument("--logging-steps", type=int, default=5)
     ap.add_argument("--wandb-project", default="danish-lm-grpo")
     ap.add_argument("--wandb-run-name", default=None)
@@ -268,6 +278,10 @@ def main():
         bf16=True,
         optim="adamw_bnb_8bit",
         remove_unused_columns=False,
+        use_vllm=args.use_vllm_server,
+        vllm_server_host=args.vllm_host,
+        vllm_server_port=args.vllm_port,
+        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
     )
 
     print(f"loading model {args.checkpoint}...", flush=True)
