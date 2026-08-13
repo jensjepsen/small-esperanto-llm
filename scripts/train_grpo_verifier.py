@@ -21,11 +21,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import torch
 from datasets import Dataset, load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 
-from esperanto_lm.rl_rewards import reward_gsm8k, reward_ifeval
+from esperanto_lm.rl_rewards import (
+    reward_gsm8k, reward_ifeval, _extract_num, _norm_num,
+)
 
 
 # transformers 4.55+ calls _get_train_sampler(dataset); TRL <=1.10 still
@@ -38,6 +41,81 @@ def _patched_sampler(self, *args, **kwargs):
 
 
 GRPOTrainer._get_train_sampler = _patched_sampler
+
+
+class GreedyEvalCallback(TrainerCallback):
+    """Every N steps, run greedy pass@1 on a fixed test-set subset and log.
+    Reports `eval_greedy_pass@1` — apples-to-apples with SFT downstream eval,
+    unlike the TRL built-in sampled eval_reward."""
+
+    def __init__(self, tokenizer, prompts_and_gold, task,
+                 every_n_steps: int, max_new_tokens: int = 256,
+                 batch_size: int = 16):
+        self.tok = tokenizer
+        self.items = prompts_and_gold  # list of (prompt_str, gold_str_or_meta)
+        self.task = task
+        self.every = every_n_steps
+        self.max_new = max_new_tokens
+        self.bs = batch_size
+
+    def on_step_end(self, args, state, control, model=None, **kw):
+        if self.every <= 0 or state.global_step % self.every != 0 or state.global_step == 0:
+            return
+        if model is None:
+            return
+        model.eval()
+        tok = self.tok
+        prev_side = tok.padding_side
+        prev_pad = tok.pad_token
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token
+        tok.padding_side = "left"
+        eos_ids = [tok.eos_token_id]
+        end_id = tok.convert_tokens_to_ids("<|end|>")
+        if end_id is not None and end_id != tok.unk_token_id:
+            eos_ids.append(end_id)
+        outs = []
+        try:
+            for i in range(0, len(self.items), self.bs):
+                batch = [p for p, _ in self.items[i:i + self.bs]]
+                enc = tok(batch, return_tensors="pt", padding=True,
+                          add_special_tokens=False,
+                          return_token_type_ids=False).to(model.device)
+                with torch.no_grad():
+                    gen = model.generate(
+                        input_ids=enc["input_ids"],
+                        attention_mask=enc["attention_mask"],
+                        max_new_tokens=self.max_new,
+                        do_sample=False, num_beams=1,
+                        pad_token_id=tok.pad_token_id,
+                        eos_token_id=eos_ids, repetition_penalty=1.1)
+                plen = enc["input_ids"].shape[1]
+                for row in gen:
+                    outs.append(tok.decode(row[plen:], skip_special_tokens=True).strip())
+        finally:
+            tok.padding_side = prev_side
+            tok.pad_token = prev_pad
+        # Score
+        n_ok = 0
+        if self.task == "gsm8k":
+            for o, (_, gold) in zip(outs, self.items):
+                pred = _norm_num(_extract_num(o))
+                target = _norm_num(gold if gold and gold.strip().replace('.', '').replace('-', '').replace(',', '').isdigit()
+                                   else _extract_num(gold))
+                if pred is not None and pred == target:
+                    n_ok += 1
+        acc = n_ok / max(1, len(self.items))
+        print(f"  [greedy-eval] step={state.global_step} {self.task}={100*acc:.2f}%",
+              flush=True)
+        try:
+            import wandb
+            if wandb.run is not None:
+                wandb.log({"eval_greedy_pass@1": acc,
+                           "train/global_step": state.global_step},
+                          step=state.global_step)
+        except Exception:
+            pass
+        model.train()
 
 USER = "<|user|>"
 ASST = "<|assistant|>"
@@ -98,6 +176,19 @@ def main():
                     help="If >0, eval on test split every N steps.")
     ap.add_argument("--eval-max-rows", type=int, default=200,
                     help="Cap test rows for periodic eval.")
+    ap.add_argument("--greedy-eval-steps", type=int, default=0,
+                    help="If >0, run greedy pass@1 (deterministic, single-"
+                         "sample) on test rows every N steps. Logged as "
+                         "eval_greedy_pass@1. Apples-to-apples with SFT "
+                         "downstream eval, unlike TRL's sampled eval_reward.")
+    ap.add_argument("--greedy-eval-max-rows", type=int, default=200)
+    ap.add_argument("--skip-zero-adv", action="store_true",
+                    help="Zero out completion_mask for groups where all "
+                         "rollouts scored the same reward (std==0 → "
+                         "advantage==0). Excludes them cleanly from the "
+                         "loss + KL + optimizer noise. Doesn't save fwd/bwd "
+                         "compute (TRL still generates them) but avoids the "
+                         "noise-only Adam step. Ported from train_grpo.py.")
     ap.add_argument("--logging-steps", type=int, default=5)
     ap.add_argument("--wandb-project", default="danish-lm-grpo")
     ap.add_argument("--wandb-run-name", default=None)
@@ -155,6 +246,47 @@ def main():
     )
 
     print(f"loading model {args.checkpoint}...", flush=True)
+    if args.skip_zero_adv:
+        # Zero-out completion_mask for groups where reward.std()==0 (all
+        # rollouts scored the same → advantage=0 → no gradient signal).
+        # Excludes them from loss + KL + Adam. Doesn't save fwd/bwd compute
+        # (TRL still generates them) but avoids the noise-only optimizer step.
+        # Ported from scripts/train_grpo.py (Esperanto verifier trainer).
+        import torch as _t
+        _orig_prepare = GRPOTrainer._prepare_inputs
+
+        def _prepare_with_skip(self, inputs):
+            result = _orig_prepare(self, inputs)
+            adv = result.get("advantages")
+            cm = result.get("completion_mask")
+            mode = "eval" if self.control.should_evaluate else "train"
+            self._metrics.setdefault(mode, {}).setdefault("skip_frac", [])
+            if adv is None or cm is None:
+                self._metrics[mode]["skip_frac"].append(0.0)
+                return result
+            n_gen = self.num_generations
+            n_local = adv.shape[0]
+            if n_local < n_gen:
+                self._metrics[mode]["skip_frac"].append(0.0)
+                return result
+            n_groups = n_local // n_gen
+            adv_g = adv[:n_groups * n_gen].view(n_groups, n_gen)
+            active = (adv_g.abs() > 1e-6).any(dim=1)
+            frac_skipped = 1.0 - active.float().mean().item()
+            self._metrics[mode]["skip_frac"].append(frac_skipped)
+            if bool(active.all()) or not bool(active.any()):
+                return result
+            sample_mask = active.repeat_interleave(n_gen).to(adv.device)
+            if sample_mask.numel() < n_local:
+                pad = _t.zeros(n_local - sample_mask.numel(),
+                               dtype=_t.bool, device=adv.device)
+                sample_mask = _t.cat([sample_mask, pad])
+            result["completion_mask"] = cm * sample_mask.to(cm.dtype).unsqueeze(1)
+            return result
+
+        GRPOTrainer._prepare_inputs = _prepare_with_skip
+        print("skip-zero-adv: enabled (masking completion_mask on zero-std groups)", flush=True)
+
     trainer = GRPOTrainer(
         model=args.checkpoint,
         processing_class=tok,
@@ -163,6 +295,14 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
     )
+    if args.greedy_eval_steps > 0 and args.task == "gsm8k":
+        gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
+        items = [(r["prompt"], r["gold"]) for r in gds]
+        trainer.add_callback(GreedyEvalCallback(
+            tokenizer=tok, prompts_and_gold=items, task="gsm8k",
+            every_n_steps=args.greedy_eval_steps, max_new_tokens=256,
+            batch_size=args.batch_size,
+        ))
     trainer.train()
     trainer.save_model(f"{args.output_dir}/final")
 
