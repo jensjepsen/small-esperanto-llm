@@ -63,6 +63,12 @@ class GreedyEvalCallback(TrainerCallback):
         self.every = every_n_steps
         self.max_new = max_new_tokens
         self.bs = batch_size
+        self._pending = None  # metric to inject on next on_log
+
+    def on_log(self, args, state, control, logs=None, **kw):
+        if self._pending is not None and logs is not None:
+            logs.update(self._pending)
+            self._pending = None
 
     def on_step_end(self, args, state, control, model=None, **kw):
         if self.every <= 0 or state.global_step % self.every != 0 or state.global_step == 0:
@@ -130,17 +136,11 @@ class GreedyEvalCallback(TrainerCallback):
             acc = sum(scores) / max(1, len(scores))
         print(f"  [greedy-eval] step={state.global_step} {self.task}={100*acc:.2f}%",
               flush=True)
-        try:
-            import wandb
-            if wandb.run is not None:
-                key = ("eval_greedy_gsm8k_pass@1" if self.task == "gsm8k"
-                       else "eval_greedy_ifeval_mean_pass")
-                wandb.log({key: acc,
-                           "train/global_step": state.global_step},
-                          step=state.global_step)
-        except Exception:
-            pass
+        key = ("eval_greedy_gsm8k_pass@1" if self.task == "gsm8k"
+               else "eval_greedy_ifeval_mean_pass")
+        self._pending = {key: acc}
         model.train()
+        control.should_log = True  # trigger on_log so _pending gets flushed
 
 USER = "<|user|>"
 ASST = "<|assistant|>"
