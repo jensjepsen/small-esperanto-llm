@@ -61,6 +61,7 @@ class IFEvalDACallback(TrainerCallback):
         self.bs = batch_size
         self._time = _time
         self._pending = None
+        self._trainer = None  # set by main() after trainer is built
         # Precompute prompts + instruction objects once (541 rows).
         from eval_ifeval_da import build_instructions as _bi  # noqa: E402
         ds = load_dataset("danish-foundation-models/ifeval-da", split="train")
@@ -145,7 +146,16 @@ class IFEvalDACallback(TrainerCallback):
               f"inst-strict={100*m['eval_ifeval_da_inst_strict']:.2f}%  "
               f"inst-loose={100*m['eval_ifeval_da_inst_loose']:.2f}%  "
               f"({dt:.0f}s)", flush=True)
-        self._pending = m
+        # Route metrics through the trainer's own logging path so wandb
+        # gets them without the two-process attach conflict the sidecar
+        # ran into. trainer.log() writes directly through HF's registered
+        # wandb reporter.
+        if self._trainer is not None:
+            try:
+                self._trainer.log(m)
+            except Exception as e:
+                print(f"  [ifeval-da] trainer.log() failed: {e}", flush=True)
+        self._pending = m  # kept as fallback for on_log injection path
         model.train()
         control.should_log = True
 
@@ -557,12 +567,14 @@ def main():
             eval_task = "ifeval-da" if args.task == "combined" else "same"
         if eval_task == "ifeval-da":
             # Full 4-metric benchmark callback (541 rows, prompt/inst strict/loose)
-            trainer.add_callback(IFEvalDACallback(
+            _ida_cb = IFEvalDACallback(
                 tokenizer=tok,
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
                 batch_size=args.batch_size,
-            ))
+            )
+            _ida_cb._trainer = trainer  # so callback can call trainer.log()
+            trainer.add_callback(_ida_cb)
         else:
             if args.task == "gsm8k":
                 gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
