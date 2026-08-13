@@ -44,8 +44,10 @@ ASST = "<|assistant|>"
 END = "<|end|>"
 
 
-def build_gsm8k_dataset(split="train"):
+def build_gsm8k_dataset(split="train", max_rows: int = 0):
     ds = load_dataset("jensjepsen/danish-gsm8k", "sft", split=split)
+    if max_rows and len(ds) > max_rows:
+        ds = ds.select(range(max_rows))
     rows = []
     for r in ds:
         u = r["messages"][0]["content"]
@@ -92,6 +94,10 @@ def main():
     ap.add_argument("--beta", type=float, default=0.04,
                     help="KL coefficient vs reference policy")
     ap.add_argument("--save-steps", type=int, default=500)
+    ap.add_argument("--eval-steps", type=int, default=0,
+                    help="If >0, eval on test split every N steps.")
+    ap.add_argument("--eval-max-rows", type=int, default=200,
+                    help="Cap test rows for periodic eval.")
     ap.add_argument("--logging-steps", type=int, default=5)
     ap.add_argument("--wandb-project", default="danish-lm-grpo")
     ap.add_argument("--wandb-run-name", default=None)
@@ -106,15 +112,22 @@ def main():
         tok.pad_token = tok.eos_token
 
     print(f"building dataset for task={args.task}...", flush=True)
+    eval_ds = None
     if args.task == "gsm8k":
-        ds = build_gsm8k_dataset("train")
+        ds = build_gsm8k_dataset("train", max_rows=args.max_rows or 0)
         reward_fn = reward_gsm8k
+        if args.eval_steps > 0:
+            eval_ds = build_gsm8k_dataset("test", max_rows=args.eval_max_rows)
     else:
         ds = build_ifeval_dataset("train", max_rows=args.max_rows or 0)
         reward_fn = reward_ifeval
+        if args.eval_steps > 0:
+            eval_ds = build_ifeval_dataset("eval", max_rows=args.eval_max_rows)
     if args.max_rows and len(ds) > args.max_rows:
         ds = ds.select(range(args.max_rows))
-    print(f"  {len(ds)} rows", flush=True)
+    print(f"  train {len(ds)} rows"
+          + (f", eval {len(eval_ds)} rows" if eval_ds is not None else ""),
+          flush=True)
 
     cfg = GRPOConfig(
         output_dir=args.output_dir,
@@ -130,6 +143,9 @@ def main():
         lr_scheduler_type="constant_with_warmup",
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
+        eval_strategy="steps" if args.eval_steps > 0 else "no",
+        eval_steps=args.eval_steps or None,
+        per_device_eval_batch_size=args.batch_size,
         save_total_limit=2,
         report_to=["wandb"],
         run_name=args.wandb_run_name or f"grpo_{args.task}",
@@ -145,6 +161,7 @@ def main():
         reward_funcs=reward_fn,
         args=cfg,
         train_dataset=ds,
+        eval_dataset=eval_ds,
     )
     trainer.train()
     trainer.save_model(f"{args.output_dir}/final")
