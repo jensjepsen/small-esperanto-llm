@@ -24,6 +24,17 @@ from if_constraints import ALL as _IF_ALL  # noqa: E402
 
 _IF_BY_NAME = {c.name: c for c in _IF_ALL}
 
+# Google IFEval verifier registry (lazy-imported to keep base reward light)
+_GOOGLE_REG = None
+
+
+def _google_reg():
+    global _GOOGLE_REG
+    if _GOOGLE_REG is None:
+        from ifeval_google import instructions_registry as reg  # noqa: E402
+        _GOOGLE_REG = reg.INSTRUCTION_DICT
+    return _GOOGLE_REG
+
 
 # ── GSM8K ───────────────────────────────────────────────────────────────────
 
@@ -63,6 +74,74 @@ def reward_gsm8k(completions: list[str], gold: list[str], **_):
 
 
 # ── IFEval (danish-IF v4 verifier set: 46 constraints) ─────────────────────
+
+def _check_google(name: str, params: dict, text: str) -> bool:
+    """Verify a `google:...` constraint. `name` includes the `google:` prefix.
+    Returns False on any exception (missing param, unknown name, etc.)."""
+    reg = _google_reg()
+    key = name[len("google:"):]
+    cls = reg.get(key)
+    if cls is None:
+        return False
+    # Strip None values — ifeval-da's param dicts carry every possible key
+    # (with None for unused ones), and Google's build_description rejects
+    # None where it expects a real value.
+    clean = {k: v for k, v in (params or {}).items() if v is not None}
+    try:
+        inst = cls(instruction_id=key)
+        inst.build_description(**clean)
+        return bool(inst.check_following(text))
+    except Exception:
+        return False
+
+
+def reward_ifeval_combined(completions: list[str],
+                           constraints: list[list[str]],
+                           params: list[list[dict]],
+                           **_):
+    """Mixed reward for our-46 + google-schema constraints.
+
+    Schema (matches data/grpo_if_rewrite_v1):
+      constraints: list[list[str]]      — names, parallel per row
+      params:      list[list[dict]]     — one param dict per constraint, parallel to constraints
+    Names starting with 'google:' dispatch to the Google IFEval verifier;
+    all others go to our 46-set. Reward per row = mean pass over listed constraints.
+    """
+    out = []
+    for text, cons, plist in zip(completions, constraints, params):
+        if not cons:
+            out.append(0.0); continue
+        # `plist` might be a JSON string on some HF versions — normalize
+        if isinstance(plist, str):
+            try:
+                plist = json.loads(plist)
+            except (TypeError, ValueError):
+                plist = [{}] * len(cons)
+        if plist is None or len(plist) != len(cons):
+            plist = [{}] * len(cons)
+        n_ok = 0
+        for name, p in zip(cons, plist):
+            if isinstance(p, str):
+                try:
+                    p = json.loads(p)
+                except (TypeError, ValueError):
+                    p = {}
+            p = p or {}
+            if name.startswith("google:"):
+                if _check_google(name, p, text):
+                    n_ok += 1
+            else:
+                c = _IF_BY_NAME.get(name)
+                if c is None:
+                    continue
+                try:
+                    if c.check(text, p):
+                        n_ok += 1
+                except Exception:
+                    pass
+        out.append(n_ok / len(cons))
+    return out
+
 
 def reward_ifeval(completions: list[str],
                   constraints: list[list[str]],

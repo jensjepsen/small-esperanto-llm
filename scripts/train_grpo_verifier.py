@@ -28,7 +28,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 
 from esperanto_lm.rl_rewards import (
-    reward_gsm8k, reward_ifeval, _extract_num, _norm_num,
+    reward_gsm8k, reward_ifeval, reward_ifeval_combined,
+    _extract_num, _norm_num,
 )
 
 _NUM_RE_INT = re.compile(r"-?\d[\d,]*\.?\d*")
@@ -111,6 +112,11 @@ class GreedyEvalCallback(TrainerCallback):
                                if _norm_num(_extract_num(o)) is not None
                                and _norm_num(_extract_num(o)) == _norm_num(g if g and _NUM_RE_INT.fullmatch(g.strip()) else _extract_num(g)))
                     print(f"  [greedy-eval] {done}/{len(self.items)} acc={n_ok/done:.4f}", flush=True)
+                elif self.task == "combined":
+                    scores_so_far = reward_ifeval_combined(
+                        outs, [row[1] for row in self.items[:done]],
+                        [row[2] for row in self.items[:done]])
+                    print(f"  [greedy-eval] {done}/{len(self.items)} mean_pass={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
                 else:  # ifeval
                     scores_so_far = reward_ifeval(
                         outs, [row[1] for row in self.items[:done]],
@@ -129,6 +135,11 @@ class GreedyEvalCallback(TrainerCallback):
                 if pred is not None and pred == target:
                     n_ok += 1
             acc = n_ok / max(1, len(self.items))
+        elif self.task == "combined":
+            scores = reward_ifeval_combined(outs,
+                                            [row[1] for row in self.items],
+                                            [row[2] for row in self.items])
+            acc = sum(scores) / max(1, len(scores))
         else:  # ifeval
             scores = reward_ifeval(outs,
                                    [row[1] for row in self.items],
@@ -137,6 +148,7 @@ class GreedyEvalCallback(TrainerCallback):
         print(f"  [greedy-eval] step={state.global_step} {self.task}={100*acc:.2f}%",
               flush=True)
         key = ("eval_greedy_gsm8k_pass@1" if self.task == "gsm8k"
+               else "eval_greedy_ifeval_combined_mean_pass" if self.task == "combined"
                else "eval_greedy_ifeval_mean_pass")
         self._pending = {key: acc}
         model.train()
@@ -175,11 +187,78 @@ def build_ifeval_dataset(split="train", max_rows: int = 0):
     return Dataset.from_list(rows)
 
 
+def build_combined_dataset(source: str, max_rows: int = 0):
+    """Loader for grpo_if_rewrite_v1 (or successor). `source` can be an HF
+    repo id (jensjepsen/...) or a local save_to_disk directory path.
+
+    Expected schema per row:
+        prompt         str    — full user-facing prompt (task + rules woven in)
+        constraints    list[str]     — mixed our-46 + google:...
+        params         list[dict]    — one dict per constraint, parallel
+    """
+    from pathlib import Path as _P
+    p = _P(source)
+    if p.exists() and (p / "state.json").exists():
+        # HF load_from_disk
+        from datasets import load_from_disk as _lfd
+        ds = _lfd(str(p))
+    elif p.exists() and (p / "hf" / "state.json").exists():
+        from datasets import load_from_disk as _lfd
+        ds = _lfd(str(p / "hf"))
+    else:
+        ds = load_dataset(source, split="train")
+    rows = []
+    for i, r in enumerate(ds):
+        if max_rows and i >= max_rows:
+            break
+        u = r["prompt"]
+        rows.append({
+            "prompt": f"{USER}{u}{END}{ASST}",
+            "constraints": r["constraints"],
+            "params": r["params"],
+        })
+    return Dataset.from_list(rows)
+
+
+def build_ifeval_da_dataset(max_rows: int = 0):
+    """Load the danish-foundation-models/ifeval-da benchmark (541 rows).
+    Used as a greedy-eval target for `combined` task so we see actual
+    benchmark movement per checkpoint instead of a proxy metric."""
+    ds = load_dataset("danish-foundation-models/ifeval-da", split="train")
+    rows = []
+    for i, r in enumerate(ds):
+        if max_rows and i >= max_rows:
+            break
+        # ifeval-da uses google's schema; prefix constraint ids so our
+        # reward dispatches correctly. Build params-list aligned with
+        # constraint list.
+        cons = [f"google:{c}" for c in r.get("instruction_id_list", [])]
+        params_raw = r.get("kwargs", [])
+        # kwargs is a list[dict] parallel to instruction_id_list already
+        rows.append({
+            "prompt": f"{USER}{r['prompt']}{END}{ASST}",
+            "constraints": cons,
+            "params": params_raw,
+        })
+    return Dataset.from_list(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["gsm8k", "ifeval"], required=True)
+    ap.add_argument("--task", choices=["gsm8k", "ifeval", "combined"], required=True)
     ap.add_argument("--checkpoint", required=True,
                     help="HF repo or local path — SFT starting model")
+    ap.add_argument("--combined-source", default=None,
+                    help="Required when --task=combined. HF repo id or local "
+                         "save_to_disk dir for the mixed our-46 + google "
+                         "training set (e.g. data/grpo_if_rewrite_v1 or "
+                         "jensjepsen/danish-if-grpo-combined-v1).")
+    ap.add_argument("--greedy-eval-task", choices=["auto", "ifeval-da", "same"],
+                    default="auto",
+                    help="Which dataset the greedy-eval callback uses. "
+                         "'same' = same as --task's train dataset (default for "
+                         "gsm8k/ifeval). 'ifeval-da' = the 541-row benchmark "
+                         "(default for combined). 'auto' picks per --task.")
     ap.add_argument("--tokenizer", default=None,
                     help="Defaults to --checkpoint")
     ap.add_argument("--output-dir", required=True)
@@ -262,11 +341,16 @@ def main():
         reward_fn = reward_gsm8k
         if args.eval_steps > 0:
             eval_ds = build_gsm8k_dataset("test", max_rows=args.eval_max_rows)
-    else:
+    elif args.task == "ifeval":
         ds = build_ifeval_dataset("train", max_rows=args.max_rows or 0)
         reward_fn = reward_ifeval
         if args.eval_steps > 0:
             eval_ds = build_ifeval_dataset("eval", max_rows=args.eval_max_rows)
+    else:  # combined
+        assert args.combined_source, "--combined-source required for --task=combined"
+        ds = build_combined_dataset(args.combined_source, max_rows=args.max_rows or 0)
+        reward_fn = reward_ifeval_combined
+        # No separate eval split; greedy-eval callback handles benchmarking.
     if args.max_rows and len(ds) > args.max_rows:
         ds = ds.select(range(args.max_rows))
     print(f"  train {len(ds)} rows"
@@ -364,10 +448,22 @@ def main():
     print(f"trainer.generation_config.eos_token_id = "
           f"{trainer.generation_config.eos_token_id}", flush=True)
     if args.greedy_eval_steps > 0:
+        # Resolve which eval dataset the callback uses
+        eval_task = args.greedy_eval_task
+        if eval_task == "auto":
+            eval_task = "ifeval-da" if args.task == "combined" else "same"
         if args.task == "gsm8k":
             gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
             g_items = [(r["prompt"], r["gold"]) for r in gds]
-        else:  # ifeval
+        elif eval_task == "ifeval-da":
+            gds = build_ifeval_da_dataset(max_rows=args.greedy_eval_max_rows)
+            g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
+        elif args.task == "combined":
+            # 'same' — greedy eval on a slice of the combined train set
+            gds = build_combined_dataset(args.combined_source,
+                                         max_rows=args.greedy_eval_max_rows)
+            g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
+        else:  # ifeval task, 'same' eval
             gds = build_ifeval_dataset("eval", max_rows=args.greedy_eval_max_rows)
             g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
         trainer.add_callback(GreedyEvalCallback(
