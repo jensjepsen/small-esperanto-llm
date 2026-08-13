@@ -352,15 +352,13 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
     )
-    # Rebuild trainer.generation_config with the full chat_stops list so
-    # rollouts stop on any of <|end|> / <|user|>. TRL only puts a single
-    # eos_token_id in the GenerationConfig by default.
-    if len(chat_stops) > 1:
-        from transformers import GenerationConfig
-        gc = trainer.generation_config
-        cfg_gen = gc.to_dict()
-        cfg_gen["eos_token_id"] = chat_stops
-        trainer.generation_config = GenerationConfig(**cfg_gen)
+    # NOTE: we intentionally do NOT rebuild trainer.generation_config with
+    # multi-value eos_token_id here. Passing a list triggers transformers'
+    # `torch.isin(eos_tensor, pad_tensor)` check which needs a CUDA kernel
+    # that isn't in the RTX 5090 (sm_120) build. Single-eos (<|end|>) from
+    # the tokenizer swap above is enough for correct stopping; multi-stop
+    # <|user|> for anti-reward-farming is a TODO once the pytorch is on a
+    # Blackwell-compatible build.
     print(f"trainer.generation_config.eos_token_id = "
           f"{trainer.generation_config.eos_token_id}", flush=True)
     if args.greedy_eval_steps > 0:
