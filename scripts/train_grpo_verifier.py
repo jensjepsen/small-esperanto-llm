@@ -23,6 +23,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import re
 import torch
+# torch 2.5.x has no sm_120 kernels; RTX 5090 crashes on torch.isin
+# (called from transformers.generation._prepare_special_tokens for the
+# eos-vs-pad check). Route isin through CPU — called O(1) per generate(),
+# perf cost is negligible.
+_orig_isin = torch.isin
+def _isin_cpu_safe(elements, test_elements, *args, **kwargs):
+    if isinstance(elements, torch.Tensor) and elements.is_cuda:
+        return _orig_isin(elements.cpu(), test_elements.cpu(), *args, **kwargs).to(elements.device)
+    return _orig_isin(elements, test_elements, *args, **kwargs)
+torch.isin = _isin_cpu_safe
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
