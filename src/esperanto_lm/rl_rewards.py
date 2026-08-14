@@ -143,6 +143,33 @@ def reward_ifeval_combined(completions: list[str],
     return out
 
 
+def reward_mixed(completions: list[str],
+                 task: list[str],
+                 gold: list[str],
+                 constraints: list[list[str]],
+                 params: list[list[dict]],
+                 **_):
+    """Per-example dispatch reward for mixing gsm8k + combined-IF training.
+
+    Each row carries a `task` marker; reward dispatches to the appropriate
+    verifier. Unused columns are filled with empty defaults per task
+    (empty string for gsm8k's constraints/params; empty string for ifeval's
+    gold). TRL still passes ALL dataset columns as kwargs to the reward
+    function on every call.
+
+    Returns per-row scalar in [0, 1]:
+      gsm8k → reward_gsm8k on the row
+      ifeval / combined → reward_ifeval_combined on the row
+    """
+    out = []
+    for text, t, g, cons, p in zip(completions, task, gold, constraints, params):
+        if t == "gsm8k":
+            out.append(reward_gsm8k([text], gold=[g])[0])
+        else:  # ifeval / combined
+            out.append(reward_ifeval_combined([text], [cons or []], [p or []])[0])
+    return out
+
+
 def reward_ifeval(completions: list[str],
                   constraints: list[list[str]],
                   params: list[str],

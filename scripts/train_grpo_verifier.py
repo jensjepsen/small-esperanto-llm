@@ -28,7 +28,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 
 from esperanto_lm.rl_rewards import (
-    reward_gsm8k, reward_ifeval, reward_ifeval_combined,
+    reward_gsm8k, reward_ifeval, reward_ifeval_combined, reward_mixed,
     _extract_num, _norm_num,
 )
 
@@ -333,6 +333,43 @@ def build_combined_dataset(source: str, max_rows: int = 0):
     return Dataset.from_list(rows)
 
 
+def build_mixed_dataset(combined_source: str, max_rows: int = 0,
+                        gsm_frac: float = 0.5, seed: int = 42):
+    """Interleave gsm8k train + combined-IF into a single dataset with a
+    `task` marker per row. `gsm_frac` sets the ratio of gsm8k rows
+    relative to IF rows in the final mix (0.5 = ~equal). Unused columns
+    are filled with defaults so all rows share the same schema:
+       prompt (str), task ("gsm8k"|"ifeval"), gold (str),
+       constraints (list[str]), params (list[dict])
+    """
+    import random as _r
+    rng = _r.Random(seed)
+    # IF side
+    ifds = build_combined_dataset(combined_source, max_rows=0)
+    if_rows = [{"prompt": r["prompt"], "task": "ifeval",
+                "gold": "",
+                "constraints": r["constraints"], "params": r["params"]}
+               for r in ifds]
+    # gsm8k side
+    gds = build_gsm8k_dataset("train", max_rows=0)
+    gsm_rows = [{"prompt": f"{USER} {r['prompt'][len(USER):].strip()}" if r["prompt"].startswith(USER) else r["prompt"],
+                 "task": "gsm8k",
+                 "gold": r["gold"],
+                 "constraints": [], "params": []}
+                for r in gds]
+    # Cap gsm to `gsm_frac` share of total (bias if_rows to fully use)
+    n_if = len(if_rows)
+    n_gsm_target = int(round(n_if * (gsm_frac / max(1e-6, 1 - gsm_frac))))
+    if len(gsm_rows) > n_gsm_target:
+        rng.shuffle(gsm_rows)
+        gsm_rows = gsm_rows[:n_gsm_target]
+    rows = if_rows + gsm_rows
+    rng.shuffle(rows)
+    if max_rows and len(rows) > max_rows:
+        rows = rows[:max_rows]
+    return Dataset.from_list(rows)
+
+
 def build_ifeval_da_dataset(max_rows: int = 0):
     """Load the danish-foundation-models/ifeval-da benchmark (541 rows).
     Used as a greedy-eval target for `combined` task so we see actual
@@ -358,20 +395,25 @@ def build_ifeval_da_dataset(max_rows: int = 0):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["gsm8k", "ifeval", "combined"], required=True)
+    ap.add_argument("--task", choices=["gsm8k", "ifeval", "combined", "mixed"], required=True)
     ap.add_argument("--checkpoint", required=True,
                     help="HF repo or local path — SFT starting model")
     ap.add_argument("--combined-source", default=None,
-                    help="Required when --task=combined. HF repo id or local "
-                         "save_to_disk dir for the mixed our-46 + google "
+                    help="Required when --task=combined or mixed. HF repo id or "
+                         "local save_to_disk dir for the mixed our-46 + google "
                          "training set (e.g. data/grpo_if_rewrite_v1 or "
                          "jensjepsen/danish-if-grpo-combined-v1).")
-    ap.add_argument("--greedy-eval-task", choices=["auto", "ifeval-da", "same"],
+    ap.add_argument("--gsm-frac", type=float, default=0.5,
+                    help="For --task=mixed: fraction of gsm8k rows in the "
+                         "interleaved mix (0.5 = ~equal count vs IF rows).")
+    ap.add_argument("--greedy-eval-task", choices=["auto", "ifeval-da", "same", "both"],
                     default="auto",
                     help="Which dataset the greedy-eval callback uses. "
                          "'same' = same as --task's train dataset (default for "
                          "gsm8k/ifeval). 'ifeval-da' = the 541-row benchmark "
-                         "(default for combined). 'auto' picks per --task.")
+                         "(default for combined). 'both' = attach both the "
+                         "ifeval-da benchmark AND the gsm8k test-set callback "
+                         "(default for --task=mixed). 'auto' picks per --task.")
     ap.add_argument("--tokenizer", default=None,
                     help="Defaults to --checkpoint")
     ap.add_argument("--output-dir", required=True)
@@ -482,11 +524,18 @@ def main():
         reward_fn = reward_ifeval
         if args.eval_steps > 0:
             eval_ds = build_ifeval_dataset("eval", max_rows=args.eval_max_rows)
-    else:  # combined
+    elif args.task == "combined":
         assert args.combined_source, "--combined-source required for --task=combined"
         ds = build_combined_dataset(args.combined_source, max_rows=args.max_rows or 0)
         reward_fn = reward_ifeval_combined
         # No separate eval split; greedy-eval callback handles benchmarking.
+    else:  # mixed
+        assert args.combined_source, "--combined-source required for --task=mixed"
+        ds = build_mixed_dataset(args.combined_source,
+                                 max_rows=args.max_rows or 0,
+                                 gsm_frac=args.gsm_frac)
+        reward_fn = reward_mixed
+        # Greedy-eval callback attaches BOTH ifeval-da and gsm8k below.
     if args.max_rows and len(ds) > args.max_rows:
         ds = ds.select(range(args.max_rows))
     print(f"  train {len(ds)} rows"
@@ -584,37 +633,63 @@ def main():
     print(f"trainer.generation_config.eos_token_id = "
           f"{trainer.generation_config.eos_token_id}", flush=True)
     if args.greedy_eval_steps > 0:
-        # Resolve which eval dataset the callback uses
+        # Resolve which callbacks to attach
         eval_task = args.greedy_eval_task
         if eval_task == "auto":
-            eval_task = "ifeval-da" if args.task == "combined" else "same"
-        if eval_task == "ifeval-da":
-            # Full 4-metric benchmark callback (541 rows, prompt/inst strict/loose)
-            _ida_cb = IFEvalDACallback(
+            if args.task == "combined":
+                eval_task = "ifeval-da"
+            elif args.task == "mixed":
+                eval_task = "both"
+            else:
+                eval_task = "same"
+
+        def _attach_ifeval_da():
+            cb = IFEvalDACallback(
                 tokenizer=tok,
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
                 batch_size=args.batch_size,
             )
-            _ida_cb._trainer = trainer  # so callback can call trainer.log()
-            trainer.add_callback(_ida_cb)
-        else:
-            if args.task == "gsm8k":
-                gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
-                g_items = [(r["prompt"], r["gold"]) for r in gds]
-            elif args.task == "combined":
-                gds = build_combined_dataset(args.combined_source,
-                                             max_rows=args.greedy_eval_max_rows)
-                g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
-            else:  # ifeval task
-                gds = build_ifeval_dataset("eval", max_rows=args.greedy_eval_max_rows)
-                g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
+            cb._trainer = trainer  # so callback can call trainer.log()
+            trainer.add_callback(cb)
+
+        def _attach_gsm8k():
+            gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
+            items = [(r["prompt"], r["gold"]) for r in gds]
             trainer.add_callback(GreedyEvalCallback(
-                tokenizer=tok, items=g_items, task=args.task,
+                tokenizer=tok, items=items, task="gsm8k",
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
                 batch_size=args.batch_size,
             ))
+
+        if eval_task == "ifeval-da":
+            _attach_ifeval_da()
+        elif eval_task == "both":
+            _attach_ifeval_da()
+            _attach_gsm8k()
+        else:  # 'same' — task-specific single greedy callback
+            if args.task == "gsm8k":
+                _attach_gsm8k()
+            elif args.task == "combined":
+                gds = build_combined_dataset(args.combined_source,
+                                             max_rows=args.greedy_eval_max_rows)
+                g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
+                trainer.add_callback(GreedyEvalCallback(
+                    tokenizer=tok, items=g_items, task="combined",
+                    every_n_steps=args.greedy_eval_steps,
+                    max_new_tokens=args.max_completion_length,
+                    batch_size=args.batch_size,
+                ))
+            else:  # ifeval task
+                gds = build_ifeval_dataset("eval", max_rows=args.greedy_eval_max_rows)
+                g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
+                trainer.add_callback(GreedyEvalCallback(
+                    tokenizer=tok, items=g_items, task="ifeval",
+                    every_n_steps=args.greedy_eval_steps,
+                    max_new_tokens=args.max_completion_length,
+                    batch_size=args.batch_size,
+                ))
     resume = args.resume
     if resume == "latest":
         resume = True  # HF Trainer autodetects newest ckpt in output_dir
