@@ -1,8 +1,8 @@
-"""ARC-DA eval on alexandrainst/m_arc:da:test — 4-5 option MC via
-generation + letter parse (same style as cit_mc).
+"""ARC-DA eval on jensjepsen/danish-arc (arc_easy | arc_challenge) — 4-5
+option MC via generation + letter parse (chat-mc) or logprob (raw-logp).
 
 Usage:
-    uv run python scripts/eval_arc_da.py --ckpt HF_ID [--n 1167]
+    uv run python scripts/eval_arc_da.py --ckpt HF_ID [--config arc_easy|arc_challenge]
 """
 from __future__ import annotations
 import argparse, re, time
@@ -41,6 +41,9 @@ def main():
     ap.add_argument("--dtype", default="fp32", choices=["fp32","fp16","bf16"])
     ap.add_argument("--max-new", type=int, default=8)
     ap.add_argument("--report-every", type=int, default=50)
+    ap.add_argument("--config", default="arc_easy",
+                    choices=["arc_easy", "arc_challenge"],
+                    help="jensjepsen/danish-arc config; test split.")
     ap.add_argument("--mode", default="chat-mc", choices=["chat-mc","raw-logp"],
                     help="chat-mc: chat-wrapped MC letter generation + parse. "
                          "raw-logp: score each option as continuation of "
@@ -55,17 +58,23 @@ def main():
     end_id = tok.convert_tokens_to_ids(END)
     eos_ids = [tok.eos_token_id] + ([end_id] if end_id != tok.unk_token_id else [])
 
-    ds = load_dataset("alexandrainst/m_arc", "da", split="test")
+    ds = load_dataset("jensjepsen/danish-arc", args.config, split="test")
     if args.n: ds = ds.select(range(min(args.n, len(ds))))
     n = len(ds)
-    print(f"  {n} rows", flush=True)
+    print(f"  {n} rows  ({args.config})", flush=True)
+
+    import ast as _ast
 
     n_ok = 0
     n_parsefail = 0
     t0 = time.time()
     for i, r in enumerate(ds, 1):
-        q = r["instruction"]
-        opts = [(l.upper(), r[f"option_{l}"]) for l in "abcde" if r.get(f"option_{l}")]
+        q = r["question"]
+        choices = r["choices"]
+        if isinstance(choices, str):
+            choices = _ast.literal_eval(choices)
+        opts = [(c["label"], c["text"]) for c in choices]
+        answer = r["answerKey"]
 
         if args.mode == "chat-mc":
             opts_str = "\n".join(f"{lab}) {v}" for lab, v in opts)
@@ -84,14 +93,14 @@ def main():
             base = f"{q.strip()}\nSvar: "
             lps = [(lab, score_cont(model, tok, base, v)) for lab, v in opts]
             pred = max(lps, key=lambda x: x[1])[0]
-        if pred == r["answer"]: n_ok += 1
+        if pred == answer: n_ok += 1
         if i % args.report_every == 0 or i == n:
             el = time.time() - t0
             eta = el * (n - i) / i
             print(f"  {i}/{n}  acc={n_ok/i:.3f}  parsefail={n_parsefail}  eta={eta:.0f}s",
                   flush=True)
 
-    print(f"\n=== arc-da[{args.mode}]  n={n}  acc={100*n_ok/n:.2f}%  ({n_ok}/{n})  "
+    print(f"\n=== arc-da[{args.config}][{args.mode}]  n={n}  acc={100*n_ok/n:.2f}%  ({n_ok}/{n})  "
           f"parsefail={n_parsefail}  random~=25% ===", flush=True)
 
 
