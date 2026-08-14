@@ -177,7 +177,8 @@ class GreedyEvalCallback(TrainerCallback):
         self.every = every_n_steps
         self.max_new = max_new_tokens
         self.bs = batch_size
-        self._pending = None  # metric to inject on next on_log
+        self._pending = None  # kept as fallback
+        self._trainer = None  # set by main() after trainer is built
 
     def on_log(self, args, state, control, logs=None, **kw):
         if self._pending is not None and logs is not None:
@@ -263,9 +264,17 @@ class GreedyEvalCallback(TrainerCallback):
         key = ("eval_greedy_gsm8k_pass@1" if self.task == "gsm8k"
                else "eval_greedy_ifeval_combined_mean_pass" if self.task == "combined"
                else "eval_greedy_ifeval_mean_pass")
-        self._pending = {key: acc}
+        m = {key: acc}
+        # Direct trainer.log() bypasses TRL 0.16's mid-step log-decision
+        # (control.should_log=True doesn't force a log at the current step).
+        if self._trainer is not None:
+            try:
+                self._trainer.log(m)
+            except Exception as e:
+                print(f"  [greedy-eval] trainer.log() failed: {e}", flush=True)
+        self._pending = m  # fallback for on_log path
         model.train()
-        control.should_log = True  # trigger on_log so _pending gets flushed
+        control.should_log = True
 
 USER = "<|user|>"
 ASST = "<|assistant|>"
@@ -656,12 +665,14 @@ def main():
         def _attach_gsm8k():
             gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
             items = [(r["prompt"], r["gold"]) for r in gds]
-            trainer.add_callback(GreedyEvalCallback(
+            cb = GreedyEvalCallback(
                 tokenizer=tok, items=items, task="gsm8k",
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
                 batch_size=args.batch_size,
-            ))
+            )
+            cb._trainer = trainer  # direct trainer.log() bypasses on_log
+            trainer.add_callback(cb)
 
         if eval_task == "ifeval-da":
             _attach_ifeval_da()
@@ -675,21 +686,25 @@ def main():
                 gds = build_combined_dataset(args.combined_source,
                                              max_rows=args.greedy_eval_max_rows)
                 g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
-                trainer.add_callback(GreedyEvalCallback(
+                cb = GreedyEvalCallback(
                     tokenizer=tok, items=g_items, task="combined",
                     every_n_steps=args.greedy_eval_steps,
                     max_new_tokens=args.max_completion_length,
                     batch_size=args.batch_size,
-                ))
+                )
+                cb._trainer = trainer
+                trainer.add_callback(cb)
             else:  # ifeval task
                 gds = build_ifeval_dataset("eval", max_rows=args.greedy_eval_max_rows)
                 g_items = [(r["prompt"], r["constraints"], r["params"]) for r in gds]
-                trainer.add_callback(GreedyEvalCallback(
+                cb = GreedyEvalCallback(
                     tokenizer=tok, items=g_items, task="ifeval",
                     every_n_steps=args.greedy_eval_steps,
                     max_new_tokens=args.max_completion_length,
                     batch_size=args.batch_size,
-                ))
+                )
+                cb._trainer = trainer
+                trainer.add_callback(cb)
     resume = args.resume
     if resume == "latest":
         resume = True  # HF Trainer autodetects newest ckpt in output_dir
