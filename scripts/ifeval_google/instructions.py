@@ -1457,6 +1457,37 @@ class LowercaseLettersEnglishChecker(Instruction):
       return True
 
 
+class ConstrainedResponseWithArgumentChecker(Instruction):
+  """Parameterised variant of ConstrainedResponseChecker. Takes an
+  `options` list; response must contain exactly one of them verbatim.
+
+  Used for `detectable_format:constrained_response_with_argument` in
+  DFM's Danish IFEval (n=10 rows) — DFM parameterised Google's original
+  which hardcoded English "My answer is yes/no/maybe." Options in the
+  dataset are Danish equivalents like "Mit svar er ja." etc."""
+
+  def build_description(self, *, options=None):  # pyrefly: ignore[bad-override]
+    """Build the instruction description."""
+    self._options = list(options or [])
+    self._description_pattern = (
+        "Answer with one of the following options: {options}"
+    )
+    return self._description_pattern.format(options=self._options)
+
+  def get_instruction_args(self):
+    return {"options": self._options}
+
+  def get_instruction_args_keys(self):
+    """Returns the args keys of `build_description`."""
+    return ["options"]
+
+  def check_following(self, value):
+    """True iff exactly one option appears verbatim in the response."""
+    assert isinstance(value, str)
+    hits = sum(1 for opt in self._options if opt in value)
+    return hits == 1
+
+
 class CapitalLettersChecker(Instruction):
   """Language-agnostic all-uppercase checker.
 

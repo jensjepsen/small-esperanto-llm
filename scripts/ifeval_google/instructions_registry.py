@@ -54,6 +54,11 @@ INSTRUCTION_DICT = {
     # TODO(jeffreyzhou): Pre-create paragraph or use prompt to replace
     # _CONTENT + "rephrase_paragraph": instructions.RephraseParagraph,
     _FORMAT + "constrained_response": instructions.ConstrainedResponseChecker,
+    # DFM-only: parameterised variant taking `options=[...]` (n=10 rows).
+    # See instructions.py::ConstrainedResponseWithArgumentChecker.
+    _FORMAT + "constrained_response_with_argument": (
+        instructions.ConstrainedResponseWithArgumentChecker
+    ),
     _FORMAT + "number_highlighted_sections": (
         instructions.HighlightSectionChecker),
     _FORMAT + "multiple_sections": instructions.SectionChecker,
