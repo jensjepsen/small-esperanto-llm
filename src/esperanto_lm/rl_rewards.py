@@ -57,9 +57,12 @@ def _norm_num(s: str | None) -> str | None:
     s = s.strip()
     try:
         f = float(s)
-        return str(int(f)) if f == int(f) else f"{f:g}"
     except ValueError:
         return s
+    import math
+    if math.isnan(f) or math.isinf(f):
+        return None  # can't score; treat as no-answer
+    return str(int(f)) if f == int(f) else f"{f:g}"
 
 
 def reward_gsm8k(completions: list[str], gold: list[str], **_):
