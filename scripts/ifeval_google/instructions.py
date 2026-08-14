@@ -1413,7 +1413,9 @@ class CapitalLettersEnglishChecker(Instruction):
     assert isinstance(value, str)
 
     try:
-      return value.isupper() and langdetect.detect(value) == "en"
+      # Patched: accept Danish alongside English so ifeval-da doesn't
+      # 0% on correctly-cased Danish responses.
+      return value.isupper() and langdetect.detect(value) in ("en", "da")
     except langdetect.LangDetectException as e:
       # Count as instruction is followed.
       logging.error(
@@ -1445,13 +1447,68 @@ class LowercaseLettersEnglishChecker(Instruction):
     assert isinstance(value, str)
 
     try:
-      return value.islower() and langdetect.detect(value) == "en"
+      # Patched: accept Danish alongside English (see uppercase note above).
+      return value.islower() and langdetect.detect(value) in ("en", "da")
     except langdetect.LangDetectException as e:
       # Count as instruction is followed.
       logging.error(
           "Unable to detect language for text %s due to %s", value, e
       )  # refex: disable=pytotw.037
       return True
+
+
+class CapitalLettersChecker(Instruction):
+  """Language-agnostic all-uppercase checker.
+
+  Used for `change_case:capital_letters` in DFM's Danish IFEval — the
+  English variant filters by langdetect ∈ {en, da}, which mis-fires on
+  all-caps text (langdetect classifies ALL-CAPS Danish as `de`). This
+  variant drops the language filter entirely and just checks case."""
+
+  def build_description(self):  # pyrefly: ignore[bad-override]
+    """Build the instruction description."""
+    self._description_pattern = (
+        "Your entire response should be in all capital letters."
+    )
+    return self._description_pattern
+
+  def get_instruction_args(self):
+    return None
+
+  def get_instruction_args_keys(self):
+    """Returns the args keys of `build_description`."""
+    return []
+
+  def check_following(self, value):
+    """True if the response contains at least one alpha and all alphas are uppercase."""
+    assert isinstance(value, str)
+    letters = [c for c in value if c.isalpha()]
+    return bool(letters) and all(c.isupper() for c in letters)
+
+
+class LowercaseLettersChecker(Instruction):
+  """Language-agnostic all-lowercase checker. Companion to CapitalLettersChecker."""
+
+  def build_description(self):  # pyrefly: ignore[bad-override]
+    """Build the instruction description."""
+    self._description_pattern = (
+        "Your entire response should be in all lowercase letters."
+        " No capital letters are allowed."
+    )
+    return self._description_pattern
+
+  def get_instruction_args(self):
+    return None
+
+  def get_instruction_args_keys(self):
+    """Returns the args keys of `build_description`."""
+    return []
+
+  def check_following(self, value):
+    """True if all alphabetic characters in the response are lowercase."""
+    assert isinstance(value, str)
+    letters = [c for c in value if c.isalpha()]
+    return bool(letters) and all(c.islower() for c in letters)
 
 
 class CommaChecker(Instruction):

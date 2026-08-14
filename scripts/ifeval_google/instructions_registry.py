@@ -72,6 +72,19 @@ INSTRUCTION_DICT = {
     + "english_capital": instructions.CapitalLettersEnglishChecker,
     _CHANGE_CASES
     + "english_lowercase": instructions.LowercaseLettersEnglishChecker,
+    # DFM's `danish-foundation-models/ifeval-da` uses the language-agnostic
+    # keys `capital_letters` and `lowercase_letters` (n=25 and n=39 rows).
+    # Google upstream never shipped these; DFM renamed the keys without
+    # publishing matching verifier code. Route them to purely case-based
+    # checkers (see instructions.py). We can't reuse the English classes
+    # even patched-for-Danish, because langdetect mis-classifies ALL-CAPS
+    # text as German — the language filter mis-fires on the very thing
+    # the constraint asks the model to produce. Language-agnostic is the
+    # right semantic anyway: the constraint asks about CASE, not language.
+    _CHANGE_CASES
+    + "capital_letters": instructions.CapitalLettersChecker,
+    _CHANGE_CASES
+    + "lowercase_letters": instructions.LowercaseLettersChecker,
     _PUNCTUATION + "no_comma": instructions.CommaChecker,
     _STARTEND + "quotation": instructions.QuotationChecker,
 }
@@ -93,6 +106,8 @@ INSTRUCTION_CONFLICTS = {
         _STARTEND + "end_checker",
         _CHANGE_CASES + "english_capital",
         _CHANGE_CASES + "english_lowercase",
+        _CHANGE_CASES + "capital_letters",  # DFM alias, see INSTRUCTION_DICT
+        _CHANGE_CASES + "lowercase_letters",  # DFM alias, see INSTRUCTION_DICT
     },
     _LENGTH + "number_sentences": {_LENGTH + "number_sentences"},
     _LENGTH + "number_paragraphs": {
