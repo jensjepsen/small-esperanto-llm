@@ -160,6 +160,83 @@ class IFEvalDACallback(TrainerCallback):
         control.should_log = True
 
 
+class BestCkptSaverCallback(TrainerCallback):
+    """Rolling top-K snapshotter — writes best model weights (no optim) to
+    <output_dir>/_best_ckpts/ when the composite score improves.
+
+    Composite = sum of whichever of the tracked metric keys land in `logs`
+    for the current step. Tolerant of partial results (e.g. only ifeval-da
+    landing before gsm8k for the mixed task — snapshot updates as more
+    metrics accumulate for the same step).
+
+    Skips optimizer/scheduler/rng in snapshots (best-of is for EVAL not
+    resume) — saves ~1GB per snapshot on tight /workspace quotas."""
+
+    _METRIC_KEYS = (
+        "eval_ifeval_da_prompt_strict",
+        "eval_ifeval_da_inst_strict",
+        "eval_greedy_gsm8k_pass@1",
+        "eval_greedy_ifeval_mean_pass",
+        "eval_greedy_ifeval_combined_mean_pass",
+    )
+
+    def __init__(self, output_dir, tokenizer, top_k: int = 3,
+                 subdir: str = "_best_ckpts"):
+        from pathlib import Path as _P
+        import shutil as _sh
+        self._P = _P
+        self._sh = _sh
+        self.best_dir = _P(output_dir) / subdir
+        self.best_dir.mkdir(parents=True, exist_ok=True)
+        self.top_k = int(top_k)
+        self.tok = tokenizer
+        # (score, step, path). Sorted best-first.
+        self.best: list[tuple[float, int, "_P"]] = []
+        self._buf: dict[int, dict[str, float]] = {}
+        self._snapped: dict[int, float] = {}  # step -> last snapshotted composite
+
+    def on_log(self, args, state, control, logs=None, model=None, **kw):
+        if logs is None or model is None:
+            return
+        step = state.global_step
+        hits = {k: v for k, v in logs.items() if k in self._METRIC_KEYS}
+        if not hits:
+            return
+        buf = self._buf.setdefault(step, {})
+        buf.update(hits)
+        score = sum(buf.values())
+        # Same or lower score already snapshotted for this step — skip
+        if self._snapped.get(step, -1.0) >= score:
+            return
+        # New candidate: must beat the current threshold to enter top-K
+        threshold = min((s for s, _, _ in self.best), default=-1.0)
+        if len(self.best) >= self.top_k and score <= threshold:
+            return
+
+        snap_dir = self.best_dir / f"step{step:06d}_score{score:07.3f}"
+        # Remove any prior snapshot for this step (score got upgraded)
+        prev = next((b for b in self.best if b[1] == step), None)
+        if prev is not None:
+            self._sh.rmtree(prev[2], ignore_errors=True)
+            self.best = [b for b in self.best if b[1] != step]
+        try:
+            model.save_pretrained(snap_dir)
+            if self.tok is not None:
+                self.tok.save_pretrained(snap_dir)
+            self._snapped[step] = score
+        except Exception as e:
+            print(f"  [best-ckpt] save err step={step}: {e}", flush=True)
+            return
+        self.best.append((score, step, snap_dir))
+        self.best.sort(key=lambda x: -x[0])
+        # Drop out-of-top-K snapshots
+        for dropped in self.best[self.top_k:]:
+            self._sh.rmtree(dropped[2], ignore_errors=True)
+        self.best = self.best[:self.top_k]
+        print(f"  [best-ckpt] step={step} score={score:.3f} snapped ({len(self.best)} tracked)",
+              flush=True)
+
+
 class GreedyEvalCallback(TrainerCallback):
     """Every N steps, run greedy pass@1 on a fixed test-set subset and log.
     Reports `eval_greedy_pass@1` — apples-to-apples with SFT downstream eval,
@@ -477,6 +554,12 @@ def main():
     ap.add_argument("--logging-steps", type=int, default=5)
     ap.add_argument("--wandb-project", default="danish-lm-grpo")
     ap.add_argument("--wandb-run-name", default=None)
+    ap.add_argument("--best-k", type=int, default=3,
+                    help="Rolling top-K best-model snapshots (model weights + "
+                         "tokenizer, no optim/scheduler) under "
+                         "<output_dir>/_best_ckpts/. Composite score is sum of "
+                         "whichever eval_* metrics land in the log for that step. "
+                         "0 = disable.")
     ap.add_argument("--max-rows", type=int, default=0,
                     help="Cap training rows (0=all). Handy for smoke tests.")
     ap.add_argument("--resume", default=None, nargs="?", const="latest",
@@ -705,6 +788,15 @@ def main():
                 )
                 cb._trainer = trainer
                 trainer.add_callback(cb)
+    # Rolling top-K snapshot of the best-scoring model weights (no optim).
+    # Reads whatever metric keys land in on_log; composite = sum.
+    if args.best_k > 0:
+        trainer.add_callback(BestCkptSaverCallback(
+            output_dir=args.output_dir,
+            tokenizer=tok,
+            top_k=args.best_k,
+        ))
+
     resume = args.resume
     if resume == "latest":
         resume = True  # HF Trainer autodetects newest ckpt in output_dir
