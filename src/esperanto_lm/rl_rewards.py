@@ -146,28 +146,106 @@ def reward_ifeval_combined(completions: list[str],
     return out
 
 
+def _try_parse_json(text: str):
+    """Best-effort JSON extraction: raw, ```json fence, first {...}, first [...]."""
+    for cand in [text, text.strip()]:
+        try:
+            return json.loads(cand)
+        except Exception:
+            pass
+    m = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    return None
+
+
+def _norm_pass(s: str) -> str:
+    return " ".join(s.lower().replace("\n", " ").split())
+
+
+def reward_json_schema(completion: str, fields: list[str], strict: bool,
+                       passage: str | None = None, types: list[str] | None = None) -> float:
+    """Graded reward for schema-directed JSON gen. Returns in [0, 1].
+
+    0.0             — unparseable JSON
+    0.3             — parses, dict, no required fields matched
+    +up to 0.4      — linear on fraction of required fields present (superset frac)
+    +0.3            — all required present (bonus). Under `strict`, extra keys forfeit this.
+    -0.1 per        — string-typed value NOT a substring of `passage` (grounding penalty)
+    """
+    obj = _try_parse_json(completion)
+    if obj is None or not isinstance(obj, dict):
+        return 0.0
+    keys = set(obj.keys())
+    required = set(fields)
+    present = required & keys
+    frac = len(present) / len(required)
+    r = 0.3 + 0.4 * frac
+    if present == required:
+        if strict:
+            if keys == required:
+                r += 0.3
+        else:
+            r += 0.3
+    if passage:
+        np_ = _norm_pass(passage)
+        types = types or [""] * len(fields)
+        for f, t in zip(fields, types):
+            if t == "str":
+                v = obj.get(f)
+                if isinstance(v, str) and v and _norm_pass(v) not in np_:
+                    r -= 0.1
+    return round(max(0.0, r), 4)
+
+
 def reward_mixed(completions: list[str],
                  task: list[str],
                  gold: list[str],
                  constraints: list[list[str]],
                  params: list[list[dict]],
+                 fields: list[list[str]] | None = None,
+                 types: list[list[str]] | None = None,
+                 strict: list[bool] | None = None,
+                 passage: list[str | None] | None = None,
                  **_):
-    """Per-example dispatch reward for mixing gsm8k + combined-IF training.
+    """Per-example dispatch reward for mixing gsm8k + combined-IF + json training.
 
     Each row carries a `task` marker; reward dispatches to the appropriate
-    verifier. Unused columns are filled with empty defaults per task
-    (empty string for gsm8k's constraints/params; empty string for ifeval's
-    gold). TRL still passes ALL dataset columns as kwargs to the reward
-    function on every call.
+    verifier. Unused columns can be empty defaults per row. TRL passes all
+    dataset columns as kwargs; JSON-specific columns (fields/types/strict/
+    passage) are optional so pre-JSON mixed datasets remain compatible.
 
     Returns per-row scalar in [0, 1]:
-      gsm8k → reward_gsm8k on the row
-      ifeval / combined → reward_ifeval_combined on the row
+      gsm8k          → reward_gsm8k
+      ifeval/combined → reward_ifeval_combined
+      json           → reward_json_schema
     """
+    N = len(completions)
+    fields = fields or [None] * N
+    types = types or [None] * N
+    strict = strict or [False] * N
+    passage = passage or [None] * N
+
     out = []
-    for text, t, g, cons, p in zip(completions, task, gold, constraints, params):
+    for text, t, g, cons, p, f, ty, st, ps in zip(
+        completions, task, gold, constraints, params, fields, types, strict, passage
+    ):
         if t == "gsm8k":
             out.append(reward_gsm8k([text], gold=[g])[0])
+        elif t == "json":
+            if not f:
+                out.append(0.0)
+                continue
+            out.append(reward_json_schema(text, f, bool(st), passage=ps or None, types=ty))
         else:  # ifeval / combined
             out.append(reward_ifeval_combined([text], [cons or []], [p or []])[0])
     return out

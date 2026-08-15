@@ -29,6 +29,7 @@ from trl import GRPOConfig, GRPOTrainer
 
 from esperanto_lm.rl_rewards import (
     reward_gsm8k, reward_ifeval, reward_ifeval_combined, reward_mixed,
+    reward_json_schema,
     _extract_num, _norm_num,
 )
 
@@ -178,6 +179,7 @@ class BestCkptSaverCallback(TrainerCallback):
         "eval_greedy_gsm8k_pass@1",
         "eval_greedy_ifeval_mean_pass",
         "eval_greedy_ifeval_combined_mean_pass",
+        "eval_greedy_json_mean_reward",
     )
 
     def __init__(self, output_dir, tokenizer, top_k: int = 3,
@@ -246,8 +248,9 @@ class GreedyEvalCallback(TrainerCallback):
                  every_n_steps: int, max_new_tokens: int = 256,
                  batch_size: int = 16):
         """items schema:
-             gsm8k: list of (prompt, gold_answer_string)
-             ifeval: list of (prompt, constraints_list, params_json_string)"""
+             gsm8k:   list of (prompt, gold_answer_string)
+             ifeval:  list of (prompt, constraints_list, params_json_string)
+             json:    list of (prompt, fields_list, types_list, strict_bool, passage_str)"""
         self.tok = tokenizer
         self.items = items
         self.task = task
@@ -308,6 +311,12 @@ class GreedyEvalCallback(TrainerCallback):
                         outs, [row[1] for row in self.items[:done]],
                         [row[2] for row in self.items[:done]])
                     print(f"  [greedy-eval] {done}/{len(self.items)} mean_pass={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
+                elif self.task == "json":
+                    scores_so_far = [
+                        reward_json_schema(o, r[1], r[3], passage=(r[4] or None), types=r[2])
+                        for o, r in zip(outs, self.items[:done])
+                    ]
+                    print(f"  [greedy-eval] {done}/{len(self.items)} mean_reward={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
                 else:  # ifeval
                     scores_so_far = reward_ifeval(
                         outs, [row[1] for row in self.items[:done]],
@@ -331,6 +340,12 @@ class GreedyEvalCallback(TrainerCallback):
                                             [row[1] for row in self.items],
                                             [row[2] for row in self.items])
             acc = sum(scores) / max(1, len(scores))
+        elif self.task == "json":
+            scores = [
+                reward_json_schema(o, r[1], r[3], passage=(r[4] or None), types=r[2])
+                for o, r in zip(outs, self.items)
+            ]
+            acc = sum(scores) / max(1, len(scores))
         else:  # ifeval
             scores = reward_ifeval(outs,
                                    [row[1] for row in self.items],
@@ -340,6 +355,7 @@ class GreedyEvalCallback(TrainerCallback):
               flush=True)
         key = ("eval_greedy_gsm8k_pass@1" if self.task == "gsm8k"
                else "eval_greedy_ifeval_combined_mean_pass" if self.task == "combined"
+               else "eval_greedy_json_mean_reward" if self.task == "json"
                else "eval_greedy_ifeval_mean_pass")
         m = {key: acc}
         # Direct trainer.log() bypasses TRL 0.16's mid-step log-decision
@@ -419,6 +435,36 @@ def build_combined_dataset(source: str, max_rows: int = 0):
     return Dataset.from_list(rows)
 
 
+def build_json_dataset(source: str, split: str = "train", max_rows: int = 0):
+    """Loader for danish-json-grpo-v1 (or successor). `source` = HF repo id
+    or local save_to_disk path. Emits mixed-compatible rows with task='json'
+    and JSON-specific columns for reward_json_schema."""
+    from pathlib import Path as _P
+    p = _P(source)
+    if p.exists() and (p / "state.json").exists():
+        from datasets import load_from_disk as _lfd
+        ds = _lfd(str(p))
+    else:
+        ds = load_dataset(source, split=split)
+    rows = []
+    for i, r in enumerate(ds):
+        if max_rows and i >= max_rows:
+            break
+        u = r["prompt"]
+        rows.append({
+            "prompt": f"{USER}{u}{END}{ASST}",
+            "task": "json",
+            "gold": "",
+            "constraints": [],
+            "params": [],
+            "fields": list(r["fields"]),
+            "types": list(r["types"]),
+            "strict": bool(r["strict"]),
+            "passage": r.get("passage") or "",
+        })
+    return Dataset.from_list(rows)
+
+
 def build_mixed_dataset(combined_source: str, max_rows: int = 0,
                         gsm_frac: float = 0.5, seed: int = 42):
     """Interleave gsm8k train + combined-IF into a single dataset with a
@@ -481,7 +527,9 @@ def build_ifeval_da_dataset(max_rows: int = 0):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["gsm8k", "ifeval", "combined", "mixed"], required=True)
+    ap.add_argument("--task", choices=["gsm8k", "ifeval", "combined", "mixed", "json"], required=True)
+    ap.add_argument("--json-source", default="jensjepsen/danish-json-grpo-v1",
+                    help="Source for --task=json (HF repo or local path).")
     ap.add_argument("--checkpoint", required=True,
                     help="HF repo or local path — SFT starting model")
     ap.add_argument("--combined-source", default=None,
@@ -492,14 +540,17 @@ def main():
     ap.add_argument("--gsm-frac", type=float, default=0.5,
                     help="For --task=mixed: fraction of gsm8k rows in the "
                          "interleaved mix (0.5 = ~equal count vs IF rows).")
-    ap.add_argument("--greedy-eval-task", choices=["auto", "ifeval-da", "same", "both"],
+    ap.add_argument("--greedy-eval-task",
+                    choices=["auto", "ifeval-da", "same", "both", "json"],
                     default="auto",
                     help="Which dataset the greedy-eval callback uses. "
                          "'same' = same as --task's train dataset (default for "
                          "gsm8k/ifeval). 'ifeval-da' = the 541-row benchmark "
                          "(default for combined). 'both' = attach both the "
                          "ifeval-da benchmark AND the gsm8k test-set callback "
-                         "(default for --task=mixed). 'auto' picks per --task.")
+                         "(default for --task=mixed). 'json' = 200-row eval split "
+                         "of --json-source (default for --task=json). "
+                         "'auto' picks per --task.")
     ap.add_argument("--tokenizer", default=None,
                     help="Defaults to --checkpoint")
     ap.add_argument("--output-dir", required=True)
@@ -621,6 +672,12 @@ def main():
         ds = build_combined_dataset(args.combined_source, max_rows=args.max_rows or 0)
         reward_fn = reward_ifeval_combined
         # No separate eval split; greedy-eval callback handles benchmarking.
+    elif args.task == "json":
+        ds = build_json_dataset(args.json_source, split="train",
+                                max_rows=args.max_rows or 0)
+        from esperanto_lm.rl_rewards import reward_mixed as _reward_mixed
+        reward_fn = _reward_mixed
+        # Held-out eval handled by JSON eval callback (or greedy-eval `--greedy-eval-task json`).
     else:  # mixed
         assert args.combined_source, "--combined-source required for --task=mixed"
         ds = build_mixed_dataset(args.combined_source,
@@ -732,6 +789,8 @@ def main():
                 eval_task = "ifeval-da"
             elif args.task == "mixed":
                 eval_task = "both"
+            elif args.task == "json":
+                eval_task = "json"
             else:
                 eval_task = "same"
 
@@ -757,11 +816,28 @@ def main():
             cb._trainer = trainer  # direct trainer.log() bypasses on_log
             trainer.add_callback(cb)
 
+        def _attach_json():
+            jds = build_json_dataset(args.json_source, split="eval",
+                                     max_rows=args.greedy_eval_max_rows)
+            j_items = [(r["prompt"], r["fields"], r["types"],
+                        bool(r["strict"]), r.get("passage") or "")
+                       for r in jds]
+            cb = GreedyEvalCallback(
+                tokenizer=tok, items=j_items, task="json",
+                every_n_steps=args.greedy_eval_steps,
+                max_new_tokens=args.max_completion_length,
+                batch_size=args.batch_size,
+            )
+            cb._trainer = trainer
+            trainer.add_callback(cb)
+
         if eval_task == "ifeval-da":
             _attach_ifeval_da()
         elif eval_task == "both":
             _attach_ifeval_da()
             _attach_gsm8k()
+        elif eval_task == "json":
+            _attach_json()
         else:  # 'same' — task-specific single greedy callback
             if args.task == "gsm8k":
                 _attach_gsm8k()

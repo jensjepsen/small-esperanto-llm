@@ -31,6 +31,11 @@ dependencies = [
     "immutabledict>=4.0",
     "langdetect>=1.0.9",
     "nltk>=3.8",
+    # scripts/ifbench_ai2/instructions.py (Allen AI IFBench verifiers used
+    # by scripts/eval_ifbench_da.py). Verifiers rely on emoji classification
+    # and English syllable counting; both are pure-python, no CUDA.
+    "emoji>=2.0",
+    "syllapy>=0.7",
 ]
 
 [project.optional-dependencies]
