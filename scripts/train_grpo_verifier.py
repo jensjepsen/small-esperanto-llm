@@ -487,39 +487,77 @@ def build_json_dataset(source: str, split: str = "train", max_rows: int = 0):
 
 
 def build_mixed_dataset(combined_source: str, max_rows: int = 0,
-                        gsm_frac: float = 0.5, seed: int = 42):
-    """Interleave gsm8k train + combined-IF into a single dataset with a
-    `task` marker per row. `gsm_frac` sets the ratio of gsm8k rows
-    relative to IF rows in the final mix (0.5 = ~equal). Unused columns
-    are filled with defaults so all rows share the same schema:
-       prompt (str), task ("gsm8k"|"ifeval"), gold (str),
-       constraints (list[str]), params (list[dict])
+                        gsm_frac: float = 0.5, seed: int = 42,
+                        json_source: str | None = None,
+                        json_frac: float = 0.0):
+    """Interleave gsm8k train + combined-IF (+ optional json) into a single
+    dataset with a `task` marker per row.
+
+    Ratios are `gsm_frac` and `json_frac` as shares of the FINAL mix (must
+    sum to <= 1). The remainder goes to IF.
+
+    Schema uniformity: all rows carry the union of columns
+      prompt, task, gold, constraints, params,
+      fields, types, strict, passage, gold_values
+    with empty defaults where a task doesn't use a given column. This is
+    required by Arrow: mixed-shape rows can't be concatenated.
     """
     import random as _r
     rng = _r.Random(seed)
-    # IF side
+
+    _EMPTY_JSON = {"fields": [], "types": [], "strict": False,
+                   "passage": "", "gold_values": ""}
+
+    # IF side (always included)
     ifds = build_combined_dataset(combined_source, max_rows=0)
     if_rows = [{"prompt": r["prompt"], "task": "ifeval",
                 "gold": "",
-                "constraints": r["constraints"], "params": r["params"]}
+                "constraints": r["constraints"], "params": r["params"],
+                **_EMPTY_JSON}
                for r in ifds]
+
     # gsm8k side
     gds = build_gsm8k_dataset("train", max_rows=0)
-    gsm_rows = [{"prompt": f"{USER} {r['prompt'][len(USER):].strip()}" if r["prompt"].startswith(USER) else r["prompt"],
+    gsm_rows = [{"prompt": (f"{USER} {r['prompt'][len(USER):].strip()}"
+                            if r["prompt"].startswith(USER) else r["prompt"]),
                  "task": "gsm8k",
                  "gold": r["gold"],
-                 "constraints": [], "params": []}
+                 "constraints": [], "params": [],
+                 **_EMPTY_JSON}
                 for r in gds]
-    # Cap gsm to `gsm_frac` share of total (bias if_rows to fully use)
+
+    # JSON side (optional)
+    json_rows = []
+    if json_source and json_frac > 0:
+        jds = build_json_dataset(json_source, split="train", max_rows=0)
+        json_rows = [{"prompt": r["prompt"], "task": "json",
+                      "gold": "", "constraints": [], "params": [],
+                      "fields": list(r["fields"]),
+                      "types": list(r["types"]),
+                      "strict": bool(r["strict"]),
+                      "passage": r["passage"],
+                      "gold_values": r["gold_values"]}
+                     for r in jds]
+
+    # Downsample gsm & json to hit target fractions vs IF (fully used).
     n_if = len(if_rows)
-    n_gsm_target = int(round(n_if * (gsm_frac / max(1e-6, 1 - gsm_frac))))
+    if_share = max(1e-6, 1.0 - gsm_frac - json_frac)
+    total_target = n_if / if_share
+    n_gsm_target = int(round(total_target * gsm_frac))
+    n_json_target = int(round(total_target * json_frac))
     if len(gsm_rows) > n_gsm_target:
         rng.shuffle(gsm_rows)
         gsm_rows = gsm_rows[:n_gsm_target]
-    rows = if_rows + gsm_rows
+    if len(json_rows) > n_json_target:
+        rng.shuffle(json_rows)
+        json_rows = json_rows[:n_json_target]
+
+    rows = if_rows + gsm_rows + json_rows
     rng.shuffle(rows)
     if max_rows and len(rows) > max_rows:
         rows = rows[:max_rows]
+    print(f"  [build_mixed] if={len(if_rows)}  gsm={len(gsm_rows)}  "
+          f"json={len(json_rows)}  total={len(rows)}", flush=True)
     return Dataset.from_list(rows)
 
 
@@ -561,17 +599,21 @@ def main():
     ap.add_argument("--gsm-frac", type=float, default=0.5,
                     help="For --task=mixed: fraction of gsm8k rows in the "
                          "interleaved mix (0.5 = ~equal count vs IF rows).")
+    ap.add_argument("--json-frac", type=float, default=0.0,
+                    help="For --task=mixed: fraction of json rows in the "
+                         "interleaved mix (0 = no json). --json-source is "
+                         "used as the row source.")
     ap.add_argument("--greedy-eval-task",
-                    choices=["auto", "ifeval-da", "same", "both", "json"],
+                    choices=["auto", "ifeval-da", "same", "both", "json", "all3"],
                     default="auto",
                     help="Which dataset the greedy-eval callback uses. "
                          "'same' = same as --task's train dataset (default for "
                          "gsm8k/ifeval). 'ifeval-da' = the 541-row benchmark "
-                         "(default for combined). 'both' = attach both the "
-                         "ifeval-da benchmark AND the gsm8k test-set callback "
-                         "(default for --task=mixed). 'json' = 200-row eval split "
-                         "of --json-source (default for --task=json). "
-                         "'auto' picks per --task.")
+                         "(default for combined). 'both' = ifeval-da + gsm8k "
+                         "(default for --task=mixed without json). 'all3' = "
+                         "ifeval-da + gsm8k + json (recommended for mixed with "
+                         "--json-frac > 0). 'json' = 200-row json eval split "
+                         "(default for --task=json). 'auto' picks per --task.")
     ap.add_argument("--tokenizer", default=None,
                     help="Defaults to --checkpoint")
     ap.add_argument("--output-dir", required=True)
@@ -703,9 +745,12 @@ def main():
         assert args.combined_source, "--combined-source required for --task=mixed"
         ds = build_mixed_dataset(args.combined_source,
                                  max_rows=args.max_rows or 0,
-                                 gsm_frac=args.gsm_frac)
+                                 gsm_frac=args.gsm_frac,
+                                 json_source=(args.json_source
+                                              if args.json_frac > 0 else None),
+                                 json_frac=args.json_frac)
         reward_fn = reward_mixed
-        # Greedy-eval callback attaches BOTH ifeval-da and gsm8k below.
+        # Greedy-eval callback attaches ifeval-da, gsm8k, and optionally json below.
     if args.max_rows and len(ds) > args.max_rows:
         ds = ds.select(range(args.max_rows))
     print(f"  train {len(ds)} rows"
@@ -809,7 +854,7 @@ def main():
             if args.task == "combined":
                 eval_task = "ifeval-da"
             elif args.task == "mixed":
-                eval_task = "both"
+                eval_task = "all3" if args.json_frac > 0 else "both"
             elif args.task == "json":
                 eval_task = "json"
             else:
@@ -867,6 +912,10 @@ def main():
         elif eval_task == "both":
             _attach_ifeval_da()
             _attach_gsm8k()
+        elif eval_task == "all3":
+            _attach_ifeval_da()
+            _attach_gsm8k()
+            _attach_json()
         elif eval_task == "json":
             _attach_json()
         else:  # 'same' — task-specific single greedy callback
