@@ -438,7 +438,14 @@ def build_combined_dataset(source: str, max_rows: int = 0):
 def build_json_dataset(source: str, split: str = "train", max_rows: int = 0):
     """Loader for danish-json-grpo-v1 (or successor). `source` = HF repo id
     or local save_to_disk path. Emits mixed-compatible rows with task='json'
-    and JSON-specific columns for reward_json_schema."""
+    and JSON-specific columns for reward_json_schema.
+
+    Fixup: v1 dataset has ~19% rows (mostly fill_template @ 87%) where the
+    Gemini rewriter dropped the source passage from the prompt text even
+    though it stored one in the `passage` field. Without the passage inline,
+    the model has nothing to extract from and the reward is forced-fail
+    noise. When passage exists but isn't inline, we prepend it explicitly.
+    """
     from pathlib import Path as _P
     p = _P(source)
     if p.exists() and (p / "state.json").exists():
@@ -447,10 +454,17 @@ def build_json_dataset(source: str, split: str = "train", max_rows: int = 0):
     else:
         ds = load_dataset(source, split=split)
     rows = []
+    n_fixed = 0
     for i, r in enumerate(ds):
         if max_rows and i >= max_rows:
             break
         u = r["prompt"]
+        passage = r.get("passage") or ""
+        if passage and len(passage) > 30:
+            # Not inline if first 40 chars of passage don't appear in prompt.
+            if passage.strip()[:40] not in u:
+                u = f"{u}\n\nKildetekst:\n{passage.strip()}"
+                n_fixed += 1
         rows.append({
             "prompt": f"{USER}{u}{END}{ASST}",
             "task": "json",
@@ -460,8 +474,11 @@ def build_json_dataset(source: str, split: str = "train", max_rows: int = 0):
             "fields": list(r["fields"]),
             "types": list(r["types"]),
             "strict": bool(r["strict"]),
-            "passage": r.get("passage") or "",
+            "passage": passage,
         })
+    if n_fixed:
+        print(f"  [build_json_dataset] appended passage inline for {n_fixed}/{len(rows)} "
+              f"rows (Gemini-drop fixup)", flush=True)
     return Dataset.from_list(rows)
 
 
