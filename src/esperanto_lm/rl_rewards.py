@@ -204,21 +204,35 @@ def _value_matches(pred, gold, t: str) -> bool:
     return pred == gold
 
 
+def _is_nullish(v) -> bool:
+    """None, empty string, or whitespace-only string."""
+    if v is None:
+        return True
+    if isinstance(v, str) and not v.strip():
+        return True
+    return False
+
+
 def reward_json_schema(completion: str, fields: list[str], strict: bool,
                        passage: str | None = None, types: list[str] | None = None,
                        gold_values: dict | None = None) -> float:
-    """Graded reward for schema-directed JSON gen. Returns in [0, 1.2].
+    """Graded reward for schema-directed JSON gen.
 
-    0.0             — unparseable JSON
-    0.3             — parses to a dict, no required fields matched
-    +up to 0.4      — linear on fraction of required fields present (superset frac)
-    +0.3            — all required present (bonus). Under `strict`, extra keys forfeit this.
-    +up to 0.2      — value-match fraction vs `gold_values` (only when gold_values is provided).
-                      Per-type comparison: str case-ins-strip-equal, int/float exact-ish,
-                      bool exact, list[str] case-ins set-equal.
+    Score ladder (max 1.2 for rows with `gold_values`, 1.0 otherwise):
+      0.0             — unparseable JSON
+      0.3             — parses to a dict, no required fields matched
+      +up to 0.4      — linear on fraction of required fields present (superset frac)
+      +0.3            — all required present. Under `strict`, extra keys forfeit this.
+      +up to 0.2      — value-match fraction vs `gold_values` (only when gold_values given).
+                        Per-type: str case-ins-strip-equal, int/float exact-ish, bool
+                        exact, list[str] case-ins set-equal.
+      -0.15 per null  — for extract/rewrite/fill_template rows (i.e. `passage` given),
+                        each required field whose output value is null / empty / whitespace-only.
+                        Kills the fill_template null-template-parrot shortcut where
+                        model scored ~1.0 by returning the empty scaffold verbatim.
 
-    Grounding penalty from prior versions is dropped — gold value match is a
-    stronger signal (a value that matches the gold IS grounded by construction).
+    Grounding penalty from earlier versions is dropped — gold value match is a
+    stronger signal (a value matching gold IS grounded by construction).
     """
     obj = _try_parse_json(completion)
     if obj is None or not isinstance(obj, dict):
@@ -246,6 +260,10 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
                 n_match += 1
         if n_gold > 0:
             r += 0.2 * (n_match / n_gold)
+    if passage:
+        # Null penalty: punishes template-parrot / lazy-fill hack.
+        n_null = sum(1 for f in fields if f in obj and _is_nullish(obj[f]))
+        r -= 0.15 * n_null
     return round(max(0.0, r), 4)
 
 
