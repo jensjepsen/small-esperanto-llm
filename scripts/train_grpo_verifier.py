@@ -871,7 +871,11 @@ def main():
             trainer.add_callback(cb)
 
         def _attach_gsm8k():
-            gds = build_gsm8k_dataset("test", max_rows=args.greedy_eval_max_rows)
+            # Always full test set (1317 rows). The first-N cap left over from
+            # `--greedy-eval-max-rows` is biased — the first ~200 rows of
+            # danish-gsm8k:test are systematically easier (translation preserves
+            # the original GSM8K order), so a 200-row subset overreports by ~5pp.
+            gds = build_gsm8k_dataset("test", max_rows=0)
             items = [(r["prompt"], r["gold"]) for r in gds]
             cb = GreedyEvalCallback(
                 tokenizer=tok, items=items, task="gsm8k",
