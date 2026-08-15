@@ -172,15 +172,53 @@ def _norm_pass(s: str) -> str:
     return " ".join(s.lower().replace("\n", " ").split())
 
 
+def _value_matches(pred, gold, t: str) -> bool:
+    """Best-effort per-type equality against gold."""
+    if pred is None:
+        return False
+    if t == "str":
+        if not isinstance(pred, str):
+            pred = str(pred)
+        g = gold if isinstance(gold, str) else str(gold)
+        return pred.strip().lower() == g.strip().lower()
+    if t == "int":
+        try:
+            return int(str(pred).replace(",", "").split(".")[0].strip()) == int(gold)
+        except (TypeError, ValueError):
+            return False
+    if t == "float":
+        try:
+            return abs(float(str(pred).replace(",", ".")) - float(gold)) < 1e-3
+        except (TypeError, ValueError):
+            return False
+    if t == "bool":
+        try:
+            return bool(pred) == bool(gold)
+        except Exception:
+            return False
+    if t == "list[str]":
+        if not isinstance(pred, list) or not isinstance(gold, list):
+            return False
+        return sorted(str(x).strip().lower() for x in pred) == sorted(str(x).strip().lower() for x in gold)
+    # dict / unknown — exact equal, best effort
+    return pred == gold
+
+
 def reward_json_schema(completion: str, fields: list[str], strict: bool,
-                       passage: str | None = None, types: list[str] | None = None) -> float:
-    """Graded reward for schema-directed JSON gen. Returns in [0, 1].
+                       passage: str | None = None, types: list[str] | None = None,
+                       gold_values: dict | None = None) -> float:
+    """Graded reward for schema-directed JSON gen. Returns in [0, 1.2].
 
     0.0             — unparseable JSON
-    0.3             — parses, dict, no required fields matched
+    0.3             — parses to a dict, no required fields matched
     +up to 0.4      — linear on fraction of required fields present (superset frac)
     +0.3            — all required present (bonus). Under `strict`, extra keys forfeit this.
-    -0.1 per        — string-typed value NOT a substring of `passage` (grounding penalty)
+    +up to 0.2      — value-match fraction vs `gold_values` (only when gold_values is provided).
+                      Per-type comparison: str case-ins-strip-equal, int/float exact-ish,
+                      bool exact, list[str] case-ins set-equal.
+
+    Grounding penalty from prior versions is dropped — gold value match is a
+    stronger signal (a value that matches the gold IS grounded by construction).
     """
     obj = _try_parse_json(completion)
     if obj is None or not isinstance(obj, dict):
@@ -196,14 +234,18 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
                 r += 0.3
         else:
             r += 0.3
-    if passage:
-        np_ = _norm_pass(passage)
+    if gold_values and isinstance(gold_values, dict):
         types = types or [""] * len(fields)
+        n_gold = 0
+        n_match = 0
         for f, t in zip(fields, types):
-            if t == "str":
-                v = obj.get(f)
-                if isinstance(v, str) and v and _norm_pass(v) not in np_:
-                    r -= 0.1
+            if f not in gold_values:
+                continue
+            n_gold += 1
+            if _value_matches(obj.get(f), gold_values[f], t):
+                n_match += 1
+        if n_gold > 0:
+            r += 0.2 * (n_match / n_gold)
     return round(max(0.0, r), 4)
 
 
@@ -216,6 +258,7 @@ def reward_mixed(completions: list[str],
                  types: list[list[str]] | None = None,
                  strict: list[bool] | None = None,
                  passage: list[str | None] | None = None,
+                 gold_values: list[str | dict | None] | None = None,
                  **_):
     """Per-example dispatch reward for mixing gsm8k + combined-IF + json training.
 
@@ -234,10 +277,11 @@ def reward_mixed(completions: list[str],
     types = types or [None] * N
     strict = strict or [False] * N
     passage = passage or [None] * N
+    gold_values = gold_values or [None] * N
 
     out = []
-    for text, t, g, cons, p, f, ty, st, ps in zip(
-        completions, task, gold, constraints, params, fields, types, strict, passage
+    for text, t, g, cons, p, f, ty, st, ps, gv in zip(
+        completions, task, gold, constraints, params, fields, types, strict, passage, gold_values
     ):
         if t == "gsm8k":
             out.append(reward_gsm8k([text], gold=[g])[0])
@@ -245,7 +289,21 @@ def reward_mixed(completions: list[str],
             if not f:
                 out.append(0.0)
                 continue
-            out.append(reward_json_schema(text, f, bool(st), passage=ps or None, types=ty))
+            # gold_values arrives from Arrow as a JSON string (dict schemas
+            # vary per row, so the dataset stores it serialized).
+            gv_dict = None
+            if gv:
+                if isinstance(gv, dict):
+                    gv_dict = gv
+                elif isinstance(gv, str) and gv.strip():
+                    try:
+                        gv_dict = json.loads(gv)
+                    except (TypeError, ValueError):
+                        gv_dict = None
+            out.append(reward_json_schema(
+                text, f, bool(st), passage=ps or None, types=ty,
+                gold_values=gv_dict,
+            ))
         else:  # ifeval / combined
             out.append(reward_ifeval_combined([text], [cons or []], [p or []])[0])
     return out

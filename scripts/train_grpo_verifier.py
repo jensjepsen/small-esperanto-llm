@@ -250,7 +250,7 @@ class GreedyEvalCallback(TrainerCallback):
         """items schema:
              gsm8k:   list of (prompt, gold_answer_string)
              ifeval:  list of (prompt, constraints_list, params_json_string)
-             json:    list of (prompt, fields_list, types_list, strict_bool, passage_str)"""
+             json:    list of (prompt, fields_list, types_list, strict_bool, passage_str, gold_dict_or_None)"""
         self.tok = tokenizer
         self.items = items
         self.task = task
@@ -313,7 +313,9 @@ class GreedyEvalCallback(TrainerCallback):
                     print(f"  [greedy-eval] {done}/{len(self.items)} mean_pass={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
                 elif self.task == "json":
                     scores_so_far = [
-                        reward_json_schema(o, r[1], r[3], passage=(r[4] or None), types=r[2])
+                        reward_json_schema(o, r[1], r[3], passage=(r[4] or None),
+                                           types=r[2],
+                                           gold_values=(r[5] if len(r) > 5 else None))
                         for o, r in zip(outs, self.items[:done])
                     ]
                     print(f"  [greedy-eval] {done}/{len(self.items)} mean_reward={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
@@ -342,7 +344,8 @@ class GreedyEvalCallback(TrainerCallback):
             acc = sum(scores) / max(1, len(scores))
         elif self.task == "json":
             scores = [
-                reward_json_schema(o, r[1], r[3], passage=(r[4] or None), types=r[2])
+                reward_json_schema(o, r[1], r[3], passage=(r[4] or None), types=r[2],
+                                   gold_values=(r[5] if len(r) > 5 else None))
                 for o, r in zip(outs, self.items)
             ]
             acc = sum(scores) / max(1, len(scores))
@@ -475,6 +478,7 @@ def build_json_dataset(source: str, split: str = "train", max_rows: int = 0):
             "types": list(r["types"]),
             "strict": bool(r["strict"]),
             "passage": passage,
+            "gold_values": r.get("gold_values") or "",  # JSON string; reward decodes
         })
     if n_fixed:
         print(f"  [build_json_dataset] appended passage inline for {n_fixed}/{len(rows)} "
@@ -836,8 +840,18 @@ def main():
         def _attach_json():
             jds = build_json_dataset(args.json_source, split="eval",
                                      max_rows=args.greedy_eval_max_rows)
+            def _decode_gold(g):
+                if not g:
+                    return None
+                if isinstance(g, dict):
+                    return g
+                try:
+                    return json.loads(g)
+                except (TypeError, ValueError):
+                    return None
             j_items = [(r["prompt"], r["fields"], r["types"],
-                        bool(r["strict"]), r.get("passage") or "")
+                        bool(r["strict"]), r.get("passage") or "",
+                        _decode_gold(r.get("gold_values")))
                        for r in jds]
             cb = GreedyEvalCallback(
                 tokenizer=tok, items=j_items, task="json",
