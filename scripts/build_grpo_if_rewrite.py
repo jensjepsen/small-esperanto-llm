@@ -353,6 +353,8 @@ def _kind_of(name: str) -> str:
         return "placeholder"
     if any(k in n for k in ["multiple_sections", "sections"]):
         return "sections"
+    if any(k in n for k in ["letter_frequency", "letter_exactly", "letter_freq"]):
+        return "letter_freq"
     return name  # unique-per-name for anything else
 
 
