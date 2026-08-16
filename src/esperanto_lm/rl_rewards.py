@@ -213,6 +213,26 @@ def _is_nullish(v) -> bool:
     return False
 
 
+def _type_shape_ok(v, t: str) -> bool:
+    """True if v matches the declared JSON type in the seed schema.
+    Strict on output shape — string-in-int-slot / string-in-list-slot etc. fail.
+    Gold-value match remains permissive (int-shaped string parses fine); this
+    penalty is purely about the raw type."""
+    if t == "str":
+        return isinstance(v, str)
+    if t == "int":
+        return isinstance(v, int) and not isinstance(v, bool)
+    if t == "float":
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+    if t == "bool":
+        return isinstance(v, bool)
+    if t == "list[str]":
+        return isinstance(v, list) and all(isinstance(x, str) for x in v)
+    if t == "dict":
+        return isinstance(v, dict)
+    return True  # unknown type — don't penalize
+
+
 def reward_json_schema(completion: str, fields: list[str], strict: bool,
                        passage: str | None = None, types: list[str] | None = None,
                        gold_values: dict | None = None) -> float:
@@ -264,6 +284,17 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
         # Null penalty: punishes template-parrot / lazy-fill hack.
         n_null = sum(1 for f in fields if f in obj and _is_nullish(obj[f]))
         r -= 0.15 * n_null
+    if types:
+        # Type-shape penalty (universal): punishes wrong raw JSON type per
+        # field. E.g. `"pris": "175.00"` (str for float), `"labels": "a, b"`
+        # (str for list[str]). Fires only for fields present in output;
+        # missing-field is already handled by the superset-frac term.
+        # Applies to all task_types incl. generate (which has no gold).
+        n_type_mis = sum(
+            1 for f, t in zip(fields, types)
+            if f in obj and not _type_shape_ok(obj[f], t)
+        )
+        r -= 0.05 * n_type_mis
     return round(max(0.0, r), 4)
 
 
