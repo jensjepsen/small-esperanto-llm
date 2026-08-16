@@ -16,10 +16,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+# Apply Liger kernels (RoPE, RMSNorm, SwiGLU) before any Llama model is
+# created. Skips fused_linear_cross_entropy since GRPO computes per-token
+# log-probs manually (no standard CE loss path); enabling it just risks
+# subtle interactions with TRL's log-prob math. ESPLLM_NO_LIGER=1 to skip.
+if os.getenv("ESPLLM_NO_LIGER") != "1":
+    try:
+        from liger_kernel.transformers import apply_liger_kernel_to_llama
+        apply_liger_kernel_to_llama(
+            rope=True, rms_norm=True, swiglu=True,
+            fused_linear_cross_entropy=False, cross_entropy=False,
+        )
+        print("[liger] RoPE + RMSNorm + SwiGLU kernels applied", flush=True)
+    except ImportError:
+        print("[liger] not installed, running vanilla", flush=True)
 
 import re
 import torch
