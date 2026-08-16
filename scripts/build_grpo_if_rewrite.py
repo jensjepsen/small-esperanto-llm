@@ -125,8 +125,13 @@ async def call_gemma(prompt: str, max_retries: int = 4) -> dict | None:
 _KW_POOL = ["Danmark", "København", "sommer", "vinter", "havet", "bog",
             "musik", "kaffe", "familie", "arbejde", "skole", "rejse",
             "kunst", "historie", "videnskab", "natur", "byen", "landet"]
-_FORBID_POOL = ["meget", "faktisk", "altså", "sådan", "godt", "typisk",
-                "generelt", "grundlæggende", "især", "nemlig"]
+_FORBID_POOL = [
+    # Filler adverbs
+    "meget", "faktisk", "altså", "sådan", "godt", "typisk",
+    "generelt", "grundlæggende", "især", "nemlig",
+    # Mid-difficulty connectives — harder to avoid without breaking flow.
+    "men", "eller", "hvis", "fordi", "derfor", "også", "når", "mens",
+]
 
 
 def _google_pool():

@@ -91,9 +91,13 @@ _KEYWORD_POOL = [
 ]
 
 _COMMON_CRUTCHES = [
+    # Filler adverbs / discourse
     "meget", "faktisk", "altså", "sådan", "godt", "man", "jo", "vist",
     "bare", "lige", "simpelthen", "egentlig", "typisk", "generelt",
     "grundlæggende", "især", "nemlig", "således",
+    # Mid-difficulty connectives — harder to avoid without breaking flow,
+    # but not impossible (unlike `og` which is Danish's primary conjunction).
+    "men", "eller", "hvis", "fordi", "derfor", "også", "når", "mens",
 ]
 
 _STARTS_POOL = [
@@ -429,6 +433,27 @@ letter_frequency = Constraint(
     sample=lambda rng, ctx: {
         "letter": rng.choice(["a", "e", "i", "o", "s", "t", "r", "n"]),
         "n": rng.choice([5, 8, 12, 20]),
+    },
+)
+
+
+letter_exactly_n_times = Constraint(
+    name="letter_exactly_n_times",
+    render_variants=[
+        lambda p: f'Bogstavet "{p["letter"]}" skal forekomme præcis {p["n"]} gange (store og små ens).',
+        lambda p: f'Brug bogstavet "{p["letter"]}" nøjagtig {p["n"]} gange — hverken flere eller færre.',
+        lambda p: f'Antal "{p["letter"]}"-bogstaver: præcis {p["n"]}.',
+        lambda p: f'"{p["letter"]}" skal optræde nøjagtigt {p["n"]} gange samlet i svaret.',
+    ],
+    check=lambda t, p: t.lower().count(p["letter"].lower()) == p["n"],
+    # Shares tag with letter_frequency so combos don't pick both at once.
+    tags=frozenset({"lexical:letter_freq"}),
+    sample=lambda rng, ctx: {
+        # Full Danish alphabet (29 letters). Common vowels like 'e' are
+        # genuinely hard to hit exactly in natural prose, but that's the
+        # point — forces targeted composition.
+        "letter": rng.choice(list("abcdefghijklmnopqrstuvwxyzæøå")),
+        "n": rng.choice([1, 2, 3, 4, 5, 6, 7, 8]),
     },
 )
 
@@ -1080,7 +1105,7 @@ ALL: list[Constraint] = [
     # Lexical
     include_keyword, include_all_keywords, exclude_word,
     starts_with_phrase, ends_with_phrase,
-    keyword_exactly_n_times, uppercase_keyword, letter_frequency,
+    keyword_exactly_n_times, uppercase_keyword, letter_frequency, letter_exactly_n_times,
     # Format
     numbered_list_n_items, bullet_list_n_items, markdown_table, section_headers,
     n_italic_sections, n_bold_sections, title_wrapped, n_placeholders, no_lists,
