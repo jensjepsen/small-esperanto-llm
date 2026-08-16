@@ -70,24 +70,55 @@ _KEYWORD_POOL = [
     # Geography / place
     "Danmark", "København", "Aarhus", "Odense", "Aalborg", "Jylland", "Fyn",
     "Sjælland", "Bornholm", "Norden", "Europa", "havet", "søen", "skoven",
+    "byen", "landet", "landsby", "hovedstad", "region", "kommune", "Grønland",
+    "Færøerne", "fjord", "strand", "kyst", "øen", "bjerg", "dal", "eng",
     # Nature / weather
     "sommer", "vinter", "forår", "efterår", "solen", "månen", "regn", "sne",
-    "vind", "storm", "blomster", "træer", "fugle",
-    # Everyday
+    "vind", "storm", "blomster", "træer", "fugle", "bølge", "sky", "tåge",
+    "torden", "lyn", "regnbue", "is", "frost", "dug", "vandet", "ilden",
+    "jord", "sand", "sten", "klippe", "græs", "løv", "blad", "rod",
+    # Animals
+    "hund", "kat", "hest", "ko", "får", "gris", "kylling", "ørn", "ulv",
+    "bjørn", "ræv", "hare", "sæl", "hval", "ørred", "laks", "bi", "myre",
+    # Body / health
+    "hånd", "fod", "hjerte", "øje", "ansigt", "hår", "hoved", "krop", "hud",
+    "blod", "søvn", "smerte", "helbred", "puls",
+    # Colors
+    "rød", "blå", "grøn", "gul", "hvid", "sort", "brun", "grå", "lyseblå",
+    # Everyday food + drink
     "kaffe", "brød", "vin", "smør", "morgenmad", "middag", "aftensmad",
-    "cykel", "tog", "bus", "bil", "gåtur",
+    "æble", "pære", "banan", "ost", "fisk", "kød", "sukker", "salt",
+    "honning", "kage", "chokolade", "te", "juice", "øl", "mælk",
+    # Transport / travel
+    "cykel", "tog", "bus", "bil", "gåtur", "fly", "skib", "båd", "metro",
+    "sporvogn", "havn", "lufthavn", "station",
     # Society / abstract
     "regering", "kunst", "musik", "litteratur", "historie", "videnskab",
     "teknologi", "sundhed", "uddannelse", "arbejde", "familie", "venner",
-    "kærlighed", "glæde", "håb", "drøm", "tanke", "idé",
-    # Objects
+    "kærlighed", "glæde", "håb", "drøm", "tanke", "idé", "angst", "sorg",
+    "vrede", "mod", "frygt", "latter", "sang", "dans",
+    # Objects / household
     "bog", "avis", "brev", "telefon", "computer", "lampe", "vindue", "dør",
-    "bord", "stol", "sæbe", "vand",
+    "bord", "stol", "sæbe", "vand", "seng", "tæppe", "kop", "gaffel", "kniv",
+    "ur", "nøgle", "spejl", "billede",
+    # Buildings
+    "hus", "slot", "kirke", "tårn", "bro", "borg", "bibliotek", "museum",
+    "hospital", "rådhus", "butik", "café",
     # People roles
     "lærer", "læge", "kok", "bonde", "kunstner", "forfatter", "politiker",
-    "barn", "voksen", "ven", "nabo",
+    "barn", "voksen", "ven", "nabo", "chef", "kollega", "student", "pensionist",
+    "arkitekt", "ingeniør", "musiker", "atlet",
     # School / life
     "skole", "eksamen", "ferie", "weekend", "fest", "møde", "rejse",
+    "universitet", "kursus", "opgave", "projekt", "bryllup", "fødselsdag",
+    # Time
+    "morgen", "aften", "nat", "dag", "uge", "måned", "år", "time", "minut",
+    "sekund", "dato", "årstid",
+    # Danish culture
+    "hygge", "kolonihave", "smørrebrød", "Dannebrog", "gadekær", "flag",
+    "julegaven", "sommerhus",
+    # Numbers / abstract quantities
+    "tal", "nul", "en", "to", "tre", "hundred", "tusind",
 ]
 
 _COMMON_CRUTCHES = [
