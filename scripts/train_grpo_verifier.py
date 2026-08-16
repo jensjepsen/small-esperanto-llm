@@ -662,6 +662,11 @@ def main():
                          "eval_greedy_pass@1. Apples-to-apples with SFT "
                          "downstream eval, unlike TRL's sampled eval_reward.")
     ap.add_argument("--greedy-eval-max-rows", type=int, default=200)
+    ap.add_argument("--greedy-eval-batch-size", type=int, default=128,
+                    help="Batch size for greedy-eval callbacks. Decoupled "
+                         "from --batch-size (train rollout) since eval has "
+                         "no gradients + no rollout expansion → much less "
+                         "VRAM per example. Default 128 = ~4x train batch.")
     ap.add_argument("--skip-zero-adv", action="store_true",
                     help="Zero out completion_mask for groups where all "
                          "rollouts scored the same reward (std==0 → "
@@ -879,7 +884,7 @@ def main():
                 tokenizer=tok,
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
-                batch_size=args.batch_size,
+                batch_size=args.greedy_eval_batch_size,
             )
             cb._trainer = trainer  # so callback can call trainer.log()
             trainer.add_callback(cb)
@@ -895,7 +900,7 @@ def main():
                 tokenizer=tok, items=items, task="gsm8k",
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
-                batch_size=args.batch_size,
+                batch_size=args.greedy_eval_batch_size,
             )
             cb._trainer = trainer  # direct trainer.log() bypasses on_log
             trainer.add_callback(cb)
@@ -920,7 +925,7 @@ def main():
                 tokenizer=tok, items=j_items, task="json",
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
-                batch_size=args.batch_size,
+                batch_size=args.greedy_eval_batch_size,
             )
             cb._trainer = trainer
             trainer.add_callback(cb)
@@ -947,7 +952,7 @@ def main():
                     tokenizer=tok, items=g_items, task="combined",
                     every_n_steps=args.greedy_eval_steps,
                     max_new_tokens=args.max_completion_length,
-                    batch_size=args.batch_size,
+                    batch_size=args.greedy_eval_batch_size,
                 )
                 cb._trainer = trainer
                 trainer.add_callback(cb)
@@ -958,7 +963,7 @@ def main():
                     tokenizer=tok, items=g_items, task="ifeval",
                     every_n_steps=args.greedy_eval_steps,
                     max_new_tokens=args.max_completion_length,
-                    batch_size=args.batch_size,
+                    batch_size=args.greedy_eval_batch_size,
                 )
                 cb._trainer = trainer
                 trainer.add_callback(cb)
