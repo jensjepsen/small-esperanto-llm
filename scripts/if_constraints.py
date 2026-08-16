@@ -175,7 +175,7 @@ exactly_n_sentences = Constraint(
     ],
     check=lambda t, p: len(sentences(t)) == p["n"],
     tags=frozenset({"length:sentences"}),
-    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5, 6, 8, 10])},
+    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15])},
 )
 
 at_most_n_sentences = Constraint(
@@ -269,7 +269,7 @@ n_paragraphs = Constraint(
     ],
     check=lambda t, p: len(_paragraphs(t)) == p["n"],
     tags=frozenset({"length:paragraphs", "structure:paragraphs"}),
-    sample=lambda rng, ctx: {"n": rng.choice([2, 3, 4, 5])},
+    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5, 6, 7])},
 )
 
 nth_paragraph_first_word = Constraint(
@@ -396,7 +396,7 @@ keyword_exactly_n_times = Constraint(
     ],
     check=lambda t, p: _count_in_text(t, p["w"]) == p["n"],
     tags=frozenset({"lexical:count"}),
-    sample=lambda rng, ctx: {"w": rng.choice(_KEYWORD_POOL), "n": rng.choice([2, 3])},
+    sample=lambda rng, ctx: {"w": rng.choice(_KEYWORD_POOL), "n": rng.choice([1, 2, 3, 4, 5, 6])},
 )
 
 uppercase_keyword = Constraint(
@@ -457,7 +457,7 @@ numbered_list_n_items = Constraint(
     ],
     check=lambda t, p: len(_NUM_LIST_LINE_RE.findall(t)) == p["n"],
     tags=frozenset({"format:list", "structure:list"}),
-    sample=lambda rng, ctx: {"n": rng.choice([3, 4, 5, 6, 7, 10])},
+    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5, 6, 7, 8, 10])},
 )
 
 bullet_list_n_items = Constraint(
@@ -470,7 +470,7 @@ bullet_list_n_items = Constraint(
     ],
     check=lambda t, p: len(_BULLET_LINE_RE.findall(t)) == p["n"],
     tags=frozenset({"format:list", "structure:list"}),
-    sample=lambda rng, ctx: {"n": rng.choice([3, 4, 5, 6])},
+    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5, 6, 7, 8, 10])},
 )
 
 
@@ -538,7 +538,7 @@ n_italic_sections = Constraint(
     ],
     check=lambda t, p: len(_ITALIC_RE.findall(t)) == p["n"],
     tags=frozenset({"format:italic"}),
-    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3])},
+    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5, 6])},
 )
 
 title_wrapped = Constraint(
@@ -564,7 +564,7 @@ n_bold_sections = Constraint(
     ],
     check=lambda t, p: len(_BOLD_RE.findall(t)) == p["n"],
     tags=frozenset({"format:bold"}),
-    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3])},
+    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5, 6])},
 )
 
 
@@ -646,7 +646,7 @@ n_placeholders = Constraint(
     ],
     check=lambda t, p: len(_PLACEHOLDER_RE.findall(t)) == p["n"],
     tags=frozenset({"format:placeholders"}),
-    sample=lambda rng, ctx: {"n": rng.choice([2, 3, 4, 5])},
+    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5, 6])},
 )
 
 
@@ -694,7 +694,7 @@ capital_word_frequency = Constraint(
         len([w for w in re.findall(r"\b[A-ZÆØÅ]{2,}\b", t) if not w.isdigit()]) == p["n"]
     ),
     tags=frozenset({"case:word_freq"}),
-    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5])},
+    sample=lambda rng, ctx: {"n": rng.choice([1, 2, 3, 4, 5, 6, 7, 8])},
 )
 
 
@@ -1075,7 +1075,7 @@ ifeval_postscript = Constraint(
 ALL: list[Constraint] = [
     # Length
     exactly_n_sentences, at_most_n_sentences, at_least_n_sentences,
-    at_most_n_words, at_least_n_words, first_sentence_max_words,
+    at_most_n_words, at_least_n_words, exactly_n_words, first_sentence_max_words,
     n_paragraphs, nth_paragraph_first_word,
     # Lexical
     include_keyword, include_all_keywords, exclude_word,
