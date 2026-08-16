@@ -799,6 +799,10 @@ def main():
         bf16=True,
         optim="adamw_bnb_8bit",
         remove_unused_columns=False,
+        # Prefetch next batch on worker threads so the rollout+reward step
+        # isn't gated on main-thread data prep (tokenize + collate).
+        dataloader_num_workers=4,
+        dataloader_persistent_workers=True,
         use_vllm=args.use_vllm_server,
         vllm_server_host=args.vllm_host,
         vllm_server_port=args.vllm_port,
