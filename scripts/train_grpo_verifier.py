@@ -710,6 +710,13 @@ def main():
                          "restart-mechanism to test. NOTE: resets epoch counter "
                          "and step-linked callbacks — treat as a fresh run "
                          "for wandb purposes.")
+    ap.add_argument("--ref-anchor-checkpoint", default=None,
+                    help="Override the KL reference model. Accepts an HF repo id "
+                         "(e.g. jensjepsen/danish-lm-400m-sft-v31-avg-top3) or a "
+                         "local ckpt dir. TRL normally clones ref_model from the "
+                         "policy at init; this swaps it AFTER trainer construction "
+                         "with the specified weights. Isolates reference-anchor "
+                         "from resume mechanics (fresh optim vs loaded optim).")
     args = ap.parse_args()
 
     # Post-parse: apply save/eval alignment if requested
@@ -866,6 +873,33 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
     )
+
+    # Swap ref_model (for KL penalty) with a different anchor. Runs AFTER
+    # trainer __init__ (which does the default create_reference_model(model)
+    # + accelerator.prepare_model), so we tear down and rebuild in place.
+    if args.ref_anchor_checkpoint:
+        if args.beta <= 0:
+            print("[ref-anchor] --beta is 0; ref_model unused — skipping swap.",
+                  flush=True)
+        else:
+            print(f"[ref-anchor] loading {args.ref_anchor_checkpoint} as KL ref",
+                  flush=True)
+            _ref = AutoModelForCausalLM.from_pretrained(
+                args.ref_anchor_checkpoint,
+                torch_dtype=torch.bfloat16 if cfg.bf16 else torch.float16,
+            )
+            _ref.eval()
+            for _p in _ref.parameters():
+                _p.requires_grad_(False)
+            _ref = trainer.accelerator.prepare_model(_ref, evaluation_mode=True)
+            # Free the old ref_model first (TRL default clone of policy weights).
+            _old = trainer.ref_model
+            trainer.ref_model = _ref
+            del _old
+            torch.cuda.empty_cache()
+            print(f"[ref-anchor] swapped: trainer.ref_model = "
+                  f"{args.ref_anchor_checkpoint}", flush=True)
+
     # Rebuild trainer.generation_config with the full chat_stops list so
     # rollouts stop on any of <|end|> / <|user|>. TRL only puts a single
     # eos_token_id in the GenerationConfig by default.
