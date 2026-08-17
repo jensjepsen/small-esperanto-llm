@@ -703,6 +703,13 @@ def main():
                          "resume_from_checkpoint. Pair with "
                          "WANDB_RUN_ID=... WANDB_RESUME=allow to keep the "
                          "wandb chart continuous.")
+    ap.add_argument("--reset-scheduler", action="store_true",
+                    help="With --resume: keep optimizer.pt (Adam moments) but "
+                         "wipe scheduler.pt AND reset trainer_state.global_step "
+                         "to 0 so LR warmup fires fresh. Isolates warmup as the "
+                         "restart-mechanism to test. NOTE: resets epoch counter "
+                         "and step-linked callbacks — treat as a fresh run "
+                         "for wandb purposes.")
     args = ap.parse_args()
 
     # Post-parse: apply save/eval alignment if requested
@@ -983,6 +990,38 @@ def main():
     resume = args.resume
     if resume == "latest":
         resume = True  # HF Trainer autodetects newest ckpt in output_dir
+
+    # --reset-scheduler: pre-mutate the ckpt dir before Trainer picks it up.
+    # Delete scheduler.pt (forces re-init from training_args) and rewrite
+    # trainer_state.json to set global_step=0/epoch=0 so warmup counts from
+    # scratch under constant_with_warmup. Optimizer.pt is preserved.
+    if resume and args.reset_scheduler:
+        import glob as _glob
+        # Find the ckpt dir HF Trainer would resume from
+        if resume is True:
+            _cks = sorted(_glob.glob(f"{args.output_dir}/checkpoint-*"),
+                          key=lambda p: int(p.rsplit("-", 1)[-1]))
+            ckdir = _cks[-1] if _cks else None
+        else:
+            ckdir = str(resume)
+        if not ckdir or not Path(ckdir).exists():
+            raise SystemExit(f"--reset-scheduler: could not find ckpt dir "
+                             f"(resume={resume!r})")
+        sched_p = Path(ckdir) / "scheduler.pt"
+        if sched_p.exists():
+            sched_p.unlink()
+            print(f"[reset-scheduler] removed {sched_p}", flush=True)
+        state_p = Path(ckdir) / "trainer_state.json"
+        if state_p.exists():
+            st = json.loads(state_p.read_text())
+            st["global_step"] = 0
+            st["epoch"] = 0.0
+            # Wipe the log history too so wandb doesn't try to backfill.
+            st["log_history"] = []
+            state_p.write_text(json.dumps(st, indent=2))
+            print(f"[reset-scheduler] zeroed global_step + epoch in {state_p}",
+                  flush=True)
+
     if resume:
         print(f"resuming from {resume!r}", flush=True)
         trainer.train(resume_from_checkpoint=resume)
