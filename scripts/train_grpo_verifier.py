@@ -703,6 +703,13 @@ def main():
                          "resume_from_checkpoint. Pair with "
                          "WANDB_RUN_ID=... WANDB_RESUME=allow to keep the "
                          "wandb chart continuous.")
+    ap.add_argument("--lr-scheduler-type", default="constant_with_warmup",
+                    help="HF scheduler name — 'constant_with_warmup' (default), "
+                         "'cosine', 'cosine_with_restarts', 'linear', 'polynomial', etc.")
+    ap.add_argument("--max-steps", type=int, default=-1,
+                    help="Cap training at N optimizer steps (overrides --epochs). "
+                         "Required for 'cosine'/'linear' schedulers so they know "
+                         "the horizon to anneal to 0 over.")
     ap.add_argument("--reset-scheduler", action="store_true",
                     help="With --resume: keep optimizer.pt (Adam moments) but "
                          "wipe scheduler.pt AND reset trainer_state.global_step "
@@ -801,7 +808,8 @@ def main():
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,
         beta=args.beta,
-        lr_scheduler_type="constant_with_warmup",
+        lr_scheduler_type=args.lr_scheduler_type,
+        max_steps=args.max_steps,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         eval_strategy="steps" if args.eval_steps > 0 else "no",
