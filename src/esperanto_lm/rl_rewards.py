@@ -65,14 +65,81 @@ def _norm_num(s: str | None) -> str | None:
     return str(int(f)) if f == int(f) else f"{f:g}"
 
 
+# Match `A op B = C` outside a bigger expression (no fraction/chained-sum
+# context on either side). Rejects things like `2/3 * 9 = 6` where the
+# regex would otherwise pull `3 * 9 = 6` and call it wrong.
+_ARITH_EQ = re.compile(
+    r"(?<![\d./+\-*x×÷])"
+    r"(-?\d+(?:[.,]\d+)?)\s*"
+    r"([+\-*×xX/÷])\s*"
+    r"(-?\d+(?:[.,]\d+)?)\s*=\s*"
+    r"(-?\d+(?:[.,]\d+)?)"
+    r"(?![\d./])"
+)
+
+
+def _eval_binop(a: str, op: str, b: str) -> float | None:
+    try:
+        x = float(a.replace(",", "."))
+        y = float(b.replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    if op == "+": return x + y
+    if op == "-": return x - y
+    if op in "*×xX": return x * y
+    if op in "/÷":
+        if y == 0: return None
+        return x / y
+    return None
+
+
+def _wrong_equations(text: str) -> int:
+    """How many `A op B = C` lines have the wrong C. Tight regex avoids
+    fraction/multi-term false positives; a residual ~1-in-8 false-positive
+    rate is acceptable at the per-equation reward magnitudes used below."""
+    if not text:
+        return 0
+    n = 0
+    for m in _ARITH_EQ.finditer(text):
+        a, op, b, c = m.groups()
+        expected = _eval_binop(a, op, b)
+        if expected is None:
+            continue
+        try:
+            actual = float(c.replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+        if abs(expected - actual) < 1e-6:
+            continue
+        # Tolerate small float rounding (0.5%)
+        if abs(expected - actual) / max(abs(expected), 1e-9) < 5e-3:
+            continue
+        n += 1
+    return n
+
+
+ARITH_PENALTY_PER_EQ = 0.05
+ARITH_PENALTY_CAP = 6
+"""Per-equation arithmetic-execution penalty for reward_gsm8k. Discovered
+via eval_gsm8k_da_freshopt_dump.jsonl: ~13% of wrong-answer rows have a
+detectable execution error (55/2=27, 7*49=333, chained-sum drop, etc.).
+Penalty is intentionally small (final-answer reward remains dominant) but
+gives GRPO a smooth signal to clean up mid-chain arithmetic — including
+on correct-final rows where the model happens to hit the answer despite
+a broken step."""
+
+
 def reward_gsm8k(completions: list[str], gold: list[str], **_):
-    """1.0 if last number in completion equals gold (int/float normalized)."""
+    """1.0 if last number equals gold, minus 0.05 per detected wrong equation
+    (capped at 6 → max −0.3 penalty)."""
     out = []
     for c, g in zip(completions, gold):
         pred = _norm_num(_extract_num(c))
         target = _norm_num(g if _NUM_RE.fullmatch((g or "").strip())
                            else _extract_num(g))
-        out.append(1.0 if (pred is not None and pred == target) else 0.0)
+        r = 1.0 if (pred is not None and pred == target) else 0.0
+        r -= ARITH_PENALTY_PER_EQ * min(_wrong_equations(c), ARITH_PENALTY_CAP)
+        out.append(max(0.0, r))
     return out
 
 
