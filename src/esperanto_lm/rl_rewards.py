@@ -65,44 +65,45 @@ def _norm_num(s: str | None) -> str | None:
     return str(int(f)) if f == int(f) else f"{f:g}"
 
 
-# Match `A op B = C` outside a bigger expression (no fraction/chained-sum
-# context on either side). Rejects things like `2/3 * 9 = 6` where the
-# regex would otherwise pull `3 * 9 = 6` and call it wrong.
-_ARITH_EQ = re.compile(
-    r"(?<![\d./+\-*x×÷])"
-    r"(-?\d+(?:[.,]\d+)?)\s*"
-    r"([+\-*×xX/÷])\s*"
-    r"(-?\d+(?:[.,]\d+)?)\s*=\s*"
-    r"(-?\d+(?:[.,]\d+)?)"
-    r"(?![\d./])"
+# Match a whole arithmetic CHAIN `A op B op C ... = R` outside a bigger
+# expression. Evaluates the full LHS with standard precedence so chained
+# sums like `27 + 22 + 11 = 60` and mixed `2 + 3 * 4 = 14` are checked
+# correctly instead of being false-positive-flagged from a sub-slice.
+_ARITH_CHAIN = re.compile(
+    r"(?<![\d./+\-*x×÷])"                                              # not mid-expr
+    r"(-?\d+(?:[.,]\d+)?(?:\s*[+\-*×xX/÷]\s*-?\d+(?:[.,]\d+)?)+)"      # LHS chain
+    r"\s*=\s*"
+    r"(-?\d+(?:[.,]\d+)?)"                                             # result
+    r"(?![\d./])"                                                       # not mid-expr
 )
 
+_SAFE_EVAL_CHARS = re.compile(r"[\d.+\-*/ ]+")
 
-def _eval_binop(a: str, op: str, b: str) -> float | None:
-    try:
-        x = float(a.replace(",", "."))
-        y = float(b.replace(",", "."))
-    except (TypeError, ValueError):
+
+def _eval_chain(lhs: str) -> float | None:
+    """Evaluate a validated arithmetic chain (digits, ops, whitespace only).
+    Normalizes ×/÷/x/X → */., and Danish decimal `,` → `.` first."""
+    s = (lhs.replace("×", "*").replace("÷", "/")
+             .replace("x", "*").replace("X", "*")
+             .replace(",", "."))
+    if not _SAFE_EVAL_CHARS.fullmatch(s):
         return None
-    if op == "+": return x + y
-    if op == "-": return x - y
-    if op in "*×xX": return x * y
-    if op in "/÷":
-        if y == 0: return None
-        return x / y
-    return None
+    try:
+        return float(eval(s, {"__builtins__": {}}, {}))
+    except (SyntaxError, ZeroDivisionError, ValueError, TypeError):
+        return None
 
 
 def _wrong_equations(text: str) -> int:
-    """How many `A op B = C` lines have the wrong C. Tight regex avoids
-    fraction/multi-term false positives; a residual ~1-in-8 false-positive
-    rate is acceptable at the per-equation reward magnitudes used below."""
+    """How many equations have a wrong result. Matches full arithmetic chains
+    with correct operator precedence — no false positives from sub-slicing
+    multi-term sums or fractions."""
     if not text:
         return 0
     n = 0
-    for m in _ARITH_EQ.finditer(text):
-        a, op, b, c = m.groups()
-        expected = _eval_binop(a, op, b)
+    for m in _ARITH_CHAIN.finditer(text):
+        lhs, c = m.groups()
+        expected = _eval_chain(lhs)
         if expected is None:
             continue
         try:
