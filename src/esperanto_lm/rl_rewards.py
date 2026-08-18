@@ -243,6 +243,26 @@ def _type_shape_ok(v, t: str) -> bool:
     return True  # unknown type — don't penalize
 
 
+def _dupe_key_extras(text: str) -> int:
+    """How many DUPLICATE key emissions (beyond the first) at the top level.
+    `json.loads` collapses duplicates last-wins, which lets the model earn
+    full reward on degenerate `{"k": "v", "k": "v", "k": "v", ...}` output.
+    We re-parse with object_pairs_hook to count extras."""
+    try:
+        pairs = json.loads(text, object_pairs_hook=list)
+    except Exception:
+        return 0
+    if not isinstance(pairs, list):
+        return 0
+    seen = set(); extras = 0
+    for k, _ in pairs:
+        if k in seen:
+            extras += 1
+        else:
+            seen.add(k)
+    return extras
+
+
 def reward_json_schema(completion: str, fields: list[str], strict: bool,
                        passage: str | None = None, types: list[str] | None = None,
                        gold_values: dict | None = None) -> float:
@@ -260,6 +280,9 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
                         each required field whose output value is null / empty / whitespace-only.
                         Kills the fill_template null-template-parrot shortcut where
                         model scored ~1.0 by returning the empty scaffold verbatim.
+      -0.1 per dupe   — duplicate top-level JSON keys (capped at 5). json.loads
+                        collapses dupes silently → free reward on degenerate
+                        `{"k":"v","k":"v",...}` output.
 
     Grounding penalty from earlier versions is dropped — gold value match is a
     stronger signal (a value matching gold IS grounded by construction).
@@ -305,6 +328,8 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
             if f in obj and not _type_shape_ok(obj[f], t)
         )
         r -= 0.05 * n_type_mis
+    # Duplicate-key penalty (universal): kills the dupe-spam degeneracy.
+    r -= 0.1 * min(_dupe_key_extras(completion), 5)
     return round(max(0.0, r), 4)
 
 
