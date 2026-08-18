@@ -35,11 +35,31 @@ apply_liger_kernel_to_llama(
 )
 print("[liger] RoPE + RMSNorm + SwiGLU kernels applied", flush=True)
 
+import os as _os
 import re
 import torch
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
+
+# GRPO_FP16_EVERYWHERE: force vLLM colocate to load model in fp16 so it
+# matches the trainer's fp16 forward pass, minimizing the
+# training-inference mismatch reported by Wu et al. 2025 for BF16 GRPO.
+# vLLM auto-detects dtype from model config (usually fp32 → downcast to
+# bf16). Monkey-patch LLM.__init__ to force dtype="float16" when set.
+# Trainer-side: also set fp16=True (not bf16=True) in GRPOConfig and
+# torch_dtype="float16" in model_init_kwargs.
+if _os.environ.get("GRPO_FP16_EVERYWHERE") == "1":
+    from vllm import LLM as _LLM
+    _orig_llm_init = _LLM.__init__
+
+    def _fp16_llm_init(self, *args, **kwargs):
+        if "dtype" not in kwargs:
+            kwargs["dtype"] = "float16"
+        return _orig_llm_init(self, *args, **kwargs)
+
+    _LLM.__init__ = _fp16_llm_init
+    print("[fp16-everywhere] vLLM.LLM patched to force dtype=float16", flush=True)
 
 from esperanto_lm.rl_rewards import (
     reward_gsm8k, reward_ifeval, reward_ifeval_combined, reward_mixed,
@@ -867,17 +887,23 @@ def main():
         save_total_limit=2,
         report_to=["wandb"],
         run_name=args.wandb_run_name or f"grpo_{args.task}",
-        bf16=True,
+        # BF16 by default; GRPO_FP16_EVERYWHERE=1 flips both trainer and
+        # vLLM to fp16 to minimize training-inference mismatch (BF16's
+        # narrower mantissa causes vLLM/trainer logit drift → different
+        # sampled tokens → biased advantages; FP16 has 3× more precision).
+        bf16=(_os.environ.get("GRPO_FP16_EVERYWHERE") != "1"),
+        fp16=(_os.environ.get("GRPO_FP16_EVERYWHERE") == "1"),
         optim="adamw_bnb_8bit",
         # Flash Attention 2 for the trainer's policy model (rollout side
         # is already FA2 via vLLM). Cuts trainer bwd time ~10-20% and
         # frees activation memory; on 5090/H100 with flash-attn 2.8+
-        # this is the default choice. torch_dtype=bfloat16 is REQUIRED
-        # here — FA2 refuses fp32 and silently falls back to SDPA with
-        # only a warning otherwise.
+        # this is the default choice. torch_dtype is REQUIRED here — FA2
+        # refuses fp32 and silently falls back to SDPA otherwise.
         model_init_kwargs={
             "attn_implementation": "flash_attention_2",
-            "torch_dtype": "bfloat16",
+            "torch_dtype": ("float16"
+                            if _os.environ.get("GRPO_FP16_EVERYWHERE") == "1"
+                            else "bfloat16"),
         },
         remove_unused_columns=False,
         # Prefetch next batch on worker threads so the rollout+reward step
