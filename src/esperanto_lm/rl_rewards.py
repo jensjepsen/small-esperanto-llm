@@ -98,6 +98,14 @@ def _check_google(name: str, params: dict, text: str) -> bool:
         return False
 
 
+MIN_COMPLETION_CHARS = 10
+"""Vacuous-output gate. Constraints like `no_lists`, `single_paragraph`,
+`no_commas`, `keywords:forbidden_words`, `punctuation:no_comma`, and several
+others vacuously pass on `""` or 1-char outputs — the model can then win
+free reward by emitting nothing. Below this char threshold, treat the row
+as reward 0 regardless of what the verifier says."""
+
+
 def reward_ifeval_combined(completions: list[str],
                            constraints: list[list[str]],
                            params: list[list[dict]],
@@ -113,6 +121,8 @@ def reward_ifeval_combined(completions: list[str],
     out = []
     for text, cons, plist in zip(completions, constraints, params):
         if not cons:
+            out.append(0.0); continue
+        if len((text or "").strip()) < MIN_COMPLETION_CHARS:
             out.append(0.0); continue
         # `plist` might be a JSON string on some HF versions — normalize
         if isinstance(plist, str):
@@ -375,6 +385,9 @@ def reward_ifeval(completions: list[str],
         except (TypeError, ValueError):
             p = {}
         if not cons:
+            out.append(0.0)
+            continue
+        if len((text or "").strip()) < MIN_COMPLETION_CHARS:
             out.append(0.0)
             continue
         n_ok = 0
