@@ -11,9 +11,16 @@ floats (one per completion). TRL applies its own advantage math on top.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
+
+# Set GRPO_LEGACY_REWARDS=1 to disable all three post-hoc reward-tweaks
+# (empty-output gate, duplicate-JSON-key penalty, arithmetic-error penalty)
+# and get behavior matching the pre-2026-08-18 reward layer. Useful for
+# A/B against historical H100 baselines that predate these gates.
+_LEGACY = os.environ.get("GRPO_LEGACY_REWARDS") == "1"
 
 # if_constraints.py lives in scripts/; add to path once
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
@@ -145,7 +152,7 @@ def _wrong_equations(text: str) -> int:
     return n
 
 
-ARITH_PENALTY_PER_EQ = 0.05
+ARITH_PENALTY_PER_EQ = 0.0 if _LEGACY else 0.05
 ARITH_PENALTY_CAP = 6
 """Per-equation arithmetic-execution penalty for reward_gsm8k. Discovered
 via eval_gsm8k_da_freshopt_dump.jsonl: ~13% of wrong-answer rows have a
@@ -192,12 +199,13 @@ def _check_google(name: str, params: dict, text: str) -> bool:
         return False
 
 
-MIN_COMPLETION_CHARS = 10
+MIN_COMPLETION_CHARS = 0 if _LEGACY else 10
 """Vacuous-output gate. Constraints like `no_lists`, `single_paragraph`,
 `no_commas`, `keywords:forbidden_words`, `punctuation:no_comma`, and several
 others vacuously pass on `""` or 1-char outputs — the model can then win
 free reward by emitting nothing. Below this char threshold, treat the row
-as reward 0 regardless of what the verifier says."""
+as reward 0 regardless of what the verifier says. Set to 0 via
+GRPO_LEGACY_REWARDS=1 to disable."""
 
 
 def reward_ifeval_combined(completions: list[str],
@@ -337,6 +345,10 @@ def _type_shape_ok(v, t: str) -> bool:
     return True  # unknown type — don't penalize
 
 
+DUPE_KEY_PENALTY_PER_EXTRA = 0.0 if _LEGACY else 0.15
+DUPE_KEY_PENALTY_CAP = 5
+
+
 def _dupe_key_extras(text: str) -> int:
     """How many DUPLICATE key emissions (beyond the first) at the top level.
     `json.loads` collapses duplicates last-wins, which lets the model earn
@@ -423,7 +435,7 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
         )
         r -= 0.05 * n_type_mis
     # Duplicate-key penalty (universal): kills the dupe-spam degeneracy.
-    r -= 0.15 * min(_dupe_key_extras(completion), 5)
+    r -= DUPE_KEY_PENALTY_PER_EXTRA * min(_dupe_key_extras(completion), DUPE_KEY_PENALTY_CAP)
     return round(max(0.0, r), 4)
 
 
