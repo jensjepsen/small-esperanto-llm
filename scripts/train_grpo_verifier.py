@@ -61,6 +61,34 @@ if _os.environ.get("GRPO_FP16_EVERYWHERE") == "1":
     _LLM.__init__ = _fp16_llm_init
     print("[fp16-everywhere] vLLM.LLM patched to force dtype=float16", flush=True)
 
+
+# GRPO_VLLM_STOP_TOKEN_IDS: comma-separated token ids to force vLLM to stop on.
+# TRL 0.18.2 does NOT set stop_token_ids in SamplingParams, so vLLM only
+# stops on tokenizer.eos_token_id. Our SFT tokenizer's eos is `<|end|>` (16002)
+# but the model was also trained to emit `<|user|>` (16000) at end of assistant
+# turn. Without this, ~5-15% of rollouts run to max_new_tokens because they
+# emit `<|user|>` and vLLM doesn't stop. Monkey-patch LLM.generate to inject
+# stops if the caller didn't already set them.
+_STOPS = _os.environ.get("GRPO_VLLM_STOP_TOKEN_IDS")
+if _STOPS:
+    from vllm import LLM as _LLM_stop
+    _stop_ids = [int(x) for x in _STOPS.split(",") if x.strip()]
+    _orig_llm_generate = _LLM_stop.generate
+
+    def _llm_generate_with_stops(self, prompts=None, sampling_params=None, **kwargs):
+        if sampling_params is not None:
+            _sp_list = (sampling_params if isinstance(sampling_params, list)
+                        else [sampling_params])
+            for _sp in _sp_list:
+                if getattr(_sp, "stop_token_ids", None) is None:
+                    _sp.stop_token_ids = list(_stop_ids)
+        return _orig_llm_generate(self, prompts=prompts,
+                                  sampling_params=sampling_params, **kwargs)
+
+    _LLM_stop.generate = _llm_generate_with_stops
+    print(f"[vllm-stops] vLLM.LLM.generate patched, stop_token_ids={_stop_ids}",
+          flush=True)
+
 from esperanto_lm.rl_rewards import (
     reward_gsm8k, reward_ifeval, reward_ifeval_combined, reward_mixed,
     reward_json_schema,
