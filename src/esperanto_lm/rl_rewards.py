@@ -69,23 +69,50 @@ def _norm_num(s: str | None) -> str | None:
 # expression. Evaluates the full LHS with standard precedence so chained
 # sums like `27 + 22 + 11 = 60` and mixed `2 + 3 * 4 = 14` are checked
 # correctly instead of being false-positive-flagged from a sub-slice.
+# Lookahead excludes `xX` so algebra like `= 2x + 5` doesn't get flagged
+# as result `2` (the `x` immediately after signals variable, not multiply).
 _ARITH_CHAIN = re.compile(
     r"(?<![\d./+\-*x×÷])"                                              # not mid-expr
     r"(-?\d+(?:[.,]\d+)?(?:\s*[+\-*×xX/÷]\s*-?\d+(?:[.,]\d+)?)+)"      # LHS chain
     r"\s*=\s*"
     r"(-?\d+(?:[.,]\d+)?)"                                             # result
-    r"(?![\d./])"                                                       # not mid-expr
+    r"(?![\d./xX])"                                                     # not mid-expr / algebra var
 )
 
 _SAFE_EVAL_CHARS = re.compile(r"[\d.+\-*/ ]+")
+_THOUSANDS_NUM = re.compile(r"^-?[1-9]\d{0,2}(?:\.\d{3})+$")
+
+
+def _parse_num(s: str) -> float | None:
+    """Parse a number token, respecting Danish/international conventions:
+      '130.000' (period as thousands sep, groups of 3) → 130000
+      '1.234.567'                                       → 1234567
+      '1,5' (Danish decimal comma)                      → 1.5
+      '1.5' (decimal point)                             → 1.5
+    Leading-zero guarded so '0.500' stays 0.5, not 500."""
+    s = s.strip().replace(" ", "")
+    if _THOUSANDS_NUM.match(s):
+        return float(s.replace(".", ""))
+    try:
+        return float(s.replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+_NUM_TOKEN = re.compile(r"-?\d+(?:[.,]\d+)*")
 
 
 def _eval_chain(lhs: str) -> float | None:
     """Evaluate a validated arithmetic chain (digits, ops, whitespace only).
-    Normalizes ×/÷/x/X → */., and Danish decimal `,` → `.` first."""
-    s = (lhs.replace("×", "*").replace("÷", "/")
-             .replace("x", "*").replace("X", "*")
-             .replace(",", "."))
+    Normalizes each numeric token via `_parse_num` (thousands-sep aware,
+    Danish decimal aware), then ×/÷/x/X → */, then hands to eval()."""
+    s = _NUM_TOKEN.sub(
+        lambda m: (str(_parse_num(m.group()))
+                   if _parse_num(m.group()) is not None else m.group()),
+        lhs,
+    )
+    s = (s.replace("×", "*").replace("÷", "/")
+             .replace("x", "*").replace("X", "*"))
     if not _SAFE_EVAL_CHARS.fullmatch(s):
         return None
     try:
@@ -106,9 +133,8 @@ def _wrong_equations(text: str) -> int:
         expected = _eval_chain(lhs)
         if expected is None:
             continue
-        try:
-            actual = float(c.replace(",", "."))
-        except (TypeError, ValueError):
+        actual = _parse_num(c)
+        if actual is None:
             continue
         if abs(expected - actual) < 1e-6:
             continue
