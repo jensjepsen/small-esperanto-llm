@@ -112,13 +112,14 @@ if _DAPO_RETRIES:
           flush=True)
 
 
-# GRPO_LOG_DIVERGENCE=1: log per-step stats of |log(π_train / π_vllm)| —
-# the training-inference mismatch that Wu et al. 2025 argue makes BF16
-# GRPO training unstable. Patches vLLM to return logprobs, captures them
-# per-rollout, then in _generate_and_score_completions computes
-# ρ = trainer_logp − vllm_logp on every sampled token and logs mean /
-# abs_mean / p95 to wandb. Direct measurement of the mismatch.
-_LOG_DIVERGENCE = _os.environ.get("GRPO_LOG_DIVERGENCE") == "1"
+# Log per-step stats of |log(π_train / π_vllm)| — the training-inference
+# mismatch that Wu et al. 2025 argue makes BF16 GRPO training unstable.
+# Patches vLLM to return logprobs, captures them per-rollout, then in
+# _generate_and_score_completions computes ρ = trainer_logp − vllm_logp
+# on every sampled token and logs mean / abs_mean / p95 to wandb. Direct
+# measurement of the mismatch. On by default (~2-5% throughput cost);
+# set GRPO_LOG_DIVERGENCE=0 to disable for max-throughput production runs.
+_LOG_DIVERGENCE = _os.environ.get("GRPO_LOG_DIVERGENCE", "1") != "0"
 if _LOG_DIVERGENCE:
     from vllm import LLM as _LLM_div
     _orig_llm_gen_div = _LLM_div.generate
