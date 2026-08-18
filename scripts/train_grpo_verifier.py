@@ -897,15 +897,22 @@ def main():
         # rollouts scored the same → advantage=0 → no gradient signal).
         # Excludes them from loss + KL + Adam. Doesn't save fwd/bwd compute
         # (TRL still generates them) but avoids the noise-only optimizer step.
-        # Ported from scripts/train_grpo.py (Esperanto verifier trainer).
+        #
+        # TRL 0.18.2 note: MUST patch _generate_and_score_completions (not
+        # _prepare_inputs) because the latter is called on per-slice batches
+        # AFTER `steps_per_generation` has split the full generation batch —
+        # by then group-level advantages are no longer visible per-group in
+        # each slice. _generate_and_score_completions is the point where the
+        # full generation-batch's advantages are computed, matching TRL 0.16's
+        # patch semantics.
         import torch as _t
-        _orig_prepare = GRPOTrainer._prepare_inputs
+        _orig_gen_score = GRPOTrainer._generate_and_score_completions
 
-        def _prepare_with_skip(self, inputs):
-            result = _orig_prepare(self, inputs)
+        def _gen_score_with_skip(self, inputs):
+            result = _orig_gen_score(self, inputs)
             adv = result.get("advantages")
             cm = result.get("completion_mask")
-            mode = "eval" if self.control.should_evaluate else "train"
+            mode = "train" if self.model.training else "eval"
             self._metrics.setdefault(mode, {}).setdefault("skip_frac", [])
             if adv is None or cm is None:
                 self._metrics[mode]["skip_frac"].append(0.0)
@@ -930,8 +937,10 @@ def main():
             result["completion_mask"] = cm * sample_mask.to(cm.dtype).unsqueeze(1)
             return result
 
-        GRPOTrainer._prepare_inputs = _prepare_with_skip
-        print("skip-zero-adv: enabled (masking completion_mask on zero-std groups)", flush=True)
+        GRPOTrainer._generate_and_score_completions = _gen_score_with_skip
+        print("skip-zero-adv: enabled (masking completion_mask on zero-std "
+              "groups at _generate_and_score_completions; TRL 0.18.2 compat)",
+              flush=True)
 
     trainer = GRPOTrainer(
         model=args.checkpoint,
