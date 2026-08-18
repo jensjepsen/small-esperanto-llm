@@ -54,6 +54,37 @@ _NUM_RE_INT = re.compile(r"-?\d[\d,]*\.?\d*")
 # `dataset=None`, matching transformers 4.55+ expectations.
 
 
+def _greedy_via_vllm_colocate(trainer, prompts, max_new, stop_token_ids=None):
+    """Route greedy eval generation through the trainer's colocate vLLM engine.
+    Returns list[str] or None (caller falls back to HF generate).
+
+    Colocate mode only — server mode is skipped intentionally: server-mode
+    eval would add a full HTTP round-trip per eval, and none of the current
+    launchers use server mode on the target hardware.
+
+    Weight sync: TRL keeps the colocate engine in step with the trainer
+    weights automatically at each optimizer step, so no manual sync is
+    needed here. deterministic sampling (temperature=0). repetition_penalty
+    matched to the HF path (1.1)."""
+    llm = getattr(trainer, "llm", None)
+    if llm is None:
+        return None
+    from vllm import SamplingParams
+    sp = SamplingParams(
+        temperature=0.0,
+        top_p=1.0,
+        max_tokens=int(max_new),
+        n=1,
+        repetition_penalty=1.1,
+        stop_token_ids=list(stop_token_ids) if stop_token_ids else None,
+    )
+    # vLLM preserves input order in the returned outputs, so we can
+    # zip 1:1 against `prompts` downstream. use_tqdm=False keeps the
+    # per-fire eval quiet since callback already prints a header.
+    outs = llm.generate(prompts, sampling_params=sp, use_tqdm=False)
+    return [o.outputs[0].text for o in outs]
+
+
 class IFEvalDACallback(TrainerCallback):
     """Step-triggered greedy eval on the full ifeval-da benchmark (541 rows).
     Reports the standard 4-way IFEval metric split: prompt-strict, prompt-loose,
@@ -100,26 +131,34 @@ class IFEvalDACallback(TrainerCallback):
         t0 = self._time.time()
         responses: list[str] = []
         try:
-            for i in range(0, len(self._prompts), self.bs):
-                batch = self._prompts[i:i + self.bs]
-                enc = tok(batch, return_tensors="pt", padding=True,
-                          add_special_tokens=False,
-                          return_token_type_ids=False).to(model.device)
-                with torch.no_grad():
-                    gen = model.generate(
-                        input_ids=enc["input_ids"],
-                        attention_mask=enc["attention_mask"],
-                        max_new_tokens=self.max_new,
-                        do_sample=False, num_beams=1,
-                        pad_token_id=tok.pad_token_id,
-                        eos_token_id=eos_ids, repetition_penalty=1.1)
-                plen = enc["input_ids"].shape[1]
-                for row in gen:
-                    responses.append(tok.decode(row[plen:], skip_special_tokens=True).strip())
-                done = len(responses)
-                if done % 128 == 0 or done == len(self._prompts):
-                    print(f"  [ifeval-da] step={state.global_step} gen {done}/{len(self._prompts)}",
-                          flush=True)
+            vllm_out = _greedy_via_vllm_colocate(
+                self._trainer, self._prompts, self.max_new, stop_token_ids=eos_ids)
+            if vllm_out is not None:
+                responses = vllm_out
+                print(f"  [ifeval-da] step={state.global_step} vllm gen "
+                      f"{len(responses)}/{len(self._prompts)}", flush=True)
+            else:
+                # HF fallback (non-vLLM runs)
+                for i in range(0, len(self._prompts), self.bs):
+                    batch = self._prompts[i:i + self.bs]
+                    enc = tok(batch, return_tensors="pt", padding=True,
+                              add_special_tokens=False,
+                              return_token_type_ids=False).to(model.device)
+                    with torch.no_grad():
+                        gen = model.generate(
+                            input_ids=enc["input_ids"],
+                            attention_mask=enc["attention_mask"],
+                            max_new_tokens=self.max_new,
+                            do_sample=False, num_beams=1,
+                            pad_token_id=tok.pad_token_id,
+                            eos_token_id=eos_ids, repetition_penalty=1.1)
+                    plen = enc["input_ids"].shape[1]
+                    for row in gen:
+                        responses.append(tok.decode(row[plen:], skip_special_tokens=True).strip())
+                    done = len(responses)
+                    if done % 128 == 0 or done == len(self._prompts):
+                        print(f"  [ifeval-da] step={state.global_step} gen {done}/{len(self._prompts)}",
+                              flush=True)
         finally:
             tok.padding_side = prev_side
             tok.pad_token = prev_pad
@@ -289,47 +328,56 @@ class GreedyEvalCallback(TrainerCallback):
             eos_ids.append(end_id)
         outs = []
         try:
-            for i in range(0, len(self.items), self.bs):
-                batch = [row[0] for row in self.items[i:i + self.bs]]
-                enc = tok(batch, return_tensors="pt", padding=True,
-                          add_special_tokens=False,
-                          return_token_type_ids=False).to(model.device)
-                with torch.no_grad():
-                    gen = model.generate(
-                        input_ids=enc["input_ids"],
-                        attention_mask=enc["attention_mask"],
-                        max_new_tokens=self.max_new,
-                        do_sample=False, num_beams=1,
-                        pad_token_id=tok.pad_token_id,
-                        eos_token_id=eos_ids, repetition_penalty=1.1)
-                plen = enc["input_ids"].shape[1]
-                for row in gen:
-                    outs.append(tok.decode(row[plen:], skip_special_tokens=True).strip())
-                done = min(i + self.bs, len(self.items))
-                # running metric
-                if self.task == "gsm8k":
-                    n_ok = sum(1 for o, (_, g) in zip(outs, self.items[:done])
-                               if _norm_num(_extract_num(o)) is not None
-                               and _norm_num(_extract_num(o)) == _norm_num(g if g and _NUM_RE_INT.fullmatch(g.strip()) else _extract_num(g)))
-                    print(f"  [greedy-eval] {done}/{len(self.items)} acc={n_ok/done:.4f}", flush=True)
-                elif self.task == "combined":
-                    scores_so_far = reward_ifeval_combined(
-                        outs, [row[1] for row in self.items[:done]],
-                        [row[2] for row in self.items[:done]])
-                    print(f"  [greedy-eval] {done}/{len(self.items)} mean_pass={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
-                elif self.task == "json":
-                    scores_so_far = [
-                        reward_json_schema(o, r[1], r[3], passage=(r[4] or None),
-                                           types=r[2],
-                                           gold_values=(r[5] if len(r) > 5 else None))
-                        for o, r in zip(outs, self.items[:done])
-                    ]
-                    print(f"  [greedy-eval] {done}/{len(self.items)} mean_reward={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
-                else:  # ifeval
-                    scores_so_far = reward_ifeval(
-                        outs, [row[1] for row in self.items[:done]],
-                        [row[2] for row in self.items[:done]])
-                    print(f"  [greedy-eval] {done}/{len(self.items)} mean_pass={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
+            all_prompts = [row[0] for row in self.items]
+            vllm_out = _greedy_via_vllm_colocate(
+                self._trainer, all_prompts, self.max_new, stop_token_ids=eos_ids)
+            if vllm_out is not None:
+                outs = vllm_out
+                print(f"  [greedy-eval] vllm gen {len(outs)}/{len(self.items)}",
+                      flush=True)
+            else:
+                # HF fallback (non-vLLM runs)
+                for i in range(0, len(self.items), self.bs):
+                    batch = [row[0] for row in self.items[i:i + self.bs]]
+                    enc = tok(batch, return_tensors="pt", padding=True,
+                              add_special_tokens=False,
+                              return_token_type_ids=False).to(model.device)
+                    with torch.no_grad():
+                        gen = model.generate(
+                            input_ids=enc["input_ids"],
+                            attention_mask=enc["attention_mask"],
+                            max_new_tokens=self.max_new,
+                            do_sample=False, num_beams=1,
+                            pad_token_id=tok.pad_token_id,
+                            eos_token_id=eos_ids, repetition_penalty=1.1)
+                    plen = enc["input_ids"].shape[1]
+                    for row in gen:
+                        outs.append(tok.decode(row[plen:], skip_special_tokens=True).strip())
+                    done = min(i + self.bs, len(self.items))
+                    # running metric
+                    if self.task == "gsm8k":
+                        n_ok = sum(1 for o, (_, g) in zip(outs, self.items[:done])
+                                   if _norm_num(_extract_num(o)) is not None
+                                   and _norm_num(_extract_num(o)) == _norm_num(g if g and _NUM_RE_INT.fullmatch(g.strip()) else _extract_num(g)))
+                        print(f"  [greedy-eval] {done}/{len(self.items)} acc={n_ok/done:.4f}", flush=True)
+                    elif self.task == "combined":
+                        scores_so_far = reward_ifeval_combined(
+                            outs, [row[1] for row in self.items[:done]],
+                            [row[2] for row in self.items[:done]])
+                        print(f"  [greedy-eval] {done}/{len(self.items)} mean_pass={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
+                    elif self.task == "json":
+                        scores_so_far = [
+                            reward_json_schema(o, r[1], r[3], passage=(r[4] or None),
+                                               types=r[2],
+                                               gold_values=(r[5] if len(r) > 5 else None))
+                            for o, r in zip(outs, self.items[:done])
+                        ]
+                        print(f"  [greedy-eval] {done}/{len(self.items)} mean_reward={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
+                    else:  # ifeval
+                        scores_so_far = reward_ifeval(
+                            outs, [row[1] for row in self.items[:done]],
+                            [row[2] for row in self.items[:done]])
+                        print(f"  [greedy-eval] {done}/{len(self.items)} mean_pass={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
         finally:
             tok.padding_side = prev_side
             tok.pad_token = prev_pad
