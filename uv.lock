@@ -720,7 +720,7 @@ requires-dist = [
     { name = "tokenizers", specifier = ">=0.19.0" },
     { name = "torch", specifier = ">=2.3.0,<2.11", index = "https://download.pytorch.org/whl/cu121" },
     { name = "transformers", specifier = ">=4.52,<4.56" },
-    { name = "trl", specifier = ">=0.14,<0.17" },
+    { name = "trl", specifier = ">=0.18.2,<0.19" },
     { name = "wandb", specifier = ">=0.26.0" },
     { name = "wandb", marker = "extra == 'all'", specifier = ">=0.17.0" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.17.0" },
@@ -3073,17 +3073,16 @@ wheels = [
 
 [[package]]
 name = "trl"
-version = "0.16.1"
+version = "0.18.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "accelerate" },
     { name = "datasets" },
-    { name = "rich" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/09/de/ba9095a2c5b9150921802727323356d47d755e62ea700dd6788eae734262/trl-0.16.1.tar.gz", hash = "sha256:166acab64811acfbaaa3839688547d78fec806f9b12b99497b168431e13968be", size = 353198, upload-time = "2025-04-04T18:21:49.62Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/c3/f55ecb8c64f9ec2b4ae9006e090727946a6acd76d00998dfbb0f424e0d75/trl-0.18.2.tar.gz", hash = "sha256:dae08ed28ca7d9228e07f37cd4a5eec4071ca4e794fffe847ebfc269b78060de", size = 383357, upload-time = "2025-06-15T13:20:41.675Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/e0/02e129c156d38a408274276def68524fd080b1242780cc23d7e261571157/trl-0.16.1-py3-none-any.whl", hash = "sha256:2b893bbed77dce79c88d6e864ce1216641f6587f4a28988281befba1d2a13ae9", size = 336439, upload-time = "2025-04-04T18:21:47.824Z" },
+    { url = "https://files.pythonhosted.org/packages/04/57/f1cf3cf20fa78a3dcd6c7cc95e9f635bdf4fe12f00894d648b0cb5e42e54/trl-0.18.2-py3-none-any.whl", hash = "sha256:6ed81faf877904e3ec0bd7a4e478837b1b93c901c53e168508799edde8cc33fa", size = 366449, upload-time = "2025-06-15T13:20:06.414Z" },
 ]
 
 [[package]]

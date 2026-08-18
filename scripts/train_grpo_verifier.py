@@ -50,16 +50,8 @@ from esperanto_lm.rl_rewards import (
 _NUM_RE_INT = re.compile(r"-?\d[\d,]*\.?\d*")
 
 
-# transformers 4.55+ calls _get_train_sampler(dataset); TRL <=1.10 still
-# overrides without the arg. Shim: accept & ignore, use the internal path.
-_orig_sampler = GRPOTrainer._get_train_sampler
-
-
-def _patched_sampler(self, *args, **kwargs):
-    return _orig_sampler(self)
-
-
-GRPOTrainer._get_train_sampler = _patched_sampler
+# _get_train_sampler shim REMOVED: TRL 0.18.2's signature natively accepts
+# `dataset=None`, matching transformers 4.55+ expectations.
 
 
 class IFEvalDACallback(TrainerCallback):
@@ -675,15 +667,20 @@ def main():
                          "compute (TRL still generates them) but avoids the "
                          "noise-only Adam step. Ported from train_grpo.py.")
     ap.add_argument("--use-vllm-server", action="store_true",
-                    help="Use a separate vLLM server for rollouts (huge "
-                         "speedup — ~10-20× rollout throughput). Requires "
-                         "a running `trl vllm-serve` on a second GPU. See "
-                         "scripts/launch_grpo_vllm.sh for the 2-GPU launcher.")
+                    help="Use vLLM for rollouts (huge speedup, ~10-20× rollout "
+                         "throughput). Requires TRL 0.18+. See --vllm-mode.")
+    ap.add_argument("--vllm-mode", choices=["server", "colocate"],
+                    default="server",
+                    help="'server' — connect to a separately-running "
+                         "`trl vllm-serve` (see launch_grpo_vllm.sh, 2-GPU). "
+                         "'colocate' — run vLLM inside the trainer process, "
+                         "same GPU (see launch_grpo_vllm_h100.sh, single H100).")
     ap.add_argument("--vllm-host", default="localhost")
     ap.add_argument("--vllm-port", type=int, default=8000)
-    ap.add_argument("--vllm-gpu-memory-utilization", type=float, default=0.55,
-                    help="GPU mem fraction for vLLM server (only used if "
-                         "trainer + server share a GPU; irrelevant with 2 GPUs).")
+    ap.add_argument("--vllm-gpu-memory-utilization", type=float, default=0.4,
+                    help="GPU mem fraction for vLLM (colocate mode: fraction "
+                         "of the shared GPU that vLLM pre-allocates; leave the "
+                         "rest for training).")
     ap.add_argument("--logging-steps", type=int, default=5)
     ap.add_argument("--wandb-project", default="danish-lm-grpo")
     ap.add_argument("--wandb-run-name", default=None)
@@ -826,6 +823,7 @@ def main():
         dataloader_num_workers=4,
         dataloader_persistent_workers=True,
         use_vllm=args.use_vllm_server,
+        vllm_mode=args.vllm_mode,
         vllm_server_host=args.vllm_host,
         vllm_server_port=args.vllm_port,
         vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
