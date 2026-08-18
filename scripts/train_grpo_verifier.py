@@ -69,6 +69,49 @@ if _os.environ.get("GRPO_FP16_EVERYWHERE") == "1":
 # turn. Without this, ~5-15% of rollouts run to max_new_tokens because they
 # emit `<|user|>` and vLLM doesn't stop. Monkey-patch LLM.generate to inject
 # stops if the caller didn't already set them.
+# GRPO_DAPO_RESAMPLE=N: DAPO dynamic sampling — retry the whole generation
+# batch up to N times if any prompt-group has zero reward std, keep the
+# attempt with the most active groups. Costs up to (N+1)× generation but
+# recovers gradient signal from otherwise-dead groups. Composes with
+# --skip-zero-adv: DAPO runs first (retries to reduce zero-std count),
+# then skip-adv masks any remaining zero-std groups.
+_DAPO_RETRIES = _os.environ.get("GRPO_DAPO_RESAMPLE")
+if _DAPO_RETRIES:
+    _dapo_n = max(1, int(_DAPO_RETRIES))
+    _orig_dapo_gen = GRPOTrainer._generate_and_score_completions
+
+    def _dapo_active_count(result, num_gens):
+        adv = result.get("advantages")
+        if adv is None:
+            return 0, 0
+        n = adv.shape[0]
+        g = n // num_gens
+        if g == 0:
+            return 0, 0
+        adv_g = adv[:g * num_gens].view(g, num_gens)
+        return int((adv_g.abs() > 1e-6).any(dim=1).sum().item()), g
+
+    def _dapo_gen(self, inputs):
+        best = _orig_dapo_gen(self, inputs)
+        best_active, n_groups = _dapo_active_count(best, self.num_generations)
+        for _attempt in range(_dapo_n):
+            if best_active >= n_groups:
+                break
+            attempt_result = _orig_dapo_gen(self, inputs)
+            a, _ = _dapo_active_count(attempt_result, self.num_generations)
+            if a > best_active:
+                best = attempt_result
+                best_active = a
+        self._metrics.setdefault("train", {}).setdefault("dapo_active", []).append(
+            best_active / max(1, n_groups)
+        )
+        return best
+
+    GRPOTrainer._generate_and_score_completions = _dapo_gen
+    print(f"[dapo] dynamic sampling enabled: up to {_dapo_n} extra generation attempts",
+          flush=True)
+
+
 _STOPS = _os.environ.get("GRPO_VLLM_STOP_TOKEN_IDS")
 if _STOPS:
     from vllm import LLM as _LLM_stop
