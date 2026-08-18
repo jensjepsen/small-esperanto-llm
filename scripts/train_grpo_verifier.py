@@ -865,6 +865,11 @@ def main():
         run_name=args.wandb_run_name or f"grpo_{args.task}",
         bf16=True,
         optim="adamw_bnb_8bit",
+        # Flash Attention 2 for the trainer's policy model (rollout side
+        # is already FA2 via vLLM). Cuts trainer bwd time ~10-20% and
+        # frees activation memory; on 5090/H100 with flash-attn 2.8+
+        # this is the default choice.
+        model_init_kwargs={"attn_implementation": "flash_attention_2"},
         remove_unused_columns=False,
         # Prefetch next batch on worker threads so the rollout+reward step
         # isn't gated on main-thread data prep (tokenize + collate).
