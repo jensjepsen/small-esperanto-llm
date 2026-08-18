@@ -909,14 +909,26 @@ def main():
     # Rebuild trainer.generation_config with the full chat_stops list so
     # rollouts stop on any of <|end|> / <|user|>. TRL only puts a single
     # eos_token_id in the GenerationConfig by default.
-    if len(chat_stops) > 1:
+    # Only applies when vLLM is OFF — with vLLM, generation goes through
+    # the vLLM engine (which uses its own SamplingParams), and TRL 0.18.2
+    # skips the HF GenerationConfig setup entirely.
+    if not args.use_vllm_server and len(chat_stops) > 1:
         from transformers import GenerationConfig
         gc = trainer.generation_config
         cfg_gen = gc.to_dict()
         cfg_gen["eos_token_id"] = chat_stops
         trainer.generation_config = GenerationConfig(**cfg_gen)
-    print(f"trainer.generation_config.eos_token_id = "
-          f"{trainer.generation_config.eos_token_id}", flush=True)
+    if not args.use_vllm_server:
+        print(f"trainer.generation_config.eos_token_id = "
+              f"{trainer.generation_config.eos_token_id}", flush=True)
+    else:
+        # vLLM: stop tokens go into SamplingParams via the vLLM engine.
+        # TRL 0.18.2 uses tokenizer.eos_token_id for stop when constructing
+        # its internal SamplingParams. Extra stops (<|end|>) can be added
+        # via GRPOConfig.vllm_guided_decoding_regex or a custom subclass;
+        # for now the tokenizer's eos handles the common case.
+        print(f"vLLM colocate: stop-token = tokenizer.eos_token_id "
+              f"(chat_stops={chat_stops} for reference)", flush=True)
     if args.greedy_eval_steps > 0:
         # Resolve which callbacks to attach
         eval_task = args.greedy_eval_task
