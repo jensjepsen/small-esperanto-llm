@@ -112,6 +112,79 @@ if _DAPO_RETRIES:
           flush=True)
 
 
+# GRPO_LOG_DIVERGENCE=1: log per-step stats of |log(π_train / π_vllm)| —
+# the training-inference mismatch that Wu et al. 2025 argue makes BF16
+# GRPO training unstable. Patches vLLM to return logprobs, captures them
+# per-rollout, then in _generate_and_score_completions computes
+# ρ = trainer_logp − vllm_logp on every sampled token and logs mean /
+# abs_mean / p95 to wandb. Direct measurement of the mismatch.
+_LOG_DIVERGENCE = _os.environ.get("GRPO_LOG_DIVERGENCE") == "1"
+if _LOG_DIVERGENCE:
+    from vllm import LLM as _LLM_div
+    _orig_llm_gen_div = _LLM_div.generate
+    _vllm_lp_buf = {"data": None}
+
+    def _llm_gen_capture(self, prompts=None, sampling_params=None, **kwargs):
+        if sampling_params is not None:
+            _sp_iter = (sampling_params if isinstance(sampling_params, list)
+                        else [sampling_params])
+            for _sp in _sp_iter:
+                if getattr(_sp, "logprobs", None) is None:
+                    _sp.logprobs = 1
+        outs = _orig_llm_gen_div(self, prompts=prompts,
+                                 sampling_params=sampling_params, **kwargs)
+        # Extract sampled-token logprobs per completion (one list per rollout).
+        all_lps = []
+        for o in outs:
+            for co in o.outputs:
+                if getattr(co, "logprobs", None) is None:
+                    all_lps.append(None); continue
+                lps = []
+                for tid, lp_dict in zip(co.token_ids, co.logprobs):
+                    lp_obj = lp_dict.get(tid) if lp_dict else None
+                    lps.append(lp_obj.logprob if lp_obj is not None else 0.0)
+                all_lps.append(lps)
+        _vllm_lp_buf["data"] = all_lps
+        return outs
+    _LLM_div.generate = _llm_gen_capture
+
+    _orig_gsc_div = GRPOTrainer._generate_and_score_completions
+
+    def _gsc_log_divergence(self, inputs):
+        result = _orig_gsc_div(self, inputs)
+        vllm_lps = _vllm_lp_buf.get("data")
+        old_lps = result.get("old_per_token_logps")
+        cm = result.get("completion_mask")
+        if vllm_lps and old_lps is not None and cm is not None:
+            import torch as _t
+            rhos = []
+            for i, vlps in enumerate(vllm_lps):
+                if vlps is None or i >= old_lps.shape[0]:
+                    continue
+                n = min(len(vlps), old_lps.shape[1])
+                if n == 0:
+                    continue
+                trainer_lp = old_lps[i, :n]
+                mask = cm[i, :n].bool()
+                if int(mask.sum().item()) == 0:
+                    continue
+                vlp = _t.tensor(vlps[:n], device=trainer_lp.device,
+                                dtype=trainer_lp.dtype)
+                rhos.append((trainer_lp - vlp)[mask])
+            if rhos:
+                log_rho = _t.cat(rhos)
+                m = self._metrics.setdefault("train", {})
+                m.setdefault("log_rho/mean", []).append(log_rho.mean().item())
+                m.setdefault("log_rho/abs_mean", []).append(log_rho.abs().mean().item())
+                m.setdefault("log_rho/abs_max", []).append(log_rho.abs().max().item())
+                m.setdefault("log_rho/p95", []).append(
+                    _t.quantile(log_rho.abs().float(), 0.95).item())
+        return result
+    GRPOTrainer._generate_and_score_completions = _gsc_log_divergence
+    print("[log-divergence] measuring |log(pi_train/pi_vllm)| per rollout",
+          flush=True)
+
+
 _STOPS = _os.environ.get("GRPO_VLLM_STOP_TOKEN_IDS")
 if _STOPS:
     from vllm import LLM as _LLM_stop
