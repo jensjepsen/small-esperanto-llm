@@ -887,24 +887,24 @@ def main():
         save_total_limit=2,
         report_to=["wandb"],
         run_name=args.wandb_run_name or f"grpo_{args.task}",
-        # BF16 by default; GRPO_FP16_EVERYWHERE=1 flips both trainer and
-        # vLLM to fp16 to minimize training-inference mismatch (BF16's
-        # narrower mantissa causes vLLM/trainer logit drift → different
-        # sampled tokens → biased advantages; FP16 has 3× more precision).
+        # BF16 by default; GRPO_FP16_EVERYWHERE=1 flips trainer to fp16
+        # autocast + forces vLLM to fp16 (via the monkey-patch at the top
+        # of this file) to minimize training-inference mismatch (Wu et al.
+        # 2025). FP16 mode uses proper HF mixed-precision: fp32 master
+        # weights + fp16 autocast forward. FA2 requires the model to be
+        # loaded in fp16/bf16 at init (incompatible with fp32 master), so
+        # in FP16 mode we fall back to SDPA. BF16 keeps FA2.
         bf16=(_os.environ.get("GRPO_FP16_EVERYWHERE") != "1"),
         fp16=(_os.environ.get("GRPO_FP16_EVERYWHERE") == "1"),
         optim="adamw_bnb_8bit",
-        # Flash Attention 2 for the trainer's policy model (rollout side
-        # is already FA2 via vLLM). Cuts trainer bwd time ~10-20% and
-        # frees activation memory; on 5090/H100 with flash-attn 2.8+
-        # this is the default choice. torch_dtype is REQUIRED here — FA2
-        # refuses fp32 and silently falls back to SDPA otherwise.
-        model_init_kwargs={
-            "attn_implementation": "flash_attention_2",
-            "torch_dtype": ("float16"
-                            if _os.environ.get("GRPO_FP16_EVERYWHERE") == "1"
-                            else "bfloat16"),
-        },
+        model_init_kwargs=(
+            {}  # FP16 mode: load fp32 master weights, use SDPA + fp16 autocast
+            if _os.environ.get("GRPO_FP16_EVERYWHERE") == "1"
+            else {
+                "attn_implementation": "flash_attention_2",
+                "torch_dtype": "bfloat16",
+            }
+        ),
         remove_unused_columns=False,
         # Prefetch next batch on worker threads so the rollout+reward step
         # isn't gated on main-thread data prep (tokenize + collate).
