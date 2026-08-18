@@ -101,7 +101,11 @@ if [ "$MAX_ROWS" -gt 0 ]; then
   MAX_ROWS_ARGS="--max-rows $MAX_ROWS"
 fi
 
-CUDA_VISIBLE_DEVICES=0 nohup uv run python -u scripts/train_grpo_verifier.py \
+# vLLM colocate mode needs distributed env vars (its UniProcExecutor reads
+# RANK from os.environ). Set explicitly since we're not using torchrun.
+CUDA_VISIBLE_DEVICES=0 RANK=0 LOCAL_RANK=0 WORLD_SIZE=1 \
+MASTER_ADDR=127.0.0.1 MASTER_PORT=29500 \
+nohup uv run python -u scripts/train_grpo_verifier.py \
   --task "$TASK" \
   --checkpoint "$CKPT" \
   --output-dir "$OUTPUT_DIR" \
