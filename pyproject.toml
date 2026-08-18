@@ -47,7 +47,13 @@ train = [
     "liger-kernel>=0.5.0",
     "bitsandbytes>=0.43.0",
 ]
-all = ["wandb>=0.17.0", "google-generativeai>=0.8.6", "google-genai>=1.70.0", "gensim>=4.4.0", "sentence-transformers>=3.0.0", "liger-kernel>=0.5.0", "bitsandbytes>=0.43.0"]
+# vLLM for GRPO rollout acceleration. 0.10.x is the last minor that
+# ships torch==2.8 wheels; newer vLLM (0.11+ / 0.27+) requires torch
+# 2.9-2.13 and CUDA 13 which conflicts with our cu128 setup on Blackwell.
+# Keep the range tight and let setup_vastai.sh pin torch first, then
+# `uv sync --extra vllm` will land compatible torchvision/torchaudio.
+vllm = ["vllm>=0.10,<0.11"]
+all = ["wandb>=0.17.0", "google-generativeai>=0.8.6", "google-genai>=1.70.0", "gensim>=4.4.0", "sentence-transformers>=3.0.0", "liger-kernel>=0.5.0", "bitsandbytes>=0.43.0", "vllm>=0.10,<0.11"]
 
 [project.scripts]
 train = "esperanto_lm.train:main"

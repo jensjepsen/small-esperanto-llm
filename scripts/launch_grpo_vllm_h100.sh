@@ -51,8 +51,8 @@ export WANDB_PROJECT="${WANDB_PROJECT:-danish-lm-grpo}"
 export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 
 if ! uv run python -c "import vllm" 2>/dev/null; then
-  echo "== installing vllm =="
-  uv pip install vllm
+  echo "== installing vllm via `uv sync --extra vllm` (respects pyproject pins) =="
+  uv sync --extra train --extra vllm
 fi
 
 VLLM_LOG=/workspace/vllm_server_h100.log
