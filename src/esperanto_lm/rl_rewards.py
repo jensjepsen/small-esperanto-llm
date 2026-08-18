@@ -280,7 +280,7 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
                         each required field whose output value is null / empty / whitespace-only.
                         Kills the fill_template null-template-parrot shortcut where
                         model scored ~1.0 by returning the empty scaffold verbatim.
-      -0.1 per dupe   — duplicate top-level JSON keys (capped at 5). json.loads
+      -0.15 per dupe  — duplicate top-level JSON keys (capped at 5). json.loads
                         collapses dupes silently → free reward on degenerate
                         `{"k":"v","k":"v",...}` output.
 
@@ -329,7 +329,7 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
         )
         r -= 0.05 * n_type_mis
     # Duplicate-key penalty (universal): kills the dupe-spam degeneracy.
-    r -= 0.1 * min(_dupe_key_extras(completion), 5)
+    r -= 0.15 * min(_dupe_key_extras(completion), 5)
     return round(max(0.0, r), 4)
 
 
