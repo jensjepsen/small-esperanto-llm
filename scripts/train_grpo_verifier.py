@@ -868,8 +868,13 @@ def main():
         # Flash Attention 2 for the trainer's policy model (rollout side
         # is already FA2 via vLLM). Cuts trainer bwd time ~10-20% and
         # frees activation memory; on 5090/H100 with flash-attn 2.8+
-        # this is the default choice.
-        model_init_kwargs={"attn_implementation": "flash_attention_2"},
+        # this is the default choice. torch_dtype=bfloat16 is REQUIRED
+        # here — FA2 refuses fp32 and silently falls back to SDPA with
+        # only a warning otherwise.
+        model_init_kwargs={
+            "attn_implementation": "flash_attention_2",
+            "torch_dtype": "bfloat16",
+        },
         remove_unused_columns=False,
         # Prefetch next batch on worker threads so the rollout+reward step
         # isn't gated on main-thread data prep (tokenize + collate).
