@@ -682,8 +682,12 @@ def main():
     ap.add_argument("--max-completion-length", type=int, default=256)
     ap.add_argument("--learning-rate", type=float, default=1e-6)
     ap.add_argument("--warmup-steps", type=int, default=10)
-    ap.add_argument("--beta", type=float, default=0.04,
-                    help="KL coefficient vs reference policy")
+    ap.add_argument("--beta", type=float, default=0.004,
+                    help="KL coefficient vs reference policy. Empirically "
+                         "beta=0.004 dominates the TRL default 0.04 by "
+                         "+3-5pp per eval on Danish IF+GSM8K mixed3 runs "
+                         "(memory: grpo-low-beta-and-fresh-optim). Bump "
+                         "back to 0.04 if you want tighter policy anchor.")
     ap.add_argument("--save-steps", type=int, default=500)
     ap.add_argument("--save-align-eval", action=argparse.BooleanOptionalAction,
                     default=True,
