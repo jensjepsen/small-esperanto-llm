@@ -860,6 +860,19 @@ def main():
                          "+3-5pp per eval on Danish IF+GSM8K mixed3 runs "
                          "(memory: grpo-low-beta-and-fresh-optim). Bump "
                          "back to 0.04 if you want tighter policy anchor.")
+    ap.add_argument("--adam-beta1", type=float, default=0.9,
+                    help="AdamW β1 (first-moment EMA). Default 0.9. Lower "
+                         "for more responsive momentum to current gradients.")
+    ap.add_argument("--adam-beta2", type=float, default=0.999,
+                    help="AdamW β2 (second-moment EMA). Default 0.999. "
+                         "Lower (e.g. 0.99, 0.95) for shorter RMS window "
+                         "→ more local per-param adaptation. Expect "
+                         "temporary effective-LR bump for ~100 steps on "
+                         "mid-run change.")
+    ap.add_argument("--adam-epsilon", type=float, default=1e-8,
+                    help="AdamW ε (denominator floor). Default 1e-8. "
+                         "Larger (e.g. 1e-6) softens per-param LR "
+                         "amplification for small-gradient params.")
     ap.add_argument("--save-steps", type=int, default=500)
     ap.add_argument("--save-align-eval", action=argparse.BooleanOptionalAction,
                     default=True,
@@ -1048,6 +1061,9 @@ def main():
         bf16=(_os.environ.get("GRPO_FP16_EVERYWHERE") != "1"),
         fp16=(_os.environ.get("GRPO_FP16_EVERYWHERE") == "1"),
         optim="adamw_bnb_8bit",
+        adam_beta1=args.adam_beta1,
+        adam_beta2=args.adam_beta2,
+        adam_epsilon=args.adam_epsilon,
         model_init_kwargs={"attn_implementation": "flash_attention_2"},
         # loss_type="grpo": per-sample-mean-then-batch-mean, correct under
         # gradient accumulation. TRL 0.18's default "bnpo" normalizes over
@@ -1067,6 +1083,9 @@ def main():
         vllm_server_port=args.vllm_port,
         vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
     )
+    print(f"[optim] adamw_bnb_8bit  β1={cfg.adam_beta1}  β2={cfg.adam_beta2}  "
+          f"ε={cfg.adam_epsilon}  weight_decay={cfg.weight_decay}  "
+          f"max_grad_norm={cfg.max_grad_norm}", flush=True)
 
     print(f"loading model {args.checkpoint}...", flush=True)
     if args.skip_zero_adv:
