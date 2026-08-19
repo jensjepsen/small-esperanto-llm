@@ -349,6 +349,16 @@ DUPE_KEY_PENALTY_PER_EXTRA = 0.0 if _LEGACY else 0.15
 DUPE_KEY_PENALTY_CAP = 5
 
 
+# Diagnostic: log resolved reward-tweak state at import so it's visible in
+# every training log (no more guessing whether GRPO_LEGACY_REWARDS reached
+# the process).
+print(f"[rewards] GRPO_LEGACY_REWARDS={_LEGACY}  "
+      f"MIN_COMPLETION_CHARS={MIN_COMPLETION_CHARS}  "
+      f"ARITH_PENALTY_PER_EQ={ARITH_PENALTY_PER_EQ}  "
+      f"DUPE_KEY_PENALTY_PER_EXTRA={DUPE_KEY_PENALTY_PER_EXTRA}",
+      flush=True)
+
+
 def _dupe_key_extras(text: str) -> int:
     """How many DUPLICATE key emissions (beyond the first) at the top level.
     `json.loads` collapses duplicates last-wins, which lets the model earn
