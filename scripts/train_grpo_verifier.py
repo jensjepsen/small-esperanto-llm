@@ -1049,6 +1049,13 @@ def main():
         fp16=(_os.environ.get("GRPO_FP16_EVERYWHERE") == "1"),
         optim="adamw_bnb_8bit",
         model_init_kwargs={"attn_implementation": "flash_attention_2"},
+        # loss_type="grpo": per-sample-mean-then-batch-mean, correct under
+        # gradient accumulation. TRL 0.18's default "bnpo" normalizes over
+        # local batch (sum losses / sum tokens per microbatch, then averaged
+        # across ga) — with varying per-microbatch completion lengths this
+        # drifts vs a single-microbatch bs=32 run. Docstring warns
+        # explicitly. wkahfzee (TRL 0.16, ga=1) never hit this drift.
+        loss_type="grpo",
         remove_unused_columns=False,
         # Prefetch next batch on worker threads so the rollout+reward step
         # isn't gated on main-thread data prep (tokenize + collate).
