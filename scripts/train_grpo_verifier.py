@@ -1035,21 +1035,13 @@ def main():
         # BF16 by default; GRPO_FP16_EVERYWHERE=1 flips trainer to fp16
         # autocast + forces vLLM to fp16 (via the monkey-patch at the top
         # of this file) to minimize training-inference mismatch (Wu et al.
-        # 2025). FP16 mode uses proper HF mixed-precision: fp32 master
-        # weights + fp16 autocast forward. FA2 requires the model to be
-        # loaded in fp16/bf16 at init (incompatible with fp32 master), so
-        # in FP16 mode we fall back to SDPA. BF16 keeps FA2.
+        # 2025). Both paths: load model in fp32, use --bf16 or --fp16
+        # autocast for compute, keep fp32 master weights (avoids bf16-
+        # weight rounding on tiny GRPO updates). Matches train_sft.py.
         bf16=(_os.environ.get("GRPO_FP16_EVERYWHERE") != "1"),
         fp16=(_os.environ.get("GRPO_FP16_EVERYWHERE") == "1"),
         optim="adamw_bnb_8bit",
-        model_init_kwargs=(
-            {}  # FP16 mode: load fp32 master weights, use SDPA + fp16 autocast
-            if _os.environ.get("GRPO_FP16_EVERYWHERE") == "1"
-            else {
-                "attn_implementation": "flash_attention_2",
-                "torch_dtype": "bfloat16",
-            }
-        ),
+        model_init_kwargs={"attn_implementation": "flash_attention_2"},
         remove_unused_columns=False,
         # Prefetch next batch on worker threads so the rollout+reward step
         # isn't gated on main-thread data prep (tokenize + collate).
@@ -1121,6 +1113,21 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
     )
+
+    # Post-load sanity: confirm attn_implementation actually engaged. Under
+    # fp32 model load + FA2 request, HF may silently fall back to SDPA with
+    # only a warning ("Flash Attention 2 only supports fp16/bf16 dtypes").
+    _pm = trainer.model
+    _attn_cfg = getattr(_pm.config, "_attn_implementation", None) or \
+                getattr(_pm.config, "attn_implementation", None)
+    try:
+        _first_attn = _pm.model.layers[0].self_attn
+        _attn_class = type(_first_attn).__name__
+    except AttributeError:
+        _attn_class = "unknown"
+    print(f"[attn] config._attn_implementation={_attn_cfg!r}  "
+          f"first_layer={_attn_class}  model_param_dtype={next(_pm.parameters()).dtype}",
+          flush=True)
 
     # Swap ref_model (for KL penalty) with a different anchor. Runs AFTER
     # trainer __init__ (which does the default create_reference_model(model)
