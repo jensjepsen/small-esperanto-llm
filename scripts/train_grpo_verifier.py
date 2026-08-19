@@ -42,24 +42,31 @@ from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 
-# GRPO_FP16_EVERYWHERE: force vLLM colocate to load model in fp16 so it
-# matches the trainer's fp16 forward pass, minimizing the
-# training-inference mismatch reported by Wu et al. 2025 for BF16 GRPO.
-# vLLM auto-detects dtype from model config (usually fp32 → downcast to
-# bf16). Monkey-patch LLM.__init__ to force dtype="float16" when set.
-# Trainer-side: also set fp16=True (not bf16=True) in GRPOConfig and
-# torch_dtype="float16" in model_init_kwargs.
-if _os.environ.get("GRPO_FP16_EVERYWHERE") == "1":
+# GRPO_VLLM_DTYPE: force vLLM colocate to load with a specific dtype.
+# Accepts "float32", "float16", "bfloat16". Overrides vLLM's default
+# "auto" (which downcasts fp32 model configs to bf16 on Blackwell/H100).
+# Use "float32" for cleanest match with trainer's fp32 masters (loss:
+# ~2× VRAM, ~2× slower rollouts). Use "float16" for Wu et al. 2025's
+# FP16-everywhere training-inference-mismatch mitigation (must combo with
+# GRPO_FP16_EVERYWHERE=1 to also flip trainer to fp16 autocast).
+# GRPO_FP16_EVERYWHERE: kept as legacy alias — implies GRPO_VLLM_DTYPE=float16
+# AND trainer fp16 autocast (fp16=True) in the GRPOConfig block below.
+_vllm_dtype = _os.environ.get("GRPO_VLLM_DTYPE")
+if not _vllm_dtype and _os.environ.get("GRPO_FP16_EVERYWHERE") == "1":
+    _vllm_dtype = "float16"  # legacy alias
+if _vllm_dtype:
+    assert _vllm_dtype in ("float32", "float16", "bfloat16"), (
+        f"GRPO_VLLM_DTYPE must be one of float32/float16/bfloat16, got {_vllm_dtype!r}")
     from vllm import LLM as _LLM
     _orig_llm_init = _LLM.__init__
 
-    def _fp16_llm_init(self, *args, **kwargs):
+    def _forced_dtype_llm_init(self, *args, **kwargs):
         if "dtype" not in kwargs:
-            kwargs["dtype"] = "float16"
+            kwargs["dtype"] = _vllm_dtype
         return _orig_llm_init(self, *args, **kwargs)
 
-    _LLM.__init__ = _fp16_llm_init
-    print("[fp16-everywhere] vLLM.LLM patched to force dtype=float16", flush=True)
+    _LLM.__init__ = _forced_dtype_llm_init
+    print(f"[vllm-dtype] vLLM.LLM patched to force dtype={_vllm_dtype}", flush=True)
 
 
 # GRPO_VLLM_STOP_TOKEN_IDS: comma-separated token ids to force vLLM to stop on.
