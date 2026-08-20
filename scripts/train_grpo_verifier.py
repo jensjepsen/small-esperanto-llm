@@ -152,18 +152,34 @@ if _DAPO_RETRIES:
                 last = b
                 if want_task is None:
                     return b
-                got = b.get("task")
-                if isinstance(got, (list, tuple)) and got:
-                    got = got[0]
+                got = _extract_task(b)
                 if got == want_task:
                     return b
             return last
 
+        def _extract_task(x):
+            """inputs may be a dict of columns or a list of per-microbatch
+            dicts (TRL 0.18 hands us a generation_batch that can be either).
+            Reach into the first entry's 'task' column and grab the first
+            row's task string."""
+            d = None
+            if isinstance(x, dict):
+                d = x
+            elif isinstance(x, (list, tuple)) and x:
+                for item in x:
+                    if isinstance(item, dict):
+                        d = item
+                        break
+            if d is None:
+                return None
+            t = d.get("task")
+            if isinstance(t, (list, tuple)) and t:
+                return t[0]
+            return t
+
         want_task = None
         if _DAPO_FRESH_PROMPTS and _DAPO_FRESH_MATCH_TASK:
-            t = inputs.get("task")
-            if isinstance(t, (list, tuple)) and t:
-                want_task = t[0]
+            want_task = _extract_task(inputs)
 
         for _attempt in range(_dapo_n):
             if best_active >= n_groups:
