@@ -125,6 +125,9 @@ if _DAPO_RETRIES:
     def _dapo_gen(self, inputs):
         best = _orig_dapo_gen(self, inputs)
         best_active, n_groups = _dapo_active_count(best, self.num_generations)
+        first_active = best_active
+        attempts_used = 1
+        rescued_by_fresh = 0
         if _DAPO_FRESH_PROMPTS:
             _dapo_require_n_groups_one(
                 n_groups,
@@ -137,6 +140,7 @@ if _DAPO_RETRIES:
         for _attempt in range(_dapo_n):
             if best_active >= n_groups:
                 break
+            attempts_used += 1
             if _DAPO_FRESH_PROMPTS:
                 try:
                     fresh = next(self._dapo_spare_iter)
@@ -150,9 +154,18 @@ if _DAPO_RETRIES:
             if a > best_active:
                 best = attempt_result
                 best_active = a
-        self._metrics.setdefault("train", {}).setdefault("dapo_active", []).append(
+                if _DAPO_FRESH_PROMPTS:
+                    rescued_by_fresh = 1
+        mode_train = self._metrics.setdefault("train", {})
+        mode_train.setdefault("dapo_active", []).append(
             best_active / max(1, n_groups)
         )
+        mode_train.setdefault("dapo_first_active", []).append(
+            first_active / max(1, n_groups)
+        )
+        mode_train.setdefault("dapo_attempts_used", []).append(float(attempts_used))
+        if _DAPO_FRESH_PROMPTS:
+            mode_train.setdefault("dapo_rescued_by_fresh", []).append(float(rescued_by_fresh))
         return best
 
     GRPOTrainer._generate_and_score_completions = _dapo_gen
