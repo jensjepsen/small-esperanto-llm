@@ -873,6 +873,17 @@ def main():
                     help="AdamW ε (denominator floor). Default 1e-8. "
                          "Larger (e.g. 1e-6) softens per-param LR "
                          "amplification for small-gradient params.")
+    ap.add_argument("--loss-type", choices=["grpo", "bnpo", "dr_grpo"],
+                    default="dr_grpo",
+                    help="GRPO loss reduction. 'dr_grpo' (default): sum-"
+                         "tokens/(bs*max_len) — length-weighted AND ga-"
+                         "invariant, matches gold's bnpo bs=32/ga=1 gradient "
+                         "direction. 'grpo': per-sample-mean then batch-mean "
+                         "(sample-weighted, ga-invariant, ignores length). "
+                         "'bnpo': sum-tokens/sum-mask per microbatch (length-"
+                         "weighted BUT drifts under ga>1 vs ga=1). Empirical "
+                         "on IF-only from-v31: dr_grpo pulled ~2-4pp ahead of "
+                         "grpo on IF after ~2000 steps.")
     ap.add_argument("--save-steps", type=int, default=500)
     ap.add_argument("--save-align-eval", action=argparse.BooleanOptionalAction,
                     default=True,
@@ -1065,13 +1076,10 @@ def main():
         adam_beta2=args.adam_beta2,
         adam_epsilon=args.adam_epsilon,
         model_init_kwargs={"attn_implementation": "flash_attention_2"},
-        # loss_type="grpo": per-sample-mean-then-batch-mean, correct under
-        # gradient accumulation. TRL 0.18's default "bnpo" normalizes over
-        # local batch (sum losses / sum tokens per microbatch, then averaged
-        # across ga) — with varying per-microbatch completion lengths this
-        # drifts vs a single-microbatch bs=32 run. Docstring warns
-        # explicitly. wkahfzee (TRL 0.16, ga=1) never hit this drift.
-        loss_type="grpo",
+        # loss_type via --loss-type CLI. Default 'dr_grpo' (length-weighted,
+        # ga-invariant, matches gold's bnpo bs=32/ga=1 gradient direction).
+        # 'grpo' is sample-weighted; 'bnpo' drifts under ga>1. See --help.
+        loss_type=args.loss_type,
         remove_unused_columns=False,
         # Prefetch next batch on worker threads so the rollout+reward step
         # isn't gated on main-thread data prep (tokenize + collate).
@@ -1104,6 +1112,43 @@ def main():
         import torch as _t
         _orig_gen_score = GRPOTrainer._generate_and_score_completions
 
+        def _log_per_task(self, mode, adv_g, n_gen):
+            """Bucket the current batch's groups by task and push per-task
+            reward / advantage / zero-std stats. Uses reward_mixed's stash of
+            per-example (task, reward). Groups are pure-task (num_gen
+            completions per prompt), so a group's task is unambiguous."""
+            from esperanto_lm import rl_rewards as _rr
+            tasks = _rr.LAST_MIXED_TASKS
+            rewards = _rr.LAST_MIXED_REWARDS
+            if not tasks or not rewards or len(tasks) != len(rewards):
+                return
+            n_local = adv_g.shape[0] * adv_g.shape[1]
+            if len(tasks) < n_local:
+                return
+            import torch as _t2
+            tasks = tasks[:n_local]
+            rewards = rewards[:n_local]
+            # Groups are contiguous num_gen slabs per prompt. Task of a group
+            # is the task of any of its samples (all identical).
+            n_groups = adv_g.shape[0]
+            group_tasks = [tasks[g * n_gen] for g in range(n_groups)]
+            r_t = _t2.tensor(rewards, device=adv_g.device, dtype=_t2.float32)
+            r_g = r_t[:n_groups * n_gen].view(n_groups, n_gen)
+            for tname in set(group_tasks):
+                idx = [g for g, t in enumerate(group_tasks) if t == tname]
+                if not idx:
+                    continue
+                r_sel = r_g[idx]
+                a_sel = adv_g[idx]
+                rsd = r_sel.std(dim=1)
+                fzs = (rsd < 1e-6).float().mean().item()
+                self._metrics[mode].setdefault(f"rewards/{tname}/mean", []).append(r_sel.mean().item())
+                self._metrics[mode].setdefault(f"rewards/{tname}/std", []).append(rsd.mean().item())
+                self._metrics[mode].setdefault(f"rewards/{tname}/fzs", []).append(fzs)
+                self._metrics[mode].setdefault(f"advantages/{tname}/absmean", []).append(a_sel.abs().mean().item())
+                self._metrics[mode].setdefault(f"advantages/{tname}/std", []).append(a_sel.std().item())
+                self._metrics[mode].setdefault(f"count/{tname}", []).append(float(len(idx)))
+
         def _gen_score_with_skip(self, inputs):
             result = _orig_gen_score(self, inputs)
             adv = result.get("advantages")
@@ -1123,6 +1168,7 @@ def main():
             active = (adv_g.abs() > 1e-6).any(dim=1)
             frac_skipped = 1.0 - active.float().mean().item()
             self._metrics[mode]["skip_frac"].append(frac_skipped)
+            _log_per_task(self, mode, adv_g, n_gen)
             if bool(active.all()) or not bool(active.any()):
                 return result
             sample_mask = active.repeat_interleave(n_gen).to(adv.device)

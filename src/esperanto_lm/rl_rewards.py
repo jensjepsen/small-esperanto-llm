@@ -258,23 +258,27 @@ def reward_ifeval_combined(completions: list[str],
     return out
 
 
-def _try_parse_json(text: str):
-    """Best-effort JSON extraction: raw, ```json fence, first {...}, first [...]."""
-    for cand in [text, text.strip()]:
-        try:
-            return json.loads(cand)
-        except Exception:
-            pass
+def _json_candidates(text: str):
+    """Yield JSON-string candidates from a completion in decreasing preference:
+    raw, stripped, ```json fence contents, first {...} block. Shared by both
+    the parse path (_try_parse_json) and the dupe-key audit (_dupe_key_extras)
+    so they see the SAME payload — otherwise fenced outputs bypass the dupe
+    penalty entirely."""
+    yield text
+    yield text.strip()
     m = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.DOTALL)
     if m:
-        try:
-            return json.loads(m.group(1))
-        except Exception:
-            pass
+        yield m.group(1)
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if m:
+        yield m.group(0)
+
+
+def _try_parse_json(text: str):
+    """Best-effort JSON extraction: raw, ```json fence, first {...}, first [...]."""
+    for cand in _json_candidates(text):
         try:
-            return json.loads(m.group(0))
+            return json.loads(cand)
         except Exception:
             pass
     return None
@@ -363,12 +367,20 @@ def _dupe_key_extras(text: str) -> int:
     """How many DUPLICATE key emissions (beyond the first) at the top level.
     `json.loads` collapses duplicates last-wins, which lets the model earn
     full reward on degenerate `{"k": "v", "k": "v", "k": "v", ...}` output.
-    We re-parse with object_pairs_hook to count extras."""
-    try:
-        pairs = json.loads(text, object_pairs_hook=list)
-    except Exception:
-        return 0
-    if not isinstance(pairs, list):
+    We re-parse with object_pairs_hook to count extras.
+
+    Runs the SAME fence-stripping / block-extraction as `_try_parse_json`
+    (via `_json_candidates`) — otherwise ```json ... ``` fenced outputs
+    (which the model produces by default) bypass the penalty entirely,
+    leaving the dupe-spam hack unpunished."""
+    pairs = None
+    for cand in _json_candidates(text):
+        try:
+            pairs = json.loads(cand, object_pairs_hook=list)
+            break
+        except Exception:
+            continue
+    if pairs is None or not isinstance(pairs, list):
         return 0
     seen = set(); extras = 0
     for k, _ in pairs:
@@ -506,7 +518,19 @@ def reward_mixed(completions: list[str],
             ))
         else:  # ifeval / combined
             out.append(reward_ifeval_combined([text], [cons or []], [p or []])[0])
+    # Stash per-example (task, reward) pairs so the trainer wrapper can bucket
+    # by task and log per-task stats. Overwritten every call.
+    global LAST_MIXED_TASKS, LAST_MIXED_REWARDS
+    LAST_MIXED_TASKS = list(task)
+    LAST_MIXED_REWARDS = list(out)
     return out
+
+
+# Per-call diagnostic buffer populated by reward_mixed. `_gen_score_with_skip`
+# in train_grpo_verifier.py reads these to log per-task reward / advantage
+# distributions to wandb. Reset every call to reward_mixed.
+LAST_MIXED_TASKS: list[str] | None = None
+LAST_MIXED_REWARDS: list[float] | None = None
 
 
 def reward_ifeval(completions: list[str],
