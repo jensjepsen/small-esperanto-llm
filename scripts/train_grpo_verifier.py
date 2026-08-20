@@ -84,6 +84,7 @@ if _vllm_dtype:
 # then skip-adv masks any remaining zero-std groups.
 _DAPO_RETRIES = _os.environ.get("GRPO_DAPO_RESAMPLE")
 _DAPO_FRESH_PROMPTS = _os.environ.get("GRPO_DAPO_FRESH_PROMPTS") == "1"
+_DAPO_FRESH_MATCH_TASK = _os.environ.get("GRPO_DAPO_FRESH_MATCH_TASK") == "1"
 
 
 def _dapo_active_count(result, num_gens):
@@ -137,16 +138,39 @@ if _DAPO_RETRIES:
             )
             if not hasattr(self, "_dapo_spare_iter"):
                 self._dapo_spare_iter = iter(self.get_train_dataloader())
+        def _pull_fresh_batch(want_task=None, max_reject=50):
+            """Fetch next batch from spare iterator, rejecting task
+            mismatches when want_task is set (rejection-sample matched
+            fresh prompt). Falls back to last drawn if budget exhausted."""
+            last = None
+            for _ in range(max_reject):
+                try:
+                    b = next(self._dapo_spare_iter)
+                except StopIteration:
+                    self._dapo_spare_iter = iter(self.get_train_dataloader())
+                    b = next(self._dapo_spare_iter)
+                last = b
+                if want_task is None:
+                    return b
+                got = b.get("task")
+                if isinstance(got, (list, tuple)) and got:
+                    got = got[0]
+                if got == want_task:
+                    return b
+            return last
+
+        want_task = None
+        if _DAPO_FRESH_PROMPTS and _DAPO_FRESH_MATCH_TASK:
+            t = inputs.get("task")
+            if isinstance(t, (list, tuple)) and t:
+                want_task = t[0]
+
         for _attempt in range(_dapo_n):
             if best_active >= n_groups:
                 break
             attempts_used += 1
             if _DAPO_FRESH_PROMPTS:
-                try:
-                    fresh = next(self._dapo_spare_iter)
-                except StopIteration:
-                    self._dapo_spare_iter = iter(self.get_train_dataloader())
-                    fresh = next(self._dapo_spare_iter)
+                fresh = _pull_fresh_batch(want_task=want_task)
                 attempt_result = _orig_dapo_gen(self, fresh)
             else:
                 attempt_result = _orig_dapo_gen(self, inputs)
@@ -169,7 +193,12 @@ if _DAPO_RETRIES:
         return best
 
     GRPOTrainer._generate_and_score_completions = _dapo_gen
-    _mode = "FRESH-prompts (best-of-N, requires n_groups==1)" if _DAPO_FRESH_PROMPTS else "same-prompts re-rollout"
+    if _DAPO_FRESH_PROMPTS:
+        _mode = "FRESH-prompts (best-of-N, requires n_groups==1)"
+        if _DAPO_FRESH_MATCH_TASK:
+            _mode += " +TASK-MATCH (rejection-sample on inputs['task'][0])"
+    else:
+        _mode = "same-prompts re-rollout"
     print(f"[dapo] dynamic sampling enabled: up to {_dapo_n} extra generation "
           f"attempts, mode={_mode}", flush=True)
 
