@@ -83,28 +83,69 @@ if _vllm_dtype:
 # --skip-zero-adv: DAPO runs first (retries to reduce zero-std count),
 # then skip-adv masks any remaining zero-std groups.
 _DAPO_RETRIES = _os.environ.get("GRPO_DAPO_RESAMPLE")
+_DAPO_FRESH_PROMPTS = _os.environ.get("GRPO_DAPO_FRESH_PROMPTS") == "1"
+
+
+def _dapo_active_count(result, num_gens):
+    adv = result.get("advantages") if result is not None else None
+    if adv is None:
+        return 0, 0
+    n = adv.shape[0]
+    g = n // num_gens
+    if g == 0:
+        return 0, 0
+    adv_g = adv[:g * num_gens].view(g, num_gens)
+    return int((adv_g.abs() > 1e-6).any(dim=1).sum().item()), g
+
+
+def _dapo_require_n_groups_one(n_groups: int, *, per_device: int, ga: int,
+                                num_gen: int) -> None:
+    """Guard for the FRESH-PROMPTS DAPO best-of-N variant.
+
+    When only 1 unique prompt is processed per opt step (n_groups==1),
+    best-of-N and paper's accumulate-with-slot-swap produce identical
+    results (either you keep the single group or replace it wholesale).
+    For n_groups>1, best-of-N is strictly weaker — accumulate would swap
+    dead prompts INDIVIDUALLY across attempts. Raise so we don't silently
+    ship a subtly-wrong implementation when someone changes the ratio."""
+    if n_groups > 1:
+        raise NotImplementedError(
+            f"GRPO_DAPO_FRESH_PROMPTS=1 (best-of-N flavor) is only correct "
+            f"for n_groups==1 per opt step. Got n_groups={n_groups} from "
+            f"per_device_batch={per_device} * ga={ga} / num_generations={num_gen}. "
+            f"For n_groups>1, upgrade to the paper's accumulate-with-slot-swap "
+            f"variant (per-slot tensor swap + pad reconciliation across attempts)."
+        )
+
+
 if _DAPO_RETRIES:
     _dapo_n = max(1, int(_DAPO_RETRIES))
     _orig_dapo_gen = GRPOTrainer._generate_and_score_completions
 
-    def _dapo_active_count(result, num_gens):
-        adv = result.get("advantages")
-        if adv is None:
-            return 0, 0
-        n = adv.shape[0]
-        g = n // num_gens
-        if g == 0:
-            return 0, 0
-        adv_g = adv[:g * num_gens].view(g, num_gens)
-        return int((adv_g.abs() > 1e-6).any(dim=1).sum().item()), g
-
     def _dapo_gen(self, inputs):
         best = _orig_dapo_gen(self, inputs)
         best_active, n_groups = _dapo_active_count(best, self.num_generations)
+        if _DAPO_FRESH_PROMPTS:
+            _dapo_require_n_groups_one(
+                n_groups,
+                per_device=self.args.per_device_train_batch_size,
+                ga=self.args.gradient_accumulation_steps,
+                num_gen=self.num_generations,
+            )
+            if not hasattr(self, "_dapo_spare_iter"):
+                self._dapo_spare_iter = iter(self.get_train_dataloader())
         for _attempt in range(_dapo_n):
             if best_active >= n_groups:
                 break
-            attempt_result = _orig_dapo_gen(self, inputs)
+            if _DAPO_FRESH_PROMPTS:
+                try:
+                    fresh = next(self._dapo_spare_iter)
+                except StopIteration:
+                    self._dapo_spare_iter = iter(self.get_train_dataloader())
+                    fresh = next(self._dapo_spare_iter)
+                attempt_result = _orig_dapo_gen(self, fresh)
+            else:
+                attempt_result = _orig_dapo_gen(self, inputs)
             a, _ = _dapo_active_count(attempt_result, self.num_generations)
             if a > best_active:
                 best = attempt_result
@@ -115,8 +156,9 @@ if _DAPO_RETRIES:
         return best
 
     GRPOTrainer._generate_and_score_completions = _dapo_gen
-    print(f"[dapo] dynamic sampling enabled: up to {_dapo_n} extra generation attempts",
-          flush=True)
+    _mode = "FRESH-prompts (best-of-N, requires n_groups==1)" if _DAPO_FRESH_PROMPTS else "same-prompts re-rollout"
+    print(f"[dapo] dynamic sampling enabled: up to {_dapo_n} extra generation "
+          f"attempts, mode={_mode}", flush=True)
 
 
 # Log per-step stats of |log(π_train / π_vllm)| — the training-inference
