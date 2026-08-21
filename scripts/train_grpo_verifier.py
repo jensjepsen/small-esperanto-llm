@@ -260,12 +260,23 @@ if _LOG_DIVERGENCE:
 
     _orig_gtplp = GRPOTrainer._get_per_token_logps
 
-    def _gtplp_capture(self, *args, **kwargs):
-        out = _orig_gtplp(self, *args, **kwargs)
+    def _gtplp_capture(self, model, *args, **kwargs):
+        out = _orig_gtplp(self, model, *args, **kwargs)
+        # Capture ONLY the trainer model's logps — TRL calls this twice per
+        # compute_loss (trainer model then ref model). Comparing ref logps to
+        # vllm's trainer-model logps would show trainer-vs-ref drift, not
+        # trainer-vs-vllm mismatch (which is what we actually want).
         try:
-            _trainer_lp_buf["data"] = out.detach() if out is not None else None
+            is_trainer = model is getattr(self, "model", None)
+            # Unwrap accelerator/DDP if needed
+            if not is_trainer:
+                unwrapped = getattr(model, "module", model)
+                trainer_unwrapped = getattr(getattr(self, "model", None), "module", getattr(self, "model", None))
+                is_trainer = unwrapped is trainer_unwrapped
+            if is_trainer:
+                _trainer_lp_buf["data"] = out.detach() if out is not None else None
         except Exception:
-            _trainer_lp_buf["data"] = None
+            pass
         return out
     GRPOTrainer._get_per_token_logps = _gtplp_capture
 
