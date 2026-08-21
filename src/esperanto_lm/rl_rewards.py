@@ -152,7 +152,8 @@ def _wrong_equations(text: str) -> int:
     return n
 
 
-ARITH_PENALTY_PER_EQ = 0.0 if _LEGACY else 0.05
+_NO_ARITH = os.environ.get("GRPO_DISABLE_GSM_ARITH_PENALTY") == "1"
+ARITH_PENALTY_PER_EQ = 0.0 if (_LEGACY or _NO_ARITH) else 0.05
 ARITH_PENALTY_CAP = 6
 """Per-equation arithmetic-execution penalty for reward_gsm8k. Discovered
 via eval_gsm8k_da_freshopt_dump.jsonl: ~13% of wrong-answer rows have a
@@ -357,6 +358,7 @@ DUPE_KEY_PENALTY_CAP = 5
 # every training log (no more guessing whether GRPO_LEGACY_REWARDS reached
 # the process).
 print(f"[rewards] GRPO_LEGACY_REWARDS={_LEGACY}  "
+      f"GRPO_DISABLE_GSM_ARITH_PENALTY={_NO_ARITH}  "
       f"MIN_COMPLETION_CHARS={MIN_COMPLETION_CHARS}  "
       f"ARITH_PENALTY_PER_EQ={ARITH_PENALTY_PER_EQ}  "
       f"DUPE_KEY_PENALTY_PER_EXTRA={DUPE_KEY_PENALTY_PER_EXTRA}",
