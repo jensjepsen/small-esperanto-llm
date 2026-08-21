@@ -87,36 +87,15 @@ _DAPO_FRESH_PROMPTS = _os.environ.get("GRPO_DAPO_FRESH_PROMPTS") == "1"
 _DAPO_FRESH_MATCH_TASK = _os.environ.get("GRPO_DAPO_FRESH_MATCH_TASK") == "1"
 
 
+from esperanto_lm.dapo_slot_swap import active_mask as _dapo_active_mask, slot_swap as _dapo_slot_swap
+
+
 def _dapo_active_count(result, num_gens):
-    adv = result.get("advantages") if result is not None else None
-    if adv is None:
-        return 0, 0
-    n = adv.shape[0]
-    g = n // num_gens
-    if g == 0:
-        return 0, 0
-    adv_g = adv[:g * num_gens].view(g, num_gens)
-    return int((adv_g.abs() > 1e-6).any(dim=1).sum().item()), g
-
-
-def _dapo_require_n_groups_one(n_groups: int, *, per_device: int, ga: int,
-                                num_gen: int) -> None:
-    """Guard for the FRESH-PROMPTS DAPO best-of-N variant.
-
-    When only 1 unique prompt is processed per opt step (n_groups==1),
-    best-of-N and paper's accumulate-with-slot-swap produce identical
-    results (either you keep the single group or replace it wholesale).
-    For n_groups>1, best-of-N is strictly weaker — accumulate would swap
-    dead prompts INDIVIDUALLY across attempts. Raise so we don't silently
-    ship a subtly-wrong implementation when someone changes the ratio."""
-    if n_groups > 1:
-        raise NotImplementedError(
-            f"GRPO_DAPO_FRESH_PROMPTS=1 (best-of-N flavor) is only correct "
-            f"for n_groups==1 per opt step. Got n_groups={n_groups} from "
-            f"per_device_batch={per_device} * ga={ga} / num_generations={num_gen}. "
-            f"For n_groups>1, upgrade to the paper's accumulate-with-slot-swap "
-            f"variant (per-slot tensor swap + pad reconciliation across attempts)."
-        )
+    """Back-compat wrapper — returns (n_active_int, n_groups)."""
+    m, g = _dapo_active_mask(result, num_gens)
+    if m is None:
+        return 0, g
+    return int(m.sum().item()), g
 
 
 if _DAPO_RETRIES:
@@ -125,17 +104,12 @@ if _DAPO_RETRIES:
 
     def _dapo_gen(self, inputs):
         best = _orig_dapo_gen(self, inputs)
-        best_active, n_groups = _dapo_active_count(best, self.num_generations)
+        best_mask, n_groups = _dapo_active_mask(best, self.num_generations)
+        best_active = 0 if best_mask is None else int(best_mask.sum().item())
         first_active = best_active
         attempts_used = 1
         rescued_by_fresh = 0
         if _DAPO_FRESH_PROMPTS:
-            _dapo_require_n_groups_one(
-                n_groups,
-                per_device=self.args.per_device_train_batch_size,
-                ga=self.args.gradient_accumulation_steps,
-                num_gen=self.num_generations,
-            )
             if not hasattr(self, "_dapo_spare_iter"):
                 self._dapo_spare_iter = iter(self.get_train_dataloader())
         def _pull_fresh_batch(want_task=None, max_reject=50):
@@ -190,12 +164,31 @@ if _DAPO_RETRIES:
                 attempt_result = _orig_dapo_gen(self, fresh)
             else:
                 attempt_result = _orig_dapo_gen(self, inputs)
-            a, _ = _dapo_active_count(attempt_result, self.num_generations)
-            if a > best_active:
-                best = attempt_result
-                best_active = a
-                if _DAPO_FRESH_PROMPTS:
-                    rescued_by_fresh = 1
+            att_mask, att_n = _dapo_active_mask(attempt_result, self.num_generations)
+            # Per-slot swap: for each slot dead in best but active in attempt,
+            # overwrite best's slot rows with attempt's slot rows (pad-
+            # reconciled). Works for n_groups >= 1. When attempt has a
+            # different n_groups (drop_last edge), slot_swap returns 0 and we
+            # fall back to whole-batch replacement only if strictly better.
+            n_swapped = 0
+            if best_mask is not None and att_mask is not None and att_n == n_groups:
+                n_swapped = _dapo_slot_swap(best, attempt_result,
+                                            self.num_generations,
+                                            best_mask=best_mask,
+                                            src_mask=att_mask)
+                if n_swapped > 0:
+                    best_active = int(best_mask.sum().item())
+                    if _DAPO_FRESH_PROMPTS:
+                        rescued_by_fresh += n_swapped
+            elif att_mask is not None:
+                a = int(att_mask.sum().item())
+                if a > best_active:
+                    best = attempt_result
+                    best_mask = att_mask
+                    n_groups = att_n
+                    best_active = a
+                    if _DAPO_FRESH_PROMPTS:
+                        rescued_by_fresh += a
         mode_train = self._metrics.setdefault("train", {})
         mode_train.setdefault("dapo_active", []).append(
             best_active / max(1, n_groups)
@@ -210,11 +203,11 @@ if _DAPO_RETRIES:
 
     GRPOTrainer._generate_and_score_completions = _dapo_gen
     if _DAPO_FRESH_PROMPTS:
-        _mode = "FRESH-prompts (best-of-N, requires n_groups==1)"
+        _mode = "FRESH-prompts (per-slot swap, supports n_groups>=1)"
         if _DAPO_FRESH_MATCH_TASK:
             _mode += " +TASK-MATCH (rejection-sample on inputs['task'][0])"
     else:
-        _mode = "same-prompts re-rollout"
+        _mode = "same-prompts re-rollout (per-slot swap)"
     print(f"[dapo] dynamic sampling enabled: up to {_dapo_n} extra generation "
           f"attempts, mode={_mode}", flush=True)
 
