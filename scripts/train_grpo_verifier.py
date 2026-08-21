@@ -249,23 +249,50 @@ if _LOG_DIVERGENCE:
         return outs
     _LLM_div.generate = _llm_gen_capture
 
-    _orig_gsc_div = GRPOTrainer._generate_and_score_completions
+    # Capture trainer per-token logprobs from `_get_per_token_logps` — TRL sets
+    # `old_per_token_logps` to None when num_iterations==1 (lazy-recomputed in
+    # compute_loss), so hooking `_generate_and_score_completions` never sees it.
+    # Publish the return value into a buffer whenever `_get_per_token_logps`
+    # runs, then read it out during compute_loss. Zero extra forward passes.
+    _trainer_lp_buf = {"data": None, "cm": None}
+    _rho_state = {"step": 0}
+    _RHO_SAMPLE_EVERY = int(_os.environ.get("GRPO_LOG_RHO_EVERY", "20"))
 
-    def _gsc_log_divergence(self, inputs):
-        result = _orig_gsc_div(self, inputs)
+    _orig_gtplp = GRPOTrainer._get_per_token_logps
+
+    def _gtplp_capture(self, *args, **kwargs):
+        out = _orig_gtplp(self, *args, **kwargs)
+        try:
+            _trainer_lp_buf["data"] = out.detach() if out is not None else None
+        except Exception:
+            _trainer_lp_buf["data"] = None
+        return out
+    GRPOTrainer._get_per_token_logps = _gtplp_capture
+
+    _orig_compute_loss = GRPOTrainer.compute_loss
+
+    def _compute_loss_with_rho(self, model, inputs, *args, **kwargs):
+        result = _orig_compute_loss(self, model, inputs, *args, **kwargs)
+        _rho_state["step"] += 1
+        if _rho_state["step"] % _RHO_SAMPLE_EVERY != 0:
+            return result
         vllm_lps = _vllm_lp_buf.get("data")
-        old_lps = result.get("old_per_token_logps")
-        cm = result.get("completion_mask")
-        if vllm_lps and old_lps is not None and cm is not None:
+        trainer_lps = _trainer_lp_buf.get("data")
+        cm = inputs.get("completion_mask") if isinstance(inputs, dict) else None
+        if not vllm_lps or trainer_lps is None or cm is None:
+            return result
+        try:
             import torch as _t
             rhos = []
-            for i, vlps in enumerate(vllm_lps):
-                if vlps is None or i >= old_lps.shape[0]:
+            n_rows = min(len(vllm_lps), trainer_lps.shape[0])
+            for i in range(n_rows):
+                vlps = vllm_lps[i]
+                if vlps is None:
                     continue
-                n = min(len(vlps), old_lps.shape[1])
+                n = min(len(vlps), trainer_lps.shape[1])
                 if n == 0:
                     continue
-                trainer_lp = old_lps[i, :n]
+                trainer_lp = trainer_lps[i, :n]
                 mask = cm[i, :n].bool()
                 if int(mask.sum().item()) == 0:
                     continue
@@ -280,9 +307,12 @@ if _LOG_DIVERGENCE:
                 m.setdefault("log_rho/abs_max", []).append(log_rho.abs().max().item())
                 m.setdefault("log_rho/p95", []).append(
                     _t.quantile(log_rho.abs().float(), 0.95).item())
+        except Exception:
+            pass  # diagnostic-only — never break training
         return result
-    GRPOTrainer._generate_and_score_completions = _gsc_log_divergence
-    print("[log-divergence] measuring |log(pi_train/pi_vllm)| per rollout",
+    GRPOTrainer.compute_loss = _compute_loss_with_rho
+    print(f"[log-divergence] measuring |log(pi_train/pi_vllm)| per rollout "
+          f"(sampled every {_RHO_SAMPLE_EVERY} compute_loss calls)",
           flush=True)
 
 
