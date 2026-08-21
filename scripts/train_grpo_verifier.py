@@ -262,18 +262,20 @@ if _LOG_DIVERGENCE:
 
     def _gtplp_capture(self, model, *args, **kwargs):
         out = _orig_gtplp(self, model, *args, **kwargs)
-        # Capture ONLY the trainer model's logps — TRL calls this twice per
-        # compute_loss (trainer model then ref model). Comparing ref logps to
-        # vllm's trainer-model logps would show trainer-vs-ref drift, not
-        # trainer-vs-vllm mismatch (which is what we actually want).
+        # Skip captures where `model` is the ref model — TRL calls this twice
+        # per compute_loss (trainer model then ref model). Comparing ref logps
+        # to vllm's trainer-model logps would show trainer-vs-ref drift, not
+        # trainer-vs-vllm mismatch. Identify ref via object identity (checked
+        # both raw and unwrapped) rather than trainer-side check because TRL
+        # passes a DDP/accelerator-wrapped `model` for the trainer call.
         try:
-            is_trainer = model is getattr(self, "model", None)
-            # Unwrap accelerator/DDP if needed
-            if not is_trainer:
-                unwrapped = getattr(model, "module", model)
-                trainer_unwrapped = getattr(getattr(self, "model", None), "module", getattr(self, "model", None))
-                is_trainer = unwrapped is trainer_unwrapped
-            if is_trainer:
+            ref = getattr(self, "ref_model", None)
+            ref_unwrapped = getattr(ref, "module", ref)
+            model_unwrapped = getattr(model, "module", model)
+            is_ref = ref is not None and (
+                model is ref or model_unwrapped is ref or model_unwrapped is ref_unwrapped
+            )
+            if not is_ref:
                 _trainer_lp_buf["data"] = out.detach() if out is not None else None
         except Exception:
             pass
