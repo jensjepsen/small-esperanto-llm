@@ -10,11 +10,11 @@ dependencies = [
     # apply_liger_kernel_to_llama on transformers≥4.52) actually runs.
     # Pre-fix: liger imported but silently failed at apply-time, paying
     # ~30-40% wall and ~40% VRAM. Upper bound is breathing room.
-    "transformers>=4.52,<4.56",
-    "datasets>=2.20.0",
+    "transformers>=4.56.2,<4.60",
+    "datasets>=4.7.0",
     "tokenizers>=0.19.0",
-    "accelerate>=0.30.0",
-    "trl>=0.18.2,<0.19",
+    "accelerate>=1.4.0",
+    "trl>=1.10.0,<2.0",
     "pyyaml>=6.0",
     "rich>=13.0",
     "lark>=1.1",
@@ -72,12 +72,12 @@ dev-dependencies = [
 ]
 
 [[tool.uv.index]]
-url = "https://download.pytorch.org/whl/cu121"
-name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu128"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu121" }
+torch = { index = "pytorch-cu128" }
 
 [build-system]
 requires = ["hatchling"]
