@@ -69,6 +69,23 @@ if _vllm_dtype:
     print(f"[vllm-dtype] vLLM.LLM patched to force dtype={_vllm_dtype}", flush=True)
 
 
+# GRPO_VLLM_PROCESSED_LOGPROBS: force logprobs_mode="processed_logprobs" on
+# vLLM.LLM (vLLM >= 0.10.2). Fixes silent train-rollout logprob mismatch — see
+# huggingface/trl#4159. Default ON; set =0 to disable.
+if _os.environ.get("GRPO_VLLM_PROCESSED_LOGPROBS", "1") != "0":
+    from vllm import LLM as _LLM_lpm
+    _orig_llm_init_lpm = _LLM_lpm.__init__
+
+    def _processed_logprobs_llm_init(self, *args, **kwargs):
+        if "logprobs_mode" not in kwargs:
+            kwargs["logprobs_mode"] = "processed_logprobs"
+        return _orig_llm_init_lpm(self, *args, **kwargs)
+
+    _LLM_lpm.__init__ = _processed_logprobs_llm_init
+    print("[vllm-logprobs] vLLM.LLM patched: logprobs_mode='processed_logprobs' "
+          "(TRL #4159 fix — vLLM >= 0.10.2)", flush=True)
+
+
 # GRPO_VLLM_STOP_TOKEN_IDS: comma-separated token ids to force vLLM to stop on.
 # TRL 0.18.2 does NOT set stop_token_ids in SamplingParams, so vLLM only
 # stops on tokenizer.eos_token_id. Our SFT tokenizer's eos is `<|end|>` (16002)
@@ -223,7 +240,11 @@ _LOG_DIVERGENCE = _os.environ.get("GRPO_LOG_DIVERGENCE", "1") != "0"
 if _LOG_DIVERGENCE:
     from vllm import LLM as _LLM_div
     _orig_llm_gen_div = _LLM_div.generate
-    _vllm_lp_buf = {"data": None}
+    # Buffer stores {tuple(token_ids): [logprobs, ...]} keyed by completion.
+    # Token-id keying is alignment-agnostic: robust to grad-accum micro-batch
+    # slicing, batch reordering, and DAPO slot-swap (accumulate across gen
+    # calls within a rollout; leftover mismatches are just skipped).
+    _vllm_lp_buf = {"by_ids": {}}
 
     def _llm_gen_capture(self, prompts=None, sampling_params=None, **kwargs):
         if sampling_params is not None:
@@ -234,18 +255,16 @@ if _LOG_DIVERGENCE:
                     _sp.logprobs = 1
         outs = _orig_llm_gen_div(self, prompts=prompts,
                                  sampling_params=sampling_params, **kwargs)
-        # Extract sampled-token logprobs per completion (one list per rollout).
-        all_lps = []
+        # Extract sampled-token logprobs per completion, key by token_ids.
         for o in outs:
             for co in o.outputs:
                 if getattr(co, "logprobs", None) is None:
-                    all_lps.append(None); continue
+                    continue
                 lps = []
                 for tid, lp_dict in zip(co.token_ids, co.logprobs):
                     lp_obj = lp_dict.get(tid) if lp_dict else None
                     lps.append(lp_obj.logprob if lp_obj is not None else 0.0)
-                all_lps.append(lps)
-        _vllm_lp_buf["data"] = all_lps
+                _vllm_lp_buf["by_ids"][tuple(co.token_ids)] = lps
         return outs
     _LLM_div.generate = _llm_gen_capture
 
@@ -289,29 +308,46 @@ if _LOG_DIVERGENCE:
         _rho_state["step"] += 1
         if _rho_state["step"] % _RHO_SAMPLE_EVERY != 0:
             return result
-        vllm_lps = _vllm_lp_buf.get("data")
+        by_ids = _vllm_lp_buf.get("by_ids") or {}
         trainer_lps = _trainer_lp_buf.get("data")
         cm = inputs.get("completion_mask") if isinstance(inputs, dict) else None
-        if not vllm_lps or trainer_lps is None or cm is None:
+        cids = inputs.get("completion_ids") if isinstance(inputs, dict) else None
+        if not by_ids or trainer_lps is None or cm is None or cids is None:
             return result
         try:
             import torch as _t
             rhos = []
-            n_rows = min(len(vllm_lps), trainer_lps.shape[0])
-            for i in range(n_rows):
-                vlps = vllm_lps[i]
+            matched = 0
+            # Build a key set + prefix map from by_ids for startswith matching:
+            # trainer's cids row is `vllm_completion + padding`, so its prefix
+            # matches some vllm key.
+            vllm_keys = list(by_ids.keys())
+            for i in range(trainer_lps.shape[0]):
+                mask_row = cm[i].bool()
+                n_valid = int(mask_row.sum().item())
+                if n_valid == 0:
+                    continue
+                cid_list = cids[i, :n_valid].tolist()
+                # Try exact match first (fast path).
+                ids_tuple = tuple(int(x) for x in cid_list)
+                vlps = by_ids.get(ids_tuple)
+                if vlps is None:
+                    # Fallback: find a vllm key that is a prefix of cid_list.
+                    for k in vllm_keys:
+                        L = len(k)
+                        if L <= n_valid and cid_list[:L] == list(k):
+                            vlps = by_ids[k]
+                            break
                 if vlps is None:
                     continue
-                n = min(len(vlps), trainer_lps.shape[1])
+                n = min(len(vlps), trainer_lps.shape[1], n_valid)
                 if n == 0:
                     continue
                 trainer_lp = trainer_lps[i, :n]
-                mask = cm[i, :n].bool()
-                if int(mask.sum().item()) == 0:
-                    continue
                 vlp = _t.tensor(vlps[:n], device=trainer_lp.device,
                                 dtype=trainer_lp.dtype)
-                rhos.append((trainer_lp - vlp)[mask])
+                rhos.append(trainer_lp - vlp)
+                matched += 1
             if rhos:
                 log_rho = _t.cat(rhos)
                 m = self._metrics.setdefault("train", {})
@@ -320,12 +356,23 @@ if _LOG_DIVERGENCE:
                 m.setdefault("log_rho/abs_max", []).append(log_rho.abs().max().item())
                 m.setdefault("log_rho/p95", []).append(
                     _t.quantile(log_rho.abs().float(), 0.95).item())
+                m.setdefault("log_rho/matched_frac", []).append(
+                    matched / trainer_lps.shape[0])
         except Exception:
             pass  # diagnostic-only — never break training
         return result
     GRPOTrainer.compute_loss = _compute_loss_with_rho
+
+    # Do NOT clear the by_ids buffer per-rollout — some compute_loss calls
+    # can be for rollouts whose vllm gen happened in a previous
+    # _generate_and_score_completions call (batch overlap, pipelining).
+    # Instead, cap it as an LRU-style dict: keep the last N entries.
+    import collections as _collections
+    _vllm_lp_buf["by_ids"] = _collections.OrderedDict()
+    _RHO_BUF_MAX = int(_os.environ.get("GRPO_LOG_RHO_BUF_MAX", "4096"))
+
     print(f"[log-divergence] measuring |log(pi_train/pi_vllm)| per rollout "
-          f"(sampled every {_RHO_SAMPLE_EVERY} compute_loss calls)",
+          f"(token-id matched; sampled every {_RHO_SAMPLE_EVERY} compute_loss calls)",
           flush=True)
 
 
