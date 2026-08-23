@@ -751,12 +751,18 @@ def build_json_dataset(source: str, split: str = "train", max_rows: int = 0):
 def build_mixed_dataset(combined_source: str, max_rows: int = 0,
                         gsm_frac: float = 0.5, seed: int = 42,
                         json_source: str | None = None,
-                        json_frac: float = 0.0):
-    """Interleave gsm8k train + combined-IF (+ optional json) into a single
-    dataset with a `task` marker per row.
+                        json_frac: float = 0.0,
+                        interleave_strategy: str = "all_exhausted"):
+    """Mix gsm8k train + combined-IF (+ optional json) via
+    datasets.interleave_datasets with per-task probabilities [if_share,
+    gsm_frac, json_frac].
 
-    Ratios are `gsm_frac` and `json_frac` as shares of the FINAL mix (must
-    sum to <= 1). The remainder goes to IF.
+    interleave_strategy:
+      - "first_exhausted": stop when the smallest source runs out (throws
+        away rows from the larger sources — matches prior subsample behavior)
+      - "all_exhausted":   stop when the LARGEST source is fully consumed
+        (small sources are cycled with-replacement to keep target ratios);
+        no rows discarded
 
     Schema uniformity: all rows carry the union of columns
       prompt, task, gold, constraints, params,
@@ -764,63 +770,64 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
     with empty defaults where a task doesn't use a given column. This is
     required by Arrow: mixed-shape rows can't be concatenated.
     """
-    import random as _r
-    rng = _r.Random(seed)
+    from datasets import interleave_datasets
 
     _EMPTY_JSON = {"fields": [], "types": [], "strict": False,
                    "passage": "", "gold_values": ""}
 
     # IF side (always included)
     ifds = build_combined_dataset(combined_source, max_rows=0)
-    if_rows = [{"prompt": r["prompt"], "task": "ifeval",
-                "gold": "",
-                "constraints": r["constraints"], "params": r["params"],
-                **_EMPTY_JSON}
-               for r in ifds]
+    if_ds = Dataset.from_list(
+        [{"prompt": r["prompt"], "task": "ifeval",
+          "gold": "",
+          "constraints": r["constraints"], "params": r["params"],
+          **_EMPTY_JSON}
+         for r in ifds])
 
     # gsm8k side
     gds = build_gsm8k_dataset("train", max_rows=0)
-    gsm_rows = [{"prompt": (f"{USER} {r['prompt'][len(USER):].strip()}"
-                            if r["prompt"].startswith(USER) else r["prompt"]),
-                 "task": "gsm8k",
-                 "gold": r["gold"],
-                 "constraints": [], "params": [],
-                 **_EMPTY_JSON}
-                for r in gds]
+    gsm_ds = Dataset.from_list(
+        [{"prompt": (f"{USER} {r['prompt'][len(USER):].strip()}"
+                     if r["prompt"].startswith(USER) else r["prompt"]),
+          "task": "gsm8k",
+          "gold": r["gold"],
+          "constraints": [], "params": [],
+          **_EMPTY_JSON}
+         for r in gds])
 
     # JSON side (optional)
-    json_rows = []
+    json_ds = None
     if json_source and json_frac > 0:
         jds = build_json_dataset(json_source, split="train", max_rows=0)
-        json_rows = [{"prompt": r["prompt"], "task": "json",
-                      "gold": "", "constraints": [], "params": [],
-                      "fields": list(r["fields"]),
-                      "types": list(r["types"]),
-                      "strict": bool(r["strict"]),
-                      "passage": r["passage"],
-                      "gold_values": r["gold_values"]}
-                     for r in jds]
+        json_ds = Dataset.from_list(
+            [{"prompt": r["prompt"], "task": "json",
+              "gold": "", "constraints": [], "params": [],
+              "fields": list(r["fields"]),
+              "types": list(r["types"]),
+              "strict": bool(r["strict"]),
+              "passage": r["passage"],
+              "gold_values": r["gold_values"]}
+             for r in jds])
 
-    # Downsample gsm & json to hit target fractions vs IF (fully used).
-    n_if = len(if_rows)
     if_share = max(1e-6, 1.0 - gsm_frac - json_frac)
-    total_target = n_if / if_share
-    n_gsm_target = int(round(total_target * gsm_frac))
-    n_json_target = int(round(total_target * json_frac))
-    if len(gsm_rows) > n_gsm_target:
-        rng.shuffle(gsm_rows)
-        gsm_rows = gsm_rows[:n_gsm_target]
-    if len(json_rows) > n_json_target:
-        rng.shuffle(json_rows)
-        json_rows = json_rows[:n_json_target]
+    parts = [if_ds, gsm_ds]
+    probs = [if_share, gsm_frac]
+    if json_ds is not None:
+        parts.append(json_ds)
+        probs.append(json_frac)
 
-    rows = if_rows + gsm_rows + json_rows
-    rng.shuffle(rows)
-    if max_rows and len(rows) > max_rows:
-        rows = rows[:max_rows]
-    print(f"  [build_mixed] if={len(if_rows)}  gsm={len(gsm_rows)}  "
-          f"json={len(json_rows)}  total={len(rows)}", flush=True)
-    return Dataset.from_list(rows)
+    mixed = interleave_datasets(parts, probabilities=probs,
+                                stopping_strategy=interleave_strategy,
+                                seed=seed)
+    if max_rows and len(mixed) > max_rows:
+        mixed = mixed.select(range(max_rows))
+
+    print(f"  [build_mixed:interleave={interleave_strategy}] "
+          f"if_ds={len(if_ds)} gsm_ds={len(gsm_ds)} "
+          f"json_ds={len(json_ds) if json_ds is not None else 0} "
+          f"→ mixed={len(mixed)} (probs={[round(p,3) for p in probs]})",
+          flush=True)
+    return mixed
 
 
 def build_ifeval_da_dataset(max_rows: int = 0):
@@ -865,6 +872,14 @@ def main():
                     help="For --task=mixed: fraction of json rows in the "
                          "interleaved mix (0 = no json). --json-source is "
                          "used as the row source.")
+    ap.add_argument("--interleave-strategy",
+                    choices=["first_exhausted", "all_exhausted"],
+                    default="all_exhausted",
+                    help="For --task=mixed: HF datasets.interleave_datasets "
+                         "stopping strategy. 'all_exhausted' preserves ALL "
+                         "rows by cycling small sources; 'first_exhausted' "
+                         "stops when the smallest source runs out (throws "
+                         "away the excess from larger sources).")
     ap.add_argument("--greedy-eval-task",
                     choices=["auto", "ifeval-da", "same", "both", "json", "all3"],
                     default="auto",
@@ -1069,7 +1084,8 @@ def main():
                                  gsm_frac=args.gsm_frac,
                                  json_source=(args.json_source
                                               if args.json_frac > 0 else None),
-                                 json_frac=args.json_frac)
+                                 json_frac=args.json_frac,
+                                 interleave_strategy=args.interleave_strategy)
         reward_fn = reward_mixed
         # Greedy-eval callback attaches ifeval-da, gsm8k, and optionally json below.
     if args.max_rows and len(ds) > args.max_rows:
