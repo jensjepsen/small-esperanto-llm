@@ -76,30 +76,6 @@ if _vllm_dtype:
 # `sampling/sampling_logp_difference/{mean,max}` when
 # vllm_importance_sampling_correction=True (default), which also enables
 # Truncated Importance Sampling to correct for the mismatch.
-#
-# GRPO_VLLM_FORCE_LOGPROBS: force sampling_params.logprobs=1 on every vLLM
-# generate call. Pre-kill scp'ed code did this as a side effect of the now-
-# removed log_rho diagnostic monkey-patch. Setting logprobs>0 can change
-# vLLM's sampling code path (extra bookkeeping, possible kernel selection).
-# We're A/B-ing whether re-adding this closes a ~2-4pp IF gap between
-# restart2/3 and the pre-kill 2bnt7b1g reference at matched step 125.
-# Default ON to match pre-kill; set =0 to disable.
-if _os.environ.get("GRPO_VLLM_FORCE_LOGPROBS", "1") != "0":
-    from vllm import LLM as _LLM_flp
-    _orig_llm_gen_flp = _LLM_flp.generate
-
-    def _force_logprobs_gen(self, prompts=None, sampling_params=None, **kwargs):
-        if sampling_params is not None:
-            _sp_iter = (sampling_params if isinstance(sampling_params, list)
-                        else [sampling_params])
-            for _sp in _sp_iter:
-                if getattr(_sp, "logprobs", None) is None:
-                    _sp.logprobs = 1
-        return _orig_llm_gen_flp(self, prompts=prompts,
-                                 sampling_params=sampling_params, **kwargs)
-    _LLM_flp.generate = _force_logprobs_gen
-    print("[vllm-force-logprobs] vLLM.LLM.generate patched: sampling_params.logprobs=1 "
-          "(matches pre-kill scp'ed code side-effect; A/B for IF gap)", flush=True)
 
 
 # GRPO_VLLM_STOP_TOKEN_IDS: comma-separated token ids to force vLLM to stop on.
