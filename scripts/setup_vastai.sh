@@ -35,21 +35,22 @@ GPU_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null |
 GPU_CAP_MAJOR=$(echo "$GPU_CAP" | cut -d. -f1)
 echo "Detected CUDA driver: ${CUDA_VERSION:-none}  GPU compute cap: ${GPU_CAP:-none}"
 
+# TRL 1.10 supports vllm 0.17-0.26. vllm>=0.17 requires torch>=2.10. No
+# flash-attn prebuilt wheel exists for torch 2.10 (would source-compile ~2h+),
+# so we fall back to SDPA. This matches the pre-kill Aug 22 stack exactly and
+# is the only way to stay inside TRL 1.10's officially-supported vllm range.
+# Set SKIP_FLASH_ATTN=1 to skip the flash-attn install below.
+export SKIP_FLASH_ATTN=${SKIP_FLASH_ATTN:-1}
+
 if [ "$CUDA_MAJOR" = "13" ]; then
-    # CUDA 13 driver → cu128 wheels. Pin torch to 2.8.* so flash-attn has
-    # a matching prebuilt wheel (2.9/2.10 have none — would source-compile).
+    # CUDA 13 driver → cu128 wheels. Don't pin torch; let vllm 0.17+ pull torch 2.10.
     export UV_TORCH_BACKEND=cu128
-    sed -i 's/torch>=2.3.0,<2.11/torch==2.8.*/' pyproject.toml
-    sed -i 's/torch>=2.3.0$/torch==2.8.*/' pyproject.toml
-    echo "Using UV_TORCH_BACKEND=cu128 with torch==2.8.* (CUDA 13 driver, flash-attn wheel compat)"
+    echo "Using UV_TORCH_BACKEND=cu128 (CUDA 13 driver, torch resolves to 2.10 via vllm 0.17+, SDPA attention)"
 elif [ "$CUDA_MAJOR" = "12" ] && [ "${GPU_CAP_MAJOR:-0}" -ge 10 ] 2>/dev/null; then
-    # Blackwell or newer needs cu128 wheels. Pin torch to 2.8.* — that's the
-    # newest series with prebuilt flash-attn wheels for cu128+py311. Torch
-    # 2.9/2.10 have no flash-attn wheel (would source-compile ~2h+); Blackwell
-    # sm_120 support requires flash-attn ≥ 2.8.3 which is cu128-only.
+    # Blackwell (5090) or newer — cu128 wheels. Don't pin torch; vllm 0.17+ pulls torch 2.10.
+    # This matches the pre-kill Aug 22 stack (torch 2.10 + vllm 0.19.1 + SDPA).
     export UV_TORCH_BACKEND=cu128
-    sed -i 's/torch>=2.3.0,<2.11/torch==2.8.*/' pyproject.toml
-    echo "Using UV_TORCH_BACKEND=cu128 with torch==2.8.* (Blackwell+ GPU, flash-attn wheel compat)"
+    echo "Using UV_TORCH_BACKEND=cu128 (Blackwell+ GPU, torch resolves to 2.10 via vllm 0.17+, SDPA attention)"
 elif [ "$CUDA_MAJOR" = "12" ]; then
     # Pre-Blackwell on CUDA 12.x driver — cu126 is fine and keeps the older torch range.
     export UV_TORCH_BACKEND=cu126
@@ -79,7 +80,9 @@ uv sync --extra train
 #   flash_attn-{VER}+cu12torch{TORCH_MM}cxx11abi{ABI}-cp{PY}-cp{PY}-linux_x86_64.whl
 # where TORCH_MM is e.g. "2.8" (major.minor) and ABI is TRUE/FALSE matching
 # `torch.compiled_with_cxx11_abi()`.
-if [ "$UV_TORCH_BACKEND" = "cu128" ] || [ "$UV_TORCH_BACKEND" = "cu126" ]; then
+if [ "$SKIP_FLASH_ATTN" = "1" ]; then
+    echo "=== Skipping flash-attn install (SKIP_FLASH_ATTN=1; torch 2.10+ has no wheel, would source-compile ~2h+; SDPA is fine for GRPO on 400M) ==="
+elif [ "$UV_TORCH_BACKEND" = "cu128" ] || [ "$UV_TORCH_BACKEND" = "cu126" ]; then
     echo "=== Installing flash-attn ==="
     uv pip install setuptools wheel packaging
     # Query the pinned torch version + ABI + python version to build the
