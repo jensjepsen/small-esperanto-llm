@@ -248,7 +248,8 @@ def _google_pool():
 
     # detectable_format:multiple_sections
     def _s_ms(rng):
-        return {"section_spliter": rng.choice(["Section", "SECTION"]),
+        return {"section_spliter": rng.choice(["Section", "SECTION",
+                                                "Afsnit", "AFSNIT"]),
                 "num_sections": rng.randint(2, 4)}
     def _d_ms(p):
         return (f"Your response must have {p['num_sections']} sections. "
