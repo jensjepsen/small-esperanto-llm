@@ -278,9 +278,9 @@ def _google_pool():
 
     # startend:end_checker
     def _s_end(rng):
-        return {"end_phrase": rng.choice(["That's my answer.",
-                                          "Any other questions?",
-                                          "I hope you found it helpful."])}
+        return {"end_phrase": rng.choice(["Det er mit svar.",
+                                          "Andre spørgsmål?",
+                                          "Jeg håber, du fandt det nyttigt."])}
     def _d_end(p):
         return f"Finish your response with this exact phrase: {p['end_phrase']} No other words should follow this phrase."
     out.append(("google:startend:end_checker", _s_end, _d_end))
