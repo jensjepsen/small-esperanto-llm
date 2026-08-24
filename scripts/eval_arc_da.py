@@ -42,8 +42,13 @@ def main():
     ap.add_argument("--max-new", type=int, default=8)
     ap.add_argument("--report-every", type=int, default=50)
     ap.add_argument("--config", default="arc_easy",
-                    choices=["arc_easy", "arc_challenge"],
-                    help="jensjepsen/danish-arc config; test split.")
+                    help="Dataset config passed to load_dataset. "
+                         "For --dataset jensjepsen/danish-arc: 'arc_easy' or 'arc_challenge'. "
+                         "For --dataset jensjepsen/danish-openbookqa: 'main'.")
+    ap.add_argument("--dataset", default="jensjepsen/danish-arc",
+                    help="HF dataset id. Must share the {question, choices=[{label,text}], "
+                         "answerKey} schema with jensjepsen/danish-arc.")
+    ap.add_argument("--split", default="test", help="Dataset split.")
     ap.add_argument("--mode", default="chat-mc", choices=["chat-mc","raw-logp"],
                     help="chat-mc: chat-wrapped MC letter generation + parse. "
                          "raw-logp: score each option as continuation of "
@@ -58,10 +63,10 @@ def main():
     end_id = tok.convert_tokens_to_ids(END)
     eos_ids = [tok.eos_token_id] + ([end_id] if end_id != tok.unk_token_id else [])
 
-    ds = load_dataset("jensjepsen/danish-arc", args.config, split="test")
+    ds = load_dataset(args.dataset, args.config, split=args.split)
     if args.n: ds = ds.select(range(min(args.n, len(ds))))
     n = len(ds)
-    print(f"  {n} rows  ({args.config})", flush=True)
+    print(f"  {n} rows  ({args.dataset}:{args.config}:{args.split})", flush=True)
 
     import ast as _ast
 
@@ -100,7 +105,8 @@ def main():
             print(f"  {i}/{n}  acc={n_ok/i:.3f}  parsefail={n_parsefail}  eta={eta:.0f}s",
                   flush=True)
 
-    print(f"\n=== arc-da[{args.config}][{args.mode}]  n={n}  acc={100*n_ok/n:.2f}%  ({n_ok}/{n})  "
+    _ds_tag = args.dataset.rsplit("/", 1)[-1].replace("danish-", "")
+    print(f"\n=== {_ds_tag}[{args.config}][{args.mode}]  n={n}  acc={100*n_ok/n:.2f}%  ({n_ok}/{n})  "
           f"parsefail={n_parsefail}  random~=25% ===", flush=True)
 
 
