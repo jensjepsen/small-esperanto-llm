@@ -236,7 +236,7 @@ def _google_pool():
     def _s_cr(rng):
         return {}
     def _d_cr(p):
-        return "Answer with one of the following options: 'My answer is yes.', 'My answer is no.', 'My answer is maybe.'"
+        return "Svar med én af følgende muligheder: 'Mit svar er ja.', 'Mit svar er nej.', 'Mit svar er måske.'"
     out.append(("google:detectable_format:constrained_response", _s_cr, _d_cr))
 
     # detectable_format:number_highlighted_sections
