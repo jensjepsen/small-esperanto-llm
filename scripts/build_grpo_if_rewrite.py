@@ -554,10 +554,12 @@ Din opgave:
 STIL FOR DENNE ROW: {style_hint}
 
 ABSOLUT KRITISKE KRAV:
-- Skriv HELE outputtet på dansk.
-- Bevar HVER REGEL EKSAKT: samme tal, samme nøgleord, samme forbud, samme afslutningsfrase, samme startord. Rørne må omformuleres sprogligt, men det indholdsmæssige krav må IKKE ændres.
+- Skriv HELE outputtet på dansk. Hvis en regel er skrevet på engelsk, OVERSÆT den til dansk (bevar alle tal, nøgleord, forbudte ord, startord, afsluttende sætning eksakt — kun det bærende sprog skal skifte).
+- GRUNDOPGAVEN skal fremgå TYDELIGT i den nye forespørgsel — som en genkendelig sætning eller spørgsmål. Den må IKKE bare skrives ind i reglerne eller forsvinde.
+- ALLE {n_rules} regler skal være til stede i den nye forespørgsel — ingen må udelades. Læseren skal kunne genfinde hver eneste regel.
+- Bevar HVERT indholdsmæssigt krav EKSAKT: samme tal, samme nøgleord, samme forbud, samme afslutningsfrase, samme startord. Reglerne må omformuleres sprogligt, men kravet må IKKE ændres.
 - Tilføj ABSOLUT INGEN nye regler eller krav som ikke står på listen. Ingen ekstra "brug procenttegn", "afslut med spørgsmålstegn", osv. — kun præcis de {n_rules} regler der er givet.
-- Gemma-fisk-agtig fabrikation af ekstra krav = fejl. Din output skal indeholde præcis de {n_rules} regler, hverken flere eller færre.
+- Din output skal indeholde præcis de {n_rules} regler, hverken flere eller færre.
 - Returnér KUN JSON med feltene {{"base_task": "...", "new_prompt": "..."}}.
 
 --- KILDEFORESPØRGSEL ---
@@ -574,6 +576,64 @@ def build_rules_block(combo: list[dict]) -> str:
     for i, r in enumerate(combo, 1):
         lines.append(f"{i}. [{r['name']}] {r['describe']}")
     return "\n".join(lines)
+
+
+# ── Constraint-in-prompt verification ────────────────────────────────────────
+# Keyword-based check that each requested constraint has some paraphrase in the
+# generated prompt. Used to trigger a retry when Gemini drops a rule during
+# rewriting. Kept small and Danish-first (with diacritics stripped to match
+# both "inkludér" and "inkluder").
+_CONSTRAINT_KEYWORDS = {
+    "google:keywords:existence":            ["nogleord","inkluder","brug ord","include","brug ordet","hvert af folgende"],
+    "google:keywords:frequency":            ["nojagtig","praecis","gange","exactly","times"],
+    "google:keywords:letter_frequency":     ["bogstav","letter","gange"],
+    "google:keywords:forbidden_words":      ["forbudt","ikke bruge","ma ikke","forbidden","avoid","uden at bruge","undga","undlad"],
+    "google:length_constraints:number_words":       ["ord","words"],
+    "google:length_constraints:number_sentences":   ["saetning","sentence","punktum"],
+    "google:length_constraints:number_paragraphs":  ["afsnit","paragraph"],
+    "google:length_constraints:nth_paragraph_first_word": ["afsnit","starte","begynde","first word"],
+    "google:detectable_format:number_bullet_lists": ["punktopstil","bullet","*"],
+    "google:detectable_format:number_highlighted_sections": ["fremhaev","kursiv","*","italic","highlight"],
+    "google:detectable_format:multiple_sections":   ["sektion","section","SECTION"],
+    "google:detectable_format:json_format":         ["json"],
+    "google:detectable_format:title":               ["titel","title","<<"],
+    "google:detectable_format:constrained_response":["muligheder","'My answer","'Mit svar"],
+    "google:detectable_content:number_placeholders":["pladsholder","placeholder","["],
+    "google:detectable_content:postscript":         ["p.s.","postscript","nb:"],
+    "google:combination:repeat_prompt":             ["gentag","repeat"],
+    "google:combination:two_responses":             ["to svar","two responses","******","to versioner","to udkast"],
+    "google:startend:quotation":                    ['"',"«","»","anforselstegn","quotation"],
+    "google:startend:end_checker":                  ["afslut","slutter","end with"],
+    "google:change_case:english_capital":           ["store bogstaver","capital"],
+    "google:change_case:english_lowercase":         ["sma bogstaver","lowercase"],
+    "google:change_case:capital_word_frequency":    ["store bogstaver","capital"],
+    "google:punctuation:no_comma":                  ["komma","commas","kommaer"],
+    "in_second_person":                             ["du ","dig","din"],
+    "no_first_person":                              ["jeg","vi","forste person","first person"],
+    "first_sentence_max_words":                     ["forste saetning","first sentence"],
+    "contains_year":                                ["ar","arstal","year"],
+    "contains_percentage":                          ["procent","percent","%"],
+    "markdown_table":                               ["tabel","table","|"],
+    "starts_with_phrase":                           ["start","begin","begynd"],
+    "ends_with_punctuation":                        ["tegn","punctuation"],
+}
+
+def _norm_for_verify(s: str) -> str:
+    import unicodedata as _u
+    s = _u.normalize("NFKD", s or "")
+    return "".join(c for c in s if _u.category(c) != "Mn").lower()
+
+def _find_missing_constraints(new_prompt: str, combo: list[dict]) -> list[dict]:
+    """Return sublist of combo entries whose keyword hint isn't found in new_prompt."""
+    p_norm = _norm_for_verify(new_prompt)
+    missing = []
+    for r in combo:
+        kws = _CONSTRAINT_KEYWORDS.get(r["name"])
+        if kws is None:
+            continue  # unknown constraint, skip check
+        if not any(_norm_for_verify(kw) in p_norm for kw in kws):
+            missing.append(r)
+    return missing
 
 
 # ── main worker ──────────────────────────────────────────────────────────────
@@ -596,6 +656,31 @@ async def process_row(idx: int, row: dict, rng: random.Random, args) -> dict | N
     new_prompt = (result.get("new_prompt") or "").strip()
     if not base_task or not new_prompt or len(new_prompt) < 30:
         return None
+
+    # Verification retry: if Gemini dropped any constraint, retry ONCE with
+    # explicit reminders. Bounded to a single retry to keep cost predictable
+    # (worst-case 2× LLM calls per row; expected ~30% × 2 = 1.3× on average
+    # based on the 29% first-pass drop rate).
+    missing = _find_missing_constraints(new_prompt, combo)
+    if missing:
+        missing_block = "\n".join(f"- [{r['name']}] {r['describe']}" for r in missing)
+        retry_prompt = (
+            prompt
+            + "\n\n=== ADVARSEL — REGLER DER MANGLER I DIT SIDSTE FORSØG ===\n"
+            + f"Du udelod følgende {len(missing)} regel(er) fra new_prompt:\n"
+            + missing_block
+            + "\n\nSkriv new_prompt igen med ALLE regler klart til stede. "
+              "Behold din struktur, men tilføj de manglende regler eksplicit."
+        )
+        result2 = await call_gemma(retry_prompt)
+        if result2:
+            bt2 = (result2.get("base_task") or "").strip()
+            np2 = (result2.get("new_prompt") or "").strip()
+            if bt2 and np2 and len(np2) >= 30:
+                still_missing = _find_missing_constraints(np2, combo)
+                # Accept retry only if it's an improvement (missing set shrank)
+                if len(still_missing) < len(missing):
+                    base_task, new_prompt = bt2, np2
     return {
         "task": base_task,
         "prompt": new_prompt,
