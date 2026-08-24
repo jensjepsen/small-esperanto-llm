@@ -40,6 +40,7 @@ from datasets import load_dataset, Dataset
 
 from if_constraints import ALL as OUR_ALL, sample_combo as sample_ours
 from ifeval_google import instructions_registry as _reg
+from constraint_compat import is_valid as _combo_is_valid, merge_combo_params as _merge_combo_params
 
 MODEL = "google/gemini-2.5-flash-lite"
 
@@ -398,6 +399,26 @@ def sample_combined_combo(rng: random.Random, min_size: int, max_size: int,
     return out
 
 
+# Rejection-sampling wrapper over sample_combined_combo — enforces
+# constraint_compat's alias + pair + param checks. The naive sampler's
+# _kind_of() dedup catches some conflicts but misses namespace duplicates
+# (e.g. entire_in_quotes ≡ google:startend:quotation) and cross-kind
+# format conflicts (e.g. json_format × two_responses). See
+# scripts/constraint_compat.py for the full list.
+_COMBO_GIVEUP_CT = 0
+
+def sample_valid_combo(rng, min_size, max_size, google_frac, max_tries=20):
+    global _COMBO_GIVEUP_CT
+    for _ in range(max_tries):
+        combo = sample_combined_combo(rng, min_size, max_size, google_frac)
+        params = _merge_combo_params(combo)
+        ok, _reasons = _combo_is_valid([r["name"] for r in combo], params)
+        if ok:
+            return combo
+    _COMBO_GIVEUP_CT += 1
+    return combo  # fall back to last attempt after max_tries
+
+
 # ── Prompt template ──────────────────────────────────────────────────────────
 
 # ── Style axes (cartesian: sample one option per axis per row) ───────────────
@@ -555,7 +576,7 @@ def build_rules_block(combo: list[dict]) -> str:
 
 async def process_row(idx: int, row: dict, rng: random.Random, args) -> dict | None:
     orig_prompt = row["messages"][0]["content"]
-    combo = sample_combined_combo(rng, args.min_rules, args.max_rules, args.google_frac)
+    combo = sample_valid_combo(rng, args.min_rules, args.max_rules, args.google_frac)
     if not combo:
         return None
     rules_block = build_rules_block(combo)
@@ -667,6 +688,8 @@ async def main():
     save_dir = str(out_path / "hf")
     ds_out.save_to_disk(save_dir)
     print(f"Saved HF dataset to {save_dir}  n={len(ds_out)}", flush=True)
+    print(f"[combo] rejection-sampler give-up count: {_COMBO_GIVEUP_CT} "
+          f"(fell back to invalid combo after 20 retries)", flush=True)
 
     if _SESSION is not None:
         await _SESSION.close()
