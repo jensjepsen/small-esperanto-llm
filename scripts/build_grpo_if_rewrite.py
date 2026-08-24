@@ -42,7 +42,7 @@ from if_constraints import ALL as OUR_ALL, sample_combo as sample_ours
 from ifeval_google import instructions_registry as _reg
 from constraint_compat import is_valid as _combo_is_valid, merge_combo_params as _merge_combo_params
 
-MODEL = "google/gemini-2.5-flash-lite"
+MODEL = "google/gemini-3.5-flash-lite"
 
 
 # ── keys / http ──────────────────────────────────────────────────────────────
