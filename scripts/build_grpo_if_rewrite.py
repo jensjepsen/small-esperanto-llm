@@ -271,9 +271,11 @@ def _google_pool():
                 lambda rng: {},
                 lambda p: "Give two different responses. Responses and only responses should be separated by 6 asterisk symbols: ******."))
 
-    # combination:repeat_prompt
+    # combination:repeat_prompt — placeholder resolved to the extracted
+    # base_task in process_row after Gemma returns; rows where base_task
+    # isn't a verbatim substring of new_prompt are rejected there.
     out.append(("google:combination:repeat_prompt",
-                lambda rng: {"prompt_to_repeat": "__ORIGINAL_TASK__"},  # filled at render
+                lambda rng: {"prompt_to_repeat": "__ORIGINAL_TASK__"},
                 lambda p: "First, repeat the request without change, then give your answer (do not say anything before repeating the request; the request you need to repeat does not include this sentence)."))
 
     # startend:end_checker
@@ -681,6 +683,19 @@ async def process_row(idx: int, row: dict, rng: random.Random, args) -> dict | N
                 # Accept retry only if it's an improvement (missing set shrank)
                 if len(still_missing) < len(missing):
                     base_task, new_prompt = bt2, np2
+
+    # Resolve the repeat_prompt placeholder to the extracted base_task.
+    # The verifier does startswith(prompt_to_repeat), so the target must
+    # be text the model actually sees — reject rows where Gemma rewrote
+    # the task and it no longer appears verbatim in new_prompt.
+    has_repeat = any(r["name"] == "google:combination:repeat_prompt" for r in combo)
+    if has_repeat:
+        if base_task not in new_prompt:
+            return None
+        for r in combo:
+            if r["name"] == "google:combination:repeat_prompt":
+                r["params"]["prompt_to_repeat"] = base_task
+
     return {
         "task": base_task,
         "prompt": new_prompt,
