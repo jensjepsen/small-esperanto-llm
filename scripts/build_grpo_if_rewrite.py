@@ -298,13 +298,17 @@ def _google_pool():
         return f"In your response, words with all capital letters should appear {p['capital_relation']} {p['capital_frequency']} times."
     out.append(("google:change_case:capital_word_frequency", _s_cap, _d_cap))
 
-    # change_case:english_capital / english_lowercase — kept but named plainly
+    # change_case:english_capital / english_lowercase — verifier is language-
+    # agnostic (just `text == text.upper()` / `.lower()`), but Google's
+    # original description forces English and thus collides with every
+    # Danish task. Swap to Danish descriptions; keep constraint names +
+    # verifier untouched so downstream code stays compatible.
     out.append(("google:change_case:english_capital",
                 lambda rng: {},
-                lambda p: "Your entire response should be in English, and in all capital letters."))
+                lambda p: "Skriv hele svaret med STORE BOGSTAVER (alle bogstaver skal være store)."))
     out.append(("google:change_case:english_lowercase",
                 lambda rng: {},
-                lambda p: "Your entire response should be in English, and in all lowercase letters. No capital letters are allowed."))
+                lambda p: "Skriv hele svaret med små bogstaver (ingen store bogstaver må forekomme)."))
 
     # punctuation:no_comma
     out.append(("google:punctuation:no_comma",
