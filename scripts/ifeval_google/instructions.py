@@ -43,9 +43,11 @@ _NUM_PLACEHOLDERS = 4
 # The number of bullet lists.
 _NUM_BULLETS = 5
 
-# The options of constrained response.
+# The options of constrained response. Accept Danish variants — we
+# evaluate a purely Danish model.
 _CONSTRAINED_RESPONSE_OPTIONS = (
-    "My answer is yes.", "My answer is no.", "My answer is maybe.")
+    "My answer is yes.", "My answer is no.", "My answer is maybe.",
+    "Mit svar er ja.", "Mit svar er nej.", "Mit svar er måske.")
 
 # The options of starter keywords.
 _STARTER_OPTIONS = ("I would say", "My answer is", "I believe",
