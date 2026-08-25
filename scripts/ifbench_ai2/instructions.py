@@ -1040,10 +1040,36 @@ class StartWithVerbChecker(Instruction):
 		"""Returns the args keys of `build_description`."""
 		return []
 
+	# Common Danish imperatives / present-tense verb forms — we evaluate
+	# a purely Danish model, and NLTK's English POS tagger mis-tags DA
+	# tokens. Not exhaustive; catches the frequent openers.
+	_DA_VERBS = frozenset([
+		'beskriv', 'forklar', 'skriv', 'fortæl', 'nævn', 'vis', 'find',
+		'læs', 'sig', 'giv', 'hjælp', 'kald', 'kør', 'se', 'hør', 'tag',
+		'kom', 'gå', 'sæt', 'læg', 'lav', 'følg', 'brug', 'vent', 'prøv',
+		'tænk', 'husk', 'anvend', 'undgå', 'antag', 'angiv', 'overvej',
+		'løs', 'regn', 'beregn', 'præsentér', 'præsenter', 'uddyb',
+		'konkludér', 'konkluder', 'definér', 'definer', 'diskutér',
+		'diskuter', 'analysér', 'analyser', 'sammenlign', 'sortér',
+		'sorter', 'start', 'begynd', 'slut', 'afslut', 'tilføj',
+		'vælg', 'tag', 'brug', 'gør', 'lyt', 'kig', 'skab', 'lav',
+		# Common 1st-person / present forms that begin narratives
+		'er', 'har', 'kan', 'vil', 'skal', 'må', 'bør',
+	])
+
 	def check_following(self, value):
-		"""Checks if the response starts with a verb."""
+		"""Checks if the response starts with a verb. Tries the English
+		POS tagger first (Penn Treebank VB* tags); falls back to a curated
+		Danish imperative/verb lexicon."""
 		text = nltk.word_tokenize(value)
-		return len(text) > 0 and len(nltk.pos_tag(text)) > 0 and 'VB' in nltk.pos_tag(text)[0][1]
+		if not text:
+			return False
+		tags = nltk.pos_tag(text)
+		if tags and 'VB' in tags[0][1]:
+			return True
+		# Danish fallback
+		first = text[0].strip(''.join(string.punctuation) + ' ').lower()
+		return first in self._DA_VERBS
 
 
 class LimitedWordRepeatChecker(Instruction):
