@@ -87,6 +87,11 @@ def main():
     ap.add_argument("--max-new-tokens", type=int, default=512)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--dtype", default="fp16", choices=["fp16", "fp32", "bf16"])
+    ap.add_argument("--repetition-penalty", type=float, default=1.1,
+                    help="HF repetition_penalty for generate(). Default 1.1 "
+                         "mirrors the training/callback stack. Try 1.0 to "
+                         "unlock keyword-frequency / repeat_prompt constraints "
+                         "which fight the default penalty.")
     ap.add_argument("--dump-jsonl", default=None,
                     help="If set, per-row (prompt, kwargs, gen, verdicts) go here.")
     args = ap.parse_args()
@@ -138,7 +143,7 @@ def main():
                 max_new_tokens=args.max_new_tokens,
                 do_sample=False, num_beams=1,
                 pad_token_id=tok.pad_token_id, eos_token_id=eos_ids,
-                repetition_penalty=1.1,
+                repetition_penalty=args.repetition_penalty,
             )
         plen = enc["input_ids"].shape[1]
         # Score each row in the batch immediately
