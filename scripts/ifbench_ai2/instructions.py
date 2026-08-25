@@ -507,23 +507,28 @@ class AlphabetLoopChecker(Instruction):
 		return []
 
 	def check_following(self, value):
-		"""Checks if each word of the response starts with the next letter of the alphabet."""
+		"""Checks if each word of the response starts with the next letter of the alphabet.
+		Accept either the English 26-letter alphabet or the Danish 29-letter
+		alphabet (a-z + æ, ø, å) — we evaluate a purely Danish model."""
 		value = value.translate(str.maketrans('', '', string.punctuation))
 		words = value.strip(''.join(string.punctuation) + ' ').split()
 		if not words:
 			return False
-		alphabet = string.ascii_lowercase
-		correct_letter = words[0][0].lower()
-		if correct_letter not in alphabet:  # numbers are fails
-			return False
-		for word in words[1:]:
-			word = word.strip(''.join(string.punctuation) + ' ').lower()
-			if not word:
-				continue
-			correct_letter = alphabet[(alphabet.index(correct_letter) + 1) % 26]
-			if word[0] != correct_letter:
+
+		def _run(alphabet):
+			correct_letter = words[0][0].lower()
+			if correct_letter not in alphabet:
 				return False
-		return True
+			for word in words[1:]:
+				w = word.strip(''.join(string.punctuation) + ' ').lower()
+				if not w:
+					continue
+				correct_letter = alphabet[(alphabet.index(correct_letter) + 1) % len(alphabet)]
+				if w[0] != correct_letter:
+					return False
+			return True
+
+		return _run(string.ascii_lowercase) or _run(string.ascii_lowercase + 'æøå')
 
 
 class SingleVowelParagraphChecker(Instruction):
