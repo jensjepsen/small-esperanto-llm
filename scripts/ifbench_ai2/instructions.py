@@ -1248,10 +1248,29 @@ class AlternateParitySyllablesChecker(Instruction):
 		"""Returns the args keys of `build_description`."""
 		return []
 
+	@staticmethod
+	def _count_syllables(word):
+		"""Estimate syllable count for either English or Danish.
+		Use max(syllapy_english_count, vowel_group_count) — the English
+		lexicon-based counter is accurate for known EN words but returns
+		0/wrong for DA words; the vowel-group heuristic works for both
+		languages (Danish is highly phonetic; a run of adjacent vowels
+		counts as one syllable). We evaluate a purely Danish model."""
+		en = syllapy.count(word) or 0
+		vowels = 'aeiouyæøå'
+		groups = 0
+		prev = False
+		for ch in word:
+			is_v = ch in vowels
+			if is_v and not prev:
+				groups += 1
+			prev = is_v
+		return max(en, groups)
+
 	def check_following(self, value):
 		"""Checks if the response alternates between words with odd and even numbers of syllables."""
 		words = value.translate(str.maketrans('', '', string.punctuation)).lower().split()
-		syllables = [syllapy.count(word) % 2 for word in words if word.strip()]
+		syllables = [self._count_syllables(w) % 2 for w in words if w.strip()]
 		return all(syllables[i] != syllables[i + 1] for i in range(len(syllables) - 1))
 
 
