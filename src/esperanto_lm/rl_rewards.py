@@ -152,7 +152,9 @@ def _wrong_equations(text: str) -> int:
     return n
 
 
-_NO_ARITH = os.environ.get("GRPO_DISABLE_GSM_ARITH_PENALTY") == "1"
+# Default "1" → penalty OFF unless a launcher explicitly opts in with
+# GRPO_DISABLE_GSM_ARITH_PENALTY=0.
+_NO_ARITH = os.environ.get("GRPO_DISABLE_GSM_ARITH_PENALTY", "1") == "1"
 ARITH_PENALTY_PER_EQ = 0.0 if (_LEGACY or _NO_ARITH) else 0.05
 ARITH_PENALTY_CAP = 6
 """Per-equation arithmetic-execution penalty for reward_gsm8k. Discovered
@@ -161,7 +163,20 @@ detectable execution error (55/2=27, 7*49=333, chained-sum drop, etc.).
 Penalty is intentionally small (final-answer reward remains dominant) but
 gives GRPO a smooth signal to clean up mid-chain arithmetic — including
 on correct-final rows where the model happens to hit the answer despite
-a broken step."""
+a broken step.
+
+OFF by default: measured on two matched mixed3 runs (LR=5e-6, beta=0.02,
+combined-v4, 1:1:1 IF/gsm/json), penalty ON vs OFF over steps 125-1000:
+
+  metric        OFF            ON
+  ifeval PS     28.0-33.9      25.4-30.1   (OFF ahead ~3-4pp from step 375)
+  json reward   59.5-85.6      55.3-83.8   (OFF ahead at 7/8 evals)
+  gsm8k pass@1  19.1-26.3      21.0-26.0   (wash)
+
+The penalty did not help the task it targets and cost IF and json. Likely
+mechanism: unclamped rewards revive all-wrong groups that previously had
+std=0 and contributed no gradient, raising gsm's effective share of each
+mixed update and crowding out the other two tasks."""
 
 
 def reward_gsm8k(completions: list[str], gold: list[str], **_):
