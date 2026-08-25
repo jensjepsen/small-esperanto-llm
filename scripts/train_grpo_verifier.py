@@ -273,8 +273,16 @@ def _greedy_via_vllm_colocate(trainer, prompts, max_new, stop_token_ids=None):
     Weight sync: TRL keeps the colocate engine in step with the trainer
     weights automatically at each optimizer step, so no manual sync is
     needed here. deterministic sampling (temperature=0). repetition_penalty
-    matched to the HF path (1.1)."""
+    matched to the HF path (1.1).
+
+    Engine attribute location changed between TRL versions:
+      TRL 0.18.x: trainer.llm
+      TRL 1.10.x: trainer.vllm_generation.llm
+    Check both, prefer whichever exists."""
     llm = getattr(trainer, "llm", None)
+    if llm is None:
+        vg = getattr(trainer, "vllm_generation", None)
+        llm = getattr(vg, "llm", None) if vg is not None else None
     if llm is None:
         return None
     from vllm import SamplingParams
