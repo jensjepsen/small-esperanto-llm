@@ -1596,10 +1596,20 @@ def _get_sentence_tokenizer():
     return nltk.data.load("nltk:tokenizers/punkt/english.pickle")
 
 
+@functools.lru_cache(maxsize=1)
+def _stopword_set():
+    # Union of English + Danish NLTK stopwords — we evaluate a purely
+    # Danish model and need meaningful signal on stopword-percentage
+    # constraints (English-only counts trivially as ~0 in DA text,
+    # making the constraint always pass).
+    words = set(nltk.corpus.stopwords.words('english'))
+    words |= set(nltk.corpus.stopwords.words('danish'))
+    return words
+
+
 def count_stopwords(text):
-    """Counts the number of stopwords."""
-    """Counts the number of stopwords."""
-    stopwords = nltk.corpus.stopwords.words('english')
+    """Counts the number of stopwords (EN + DA)."""
+    stopwords = _stopword_set()
     tokenizer = nltk.tokenize.RegexpTokenizer(r"\w+")
     tokens = tokenizer.tokenize(text)
     num_stopwords = len([t for t in tokens if t.lower() in stopwords])
