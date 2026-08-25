@@ -315,9 +315,18 @@ class ConjunctionCountChecker(Instruction):
 		# Split the text into words
 		words = value.split()
 		# Count the number of coordinating conjunctions
+		# Include Danish coordinating conjunctions alongside the English
+		# ones — we evaluate a purely Danish model, and Danish uses these
+		# canonical coordinators: og (and), men (but), eller (or),
+		# hverken/eller, enten/eller, samt (as well as), plus (plus).
+		# "for" and "så" overlap with English forms; kept once.
+		_COORD = {
+			'and', 'but', 'for', 'nor', 'or', 'so', 'yet',
+			'og', 'men', 'eller', 'samt', 'plus', 'hverken', 'enten',
+			'så', 'saa',
+		}
 		conjunctions = [word for word in words if
-						word.strip(''.join(string.punctuation) + ' ').lower() in ['and', 'but', 'for', 'nor', 'or',
-																				  'so', 'yet']]
+						word.strip(''.join(string.punctuation) + ' ').lower() in _COORD]
 		unique_conjunctions = set(conjunctions)
 		return len(unique_conjunctions) >= self._num_conjunctions
 
