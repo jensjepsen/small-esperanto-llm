@@ -1157,7 +1157,27 @@ class PronounCountChecker(Instruction):
 			# Indefinite
 			'anybody', 'anyone', 'anything', 'everybody', 'everyone', 'everything',
 			'nobody', 'nothing', 'somebody', 'someone', 'something',
-			'each', 'either', 'neither', 'both', 'all', 'some', 'any', 'none'])
+			'each', 'either', 'neither', 'both', 'all', 'some', 'any', 'none',
+			# Danish — we evaluate a purely Danish model
+			# Personal
+			'jeg', 'mig', 'vi', 'os', 'du', 'dig', 'i', 'jer',
+			'han', 'ham', 'hun', 'hende', 'den', 'det', 'de', 'dem',
+			# Possessive
+			'min', 'mit', 'mine', 'vores', 'vor', 'vort', 'vore',
+			'din', 'dit', 'dine', 'jeres',
+			'hans', 'hendes', 'dens', 'dets', 'deres',
+			# Reflexive
+			'sig', 'selv',
+			# Demonstrative
+			'denne', 'dette', 'disse',
+			# Interrogative / relative
+			'hvem', 'hvad', 'hvilken', 'hvilket', 'hvilke', 'hvis',
+			'som', 'der',
+			# Indefinite
+			'nogen', 'noget', 'nogle', 'ingen', 'intet',
+			'enhver', 'ethvert', 'alle', 'alt',
+			'man',
+		])
 		value = value.replace('/',
 							  ' ')  # to correctly count pronoun sets like she/her/hers, a common use case of pronouns
 		# Use NLTK word_tokenize for better tokenization
