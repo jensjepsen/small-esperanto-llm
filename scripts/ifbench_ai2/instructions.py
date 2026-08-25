@@ -841,13 +841,28 @@ class OptionsResponseChecker(Instruction):
 		"""Returns the args keys of `build_description`."""
 		return ["options"]
 
+	# Danish equivalents for the three known EN option-banks — we
+	# evaluate a purely Danish model, and the DA prompt renders these
+	# in Danish so the model responds in Danish.
+	_DA_EQUIV = {
+		'yes': 'ja', 'no': 'nej', 'maybe': 'måske',
+		'i know': 'jeg ved det',
+		"i don't know": 'jeg ved det ikke',
+	}
+
 	def check_following(self, value):
-		"""Checks if the response is exactly one of {options}."""
+		"""Checks if the response is exactly one of {options}, accepting
+		Danish equivalents for the known English option-banks."""
 		if self._strict:
+			# letter labels like a)/b)/c)/d) are language-neutral
 			return value in self._options
 		value = value.strip(''.join(string.punctuation) + ' ').lower()
 		for option in self._options:
-			if option.strip(''.join(string.punctuation) + ' ').lower() == value:
+			opt = option.strip(''.join(string.punctuation) + ' ').lower()
+			if opt == value:
+				return True
+			da = self._DA_EQUIV.get(opt)
+			if da is not None and da == value:
 				return True
 		return False
 
