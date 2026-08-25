@@ -166,7 +166,17 @@ a broken step."""
 
 def reward_gsm8k(completions: list[str], gold: list[str], **_):
     """1.0 if last number equals gold, minus 0.05 per detected wrong equation
-    (capped at 6 → max −0.3 penalty)."""
+    (capped at 6 → max −0.3 penalty). Range is [−0.3, 1.0] — deliberately
+    NOT clamped at 0.
+
+    The old `max(0.0, r)` floor made the penalty inert on wrong-answer rows:
+    every wrong completion scored exactly 0.0 regardless of how many broken
+    equations it contained. For an all-wrong rollout group that means
+    std=0 → zero advantage → no gradient at all. Letting the reward go
+    negative spreads those groups over [−0.3, 0], so GRPO can still learn
+    "less wrong" on prompts the model cannot yet solve. GRPO normalises by
+    group std, so the absolute sign of the reward is irrelevant to the
+    update — only the within-group ordering matters."""
     out = []
     for c, g in zip(completions, gold):
         pred = _norm_num(_extract_num(c))
@@ -174,7 +184,7 @@ def reward_gsm8k(completions: list[str], gold: list[str], **_):
                            else _extract_num(g))
         r = 1.0 if (pred is not None and pred == target) else 0.0
         r -= ARITH_PENALTY_PER_EQ * min(_wrong_equations(c), ARITH_PENALTY_CAP)
-        out.append(max(0.0, r))
+        out.append(r)
     return out
 
 
