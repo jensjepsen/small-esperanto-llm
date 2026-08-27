@@ -251,7 +251,7 @@ if _STOPS:
 
 from esperanto_lm.rl_rewards import (
     reward_gsm8k, reward_ifeval, reward_ifeval_combined, reward_mixed,
-    reward_json_schema,
+    reward_json_schema, reward_ner,
     _extract_num, _norm_num,
 )
 
@@ -441,6 +441,7 @@ class BestCkptSaverCallback(TrainerCallback):
         "eval_greedy_ifeval_mean_pass",
         "eval_greedy_ifeval_combined_mean_pass",
         "eval_greedy_json_mean_reward",
+        "eval_greedy_ner_f1",
     )
 
     def __init__(self, output_dir, tokenizer, top_k: int = 3,
@@ -589,6 +590,11 @@ class GreedyEvalCallback(TrainerCallback):
                             for o, r in zip(outs, self.items[:done])
                         ]
                         print(f"  [greedy-eval] {done}/{len(self.items)} mean_reward={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
+                    elif self.task == "ner":
+                        # items are (prompt, gold_values_json)
+                        scores_so_far = [reward_ner(o, r[1])
+                                         for o, r in zip(outs, self.items[:done])]
+                        print(f"  [greedy-eval] {done}/{len(self.items)} mean_f1={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
                     else:  # ifeval
                         scores_so_far = reward_ifeval(
                             outs, [row[1] for row in self.items[:done]],
@@ -619,6 +625,9 @@ class GreedyEvalCallback(TrainerCallback):
                 for o, r in zip(outs, self.items)
             ]
             acc = sum(scores) / max(1, len(scores))
+        elif self.task == "ner":
+            scores = [reward_ner(o, r[1]) for o, r in zip(outs, self.items)]
+            acc = sum(scores) / max(1, len(scores))
         else:  # ifeval
             scores = reward_ifeval(outs,
                                    [row[1] for row in self.items],
@@ -629,6 +638,7 @@ class GreedyEvalCallback(TrainerCallback):
         key = ("eval_greedy_gsm8k_pass@1" if self.task == "gsm8k"
                else "eval_greedy_ifeval_combined_mean_pass" if self.task == "combined"
                else "eval_greedy_json_mean_reward" if self.task == "json"
+               else "eval_greedy_ner_f1" if self.task == "ner"
                else "eval_greedy_ifeval_mean_pass")
         m = {key: acc}
         # Direct trainer.log() bypasses TRL 0.16's mid-step log-decision
@@ -756,10 +766,86 @@ def build_json_dataset(source: str, split: str = "train", max_rows: int = 0):
     return Dataset.from_list(rows)
 
 
+_NER_TYPE_MAP = {"PERSON": "person", "PER": "person",
+                 "ORGANIZATION": "org", "ORG": "org",
+                 "GPE": "sted", "LOCATION": "sted", "LOC": "sted",
+                 "FACILITY": "sted", "DATE": "dato"}
+
+NER_PROMPT = ('Find alle navngivne enheder i denne tekst:\n\n"{t}"\n\n'
+              'Svar kun med JSON på formen '
+              '{{"person": [], "org": [], "sted": [], "dato": []}} — '
+              'personer under "person", organisationer under "org", '
+              'steder og lande under "sted", datoer og årstal under "dato". '
+              'Er der ingen af en slags, så lad listen være tom. '
+              'Skriv enhederne præcis som de står i teksten.')
+
+
+def build_ner_dataset(source: str = "KennethEnevoldsen/dane_plus",
+                      split: str = "train", max_rows: int = 0,
+                      empty_frac: float = 0.28, seed: int = 42):
+    """dane_plus → mixed-compatible rows with task='ner'.
+
+    Gold entities ride in `gold_values` (serialized [[surface, type], ...]) so
+    no new column is needed — Arrow requires one schema across all interleaved
+    parts, and adding a column would mean touching every other builder.
+
+    `empty_frac` caps the share of entity-FREE sentences. The natural split is
+    ~53% empty, and empty-on-empty scores 1.0, so at the natural rate a policy
+    that never emits anything earns mean reward ~0.53 — a high plateau that the
+    v31 base already sits near (82-93% empty completions). Downsampling the
+    abstention half keeps that from being the easiest way to a good score.
+    Set empty_frac<0 to keep the natural distribution.
+    """
+    import random as _rnd
+    ds = load_dataset(source, split=split)
+    with_e, no_e = [], []
+    for r in ds:
+        text = (r.get("text") or "").strip()
+        if not text:
+            continue
+        ents = set()
+        for e in r.get("ents") or []:
+            raw = str(e.get("label", "")).upper()
+            lab = _NER_TYPE_MAP.get(raw) or _NER_TYPE_MAP.get(raw.replace(" ", "_"))
+            if not lab:
+                continue
+            surf = text[e["start"]:e["end"]].strip()
+            if surf:
+                ents.add((surf.lower(), lab))
+        row = {"text": text, "ents": sorted(ents)}
+        (with_e if ents else no_e).append(row)
+
+    rng = _rnd.Random(seed)
+    if empty_frac is not None and empty_frac >= 0 and with_e:
+        # n_empty such that n_empty / (n_empty + n_with) == empty_frac
+        want = int(round(len(with_e) * empty_frac / max(1e-6, 1.0 - empty_frac)))
+        no_e = rng.sample(no_e, min(want, len(no_e)))
+    rows_src = with_e + no_e
+    rng.shuffle(rows_src)
+    if max_rows and len(rows_src) > max_rows:
+        rows_src = rows_src[:max_rows]
+
+    rows = [{"prompt": f"{USER}{NER_PROMPT.format(t=r['text'])}{END}{ASST}",
+             "task": "ner",
+             "gold": "",
+             "constraints": [], "params": [],
+             "fields": [], "types": [], "strict": False, "passage": r["text"],
+             "gold_values": json.dumps(r["ents"], ensure_ascii=False)}
+            for r in rows_src]
+    n_empty = sum(1 for r in rows_src if not r["ents"])
+    print(f"  [build_ner] {source}:{split} → {len(rows)} rows "
+          f"({len(rows)-n_empty} with entities, {n_empty} entity-free = "
+          f"{100*n_empty/max(1,len(rows)):.0f}%)", flush=True)
+    return Dataset.from_list(rows)
+
+
 def build_mixed_dataset(combined_source: str, max_rows: int = 0,
                         gsm_frac: float = 0.5, seed: int = 42,
                         json_source: str | None = None,
                         json_frac: float = 0.0,
+                        ner_source: str | None = None,
+                        ner_frac: float = 0.0,
+                        ner_empty_frac: float = 0.28,
                         interleave_strategy: str = "all_exhausted"):
     """Mix gsm8k train + combined-IF (+ optional json) via
     datasets.interleave_datasets with per-task probabilities [if_share,
@@ -817,12 +903,22 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
               "gold_values": r["gold_values"]}
              for r in jds])
 
-    if_share = max(1e-6, 1.0 - gsm_frac - json_frac)
+    # NER side (optional)
+    ner_ds = None
+    if ner_frac > 0:
+        ner_ds = build_ner_dataset(ner_source or "KennethEnevoldsen/dane_plus",
+                                   split="train", max_rows=0,
+                                   empty_frac=ner_empty_frac, seed=seed)
+
+    if_share = max(1e-6, 1.0 - gsm_frac - json_frac - ner_frac)
     parts = [if_ds, gsm_ds]
     probs = [if_share, gsm_frac]
     if json_ds is not None:
         parts.append(json_ds)
         probs.append(json_frac)
+    if ner_ds is not None:
+        parts.append(ner_ds)
+        probs.append(ner_frac)
 
     mixed = interleave_datasets(parts, probabilities=probs,
                                 stopping_strategy=interleave_strategy,
@@ -833,6 +929,7 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
     print(f"  [build_mixed:interleave={interleave_strategy}] "
           f"if_ds={len(if_ds)} gsm_ds={len(gsm_ds)} "
           f"json_ds={len(json_ds) if json_ds is not None else 0} "
+          f"ner_ds={len(ner_ds) if ner_ds is not None else 0} "
           f"→ mixed={len(mixed)} (probs={[round(p,3) for p in probs]})",
           flush=True)
     return mixed
@@ -880,6 +977,17 @@ def main():
                     help="For --task=mixed: fraction of json rows in the "
                          "interleaved mix (0 = no json). --json-source is "
                          "used as the row source.")
+    ap.add_argument("--ner-frac", type=float, default=0.0,
+                    help="For --task=mixed: fraction of NER rows in the "
+                         "interleaved mix (0 = no NER).")
+    ap.add_argument("--ner-source", default="KennethEnevoldsen/dane_plus",
+                    help="Source for NER rows (dane_plus schema: text + ents "
+                         "with char offsets).")
+    ap.add_argument("--ner-empty-frac", type=float, default=0.28,
+                    help="Share of entity-FREE sentences in the NER split. "
+                         "Natural rate is ~53%%, but empty-on-empty scores 1.0, "
+                         "so at the natural rate an always-abstain policy earns "
+                         "~0.53 mean reward. Negative = keep natural rate.")
     ap.add_argument("--interleave-strategy",
                     choices=["first_exhausted", "all_exhausted"],
                     default="all_exhausted",
@@ -889,7 +997,8 @@ def main():
                          "stops when the smallest source runs out (throws "
                          "away the excess from larger sources).")
     ap.add_argument("--greedy-eval-task",
-                    choices=["auto", "ifeval-da", "same", "both", "json", "all3"],
+                    choices=["auto", "ifeval-da", "same", "both", "json", "all3",
+                             "ner", "all4"],
                     default="auto",
                     help="Which dataset the greedy-eval callback uses. "
                          "'same' = same as --task's train dataset (default for "
@@ -1093,6 +1202,10 @@ def main():
                                  json_source=(args.json_source
                                               if args.json_frac > 0 else None),
                                  json_frac=args.json_frac,
+                                 ner_source=(args.ner_source
+                                             if args.ner_frac > 0 else None),
+                                 ner_frac=args.ner_frac,
+                                 ner_empty_frac=args.ner_empty_frac,
                                  interleave_strategy=args.interleave_strategy)
         reward_fn = reward_mixed
         # Greedy-eval callback attaches ifeval-da, gsm8k, and optionally json below.
@@ -1345,7 +1458,9 @@ def main():
             if args.task == "combined":
                 eval_task = "ifeval-da"
             elif args.task == "mixed":
-                eval_task = "all3" if args.json_frac > 0 else "both"
+                eval_task = ("all4" if args.ner_frac > 0 and args.json_frac > 0
+                             else "all3" if args.json_frac > 0
+                             else "both")
             elif args.task == "json":
                 eval_task = "json"
             else:
@@ -1402,6 +1517,21 @@ def main():
             cb._trainer = trainer
             trainer.add_callback(cb)
 
+        def _attach_ner():
+            # dev split — train is used for rollouts, test stays fully held out
+            nds = build_ner_dataset(args.ner_source, split="dev",
+                                    max_rows=args.greedy_eval_max_rows,
+                                    empty_frac=-1.0)
+            n_items = [(r["prompt"], r["gold_values"]) for r in nds]
+            cb = GreedyEvalCallback(
+                tokenizer=tok, items=n_items, task="ner",
+                every_n_steps=args.greedy_eval_steps,
+                max_new_tokens=args.max_completion_length,
+                batch_size=args.greedy_eval_batch_size,
+            )
+            cb._trainer = trainer
+            trainer.add_callback(cb)
+
         if eval_task == "ifeval-da":
             _attach_ifeval_da()
         elif eval_task == "both":
@@ -1411,8 +1541,15 @@ def main():
             _attach_ifeval_da()
             _attach_gsm8k()
             _attach_json()
+        elif eval_task == "all4":
+            _attach_ifeval_da()
+            _attach_gsm8k()
+            _attach_json()
+            _attach_ner()
         elif eval_task == "json":
             _attach_json()
+        elif eval_task == "ner":
+            _attach_ner()
         else:  # 'same' — task-specific single greedy callback
             if args.task == "gsm8k":
                 _attach_gsm8k()

@@ -488,6 +488,113 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
     return round(max(0.0, r), 4)
 
 
+# ── NER ─────────────────────────────────────────────────────────────────────
+
+# Canonical entity buckets. Keys the model may use for each — it routinely
+# answers with its own key names (`navn`, `placering`, `årstal`) instead of the
+# requested ones, so a strict key match scores correct extractions as zero.
+_NER_TYPES = ("person", "org", "sted", "dato")
+_NER_KEYMAP = {}
+for _k in ("person", "personer", "people", "navn", "navne", "name", "names"):
+    _NER_KEYMAP[_k] = "person"
+for _k in ("org", "organisation", "organisationer", "organization",
+           "organizations", "virksomhed", "virksomheder"):
+    _NER_KEYMAP[_k] = "org"
+for _k in ("sted", "steder", "places", "place", "placering", "lokation",
+           "location", "locations", "land", "lande", "by", "byer"):
+    _NER_KEYMAP[_k] = "sted"
+for _k in ("dato", "datoer", "dates", "date", "aar", "år", "årstal",
+           "aarstal", "year", "tid"):
+    _NER_KEYMAP[_k] = "dato"
+
+_NER_KV_RE = re.compile(r'"([^"]+)"\s*:\s*(\[[^\]]*\]|"[^"]*"|[-\d.]+)')
+_NER_STR_RE = re.compile(r'"([^"]*)"')
+
+
+def parse_ner(text: str) -> list[tuple[str, str]] | None:
+    """Entities from a model completion. None = no JSON object at all.
+
+    Tolerant on purpose: accepts the model's own key synonyms, accepts a bare
+    scalar where a list was asked for, and preserves duplicate keys (json.loads
+    silently keeps only the last).
+    """
+    if not text:
+        return None
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return None
+    out = []
+    for key_raw, val_raw in _NER_KV_RE.findall(m.group(0)):
+        key = _NER_KEYMAP.get(key_raw.strip().lower())
+        if key is None:
+            continue
+        v = val_raw.strip()
+        if v.startswith("["):
+            vals = _NER_STR_RE.findall(v)
+        elif v.startswith('"'):
+            vals = [v.strip('"')]
+        else:
+            vals = [v]
+        for x in vals:
+            x = x.strip()
+            if x and x not in ("[]", "[],"):
+                out.append((x.lower(), key))
+    return out
+
+
+def _parse_ner_gold(gv) -> set[tuple[str, str]]:
+    """Gold entities. Stored serialized in `gold_values` as [[surface, type], ...]
+    because Arrow needs one schema across all interleaved tasks."""
+    if not gv:
+        return set()
+    if isinstance(gv, str):
+        try:
+            gv = json.loads(gv)
+        except (TypeError, ValueError):
+            return set()
+    out = set()
+    for item in gv or []:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            s, t = item
+            if isinstance(s, str) and t in _NER_TYPES:
+                out.add((s.strip().lower(), t))
+    return out
+
+
+def reward_ner(completion: str, gold_values) -> float:
+    """Entity-level F1 in [0, 1].
+
+    F1 rather than exact-set-match deliberately: measured on the v31 base at
+    the run's real config (k=32, temp 1.0), exact match yields gradient on only
+    26% of entity-bearing prompts vs 58% under F1. Exact match zeroes an entire
+    group as soon as one span is wrong, so most groups have no spread and
+    contribute nothing.
+
+    Empty-and-correct scores 1.0 — abstention on an entity-free sentence is the
+    right answer and must be rewarded, since a JSON-shape reward (which cannot
+    tell a real entity from an invented one) previously drove the policy to
+    invent entities on 301/301 entity-free sentences.
+
+    Precision is half of F1, so hallucination is penalised directly. That is
+    the property the schema reward lacked.
+    """
+    pred_list = parse_ner(completion)
+    gold = _parse_ner_gold(gold_values)
+    if pred_list is None:
+        return 0.0                      # no JSON emitted at all
+    pred = set(pred_list)
+    if not pred and not gold:
+        return 1.0                      # correctly abstained
+    if not pred or not gold:
+        return 0.0                      # emitted on empty, or empty on non-empty
+    tp = len(pred & gold)
+    if tp == 0:
+        return 0.0
+    prec = tp / len(pred)
+    rec = tp / len(gold)
+    return round(2 * prec * rec / (prec + rec), 4)
+
+
 def reward_mixed(completions: list[str],
                  task: list[str],
                  gold: list[str],
@@ -510,6 +617,7 @@ def reward_mixed(completions: list[str],
       gsm8k          → reward_gsm8k
       ifeval/combined → reward_ifeval_combined
       json           → reward_json_schema
+      ner            → reward_ner (gold entities ride in `gold_values`)
     """
     N = len(completions)
     fields = fields or [None] * N
@@ -524,6 +632,8 @@ def reward_mixed(completions: list[str],
     ):
         if t == "gsm8k":
             out.append(reward_gsm8k([text], gold=[g])[0])
+        elif t == "ner":
+            out.append(reward_ner(text, gv))
         elif t == "json":
             if not f:
                 out.append(0.0)
