@@ -69,6 +69,33 @@ if _vllm_dtype:
     print(f"[vllm-dtype] vLLM.LLM patched to force dtype={_vllm_dtype}", flush=True)
 
 
+# GRPO_VLLM_ATTENTION_BACKEND: force vLLM's attention backend, e.g.
+# "FLASHINFER", "TRITON_ATTN", "FLEX_ATTENTION". vLLM >=0.19 dropped the
+# VLLM_ATTENTION_BACKEND env var; the backend is now an engine arg
+# (AttentionConfig.backend, parsed from an upper-case string), so the only way
+# to set it through TRL — which doesn't forward arbitrary vLLM kwargs — is to
+# patch LLM.__init__ the same way GRPO_VLLM_DTYPE does.
+#
+# Why you may need this: vLLM's bundled FlashAttention-2 kernels
+# (torch.ops._vllm_fa2_C) ship PTX built with a newer CUDA toolkit than some
+# drivers can JIT. On a 12.8 driver that raises
+#   AcceleratorError: the provided PTX was compiled with an unsupported toolchain
+# on the first attention call. FLASHINFER avoids those kernels entirely.
+_vllm_attn = _os.environ.get("GRPO_VLLM_ATTENTION_BACKEND")
+if _vllm_attn:
+    from vllm import LLM as _LLM_A
+    _orig_llm_init_attn = _LLM_A.__init__
+
+    def _forced_attn_llm_init(self, *args, **kwargs):
+        if "attention_backend" not in kwargs:
+            kwargs["attention_backend"] = _vllm_attn.upper()
+        return _orig_llm_init_attn(self, *args, **kwargs)
+
+    _LLM_A.__init__ = _forced_attn_llm_init
+    print(f"[vllm-attn] vLLM.LLM patched to force "
+          f"attention_backend={_vllm_attn.upper()}", flush=True)
+
+
 # NB: TRL >=1.0 sets logprobs_mode="processed_logprobs" natively in
 # trl/generation/vllm_generation.py::_init_vllm (fixes TRL #4159).
 # Our old GRPO_VLLM_PROCESSED_LOGPROBS monkey-patch is no longer needed.
