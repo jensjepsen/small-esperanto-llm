@@ -66,9 +66,27 @@ rm -f uv.lock
 
 # Pin python and sync deps (with `train` extra for liger-kernel — required for
 # the LM and SFT training scripts, which import it via try/except but get the
-# 30-40% throughput boost when present)
+# 30-40% throughput boost when present).
+#
+# vllm MUST be part of this same resolution, not installed afterwards. The
+# `vllm` extra pins vllm>=0.17,<=0.26 precisely because newer vllm (0.27+)
+# requires torch 2.9-2.13 on CUDA 13, which conflicts with the cu128 stack
+# Blackwell needs. A later `uv pip install vllm` resolves vllm ALONE, ignores
+# the extras pin, and silently upgrades torch to 2.13+cu130 — which leaves
+# torch.cuda.is_available() False against a 12.8 driver and strands the
+# nvidia-* runtime libs (libcusparseLt.so.0 goes missing). Resolving both
+# extras together is what makes uv honour the pin and keep torch on cu128.
+#
+# Set SKIP_VLLM=1 for boxes that only run SFT/pretrain and don't need rollout
+# acceleration.
 uv python pin 3.11
-uv sync --extra train
+if [ "${SKIP_VLLM:-0}" = "1" ]; then
+    echo "=== Syncing deps (train extra only; SKIP_VLLM=1) ==="
+    uv sync --extra train
+else
+    echo "=== Syncing deps (train + vllm extras, resolved together) ==="
+    uv sync --extra train --extra vllm
+fi
 
 # Flash-attn: install prebuilt wheel from GitHub releases. `pip install
 # flash-attn` from PyPI is SOURCE-ONLY (2-3h compile). The GitHub release
