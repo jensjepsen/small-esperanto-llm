@@ -896,18 +896,25 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
     _EMPTY_JSON = {"fields": [], "types": [], "strict": False,
                    "passage": "", "gold_values": ""}
 
-    # IF side (always included)
-    ifds = build_combined_dataset(combined_source, max_rows=0)
-    if_ds = Dataset.from_list(
+    # Sources are loaded ONLY when their fraction is non-zero — otherwise a
+    # json+ner run still downloads and builds the IF and gsm8k splits it will
+    # never sample from.
+    _if_share = 1.0 - gsm_frac - json_frac - ner_frac
+    if_ds = None
+    if _if_share > 1e-9:
+        ifds = build_combined_dataset(combined_source, max_rows=0)
+        if_ds = Dataset.from_list(
         [{"prompt": r["prompt"], "task": "ifeval",
           "gold": "",
           "constraints": r["constraints"], "params": r["params"],
           **_EMPTY_JSON}
-         for r in ifds])
+             for r in ifds])
 
     # gsm8k side
-    gds = build_gsm8k_dataset("train", max_rows=0)
-    gsm_ds = Dataset.from_list(
+    gsm_ds = None
+    if gsm_frac > 1e-9:
+        gds = build_gsm8k_dataset("train", max_rows=0)
+        gsm_ds = Dataset.from_list(
         [{"prompt": (f"{USER} {r['prompt'][len(USER):].strip()}"
                      if r["prompt"].startswith(USER) else r["prompt"]),
           "task": "gsm8k",
@@ -937,15 +944,22 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
                                    split="train", max_rows=0,
                                    empty_frac=ner_empty_frac, seed=seed)
 
-    if_share = max(1e-6, 1.0 - gsm_frac - json_frac - ner_frac)
-    parts = [if_ds, gsm_ds]
-    probs = [if_share, gsm_frac]
-    if json_ds is not None:
-        parts.append(json_ds)
-        probs.append(json_frac)
-    if ner_ds is not None:
-        parts.append(ner_ds)
-        probs.append(ner_frac)
+    # Drop zero-weight sources rather than passing probability 0. Keeping them
+    # forces if_share to a 1e-6 floor so the probabilities no longer sum to 1,
+    # and it leaves an unused source in the interleave. Dropping them makes
+    # any subset a valid mix (e.g. json+ner only).
+    if_share = 1.0 - gsm_frac - json_frac - ner_frac
+    cand = [(if_ds, if_share, "if"), (gsm_ds, gsm_frac, "gsm"),
+            (json_ds, json_frac, "json"), (ner_ds, ner_frac, "ner")]
+    parts, probs, names = [], [], []
+    for d, w, nm in cand:
+        if d is not None and w > 1e-9:
+            parts.append(d); probs.append(w); names.append(nm)
+    assert parts, "all task fractions are zero — nothing to train on"
+    tot = sum(probs)
+    probs = [p / tot for p in probs]        # renormalise after dropping
+    print(f"  [build_mixed] active sources: "
+          f"{', '.join(f'{n}={w:.3f}' for n, w in zip(names, probs))}", flush=True)
 
     mixed = interleave_datasets(parts, probabilities=probs,
                                 stopping_strategy=interleave_strategy,
