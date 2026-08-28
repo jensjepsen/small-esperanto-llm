@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -115,6 +116,30 @@ def render(ents):
                         for l in TYPES if by[l])
 
 
+def emitted_keys(raw):
+    """Top-level JSON keys the completion actually emitted, lower-cased."""
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    if not m:
+        return set()
+    return {k.strip().lower() for k, _ in _KV_RE.findall(m.group(0))}
+
+
+def schema_score(raw):
+    """Conformance to the REQUESTED schema, in [0, 1].
+
+    Fraction of the four required keys present minus 0.1 per extraneous key.
+    Deliberately NOT run through KEYMAP: the synonym map credits `places` as
+    `sted`, which is exactly how a policy can score well on F1 while ignoring
+    the requested format. Mirrors ner_schema_score in rl_rewards.py.
+    """
+    ks = emitted_keys(raw)
+    if not ks:
+        return 0.0
+    present = len(ks & set(TYPES)) / len(TYPES)
+    extra = len(ks - set(TYPES))
+    return max(0.0, min(1.0, present - 0.1 * min(extra, 6)))
+
+
 def prf(tp, fp, fn):
     p = tp / (tp + fp) if tp + fp else 0.0
     r = tp / (tp + fn) if tp + fn else 0.0
@@ -205,6 +230,17 @@ def main():
     ent_free = [x for x in recs if not x["gold"]]
     invented = sum(1 for x in ent_free if x["pred"])
 
+    # Schema conformance is reported SEPARATELY from F1 rather than folded in.
+    # The inline eval_greedy_ner_f1 blends them (it calls reward_ner), which
+    # makes that number incomparable across runs with different weights. Here
+    # F1 stays the extraction metric, schema stays the format metric, and
+    # `blended` reproduces the inline metric for comparability.
+    w = float(os.environ.get("GRPO_NER_SCHEMA_WEIGHT", "0.15"))
+    schemas = [schema_score(x["raw"]) for x in recs]
+    schema_mean = sum(schemas) / max(1, len(schemas))
+    key_counts = Counter(k for x in recs for k in emitted_keys(x["raw"]))
+    conforming = sum(1 for sc in schemas if sc >= 0.999)
+
     print(f"\n{'':<14}{'P':>8}{'R':>8}{'F1':>8}{'tp':>7}{'fp':>7}{'fn':>7}")
     print(f"{'micro':<14}{100*P:>8.1f}{100*R:>8.1f}{100*F:>8.1f}{tp:>7}{fp:>7}{fn:>7}")
     for t in TYPES:
@@ -214,6 +250,17 @@ def main():
     print(f"\nstatus: {dict(stc)}")
     print(f"invented entities on entity-free sentences: "
           f"{invented}/{len(ent_free)}")
+
+    print(f"\nschema conformance (literal keys, not synonym-mapped)")
+    print(f"  mean schema score      {schema_mean:.3f}")
+    print(f"  fully conforming rows  {conforming}/{len(recs)}")
+    print(f"  emitted keys           "
+          f"{dict(key_counts.most_common(8)) if key_counts else '{}'}")
+    missing = [t for t in TYPES if key_counts.get(t, 0) == 0]
+    if missing:
+        print(f"  NEVER emitted          {missing}  <- unreachable label space")
+    print(f"  blended (inline metric, w={w}): "
+          f"{100 * (F * ((1 - w) + w * schema_mean)):.1f}")
 
     if args.dump_jsonl:
         with open(args.dump_jsonl, "w", encoding="utf-8") as fh:
@@ -234,6 +281,13 @@ def main():
             a, b, c = per[t]
             p, r, f = prf(a, b, c)
             L.append(f"| {DA_NAME[t]} | {100*p:.1f} | {100*r:.1f} | {100*f:.1f} | {a} | {b} | {c} |")
+        L += ["", f"**Skema-konformitet** (bogstavelige nøgler): "
+                  f"middel {schema_mean:.3f}, "
+                  f"fuldt konforme rækker {conforming}/{len(recs)}  ",
+              f"Emitterede nøgler: `{dict(key_counts.most_common(8))}`  "]
+        _missing = [t for t in TYPES if key_counts.get(t, 0) == 0]
+        if _missing:
+            L.append(f"**Aldrig emitteret:** `{_missing}` — utilgængeligt labelrum  ")
         L += ["", "| status | antal |", "|---|---|"]
         for k, v in stc.most_common():
             L.append(f"| {k} | {v} |")
