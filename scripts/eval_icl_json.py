@@ -85,7 +85,11 @@ def main():
     ap.add_argument("--n", type=int, default=0, help="0 = full split")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--max-new", type=int, default=256)
-    ap.add_argument("--dump", default=None)
+    ap.add_argument("--dump", default=None,
+                    help="JSONL prefix; writes <prefix>.<split>.jsonl with one "
+                         "record per row including the full prompt, so a wrong "
+                         "answer can be judged against the demonstrations it "
+                         "was given")
     args = ap.parse_args()
 
     tok = AutoTokenizer.from_pretrained(args.ckpt)
@@ -97,9 +101,9 @@ def main():
     eid = tok.convert_tokens_to_ids(END)
     eos = [tok.eos_token_id] + ([eid] if eid != tok.unk_token_id else [])
 
-    dump = []
     print(f"{args.ckpt}\n")
     for split in args.splits:
+        jf = open(f"{args.dump}.{split}.jsonl", "w") if args.dump else None
         ds = load_dataset(DATASET, "default", split=split)
         if args.n:
             ds = ds.select(range(min(args.n, len(ds))))
@@ -131,11 +135,18 @@ def main():
                 for b in ("all", sym, f"shots{r['shots']}"):
                     stats[b][0] += ok
                     stats[b][1] += 1
-                if args.dump and len(dump) < 400:
-                    dump.append({"split": split, "symbols": r["symbols"],
-                                 "shots": r["shots"], "schema": r["schema"],
-                                 "gold": r["messages"][1]["content"],
-                                 "pred": o[:400], "exact": ok})
+                if jf:
+                    # every row, not a 400-row prefix, and the prompt is
+                    # included: without the demonstrations there is no way to
+                    # tell a model error from an unanswerable row
+                    jf.write(json.dumps({
+                        "split": split, "schema": r["schema"],
+                        "symbols": r["symbols"], "shots": r["shots"],
+                        "task_type": r["task_type"], "domain": r["domain"],
+                        "prompt": r["messages"][0]["content"],
+                        "gold": r["messages"][1]["content"],
+                        "pred": o, "exact": bool(ok), "keys_ok": bool(kk),
+                    }, ensure_ascii=False) + "\n")
             # Running numbers per batch, not just a final line: these evals
             # take minutes per checkpoint and a partial result is worth
             # seeing. symbol/plain are broken out because plain-key rows are
@@ -149,6 +160,8 @@ def main():
                   f"exact={pct('all')}  symbol={pct('symbol')}  "
                   f"plain={pct('plain')}  keys={100*keyhit/max(1,done):.1f}%",
                   flush=True)
+            if jf:
+                jf.flush()      # partial dump survives a killed run
 
         h, n = stats["all"]
         print(f"\n{split.upper()}  n={n}")
@@ -159,12 +172,10 @@ def main():
                 continue
             hh, nn = stats[b]
             print(f"    {b:<10} {hh}/{nn}  {100*hh/max(1,nn):.1f}%")
+        if jf:
+            jf.close()
+            print(f"  -> {args.dump}.{split}.jsonl")
         print(flush=True)
-
-    if args.dump:
-        with open(args.dump, "w") as f:
-            json.dump(dump, f, ensure_ascii=False, indent=2)
-        print(f"-> {args.dump}")
 
 
 if __name__ == "__main__":
