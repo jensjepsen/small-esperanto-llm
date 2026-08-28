@@ -515,14 +515,93 @@ _NER_GLOSS = {
 _NER_BUCKET_ORDER = ("person", "org", "sted", "dato")
 
 
-def ner_prompt(buckets) -> str:
-    """Prompt template for a SUBSET of entity types.
+# ── NER prompt slots ────────────────────────────────────────────────────────
+# The prompt is split into a FREE part and a CONTRACT part. Openings, layout
+# and the wording of the conditions vary; the schema spec and key names do not,
+# because the verifier keys off them.
+#
+# Why vary at all: the policy has twice keyed off surface tokens rather than
+# reading the instruction — it converged on a memorised {person, places,
+# dates, numbers} object, and renaming one key "org"->"organisation" moved org
+# recall 0%->21.7% while *explaining* what an organisation is moved it 0%->0%.
+# A constant opening is a constant prefix that can trigger the whole memorised
+# continuation.
+#
+# CAUTION on the condition slots: their semantics are load-bearing. A
+# paraphrase that quietly drops "præcis som de står i teksten" makes the model
+# normalise entities and the verifier then marks correct answers wrong. Every
+# variant here must preserve meaning — validated behaviourally, not by taste
+# (see scripts/gen_ner_openings.py).
 
-    Asking for all four every time lets the model emit one memorised object
-    and never read the schema — which is exactly what happened twice: it
-    converged on the SFT textman keys, and later emitted `org` in 565/565 rows
-    while populating it in none. Varying which keys are requested makes the
-    schema a thing that must be read per example.
+# Openings template over the REQUESTED TYPES rather than saying "navngivne
+# enheder" generically. Two reasons: it is what a Danish speaker would
+# actually write ("Find alle personer og steder i teksten"), and it makes the
+# opening vary with the subset instead of being a constant prefix that can
+# trigger a memorised continuation. The type names in the opening are plain
+# Danish plurals — the JSON key names remain the contract and appear only in
+# the schema spec.
+_NER_PLURAL = {"person": "personer", "org": "organisationer",
+               "sted": "steder", "dato": "datoer"}
+
+
+def _da_list(items) -> str:
+    """Danish enumeration: a / a og b / a, b og c."""
+    items = list(items)
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " og " + items[-1]
+
+
+# {types} is filled with the Danish plural list. LAYOUT: "any" works with the
+# passage before or after; "after" claims the text is below and must only be
+# used when the passage actually follows.
+NER_OPENINGS = [
+    ("Find alle {types} i denne tekst", "any"),
+    ("Find alle {types} i teksten nedenunder", "after"),
+    ("Udtræk {types} fra teksten nedenfor", "after"),
+    ("Hvilke {types} optræder i denne tekst?", "any"),
+    ("Gennemgå teksten og find alle {types}", "any"),
+    ("Identificér samtlige {types} i teksten", "any"),
+    ("Angiv de {types} der nævnes i teksten", "any"),
+    ("Opgave: udtræk {types} fra den givne tekst", "any"),
+    ("Kan du finde alle {types} i teksten?", "any"),
+    ("List de {types} som forekommer i teksten", "any"),
+]
+# Used only when all four types are requested — a speaker would say "alle
+# navngivne enheder" rather than enumerate every type.
+NER_OPENINGS_ALLTYPES = [
+    ("Find alle navngivne enheder i denne tekst", "any"),
+    ("Udtræk alle navngivne enheder fra teksten nedenfor", "after"),
+    ("Hvilke navngivne enheder optræder i denne tekst?", "any"),
+    ("Gennemgå teksten og find alle navngivne enheder", "any"),
+    ("Identificér samtlige navngivne enheder i teksten", "any"),
+]
+NER_COND_ONLYKEYS = [
+    "Medtag kun de nævnte nøgler og ingen andre.",
+    "Brug udelukkende de nøgler der er nævnt ovenfor.",
+    "Svaret må ikke indeholde andre nøgler end de angivne.",
+]
+NER_COND_EMPTY = [
+    "Er der ingen af en slags, så lad listen være tom.",
+    "Hvis en type ikke forekommer, skal dens liste være tom.",
+    "Findes der ingen af en given type, efterlades listen tom.",
+]
+NER_COND_VERBATIM = [
+    "Skriv enhederne præcis som de står i teksten.",
+    "Gengiv enhederne ordret som de fremgår af teksten.",
+    "Enhederne skal skrives nøjagtigt som i teksten, uden ændringer.",
+]
+
+
+def ner_prompt(buckets, rng=None) -> str:
+    """Prompt template for a SUBSET of entity types, with optional variation.
+
+    rng=None returns the CANONICAL variant (first compatible opening, first of
+    every condition, passage after the instruction) so held-out eval stays
+    byte-stable and comparable across runs. Training passes an rng.
+
+    Openings are chosen to match the drawn layout: one that says the text is
+    "nedenfor" must not be paired with the passage placed first.
 
     Returns a template with a literal `{t}` slot for the sentence.
     """
@@ -532,14 +611,32 @@ def ner_prompt(buckets) -> str:
     keys = [_NER_KEY_FOR_BUCKET[b] for b in bs]
     shape = "{{" + ", ".join(f'"{k}": []' for k in keys) + "}}"
     gloss = ", ".join(_NER_GLOSS[b] for b in bs)
-    what = ("Find alle navngivne enheder i denne tekst" if len(bs) == 4
-            else "Find kun de navngivne enheder af de typer der nævnes nedenfor "
-                 "i denne tekst")
-    return (f'{what}:\n\n"{{t}}"\n\n'
-            f'Svar kun med JSON på formen {shape} — {gloss}. '
-            'Medtag kun de nævnte nøgler og ingen andre. '
-            'Er der ingen af en slags, så lad listen være tom. '
-            'Skriv enhederne præcis som de står i teksten.')
+    types = _da_list(_NER_PLURAL[b] for b in bs)
+
+    if rng is None:
+        passage_first, pick = False, (lambda xs: xs[0])
+    else:
+        passage_first = rng.random() < 0.35
+        pick = rng.choice
+
+    # For the full request the "alle navngivne enheder" phrasings go FIRST, so
+    # the canonical variant stays byte-identical to the prompt every measured
+    # run used — held-out numbers remain comparable.
+    bank = (NER_OPENINGS_ALLTYPES + NER_OPENINGS if len(bs) == 4
+            else list(NER_OPENINGS))
+    ok = [o for o, lay in bank if lay == "any" or not passage_first]
+    opening = pick(ok).format(types=types)
+
+    conds = " ".join([pick(NER_COND_ONLYKEYS), pick(NER_COND_EMPTY),
+                      pick(NER_COND_VERBATIM)])
+    spec = f"Svar kun med JSON på formen {shape} — {gloss}. {conds}"
+
+    if passage_first:
+        return f'Tekst:\n\n"{{t}}"\n\n{opening}\n\n{spec}'
+    sep = "" if opening.rstrip().endswith("?") else ":"
+    return f'{opening}{sep}\n\n"{{t}}"\n\n{spec}'
+
+
 _NER_KEYMAP = {}
 for _k in ("person", "personer", "people", "navn", "navne", "name", "names"):
     _NER_KEYMAP[_k] = "person"
@@ -586,6 +683,80 @@ def parse_ner(text: str) -> list[tuple[str, str]] | None:
             if x and x not in ("[]", "[],"):
                 out.append((x.lower(), key))
     return out
+
+
+def ner_emitted_keys(text: str) -> set[str]:
+    """Top-level JSON keys the completion actually emitted, lower-cased."""
+    if not text:
+        return set()
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return set()
+    return {k.strip().lower() for k, _ in _NER_KV_RE.findall(m.group(0))}
+
+
+def ner_schema_score(text: str, required_keys=None) -> float:
+    """How well the completion follows the REQUESTED schema, in [0, 1].
+
+    Fraction of the requested keys present, minus a penalty per extraneous
+    top-level key. Scored on literal key names, not the synonym map, because
+    that map is exactly what is blind to this axis.
+
+    `required_keys` is the per-example subset; defaults to all four.
+    """
+    req = tuple(required_keys) if required_keys else _NER_REQUIRED_KEYS
+    ks = ner_emitted_keys(text)
+    if not ks:
+        return 0.0
+    present = len(ks & set(req)) / len(req)
+    extra = len(ks - set(req))
+    return max(0.0, min(1.0, present - 0.1 * min(extra, 6)))
+
+
+def _ner_surface_match(a: str, b: str) -> bool:
+    """Surface equality tolerant of Danish inflection.
+
+    Danish inflects the entity itself: gold "Ruslands" (genitive) vs predicted
+    "Rusland" is the same entity, but exact matching charges it as BOTH a false
+    positive and a false negative — two penalties for a suffix. Accept a
+    prefix relation with a short delta; require >=4 chars on the shorter side
+    so "Dan"/"Danmark" doesn't slip through.
+    """
+    if a == b:
+        return True
+    lo, hi = (a, b) if len(a) <= len(b) else (b, a)
+    return len(lo) >= 4 and hi.startswith(lo) and (len(hi) - len(lo)) <= 3
+
+
+def ner_match_counts(pred: list[tuple[str, str]],
+                     gold: set[tuple[str, str]]) -> tuple[int, int, int]:
+    """(tp, fp, fn) with exact matches resolved before inflectional ones.
+
+    Two passes matter: a fuzzy match made first could consume the gold entry
+    that an exact prediction needed, understating tp.
+    """
+    gold_left = list(gold)
+    pred_left = []
+    tp = 0
+    for p in pred:                       # pass 1 — exact
+        if p in gold_left:
+            gold_left.remove(p)
+            tp += 1
+        else:
+            pred_left.append(p)
+    still = []
+    for p in pred_left:                  # pass 2 — inflectional
+        hit = None
+        for i, g in enumerate(gold_left):
+            if p[1] == g[1] and _ner_surface_match(p[0], g[0]):
+                hit = i
+                break
+        if hit is None:
+            still.append(p)
+        else:
+            gold_left.pop(hit)
+            tp += 1
+    return tp, len(still), len(gold_left)
 
 
 def ner_emitted_keys(text: str) -> set[str]:
