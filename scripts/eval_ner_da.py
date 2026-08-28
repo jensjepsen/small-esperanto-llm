@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -45,14 +46,15 @@ TYPES = ["person", "org", "sted", "dato"]          # internal buckets
 REQUIRED_KEYS = ["person", "organisation", "sted", "dato"]
 DA_NAME = {"person": "PERSON", "org": "ORGANISATION", "sted": "STED", "dato": "DATO"}
 
-# Must match NER_PROMPT in train_grpo_verifier.py — eval and train share it.
-PROMPT = ('Find alle navngivne enheder i denne tekst:\n\n"{t}"\n\n'
-          'Svar kun med JSON på formen '
-          '{{"person": [], "organisation": [], "sted": [], "dato": []}} — '
-          'personer under "person", organisationer under "organisation", '
-          'steder og lande under "sted", datoer og årstal under "dato". '
-          'Er der ingen af en slags, så lad listen være tom. '
-          'Skriv enhederne præcis som de står i teksten.')
+# Prompt comes from the SAME builder training uses, so the two cannot drift.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from esperanto_lm.rl_rewards import ner_prompt  # noqa: E402
+
+# Held-out eval requests ALL four types by default: it is the hardest case and
+# keeps the number comparable across runs. --subset-keys samples per-row
+# subsets the way training does, to measure whether the model actually reads
+# the requested schema.
+PROMPT = ner_prompt(("person", "org", "sted", "dato"))
 
 KEYMAP = {}
 for _k in ("person", "personer", "people", "navn", "navne", "name", "names"):

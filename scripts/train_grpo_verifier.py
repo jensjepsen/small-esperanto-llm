@@ -278,7 +278,7 @@ if _STOPS:
 
 from esperanto_lm.rl_rewards import (
     reward_gsm8k, reward_ifeval, reward_ifeval_combined, reward_mixed,
-    reward_json_schema, reward_ner,
+    reward_json_schema, reward_ner, ner_prompt,
     _extract_num, _norm_num,
 )
 
@@ -798,22 +798,8 @@ _NER_TYPE_MAP = {"PERSON": "person", "PER": "person",
                  "GPE": "sted", "LOCATION": "sted", "LOC": "sted",
                  "FACILITY": "sted", "DATE": "dato"}
 
-# Key is "organisation", NOT "org". Probed on 60 org-bearing test rows against
-# the step-3375 checkpoint: with "org" the model emitted the key in every row
-# and populated it in ZERO of them (0/93 gold org entities). Renaming the key
-# to "organisation" — changing nothing else — took org recall 0% -> 21.7% and
-# overall F1 34.7 -> 47.0. Adding concrete examples or an explicit
-# "et parti eller et nævn er en organisation, ikke et sted" nudge while
-# KEEPING "org" produced exactly zero both times, so this is the key token,
-# not the concept. Reordering so "org" came first also partially unblocked it
-# (14.1%), which points at a memorised emission sequence rather than semantics.
-NER_PROMPT = ('Find alle navngivne enheder i denne tekst:\n\n"{t}"\n\n'
-              'Svar kun med JSON på formen '
-              '{{"person": [], "organisation": [], "sted": [], "dato": []}} — '
-              'personer under "person", organisationer under "organisation", '
-              'steder og lande under "sted", datoer og årstal under "dato". '
-              'Er der ingen af en slags, så lad listen være tom. '
-              'Skriv enhederne præcis som de står i teksten.')
+# Prompt is built per-example by ner_prompt() in rl_rewards, because each row
+# requests a SUBSET of the entity types — see build_ner_dataset.
 
 
 def build_ner_dataset(source: str = "KennethEnevoldsen/dane_plus",
@@ -861,17 +847,40 @@ def build_ner_dataset(source: str = "KennethEnevoldsen/dane_plus",
     if max_rows and len(rows_src) > max_rows:
         rows_src = rows_src[:max_rows]
 
-    rows = [{"prompt": f"{USER}{NER_PROMPT.format(t=r['text'])}{END}{ASST}",
-             "task": "ner",
-             "gold": "",
-             "constraints": [], "params": [],
-             "fields": [], "types": [], "strict": False, "passage": r["text"],
-             "gold_values": json.dumps(r["ents"], ensure_ascii=False)}
-            for r in rows_src]
-    n_empty = sum(1 for r in rows_src if not r["ents"])
+    # Each row requests a SUBSET of the four types. Asking for all four every
+    # time lets the policy emit one memorised object and never read the schema
+    # — which is what happened twice (SFT textman keys; then `org` emitted in
+    # 565/565 rows and populated in none). Weighted toward larger subsets so
+    # the full-schema case stays common, and any row whose gold would become
+    # empty under its subset is re-drawn once to avoid manufacturing extra
+    # abstention on top of the --ner-empty-frac balance.
+    ALL_B = ("person", "org", "sted", "dato")
+    SUBSET_SIZES = [1, 2, 3, 4]
+    SUBSET_W = [0.10, 0.20, 0.30, 0.40]
+    rows = []
+    for r in rows_src:
+        have = {t for _, t in r["ents"]}
+        for _attempt in range(2):
+            k = rng.choices(SUBSET_SIZES, weights=SUBSET_W)[0]
+            buckets = sorted(rng.sample(ALL_B, k), key=ALL_B.index)
+            if not have or (have & set(buckets)):
+                break
+        ents = [[sfc, t] for sfc, t in r["ents"] if t in buckets]
+        rows.append({
+            "prompt": f"{USER}{ner_prompt(buckets).format(t=r['text'])}{END}{ASST}",
+            "task": "ner",
+            "gold": "",
+            "constraints": [], "params": [],
+            "fields": [], "types": [], "strict": False, "passage": r["text"],
+            "gold_values": json.dumps({"ents": ents, "buckets": buckets},
+                                      ensure_ascii=False)})
+    from collections import Counter as _C
+    _sizes = _C(len(json.loads(r["gold_values"])["buckets"]) for r in rows)
+    n_empty = sum(1 for r in rows if not json.loads(r["gold_values"])["ents"])
     print(f"  [build_ner] {source}:{split} → {len(rows)} rows "
           f"({len(rows)-n_empty} with entities, {n_empty} entity-free = "
-          f"{100*n_empty/max(1,len(rows)):.0f}%)", flush=True)
+          f"{100*n_empty/max(1,len(rows)):.0f}%)  "
+          f"key-subset sizes: {dict(sorted(_sizes.items()))}", flush=True)
     return Dataset.from_list(rows)
 
 

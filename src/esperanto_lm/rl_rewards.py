@@ -501,6 +501,45 @@ _NER_TYPES = ("person", "org", "sted", "dato")
 # scored against what was ASKED FOR, or the term penalises the model for
 # obeying the prompt.
 _NER_REQUIRED_KEYS = ("person", "organisation", "sted", "dato")
+
+# internal bucket -> the JSON key the prompt asks for
+_NER_KEY_FOR_BUCKET = {"person": "person", "org": "organisation",
+                       "sted": "sted", "dato": "dato"}
+_NER_BUCKET_FOR_KEY = {v: k for k, v in _NER_KEY_FOR_BUCKET.items()}
+_NER_GLOSS = {
+    "person": 'personer under "person"',
+    "org": 'organisationer under "organisation"',
+    "sted": 'steder og lande under "sted"',
+    "dato": 'datoer og årstal under "dato"',
+}
+_NER_BUCKET_ORDER = ("person", "org", "sted", "dato")
+
+
+def ner_prompt(buckets) -> str:
+    """Prompt template for a SUBSET of entity types.
+
+    Asking for all four every time lets the model emit one memorised object
+    and never read the schema — which is exactly what happened twice: it
+    converged on the SFT textman keys, and later emitted `org` in 565/565 rows
+    while populating it in none. Varying which keys are requested makes the
+    schema a thing that must be read per example.
+
+    Returns a template with a literal `{t}` slot for the sentence.
+    """
+    bs = [b for b in _NER_BUCKET_ORDER if b in set(buckets)]
+    if not bs:
+        raise ValueError("ner_prompt needs at least one bucket")
+    keys = [_NER_KEY_FOR_BUCKET[b] for b in bs]
+    shape = "{{" + ", ".join(f'"{k}": []' for k in keys) + "}}"
+    gloss = ", ".join(_NER_GLOSS[b] for b in bs)
+    what = ("Find alle navngivne enheder i denne tekst" if len(bs) == 4
+            else "Find kun de navngivne enheder af de typer der nævnes nedenfor "
+                 "i denne tekst")
+    return (f'{what}:\n\n"{{t}}"\n\n'
+            f'Svar kun med JSON på formen {shape} — {gloss}. '
+            'Medtag kun de nævnte nøgler og ingen andre. '
+            'Er der ingen af en slags, så lad listen være tom. '
+            'Skriv enhederne præcis som de står i teksten.')
 _NER_KEYMAP = {}
 for _k in ("person", "personer", "people", "navn", "navne", "name", "names"):
     _NER_KEYMAP[_k] = "person"
@@ -559,18 +598,21 @@ def ner_emitted_keys(text: str) -> set[str]:
     return {k.strip().lower() for k, _ in _NER_KV_RE.findall(m.group(0))}
 
 
-def ner_schema_score(text: str) -> float:
+def ner_schema_score(text: str, required_keys=None) -> float:
     """How well the completion follows the REQUESTED schema, in [0, 1].
 
-    Fraction of the four required keys present, minus a small penalty per
-    extraneous top-level key. Scored on the literal key names, not the
-    synonym map, because this is exactly the axis the synonym map is blind to.
+    Fraction of the requested keys present, minus a penalty per extraneous
+    top-level key. Scored on literal key names, not the synonym map, because
+    that map is exactly what is blind to this axis.
+
+    `required_keys` is the per-example subset; defaults to all four.
     """
+    req = tuple(required_keys) if required_keys else _NER_REQUIRED_KEYS
     ks = ner_emitted_keys(text)
     if not ks:
         return 0.0
-    present = len(ks & set(_NER_REQUIRED_KEYS)) / len(_NER_REQUIRED_KEYS)
-    extra = len(ks - set(_NER_REQUIRED_KEYS))
+    present = len(ks & set(req)) / len(req)
+    extra = len(ks - set(req))
     return max(0.0, min(1.0, present - 0.1 * min(extra, 6)))
 
 
@@ -620,23 +662,38 @@ def ner_match_counts(pred: list[tuple[str, str]],
     return tp, len(still), len(gold_left)
 
 
-def _parse_ner_gold(gv) -> set[tuple[str, str]]:
-    """Gold entities. Stored serialized in `gold_values` as [[surface, type], ...]
-    because Arrow needs one schema across all interleaved tasks."""
+def _parse_ner_gold(gv):
+    """(gold_entities, requested_buckets) from the serialized `gold_values`.
+
+    Two shapes are accepted. Legacy is a bare list [[surface, type], ...] and
+    implies all four types were requested. Current is
+    {"ents": [...], "buckets": ["person", "org"]} so each example can request a
+    SUBSET — the model must read the schema rather than emit a memorised one.
+
+    Serialized because Arrow needs a single column schema across all
+    interleaved tasks.
+    """
     if not gv:
-        return set()
+        return set(), list(_NER_BUCKET_ORDER)
     if isinstance(gv, str):
         try:
             gv = json.loads(gv)
         except (TypeError, ValueError):
-            return set()
+            return set(), list(_NER_BUCKET_ORDER)
+    buckets = list(_NER_BUCKET_ORDER)
+    items = gv
+    if isinstance(gv, dict):
+        items = gv.get("ents") or []
+        b = gv.get("buckets")
+        if b:
+            buckets = [x for x in _NER_BUCKET_ORDER if x in set(b)]
     out = set()
-    for item in gv or []:
+    for item in items or []:
         if isinstance(item, (list, tuple)) and len(item) == 2:
             s, t = item
-            if isinstance(s, str) and t in _NER_TYPES:
+            if isinstance(s, str) and t in buckets:   # gold filtered to request
                 out.add((s.strip().lower(), t))
-    return out
+    return out, buckets
 
 
 # Weight of the schema-conformance term in reward_ner. The extraction F1 keeps
@@ -676,9 +733,13 @@ def reward_ner(completion: str, gold_values) -> float:
     was a capability RL removed because nothing scored it.
     """
     pred_list = parse_ner(completion)
-    gold = _parse_ner_gold(gold_values)
+    gold, buckets = _parse_ner_gold(gold_values)
     if pred_list is None:
         return 0.0                      # no JSON emitted at all
+    # Predictions of types we did NOT ask for are spurious, not ignored — the
+    # instruction named which keys to produce.
+    pred_list = [(x, t) for x, t in pred_list if t in buckets]
+    req_keys = [_NER_KEY_FOR_BUCKET[b] for b in buckets]
 
     # Duplicates are counted BEFORE dedup. set() made repeated entities free,
     # so the policy emitted them in 97/565 held-out rows at zero cost —
@@ -712,7 +773,7 @@ def reward_ner(completion: str, gold_values) -> float:
     # F1 instead keeps every wrong answer at 0 while preserving the same
     # correct-key advantage at equal extraction quality.
     w = NER_SCHEMA_WEIGHT
-    r = f1 * ((1.0 - w) + w * ner_schema_score(completion))
+    r = f1 * ((1.0 - w) + w * ner_schema_score(completion, req_keys))
     return round(max(0.0, r - NER_DUPE_PENALTY * min(n_dupes, 4)), 4)
 
 
