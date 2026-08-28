@@ -21,14 +21,19 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from pathlib import Path
 from collections import defaultdict
 
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gen_icl_json import canon  # noqa: E402
+
 USER, ASST, END = "<|user|>", "<|assistant|>", "<|end|>"
-DATASET = "jensjepsen/danish-icl-json-v1"
+DATASET = "jensjepsen/danish-icl-json-v2"
 
 
 def parse(text: str):
@@ -62,6 +67,23 @@ def parse(text: str):
     return None
 
 
+def _keys(r):
+    """Key names this row's answer uses. canon() needs them to build the
+    per-format regex; taking them from GOLD (not from the prediction) means a
+    model inventing a key simply fails to parse, which is correct."""
+    g = r["messages"][1]["content"]
+    if r.get("format", "json") == "json":
+        try:
+            return set(json.loads(g[g.find("{"):g.rfind("}") + 1]))
+        except Exception:
+            return set()
+    pats = {"kv_colon": r"^\s*([^\s:]+)\s*:", "kv_eq": r"^\s*([^\s=]+)\s*=",
+            "kv_bracket": r"^\s*\[([^\]]+)\]", "kv_arrow": r"->\s*(\S+)\s*$",
+            "numbered": r"^\s*\d+\.\s*([^\s:]+)\s*:", "tsv": r"^([^\t]+)\t",
+            "tagged": r"<([^/>]+)>"}
+    return set(re.findall(pats[r["format"]], g, re.M))
+
+
 def norm(v):
     if isinstance(v, str):
         return re.sub(r"\s+", " ", v).strip().lower()
@@ -81,7 +103,9 @@ def same(a: dict, b: dict) -> bool:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
-    ap.add_argument("--splits", nargs="+", default=["val", "eval"])
+    ap.add_argument("--dataset", default=DATASET)
+    ap.add_argument("--splits", nargs="+",
+                    default=["val", "eval_schema", "eval_format", "eval_both"])
     ap.add_argument("--n", type=int, default=0, help="0 = full split")
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--max-new", type=int, default=256)
@@ -104,7 +128,7 @@ def main():
     print(f"{args.ckpt}\n")
     for split in args.splits:
         jf = open(f"{args.dump}.{split}.jsonl", "w") if args.dump else None
-        ds = load_dataset(DATASET, "default", split=split)
+        ds = load_dataset(args.dataset, "default", split=split)
         if args.n:
             ds = ds.select(range(min(args.n, len(ds))))
         rows = list(ds)
@@ -126,13 +150,17 @@ def main():
             outs = [tok.decode(x[pl:], skip_special_tokens=True).strip()
                     for x in g]
             for r, o in zip(chunk, outs):
-                gold = json.loads(r["messages"][1]["content"])
-                pred = parse(o)
-                ok = pred is not None and same(pred, gold)
-                kk = pred is not None and set(pred) == set(gold)
+                # v2 rows carry a format; v1 rows are all json
+                fmt = r.get("format", "json")
+                gold = canon(r["messages"][1]["content"], fmt, _keys(r))
+                pred = canon(o, fmt, _keys(r))
+                ok = pred is not None and gold is not None and pred == gold
+                kk = (pred is not None and gold is not None
+                      and set(pred) == set(gold))
                 keyhit += kk
                 sym = "symbol" if r["symbols"] != "none" else "plain"
-                for b in ("all", sym, f"shots{r['shots']}"):
+                for b in ("all", sym, f"shots{r['shots']}",
+                          f"fmt:{fmt}"):
                     stats[b][0] += ok
                     stats[b][1] += 1
                 if jf:
@@ -143,6 +171,7 @@ def main():
                         "split": split, "schema": r["schema"],
                         "symbols": r["symbols"], "shots": r["shots"],
                         "task_type": r["task_type"], "domain": r["domain"],
+                        "format": fmt,
                         "prompt": r["messages"][0]["content"],
                         "gold": r["messages"][1]["content"],
                         "pred": o, "exact": bool(ok), "keys_ok": bool(kk),
