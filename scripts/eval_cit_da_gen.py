@@ -6,6 +6,7 @@ text, then substring-match against the gold option's Danish text.
 Same shape as eval_triviaqa_eo.py but Danish + no morpheme preprocess.
 """
 import argparse
+import json
 import re
 import sys
 import unicodedata
@@ -44,7 +45,11 @@ def main():
                     help="chat=<|user|>…<|assistant|> (SFT). "
                          "spm='Spørgsmål: …\\nSvar:' (base-LM pretrain format).")
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--batch-size", type=int, default=1)
+    # Default was 1 — a full 720-row pass one prompt at a time is minutes of
+    # almost entirely idle GPU. Batched greedy decoding is identical output.
+    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--jsonl", default=None,
+                    help="write one record per row: question, gold, pred, ok")
     args = ap.parse_args()
 
     print(f"loading {args.ckpt}", flush=True)
@@ -63,6 +68,7 @@ def main():
 
     rows_list = list(ds)
     n_ok = 0
+    jf = open(args.jsonl, "w") if args.jsonl else None
     for bstart in range(0, n, args.batch_size):
         batch = rows_list[bstart:bstart + args.batch_size]
         B = len(batch)
@@ -91,6 +97,16 @@ def main():
             pred = tok.decode(out[row_ix, plen:], skip_special_tokens=True).strip()
             ok = matches(pred, gold_texts[row_ix])
             n_ok += ok
+            if jf:
+                # flushed per row so a killed run still leaves usable output
+                jf.write(json.dumps({
+                    "i": bstart + row_ix,
+                    "question": qs[row_ix],
+                    "gold": gold_texts[row_ix],
+                    "pred": pred,
+                    "ok": bool(ok),
+                }, ensure_ascii=False) + "\n")
+                jf.flush()
             i = bstart + row_ix + 1
             if args.verbose or i <= 8 or (not ok and i <= 20):
                 flag = "✓" if ok else "✗"
@@ -101,6 +117,9 @@ def main():
         if (i // 100) != ((i - B) // 100) or i == n:
             print(f"  {i}/{n} acc={n_ok/i:.3f}", flush=True)
 
+    if jf:
+        jf.close()
+        print(f"-> {args.jsonl}")
     print(f"\n=== citizen (gen) {n_ok}/{n} = {100*n_ok/n:.1f}% ===")
 
 
