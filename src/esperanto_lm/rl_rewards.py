@@ -567,6 +567,52 @@ def ner_schema_score(text: str) -> float:
     return max(0.0, min(1.0, present - 0.1 * min(extra, 6)))
 
 
+def _ner_surface_match(a: str, b: str) -> bool:
+    """Surface equality tolerant of Danish inflection.
+
+    Danish inflects the entity itself: gold "Ruslands" (genitive) vs predicted
+    "Rusland" is the same entity, but exact matching charges it as BOTH a false
+    positive and a false negative — two penalties for a suffix. Accept a
+    prefix relation with a short delta; require >=4 chars on the shorter side
+    so "Dan"/"Danmark" doesn't slip through.
+    """
+    if a == b:
+        return True
+    lo, hi = (a, b) if len(a) <= len(b) else (b, a)
+    return len(lo) >= 4 and hi.startswith(lo) and (len(hi) - len(lo)) <= 3
+
+
+def ner_match_counts(pred: list[tuple[str, str]],
+                     gold: set[tuple[str, str]]) -> tuple[int, int, int]:
+    """(tp, fp, fn) with exact matches resolved before inflectional ones.
+
+    Two passes matter: a fuzzy match made first could consume the gold entry
+    that an exact prediction needed, understating tp.
+    """
+    gold_left = list(gold)
+    pred_left = []
+    tp = 0
+    for p in pred:                       # pass 1 — exact
+        if p in gold_left:
+            gold_left.remove(p)
+            tp += 1
+        else:
+            pred_left.append(p)
+    still = []
+    for p in pred_left:                  # pass 2 — inflectional
+        hit = None
+        for i, g in enumerate(gold_left):
+            if p[1] == g[1] and _ner_surface_match(p[0], g[0]):
+                hit = i
+                break
+        if hit is None:
+            still.append(p)
+        else:
+            gold_left.pop(hit)
+            tp += 1
+    return tp, len(still), len(gold_left)
+
+
 def _parse_ner_gold(gv) -> set[tuple[str, str]]:
     """Gold entities. Stored serialized in `gold_values` as [[surface, type], ...]
     because Arrow needs one schema across all interleaved tasks."""
@@ -592,6 +638,8 @@ def _parse_ner_gold(gv) -> set[tuple[str, str]]:
 # at k=32 and must not be thrown away — while correct keys become strictly
 # better. 0 disables the term entirely (pre-2026-08-28 behaviour).
 NER_SCHEMA_WEIGHT = float(os.environ.get("GRPO_NER_SCHEMA_WEIGHT", "0.15"))
+# Per-duplicate-entity penalty, capped at 4 duplicates (max -0.20).
+NER_DUPE_PENALTY = float(os.environ.get("GRPO_NER_DUPE_PENALTY", "0.05"))
 
 
 def reward_ner(completion: str, gold_values) -> float:
@@ -625,22 +673,30 @@ def reward_ner(completion: str, gold_values) -> float:
     if pred_list is None:
         return 0.0                      # no JSON emitted at all
 
-    pred = set(pred_list)
+    # Duplicates are counted BEFORE dedup. set() made repeated entities free,
+    # so the policy emitted them in 97/565 held-out rows at zero cost —
+    # ["Birte Weiss", "Birte Weiss"]. Same hole as the schema one: a tolerance
+    # in the scorer removing a gradient. reward_json_schema already penalises
+    # duplicate KEYS; this is the value-level equivalent.
+    n_dupes = len(pred_list) - len(set(pred_list))
+    pred_u = list(dict.fromkeys(pred_list))     # dedup, order-stable
+    pred = set(pred_u)
+
     if not pred and not gold:
         f1 = 1.0                        # correctly abstained
     elif not pred or not gold:
         f1 = 0.0                        # emitted on empty, or empty on non-empty
     else:
-        tp = len(pred & gold)
+        tp, fp, fn = ner_match_counts(pred_u, gold)
         if tp == 0:
             f1 = 0.0
         else:
-            prec = tp / len(pred)
-            rec = tp / len(gold)
+            prec = tp / (tp + fp)
+            rec = tp / (tp + fn)
             f1 = 2 * prec * rec / (prec + rec)
 
     if NER_SCHEMA_WEIGHT <= 0:
-        return round(f1, 4)
+        return round(max(0.0, f1 - NER_DUPE_PENALTY * min(n_dupes, 4)), 4)
     # MULTIPLICATIVE, not additive. An additive term pays a floor for merely
     # emitting the right key names even when the answer is wrong (empty output
     # on an entity row scored 0.15), which lifts the always-abstain plateau
@@ -649,7 +705,8 @@ def reward_ner(completion: str, gold_values) -> float:
     # F1 instead keeps every wrong answer at 0 while preserving the same
     # correct-key advantage at equal extraction quality.
     w = NER_SCHEMA_WEIGHT
-    return round(f1 * ((1.0 - w) + w * ner_schema_score(completion)), 4)
+    r = f1 * ((1.0 - w) + w * ner_schema_score(completion))
+    return round(max(0.0, r - NER_DUPE_PENALTY * min(n_dupes, 4)), 4)
 
 
 def reward_mixed(completions: list[str],

@@ -140,6 +140,37 @@ def schema_score(raw):
     return max(0.0, min(1.0, present - 0.1 * min(extra, 6)))
 
 
+def surface_match(a, b):
+    """Surface equality tolerant of Danish inflection. Mirrors
+    _ner_surface_match in rl_rewards.py. Gold "Ruslands" vs predicted
+    "Rusland" is the same entity; exact matching charges it as both a false
+    positive AND a false negative — two penalties for a genitive -s."""
+    if a == b:
+        return True
+    lo, hi = (a, b) if len(a) <= len(b) else (b, a)
+    return len(lo) >= 4 and hi.startswith(lo) and (len(hi) - len(lo)) <= 3
+
+
+def match_entities(pred, gold):
+    """(tp, unmatched_pred, unmatched_gold) — exact pass before inflectional,
+    so a fuzzy match cannot consume a gold an exact prediction needed."""
+    gold_left, pred_left, hits = list(gold), [], []
+    for p in pred:
+        if p in gold_left:
+            gold_left.remove(p); hits.append(p)
+        else:
+            pred_left.append(p)
+    still = []
+    for p in pred_left:
+        idx = next((i for i, g in enumerate(gold_left)
+                    if p[1] == g[1] and surface_match(p[0], g[0])), None)
+        if idx is None:
+            still.append(p)
+        else:
+            gold_left.pop(idx); hits.append(p)
+    return hits, still, gold_left
+
+
 def prf(tp, fp, fn):
     p = tp / (tp + fp) if tp + fp else 0.0
     r = tp / (tp + fn) if tp + fn else 0.0
@@ -205,8 +236,11 @@ def main():
     for r, o in zip(rows, outs):
         gold = {(s.lower(), l) for s, l in r["gold"]}
         pred_r = parse_pred(o)
-        pred = {(s.lower(), l) for s, l in pred_r}
-        hit, spur, miss = pred & gold, pred - gold, gold - pred
+        pred_pairs = [(s.lower(), l) for s, l in pred_r]
+        n_dupes = len(pred_pairs) - len(set(pred_pairs))
+        pred_u = list(dict.fromkeys(pred_pairs))
+        pred = set(pred_u)
+        hit, spur, miss = match_entities(pred_u, gold)
         tp += len(hit); fp += len(spur); fn += len(miss)
         for _, l in hit: per[l][0] += 1
         for _, l in spur: per[l][1] += 1
@@ -223,7 +257,8 @@ def main():
             st = f"forfejlet (fp={len(spur)} fn={len(miss)})"
         recs.append({"text": r["text"], "gold": r["gold"], "pred": pred_r,
                      "raw": o, "status": st, "hit": sorted(hit),
-                     "spurious": sorted(spur), "missed": sorted(miss)})
+                     "spurious": sorted(spur), "missed": sorted(miss),
+                     "n_dupes": n_dupes})
 
     P, R, F = prf(tp, fp, fn)
     stc = Counter(x["status"].split(" (")[0] for x in recs)
@@ -247,7 +282,11 @@ def main():
         a, b, c = per[t]
         p, r, f = prf(a, b, c)
         print(f"{DA_NAME[t]:<14}{100*p:>8.1f}{100*r:>8.1f}{100*f:>8.1f}{a:>7}{b:>7}{c:>7}")
-    print(f"\nstatus: {dict(stc)}")
+    dup_rows = sum(1 for x in recs if x["n_dupes"])
+    dup_tot = sum(x["n_dupes"] for x in recs)
+    print(f"\nduplicate entities: {dup_tot} across {dup_rows}/{len(recs)} rows "
+          f"(deduped before scoring; penalised in reward_ner)")
+    print(f"status: {dict(stc)}")
     print(f"invented entities on entity-free sentences: "
           f"{invented}/{len(ent_free)}")
 
