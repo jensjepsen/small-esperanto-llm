@@ -987,7 +987,8 @@ def build_ifeval_da_dataset(max_rows: int = 0):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["gsm8k", "ifeval", "combined", "mixed", "json"], required=True)
+    ap.add_argument("--task", choices=["gsm8k", "ifeval", "combined", "mixed", "json", "ner"],
+                    required=True)
     ap.add_argument("--json-source", default="jensjepsen/danish-json-grpo-v1",
                     help="Source for --task=json (HF repo or local path).")
     ap.add_argument("--checkpoint", required=True,
@@ -1221,6 +1222,16 @@ def main():
         from esperanto_lm.rl_rewards import reward_mixed as _reward_mixed
         reward_fn = _reward_mixed
         # Held-out eval handled by JSON eval callback (or greedy-eval `--greedy-eval-task json`).
+    elif args.task == "ner":
+        # build_ner_dataset already emits task="ner" plus the full union
+        # schema, so reward_mixed dispatches to reward_ner per row — same
+        # pattern as the json single-task branch above.
+        ds = build_ner_dataset(args.ner_source, split="train",
+                               max_rows=args.max_rows or 0,
+                               empty_frac=args.ner_empty_frac)
+        from esperanto_lm.rl_rewards import reward_mixed as _reward_mixed
+        reward_fn = _reward_mixed
+        # Held-out eval is the dane_plus dev split via --greedy-eval-task ner.
     else:  # mixed
         assert args.combined_source, "--combined-source required for --task=mixed"
         ds = build_mixed_dataset(args.combined_source,
@@ -1490,6 +1501,8 @@ def main():
                              else "both")
             elif args.task == "json":
                 eval_task = "json"
+            elif args.task == "ner":
+                eval_task = "ner"
             else:
                 eval_task = "same"
 
@@ -1580,6 +1593,8 @@ def main():
         else:  # 'same' — task-specific single greedy callback
             if args.task == "gsm8k":
                 _attach_gsm8k()
+            elif args.task == "ner":
+                _attach_ner()
             elif args.task == "combined":
                 gds = build_combined_dataset(args.combined_source,
                                              max_rows=args.greedy_eval_max_rows)
