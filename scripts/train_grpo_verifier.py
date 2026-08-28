@@ -967,10 +967,10 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
     if max_rows and len(mixed) > max_rows:
         mixed = mixed.select(range(max_rows))
 
+    _sz = lambda d: len(d) if d is not None else 0   # sources may be skipped
     print(f"  [build_mixed:interleave={interleave_strategy}] "
-          f"if_ds={len(if_ds)} gsm_ds={len(gsm_ds)} "
-          f"json_ds={len(json_ds) if json_ds is not None else 0} "
-          f"ner_ds={len(ner_ds) if ner_ds is not None else 0} "
+          f"if_ds={_sz(if_ds)} gsm_ds={_sz(gsm_ds)} "
+          f"json_ds={_sz(json_ds)} ner_ds={_sz(ner_ds)} "
           f"→ mixed={len(mixed)} (probs={[round(p,3) for p in probs]})",
           flush=True)
     return mixed
