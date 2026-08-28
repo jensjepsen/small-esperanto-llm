@@ -494,6 +494,13 @@ def reward_json_schema(completion: str, fields: list[str], strict: bool,
 # answers with its own key names (`navn`, `placering`, `årstal`) instead of the
 # requested ones, so a strict key match scores correct extractions as zero.
 _NER_TYPES = ("person", "org", "sted", "dato")
+# The JSON keys the PROMPT asks for. Deliberately distinct from _NER_TYPES:
+# the internal bucket is "org" (gold labels, KEYMAP targets) but the prompt
+# now requests "organisation", because the model populated "org" in 0/93 gold
+# org entities and "organisation" in 21.7% of them. Schema conformance must be
+# scored against what was ASKED FOR, or the term penalises the model for
+# obeying the prompt.
+_NER_REQUIRED_KEYS = ("person", "organisation", "sted", "dato")
 _NER_KEYMAP = {}
 for _k in ("person", "personer", "people", "navn", "navne", "name", "names"):
     _NER_KEYMAP[_k] = "person"
@@ -562,8 +569,8 @@ def ner_schema_score(text: str) -> float:
     ks = ner_emitted_keys(text)
     if not ks:
         return 0.0
-    present = len(ks & set(_NER_TYPES)) / len(_NER_TYPES)
-    extra = len(ks - set(_NER_TYPES))
+    present = len(ks & set(_NER_REQUIRED_KEYS)) / len(_NER_REQUIRED_KEYS)
+    extra = len(ks - set(_NER_REQUIRED_KEYS))
     return max(0.0, min(1.0, present - 0.1 * min(extra, 6)))
 
 

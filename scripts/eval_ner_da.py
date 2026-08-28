@@ -38,14 +38,18 @@ CANON = {"PERSON": "person", "PER": "person",
          "ORGANIZATION": "org", "ORG": "org",
          "GPE": "sted", "LOCATION": "sted", "LOC": "sted", "FACILITY": "sted",
          "DATE": "dato"}
-TYPES = ["person", "org", "sted", "dato"]
+TYPES = ["person", "org", "sted", "dato"]          # internal buckets
+# JSON keys the prompt requests — see NER_PROMPT. "organisation", not "org":
+# the model populated "org" in 0/93 gold org entities and "organisation" in
+# 21.7%. Schema conformance is scored against what was asked for.
+REQUIRED_KEYS = ["person", "organisation", "sted", "dato"]
 DA_NAME = {"person": "PERSON", "org": "ORGANISATION", "sted": "STED", "dato": "DATO"}
 
 # Must match NER_PROMPT in train_grpo_verifier.py — eval and train share it.
 PROMPT = ('Find alle navngivne enheder i denne tekst:\n\n"{t}"\n\n'
           'Svar kun med JSON på formen '
-          '{{"person": [], "org": [], "sted": [], "dato": []}} — '
-          'personer under "person", organisationer under "org", '
+          '{{"person": [], "organisation": [], "sted": [], "dato": []}} — '
+          'personer under "person", organisationer under "organisation", '
           'steder og lande under "sted", datoer og årstal under "dato". '
           'Er der ingen af en slags, så lad listen være tom. '
           'Skriv enhederne præcis som de står i teksten.')
@@ -135,8 +139,8 @@ def schema_score(raw):
     ks = emitted_keys(raw)
     if not ks:
         return 0.0
-    present = len(ks & set(TYPES)) / len(TYPES)
-    extra = len(ks - set(TYPES))
+    present = len(ks & set(REQUIRED_KEYS)) / len(REQUIRED_KEYS)
+    extra = len(ks - set(REQUIRED_KEYS))
     return max(0.0, min(1.0, present - 0.1 * min(extra, 6)))
 
 
@@ -295,7 +299,7 @@ def main():
     print(f"  fully conforming rows  {conforming}/{len(recs)}")
     print(f"  emitted keys           "
           f"{dict(key_counts.most_common(8)) if key_counts else '{}'}")
-    missing = [t for t in TYPES if key_counts.get(t, 0) == 0]
+    missing = [t for t in REQUIRED_KEYS if key_counts.get(t, 0) == 0]
     if missing:
         print(f"  NEVER emitted          {missing}  <- unreachable label space")
     print(f"  blended (inline metric, w={w}): "
@@ -324,7 +328,7 @@ def main():
                   f"middel {schema_mean:.3f}, "
                   f"fuldt konforme rækker {conforming}/{len(recs)}  ",
               f"Emitterede nøgler: `{dict(key_counts.most_common(8))}`  "]
-        _missing = [t for t in TYPES if key_counts.get(t, 0) == 0]
+        _missing = [t for t in REQUIRED_KEYS if key_counts.get(t, 0) == 0]
         if _missing:
             L.append(f"**Aldrig emitteret:** `{_missing}` — utilgængeligt labelrum  ")
         L += ["", "| status | antal |", "|---|---|"]

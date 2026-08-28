@@ -798,10 +798,19 @@ _NER_TYPE_MAP = {"PERSON": "person", "PER": "person",
                  "GPE": "sted", "LOCATION": "sted", "LOC": "sted",
                  "FACILITY": "sted", "DATE": "dato"}
 
+# Key is "organisation", NOT "org". Probed on 60 org-bearing test rows against
+# the step-3375 checkpoint: with "org" the model emitted the key in every row
+# and populated it in ZERO of them (0/93 gold org entities). Renaming the key
+# to "organisation" — changing nothing else — took org recall 0% -> 21.7% and
+# overall F1 34.7 -> 47.0. Adding concrete examples or an explicit
+# "et parti eller et nævn er en organisation, ikke et sted" nudge while
+# KEEPING "org" produced exactly zero both times, so this is the key token,
+# not the concept. Reordering so "org" came first also partially unblocked it
+# (14.1%), which points at a memorised emission sequence rather than semantics.
 NER_PROMPT = ('Find alle navngivne enheder i denne tekst:\n\n"{t}"\n\n'
               'Svar kun med JSON på formen '
-              '{{"person": [], "org": [], "sted": [], "dato": []}} — '
-              'personer under "person", organisationer under "org", '
+              '{{"person": [], "organisation": [], "sted": [], "dato": []}} — '
+              'personer under "person", organisationer under "organisation", '
               'steder og lande under "sted", datoer og årstal under "dato". '
               'Er der ingen af en slags, så lad listen være tom. '
               'Skriv enhederne præcis som de står i teksten.')
