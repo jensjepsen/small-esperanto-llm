@@ -641,8 +641,15 @@ def reward_ner(completion: str, gold_values) -> float:
 
     if NER_SCHEMA_WEIGHT <= 0:
         return round(f1, 4)
+    # MULTIPLICATIVE, not additive. An additive term pays a floor for merely
+    # emitting the right key names even when the answer is wrong (empty output
+    # on an entity row scored 0.15), which lifts the always-abstain plateau
+    # from 0.28 to ~0.39 on the shipped 28%-empty mix — undoing the point of
+    # --ner-empty-frac, since the base is already an 82-93% abstainer. Scaling
+    # F1 instead keeps every wrong answer at 0 while preserving the same
+    # correct-key advantage at equal extraction quality.
     w = NER_SCHEMA_WEIGHT
-    return round((1.0 - w) * f1 + w * ner_schema_score(completion), 4)
+    return round(f1 * ((1.0 - w) + w * ner_schema_score(completion)), 4)
 
 
 def reward_mixed(completions: list[str],
