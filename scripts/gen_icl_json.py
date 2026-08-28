@@ -65,6 +65,16 @@ def schema_id(fields) -> str:
     return "|".join(fields)
 
 
+def fmt_heldout(fmt: str, frac: float) -> bool:
+    """Formats are partitioned like schemas. Without this there is no split
+    that answers "does it generalise to a format it never saw" -- exactly the
+    question v1 could not answer and got wrong."""
+    if frac <= 0:
+        return False
+    h = hashlib.sha1(("fmt:" + fmt).encode()).hexdigest()
+    return int(h[:8], 16) / 0xFFFFFFFF < frac
+
+
 def is_heldout(fields, frac: float) -> bool:
     """Partition the schema space deterministically, so re-running with a
     different --n cannot leak a held-out schema into training."""
@@ -72,14 +82,166 @@ def is_heldout(fields, frac: float) -> bool:
     return int(h[:8], 16) / 0xFFFFFFFF < frac
 
 
-def render(gold: dict, fields, keymap) -> str:
-    """Answer JSON, keys in schema order and remapped if symbols are in use.
+# ---------------------------------------------------------------- formats
+#
+# Format is the SECOND induction axis. Training v1 on JSON alone produced a
+# model that answers a "type: enhed" request with malformed JSON -- schema
+# induction transferred to unseen schemas, format did not transfer at all.
+# So the renderer is sampled per row like the schema is: constant within a
+# row (all exemplars and the target), varying across rows.
+#
+# Three decisions have to be made per format and held consistent, or a row
+# stops being inducible:
+#   lists  flat formats repeat the key, one element per line/field
+#   null   rendered as an explicit marker, never silently dropped -- the key
+#          must still be visible or key-set induction breaks
+#   types  flat formats are untyped, so scoring compares post-parse as
+#          strings; see parse_fmt
+NULL = "-"
+
+
+def _vals(v):
+    """Gold value -> list of rendered strings (the common currency)."""
+    if v is None or v == "" or v == []:
+        return [NULL]
+    if isinstance(v, bool):
+        return ["true" if v else "false"]
+    if isinstance(v, list):
+        return [_vals(x)[0] for x in v] or [NULL]
+    if isinstance(v, float) and v.is_integer():
+        return [str(int(v))]
+    return [str(v)]
+
+
+def _render_flat(gold, fields, keymap, sep, tmpl, numbered=False):
+    out, i = [], 0
+    for f in fields:
+        for x in _vals(gold.get(f)):
+            i += 1
+            out.append((f"{i}. " if numbered else "") + tmpl.format(k=keymap[f], v=x))
+    return sep.join(out)
+
+
+def _parse_flat(text, keys, rx, val_first=False):
+    hits = rx.findall(text or "")
+    if not hits:
+        return None
+    out = {}
+    for a_, b_ in hits:
+        v, k = (a_, b_) if val_first else (b_, a_)
+        k = k.strip()
+        if k not in keys:
+            return None
+        out.setdefault(k, []).append(v.strip())
+    return out
+
+
+def _kpat(keys):
+    return "|".join(re.escape(k) for k in keys)
+
+
+FORMATS = {
+    "json": {
+        "render": lambda g, fs, km: json.dumps(
+            {km[f]: g.get(f) for f in fs}, ensure_ascii=False),
+        "parse": lambda t, keys: _parse_json(t, keys),
+    },
+    "kv_colon": {
+        "render": lambda g, fs, km: _render_flat(g, fs, km, "\n", "{k}: {v}"),
+        "parse": lambda t, keys: _parse_flat(
+            t, keys, re.compile(rf"^\s*({_kpat(keys)})\s*:\s*(.+?)\s*$", re.M)),
+    },
+    "kv_eq": {
+        "render": lambda g, fs, km: _render_flat(g, fs, km, "\n", "{k}={v}"),
+        "parse": lambda t, keys: _parse_flat(
+            t, keys, re.compile(rf"^\s*({_kpat(keys)})\s*=\s*(.+?)\s*$", re.M)),
+    },
+    "kv_bracket": {
+        "render": lambda g, fs, km: _render_flat(g, fs, km, "\n", "[{k}] {v}"),
+        "parse": lambda t, keys: _parse_flat(
+            t, keys, re.compile(rf"^\s*\[({_kpat(keys)})\]\s*(.+?)\s*$", re.M)),
+    },
+    "kv_arrow": {
+        "render": lambda g, fs, km: _render_flat(g, fs, km, "\n", "{v} -> {k}"),
+        "parse": lambda t, keys: _parse_flat(
+            t, keys, re.compile(rf"^\s*(.+?)\s*->\s*({_kpat(keys)})\s*$", re.M),
+            val_first=True),
+    },
+    "numbered": {
+        "render": lambda g, fs, km: _render_flat(
+            g, fs, km, "\n", "{k}: {v}", numbered=True),
+        "parse": lambda t, keys: _parse_flat(
+            t, keys,
+            re.compile(rf"^\s*\d+\.\s*({_kpat(keys)})\s*:\s*(.+?)\s*$", re.M)),
+    },
+    "tsv": {
+        "render": lambda g, fs, km: _render_flat(g, fs, km, "\n", "{k}\t{v}"),
+        "parse": lambda t, keys: _parse_flat(
+            t, keys, re.compile(rf"^\s*({_kpat(keys)})\t(.+?)\s*$", re.M)),
+    },
+    "tagged": {
+        "render": lambda g, fs, km: _render_flat(
+            g, fs, km, "\n", "<{k}>{v}</{k}>"),
+        "parse": lambda t, keys: _parse_flat(
+            t, keys,
+            re.compile(rf"<({_kpat(keys)})>(.*?)</\1>", re.S)),
+    },
+}
+
+
+def _parse_json(t, keys):
+    a_ = t.find("{")
+    b_ = t.rfind("}")
+    if a_ < 0 or b_ < a_:
+        return None
+    try:
+        d = json.loads(t[a_:b_ + 1])
+    except Exception:
+        return None
+    if not isinstance(d, dict):
+        return None
+    out = {}
+    for k, v in d.items():
+        if k not in keys:
+            return None
+        out[k] = _vals(v)
+    return out
+
+
+def render(gold: dict, fields, keymap, fmt: str = "json") -> str:
+    """Answer in `fmt`, keys in schema order and remapped for symbols.
 
     Fixed key order matters: a varying order would make the demonstrations
-    look inconsistent for a reason that has nothing to do with the schema.
+    look inconsistent for a reason unrelated to the schema.
     """
-    return json.dumps({keymap[f]: gold.get(f) for f in fields},
-                      ensure_ascii=False)
+    return FORMATS[fmt]["render"](gold, fields, keymap)
+
+
+def canon(text: str, fmt: str, keys) -> dict | None:
+    """Parse to {key: [value-strings]} -- the shape both sides of a
+    comparison are reduced to, so an untyped flat format and JSON can be
+    scored the same way."""
+    d = FORMATS[fmt]["parse"](text, set(keys))
+    if d is None:
+        return None
+    return {k: [re.sub(r"\s+", " ", x).strip().lower() for x in v]
+            for k, v in d.items()}
+
+
+def gate_format(fmt: str) -> None:
+    """Constructive control per format: a compliant render must parse back to
+    the same thing, and a one-edit break must not."""
+    fields = ["a", "b", "c"]
+    km = {"a": "alfa", "b": "beta", "c": "gamma"}
+    probe = {"a": "Knud Vilby", "b": ["X", "Y"], "c": None}
+    r = render(probe, fields, km, fmt)
+    got = canon(r, fmt, km.values())
+    want = {"alfa": ["knud vilby"], "beta": ["x", "y"], "gamma": [NULL]}
+    assert got == want, f"{fmt} round-trip: {r!r} -> {got!r}"
+    broken = r.replace(":", "").replace("=", "").replace("->", "") \
+              .replace("[", "").replace("<", "").replace("\t", " ") + "@@"
+    if broken != r:
+        assert canon(broken, fmt, km.values()) != want, f"{fmt} break undetected"
 
 
 _W = re.compile(r"[^\W\d_]+[\w.\-]*", re.UNICODE)
@@ -149,7 +311,7 @@ def boundary_anomalies(groups):
     return bad
 
 
-def build_row(rng, group, fields, shots, sym_frac):
+def build_row(rng, group, fields, shots, sym_frac, fmt="json"):
     picks = rng.sample(group, shots + 1)
     demos, target = picks[:-1], picks[-1]
 
@@ -321,9 +483,24 @@ def build_row(rng, group, fields, shots, sym_frac):
     parts = ["Eksempler:"]
     for d in demos:
         parts.append(f'Tekst:\n{d["passage"].strip()}\n'
-                     f'Svar: {render(json.loads(d["gold_values"]), fields, keymap)}')
+                     f'Svar: {render(json.loads(d["gold_values"]), fields, keymap, fmt)}')
     parts.append(f'Tekst:\n{target["passage"].strip()}\nSvar:')
-    answer = render(tgold, fields, keymap)
+    # A value containing a newline or tab is fine in JSON (it escapes) but in
+    # any line-based format it splits across lines and the parser recovers
+    # only the first fragment. One such value exists in the source (an HTML
+    # body); it would silently corrupt every flat-format row that drew it.
+    if fmt != "json":
+        for p_ in picks:
+            for v in json.loads(p_["gold_values"]).values():
+                for x in (v if isinstance(v, list) else [v]):
+                    if isinstance(x, str) and ("\n" in x or "\t" in x):
+                        return None
+
+    answer = render(tgold, fields, keymap, fmt)
+    # the target must parse back to itself under this format, or the row is
+    # scored against something the renderer cannot express
+    if canon(answer, fmt, keymap.values()) is None:
+        return None
     return {
         # provenance, stripped before writing -- used to build a val split
         # whose passages appear nowhere in train or eval
@@ -331,7 +508,7 @@ def build_row(rng, group, fields, shots, sym_frac):
         "messages": [{"role": "user", "content": "\n\n".join(parts)},
                      {"role": "assistant", "content": answer}],
         "meta": {"schema": schema_id(fields), "n_fields": len(fields),
-                 "shots": shots, "symbols": scheme or "none",
+                 "shots": shots, "symbols": scheme or "none", "format": fmt,
                  "task_type": target["task_type"], "domain": target["domain"],
                  "heldout_schema": is_heldout(fields, 0.0)},
     }
@@ -345,10 +522,20 @@ def main():
                     help="share of rows whose field names are replaced by "
                          "meaning-free symbols (symbol tuning)")
     ap.add_argument("--heldout-frac", type=float, default=0.2)
+    ap.add_argument("--formats", nargs="*", default=["json"],
+                    help="output formats to sample from, or 'all'. Format is "
+                         "an induction axis: v1 trained on json alone and did "
+                         "not transfer to any other format.")
+    ap.add_argument("--fmt-heldout-frac", type=float, default=0.0,
+                    help="share of FORMATS reserved for the unseen-format "
+                         "eval splits")
     ap.add_argument("--val-frac", type=float, default=0.0,
                     help="share of EACH schema's source rows reserved for a "
                          "val split before train/eval are built")
     ap.add_argument("--n-val", type=int, default=500)
+    ap.add_argument("--n-fmt", type=int, default=0,
+                    help="rows to generate on the HELD-OUT formats, for the "
+                         "eval_format / eval_both splits")
     ap.add_argument("--exclude-src", type=Path, default=None,
                     help="JSON list of source row ids to drop before "
                          "generating; pass the used_src.json of an earlier "
@@ -428,7 +615,8 @@ def main():
     print(f"{len(groups)} schemas, {len(usable)} with >=2 rows "
           f"({sum(len(v) for v in usable.values())} rows usable)", flush=True)
 
-    def generate(rng, pool, n, seen_rows, schema_filter=None):
+    def generate(rng, pool, n, seen_rows, schema_filter=None,
+                 fmt_pool=None):
         keys = sorted(k for k in pool
                       if schema_filter is None or schema_filter(k))
         rows, tried, n_dupe = [], 0, 0
@@ -443,10 +631,12 @@ def main():
             # rejection biases the output toward short prompts, because a
             # 5-shot row must clear every filter five times over: an earlier
             # run came out 2541 one-shot against 1592 five-shot.
+            fmt = rng.choice(fmt_pool or seen_f)
             r = None
             for _ in range(6):
                 shots = min(want, len(group) - 1)
-                r = build_row(rng, group, list(fields), shots, args.sym_frac)
+                r = build_row(rng, group, list(fields), shots, args.sym_frac,
+                              fmt)
                 if r:
                     break
             if not r:
@@ -458,49 +648,92 @@ def main():
                 continue
             seen_rows.add(key)
             r["meta"]["heldout_schema"] = is_heldout(fields, args.heldout_frac)
+            r["meta"]["heldout_format"] = r["meta"]["format"] in held_f
             rows.append(r)
         return rows, tried, n_dupe
+
+    fmts = sorted(FORMATS) if args.formats == ["all"] else list(args.formats)
+    bad_f = [f for f in fmts if f not in FORMATS]
+    if bad_f:
+        raise SystemExit(f"unknown format(s): {bad_f}; have {sorted(FORMATS)}")
+    for f in fmts:
+        gate_format(f)            # raises if render/parse do not round-trip
+    held_f = [f for f in fmts if fmt_heldout(f, args.fmt_heldout_frac)]
+    seen_f = [f for f in fmts if f not in held_f]
+    if not seen_f:
+        raise SystemExit("fmt-heldout-frac held out every format")
+    print(f"formats: {len(fmts)} gated; train formats={seen_f}"
+          + (f"  held out={held_f}" if held_f else ""), flush=True)
 
     rng = random.Random(args.seed)
     seen_rows = set()
     rows, tried, n_dupe = generate(rng, usable, args.n, seen_rows)
-    # val draws only from reserved rows, and only from schemas that are NOT
-    # the held-out-schema eval set, so it stays in-distribution for train
+    # A second pass over the HELD-OUT formats. generate() otherwise only ever
+    # draws from seen_f, so without this there would be no unseen-format rows
+    # to evaluate on -- the gap that let v1 ship a single-format model.
+    fmt_rows = []
+    if held_f and args.n_fmt:
+        fmt_rows, f_tried, f_dupe = generate(
+            rng, usable, args.n_fmt, seen_rows, fmt_pool=held_f)
+        print(f"unseen-format pass: {len(fmt_rows)} rows from {f_tried} draws",
+              flush=True)
+
+    # val draws only from reserved passages, seen schemas, seen formats: it
+    # varies ONE thing (the passage) so it isolates the task from both axes
     val_usable = {k: v for k, v in val_pool.items() if len(v) >= 2}
     val, v_tried, v_dupe = generate(
         rng, val_usable, args.n_val, seen_rows,
         schema_filter=lambda k: not is_heldout(k, args.heldout_frac))
 
-    used_src = sorted({i for r in rows + val for i in r["_src"]})
-    for r in rows + val:
+    allr = rows + fmt_rows + val
+    used_src = sorted({i for r in allr for i in r["_src"]})
+    for r in allr:
         del r["_src"]
-    rng.shuffle(rows)
+    main = rows + fmt_rows
+    rng.shuffle(main)
     rng.shuffle(val)
-    tr = [r for r in rows if not r["meta"]["heldout_schema"]]
-    ev = [r for r in rows if r["meta"]["heldout_schema"]]
+
+    def pick(hs, hf):
+        return [r for r in main if r["meta"]["heldout_schema"] == hs
+                and r["meta"]["heldout_format"] == hf]
+
+    # The factorial: which axis generalises is only answerable if each is
+    # held out independently and together.
+    splits = [
+        ("train",       pick(False, False)),
+        ("eval_schema", pick(True, False)),
+        ("eval_format", pick(False, True)),
+        ("eval_both",   pick(True, True)),
+        ("val",         val),
+    ]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    for nm, rs in (("train", tr), ("eval_heldout_schema", ev), ("val", val)):
+    for nm, rs in splits:
         if not rs:
             continue
         (out / f"{nm}.jsonl").write_text(
             "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rs))
         print(f"-> {out / (nm + '.jsonl')}  ({len(rs)} rows)")
-    if val:
-        print(f"   val: {v_tried} draws, {v_dupe} duplicates dropped")
 
     (out / "used_src.json").write_text(json.dumps(used_src))
     print(f"-> {out / 'used_src.json'}  ({len(used_src)} source rows consumed)")
 
     print(f"\n{len(rows)} rows from {tried} draws; {n_dupe} exact duplicates dropped")
-    print(f"train={len(tr)}  heldout-schema eval={len(ev)}")
-    ovl = ({r["meta"]["schema"] for r in tr} & {r["meta"]["schema"] for r in ev})
-    print(f"schema overlap train/eval: {sorted(ovl) or 'none'}")
-    for k in ("shots", "symbols", "task_type", "n_fields"):
-        c = Counter(r["meta"][k] for r in rows)
+    tr = dict(splits)["train"]
+    for nm, rs in splits:
+        if not rs or nm == "train":
+            continue
+        so = {r["meta"]["schema"] for r in tr} & {r["meta"]["schema"] for r in rs}
+        fo = {r["meta"]["format"] for r in tr} & {r["meta"]["format"] for r in rs}
+        exp = {"eval_schema": "0 schema", "eval_format": "0 format",
+               "eval_both": "0 schema, 0 format", "val": "shares both"}[nm]
+        print(f"  {nm:<12} n={len(rs):<6} shares {len(so)} schemas, "
+              f"{len(fo)} formats with train   (expect: {exp})")
+    for k in ("format", "shots", "symbols", "task_type", "n_fields"):
+        c = Counter(r["meta"][k] for r in main)
         print(f"  {k:<10}" + "  ".join(f"{a}={b}" for a, b in
                                        sorted(c.items(), key=lambda x: -x[1])))
-    print(f"  distinct schemas used: {len({r['meta']['schema'] for r in rows})}")
+    print(f"  distinct schemas used: {len({r['meta']['schema'] for r in main})}")
 
     for r in rows[:args.show]:
         m = r["meta"]
