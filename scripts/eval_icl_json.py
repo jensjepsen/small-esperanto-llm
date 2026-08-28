@@ -136,9 +136,18 @@ def main():
                                  "shots": r["shots"], "schema": r["schema"],
                                  "gold": r["messages"][1]["content"],
                                  "pred": o[:400], "exact": ok})
+            # Running numbers per batch, not just a final line: these evals
+            # take minutes per checkpoint and a partial result is worth
+            # seeing. symbol/plain are broken out because plain-key rows are
+            # partly solvable from field-name semantics, so a headline that
+            # mixes them can look healthy while induction is flat.
             done = min(i + args.batch_size, len(rows))
-            print(f"  {split} {done}/{len(rows)}  "
-                  f"exact={100*stats['all'][0]/max(1,stats['all'][1]):.1f}%",
+            def pct(b_):
+                h_, n_ = stats[b_]
+                return f"{100*h_/n_:.1f}%" if n_ else "  -  "
+            print(f"  [{split}] {done:>4}/{len(rows)}  "
+                  f"exact={pct('all')}  symbol={pct('symbol')}  "
+                  f"plain={pct('plain')}  keys={100*keyhit/max(1,done):.1f}%",
                   flush=True)
 
         h, n = stats["all"]
