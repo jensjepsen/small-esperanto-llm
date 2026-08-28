@@ -30,7 +30,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import sys as _sys
 _sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gen_icl_json import canon  # noqa: E402
+from gen_icl_json import canon, SYMBOLS  # noqa: E402
 
 USER, ASST, END = "<|user|>", "<|assistant|>", "<|end|>"
 DATASET = "jensjepsen/danish-icl-json-v2"
@@ -68,20 +68,18 @@ def parse(text: str):
 
 
 def _keys(r):
-    """Key names this row's answer uses. canon() needs them to build the
-    per-format regex; taking them from GOLD (not from the prediction) means a
-    model inventing a key simply fails to parse, which is correct."""
-    g = r["messages"][1]["content"]
-    if r.get("format", "json") == "json":
-        try:
-            return set(json.loads(g[g.find("{"):g.rfind("}") + 1]))
-        except Exception:
-            return set()
-    pats = {"kv_colon": r"^\s*([^\s:]+)\s*:", "kv_eq": r"^\s*([^\s=]+)\s*=",
-            "kv_bracket": r"^\s*\[([^\]]+)\]", "kv_arrow": r"->\s*(\S+)\s*$",
-            "numbered": r"^\s*\d+\.\s*([^\s:]+)\s*:", "tsv": r"^([^\t]+)\t",
-            "tagged": r"<([^/>]+)>"}
-    return set(re.findall(pats[r["format"]], g, re.M))
+    """The key set this row uses, derived from metadata rather than by
+    regexing the rendered answer.
+
+    A per-format pattern table is the same maintenance trap as a per-format
+    break mutation: adding bracket_pair/brace_pair broke both. The schema and
+    the symbol scheme fully determine the keys, and the symbol shuffle only
+    permutes the assignment, never the set.
+    """
+    m = r.get("meta", r)
+    if m.get("symbols", "none") == "none":
+        return set(m["schema"].split("|"))
+    return set(SYMBOLS[m["symbols"]][:m["n_fields"]])
 
 
 def norm(v):

@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, "scripts")
-from gen_icl_json import canon, NULL  # noqa: E402
+from gen_icl_json import canon, NULL, SYMBOLS  # noqa: E402
 
 SPLITS = ("train", "eval_schema", "eval_format", "eval_both", "val")
 
@@ -60,7 +60,8 @@ def main(d: Path):
             ans = r["messages"][1]["content"]
 
             keys = None
-            tg = canon(ans, fmt, _keys_of(ans, fmt))
+            keyset = _keys_of(r)
+            tg = canon(ans, fmt, keyset)
             if tg is None:
                 hit(F, "target does not parse under its own format", r,
                     f"{fmt}: {ans[:70]}")
@@ -69,7 +70,7 @@ def main(d: Path):
 
             dgs = []
             for p, a in demos:
-                g = canon(a, fmt, keys | _keys_of(a, fmt))
+                g = canon(a, fmt, keyset)
                 if g is None:
                     hit(F, "an exemplar does not parse under the row format",
                         r, f"{fmt}: {a[:70]}")
@@ -154,18 +155,19 @@ def _shape(ans: str) -> str:
     return "colon"
 
 
-def _keys_of(ans: str, fmt: str):
-    """Keys mentioned in a rendered answer, for feeding canon()."""
-    if fmt == "json":
-        try:
-            return set(json.loads(ans[ans.find("{"):ans.rfind("}") + 1]))
-        except Exception:
-            return set()
-    pats = {"kv_colon": r"^\s*([^\s:]+)\s*:", "kv_eq": r"^\s*([^\s=]+)\s*=",
-            "kv_bracket": r"^\s*\[([^\]]+)\]", "kv_arrow": r"->\s*(\S+)\s*$",
-            "numbered": r"^\s*\d+\.\s*([^\s:]+)\s*:", "tsv": r"^([^\t]+)\t",
-            "tagged": r"<([^/>]+)>"}
-    return set(re.findall(pats[fmt], ans, re.M))
+def _keys_of(r):
+    """The key set this row uses, derived from metadata rather than by
+    regexing the rendered answer.
+
+    A per-format pattern table is the same maintenance trap as a per-format
+    break mutation: adding bracket_pair/brace_pair broke both. The schema and
+    the symbol scheme fully determine the keys, and the symbol shuffle only
+    permutes the assignment, never the set.
+    """
+    m = r.get("meta", r)
+    if m.get("symbols", "none") == "none":
+        return set(m["schema"].split("|"))
+    return set(SYMBOLS[m["symbols"]][:m["n_fields"]])
 
 
 def _numeric_ok(v: str, p: str) -> bool:

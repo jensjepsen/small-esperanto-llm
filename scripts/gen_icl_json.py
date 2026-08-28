@@ -186,6 +186,28 @@ FORMATS = {
             t, keys,
             re.compile(rf"<({_kpat(keys)})>(.*?)</\1>", re.S)),
     },
+    # Two more PAIRED-delimiter formats. v2 held `tagged` out and it scored
+    # 0.5% while the line-based `kv_eq` reached 65.1% -- transfer happened
+    # within the line family and not across to paired delimiters. The
+    # diagnosis was structural, not semantic: 100% of tagged predictions
+    # opened a tag, 62% carried all the right values, but only 2% balanced
+    # their opens and closes. These exist so a paired format can be TRAINED
+    # while a different paired format is held out, which is the direct test
+    # of whether the family is learnable at all.
+    "bracket_pair": {                       # [k]v[/k] -- bracket vocabulary,
+        "render": lambda g, fs, km: _render_flat(   # shared with kv_bracket
+            g, fs, km, "\n", "[{k}]{v}[/{k}]"),
+        "parse": lambda t, keys: _parse_flat(
+            t, keys,
+            re.compile(rf"\[({_kpat(keys)})\](.*?)\[/\1\]", re.S)),
+    },
+    "brace_pair": {                         # {k}v{/k} -- brace vocabulary,
+        "render": lambda g, fs, km: _render_flat(   # collides with JSON's
+            g, fs, km, "\n", "{{{k}}}{v}{{/{k}}}"),
+        "parse": lambda t, keys: _parse_flat(
+            t, keys,
+            re.compile(rf"\{{({_kpat(keys)})\}}(.*?)\{{/\1\}}", re.S)),
+    },
 }
 
 
@@ -238,10 +260,14 @@ def gate_format(fmt: str) -> None:
     got = canon(r, fmt, km.values())
     want = {"alfa": ["knud vilby"], "beta": ["x", "y"], "gamma": [NULL]}
     assert got == want, f"{fmt} round-trip: {r!r} -> {got!r}"
-    broken = r.replace(":", "").replace("=", "").replace("->", "") \
-              .replace("[", "").replace("<", "").replace("\t", " ") + "@@"
-    if broken != r:
-        assert canon(broken, fmt, km.values()) != want, f"{fmt} break undetected"
+    # Dropping the first character is destructive for EVERY format: it eats
+    # the opening delimiter or the first key character, so the first item
+    # either fails to parse or parses to something else. An earlier version
+    # deleted a hand-listed set of delimiters (":", "=", "->", "[", "<", tab)
+    # and silently passed brace_pair, whose "{}" was not on the list -- a
+    # per-format mutation list is exactly the kind of thing that rots as
+    # formats are added.
+    assert canon(r[1:], fmt, km.values()) != want, f"{fmt} break undetected"
 
 
 _W = re.compile(r"[^\W\d_]+[\w.\-]*", re.UNICODE)
@@ -528,7 +554,12 @@ def main():
                          "not transfer to any other format.")
     ap.add_argument("--fmt-heldout-frac", type=float, default=0.0,
                     help="share of FORMATS reserved for the unseen-format "
-                         "eval splits")
+                         "eval splits (hash-partitioned)")
+    ap.add_argument("--held-formats", nargs="*", default=None,
+                    help="hold out exactly these formats, overriding the hash "
+                         "partition. Needed to place a specific format on a "
+                         "specific side -- the hash cannot express 'train on "
+                         "tagged, hold out bracket_pair'.")
     ap.add_argument("--val-frac", type=float, default=0.0,
                     help="share of EACH schema's source rows reserved for a "
                          "val split before train/eval are built")
@@ -658,7 +689,13 @@ def main():
         raise SystemExit(f"unknown format(s): {bad_f}; have {sorted(FORMATS)}")
     for f in fmts:
         gate_format(f)            # raises if render/parse do not round-trip
-    held_f = [f for f in fmts if fmt_heldout(f, args.fmt_heldout_frac)]
+    if args.held_formats is not None:
+        unknown = [f for f in args.held_formats if f not in fmts]
+        if unknown:
+            raise SystemExit(f"--held-formats not in --formats: {unknown}")
+        held_f = [f for f in fmts if f in args.held_formats]
+    else:
+        held_f = [f for f in fmts if fmt_heldout(f, args.fmt_heldout_frac)]
     seen_f = [f for f in fmts if f not in held_f]
     if not seen_f:
         raise SystemExit("fmt-heldout-frac held out every format")
