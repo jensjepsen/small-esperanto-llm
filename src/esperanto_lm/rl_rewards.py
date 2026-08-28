@@ -542,6 +542,31 @@ def parse_ner(text: str) -> list[tuple[str, str]] | None:
     return out
 
 
+def ner_emitted_keys(text: str) -> set[str]:
+    """Top-level JSON keys the completion actually emitted, lower-cased."""
+    if not text:
+        return set()
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return set()
+    return {k.strip().lower() for k, _ in _NER_KV_RE.findall(m.group(0))}
+
+
+def ner_schema_score(text: str) -> float:
+    """How well the completion follows the REQUESTED schema, in [0, 1].
+
+    Fraction of the four required keys present, minus a small penalty per
+    extraneous top-level key. Scored on the literal key names, not the
+    synonym map, because this is exactly the axis the synonym map is blind to.
+    """
+    ks = ner_emitted_keys(text)
+    if not ks:
+        return 0.0
+    present = len(ks & set(_NER_TYPES)) / len(_NER_TYPES)
+    extra = len(ks - set(_NER_TYPES))
+    return max(0.0, min(1.0, present - 0.1 * min(extra, 6)))
+
+
 def _parse_ner_gold(gv) -> set[tuple[str, str]]:
     """Gold entities. Stored serialized in `gold_values` as [[surface, type], ...]
     because Arrow needs one schema across all interleaved tasks."""
@@ -561,8 +586,16 @@ def _parse_ner_gold(gv) -> set[tuple[str, str]]:
     return out
 
 
+# Weight of the schema-conformance term in reward_ner. The extraction F1 keeps
+# (1 - weight) so a model that extracts well but uses the wrong keys still
+# earns most of the reward — that tolerance is what gave 79% gradient coverage
+# at k=32 and must not be thrown away — while correct keys become strictly
+# better. 0 disables the term entirely (pre-2026-08-28 behaviour).
+NER_SCHEMA_WEIGHT = float(os.environ.get("GRPO_NER_SCHEMA_WEIGHT", "0.15"))
+
+
 def reward_ner(completion: str, gold_values) -> float:
-    """Entity-level F1 in [0, 1].
+    """Entity-level F1 in [0, 1], plus a schema-conformance term.
 
     F1 rather than exact-set-match deliberately: measured on the v31 base at
     the run's real config (k=32, temp 1.0), exact match yields gradient on only
@@ -577,22 +610,39 @@ def reward_ner(completion: str, gold_values) -> float:
 
     Precision is half of F1, so hallucination is penalised directly. That is
     the property the schema reward lacked.
+
+    The schema term exists because the tolerant parser above accepts the
+    model's own key names, which means a model can score full marks while
+    ignoring the requested format. Measured after 13,375 steps without it: the
+    policy converged on `person/places/dates/numbers` (its SFT
+    textman_extraction template) in 565/565 held-out rows, so `org` had no slot
+    in the output space at all and all 151 gold org entities were unreachable —
+    not hard, structurally absent. The base model did emit org keys, so this
+    was a capability RL removed because nothing scored it.
     """
     pred_list = parse_ner(completion)
     gold = _parse_ner_gold(gold_values)
     if pred_list is None:
         return 0.0                      # no JSON emitted at all
+
     pred = set(pred_list)
     if not pred and not gold:
-        return 1.0                      # correctly abstained
-    if not pred or not gold:
-        return 0.0                      # emitted on empty, or empty on non-empty
-    tp = len(pred & gold)
-    if tp == 0:
-        return 0.0
-    prec = tp / len(pred)
-    rec = tp / len(gold)
-    return round(2 * prec * rec / (prec + rec), 4)
+        f1 = 1.0                        # correctly abstained
+    elif not pred or not gold:
+        f1 = 0.0                        # emitted on empty, or empty on non-empty
+    else:
+        tp = len(pred & gold)
+        if tp == 0:
+            f1 = 0.0
+        else:
+            prec = tp / len(pred)
+            rec = tp / len(gold)
+            f1 = 2 * prec * rec / (prec + rec)
+
+    if NER_SCHEMA_WEIGHT <= 0:
+        return round(f1, 4)
+    w = NER_SCHEMA_WEIGHT
+    return round((1.0 - w) * f1 + w * ner_schema_score(completion), 4)
 
 
 def reward_mixed(completions: list[str],
