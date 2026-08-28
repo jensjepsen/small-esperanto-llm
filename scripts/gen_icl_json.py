@@ -345,6 +345,10 @@ def main():
                     help="share of rows whose field names are replaced by "
                          "meaning-free symbols (symbol tuning)")
     ap.add_argument("--heldout-frac", type=float, default=0.2)
+    ap.add_argument("--val-frac", type=float, default=0.0,
+                    help="share of EACH schema's source rows reserved for a "
+                         "val split before train/eval are built")
+    ap.add_argument("--n-val", type=int, default=500)
     ap.add_argument("--exclude-src", type=Path, default=None,
                     help="JSON list of source row ids to drop before "
                          "generating; pass the used_src.json of an earlier "
@@ -392,51 +396,98 @@ def main():
                   for k, v in groups.items()}
         print(f"exclude-src: dropped {before - sum(len(v) for v in groups.values())} "
               f"source rows used by {args.exclude_src}")
+    # VAL HOLDOUT. Taking val from whatever train happened not to consume
+    # gives a thin, lopsided split -- an earlier attempt covered 34 of 113
+    # schemas because most were left with fewer than two spare rows. Reserving
+    # a share of each schema's rows FIRST keeps val broad and guarantees the
+    # passages never appear in train or eval.
+    val_pool = {}
+    if args.val_frac > 0:
+        # Partition on PASSAGE TEXT, not row id: within a schema several
+        # source rows carry the same passage, so holding out a row leaves its
+        # text reachable through a sibling. Row-id partitioning leaked 47
+        # passages from val into train.
+        prng = random.Random(args.seed ^ 0x5A17)
+        for k, v in list(groups.items()):
+            by_text = defaultdict(list)
+            for r in v:
+                by_text[(r["passage"] or "").strip()].append(r)
+            texts = sorted(by_text)
+            if len(texts) < 4:
+                continue          # too few distinct passages to give any away
+            n_hold = max(2, int(round(len(texts) * args.val_frac)))
+            n_hold = min(n_hold, len(texts) - 2)
+            held_t = set(prng.sample(texts, n_hold))
+            groups[k] = [r for t in texts if t not in held_t for r in by_text[t]]
+            val_pool[k] = [r for t in held_t for r in by_text[t]]
+        print(f"val holdout: reserved "
+              f"{sum(len(v) for v in val_pool.values())} source rows across "
+              f"{len(val_pool)} schemas ({args.val_frac:.0%} each)")
+
     usable = {k: v for k, v in groups.items() if len(v) >= 2}
     print(f"{len(groups)} schemas, {len(usable)} with >=2 rows "
           f"({sum(len(v) for v in usable.values())} rows usable)", flush=True)
 
-    rng = random.Random(args.seed)
-    keys = sorted(usable)
-    rows, tried, seen_rows, n_dupe = [], 0, set(), 0
-    while len(rows) < args.n and tried < args.n * 120:
-        tried += 1
-        fields = rng.choice(keys)
-        group = usable[fields]
-        want = rng.randint(1, 5)
-        # Retry AT the drawn shot count. Redrawing everything on rejection
-        # biases the output toward short prompts, because a 5-shot row must
-        # clear every filter five times over: an earlier run came out
-        # 2541 one-shot against 1592 five-shot from a uniform draw.
-        r = None
-        for _ in range(6):
-            shots = min(want, len(group) - 1)
-            r = build_row(rng, group, list(fields), shots, args.sym_frac)
-            if r:
-                break
-        if not r:
-            continue
-        key = hashlib.md5((r["messages"][0]["content"]
-                           + r["messages"][1]["content"]).encode()).hexdigest()
-        if key in seen_rows:
-            n_dupe += 1
-            continue
-        seen_rows.add(key)
-        r["meta"]["heldout_schema"] = is_heldout(fields, args.heldout_frac)
-        rows.append(r)
+    def generate(rng, pool, n, seen_rows, schema_filter=None):
+        keys = sorted(k for k in pool
+                      if schema_filter is None or schema_filter(k))
+        rows, tried, n_dupe = [], 0, 0
+        if not keys:
+            return rows, tried, n_dupe
+        while len(rows) < n and tried < n * 120:
+            tried += 1
+            fields = rng.choice(keys)
+            group = pool[fields]
+            want = rng.randint(1, 5)
+            # Retry AT the drawn shot count. Redrawing everything on
+            # rejection biases the output toward short prompts, because a
+            # 5-shot row must clear every filter five times over: an earlier
+            # run came out 2541 one-shot against 1592 five-shot.
+            r = None
+            for _ in range(6):
+                shots = min(want, len(group) - 1)
+                r = build_row(rng, group, list(fields), shots, args.sym_frac)
+                if r:
+                    break
+            if not r:
+                continue
+            key = hashlib.md5((r["messages"][0]["content"]
+                               + r["messages"][1]["content"]).encode()).hexdigest()
+            if key in seen_rows:
+                n_dupe += 1
+                continue
+            seen_rows.add(key)
+            r["meta"]["heldout_schema"] = is_heldout(fields, args.heldout_frac)
+            rows.append(r)
+        return rows, tried, n_dupe
 
-    used_src = sorted({i for r in rows for i in r["_src"]})
-    for r in rows:
+    rng = random.Random(args.seed)
+    seen_rows = set()
+    rows, tried, n_dupe = generate(rng, usable, args.n, seen_rows)
+    # val draws only from reserved rows, and only from schemas that are NOT
+    # the held-out-schema eval set, so it stays in-distribution for train
+    val_usable = {k: v for k, v in val_pool.items() if len(v) >= 2}
+    val, v_tried, v_dupe = generate(
+        rng, val_usable, args.n_val, seen_rows,
+        schema_filter=lambda k: not is_heldout(k, args.heldout_frac))
+
+    used_src = sorted({i for r in rows + val for i in r["_src"]})
+    for r in rows + val:
         del r["_src"]
     rng.shuffle(rows)
+    rng.shuffle(val)
     tr = [r for r in rows if not r["meta"]["heldout_schema"]]
     ev = [r for r in rows if r["meta"]["heldout_schema"]]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    for nm, rs in (("train", tr), ("eval_heldout_schema", ev)):
+    for nm, rs in (("train", tr), ("eval_heldout_schema", ev), ("val", val)):
+        if not rs:
+            continue
         (out / f"{nm}.jsonl").write_text(
             "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rs))
         print(f"-> {out / (nm + '.jsonl')}  ({len(rs)} rows)")
+    if val:
+        print(f"   val: {v_tried} draws, {v_dupe} duplicates dropped")
 
     (out / "used_src.json").write_text(json.dumps(used_src))
     print(f"-> {out / 'used_src.json'}  ({len(used_src)} source rows consumed)")
