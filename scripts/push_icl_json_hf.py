@@ -30,7 +30,7 @@ from pathlib import Path
 from datasets import Dataset
 from huggingface_hub import HfApi
 
-REPO = "jensjepsen/danish-icl-json-v2"
+REPO = "jensjepsen/danish-icl-json-v3"
 SPLITS = ["train", "val", "eval_schema", "eval_format", "eval_both"]
 
 
@@ -56,16 +56,20 @@ configs:
 {_cfg_block("sft", "sft")}
 ---
 
-# danish-icl-json-v2
+# danish-icl-json-v3
 
 In-context-learning rows derived from `jensjepsen/danish-json-grpo-v1`. Each row
 packs 1-5 worked examples into a single user turn, followed by a held-out
 passage; the assistant turn is the answer for that passage. No instruction is
 included, so both the schema and the output format have to be inferred from the
 examples. Two axes vary per row and are held constant within a row: the schema
-(134 field-sets) and the output format (8 renderers — JSON, `key: value`,
-`key=value`, `[key] value`, `value -> key`, numbered, TSV, and
-`<key>value</key>`). In roughly half the rows the field names are replaced by
+(134 field-sets) and the output format (10 renderers — JSON, `key: value`,
+`key=value`, `[key] value`, `value -> key`, numbered, TSV, and three
+paired-delimiter forms `<key>value</key>`, `[key]value[/key]` and
+`{{key}}value{{/key}}`). Training uses seven of them including one paired form;
+`bracket_pair`, `brace_pair` and `kv_eq` are held out, so the unseen-format
+splits measure transfer to two fresh paired formats against a line-format
+control. In roughly half the rows the field names are replaced by
 meaning-free symbols (`alfa`/`kat_a`/`f1`/`foo`), applied consistently within a
 row. Splits partition those axes rather than rows: `eval_schema` uses schemas
 absent from training, `eval_format` uses formats absent from training,
@@ -80,7 +84,7 @@ demonstrated by at least one example. Built by `scripts/gen_icl_json.py`.
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", type=Path, default=Path("scratch/icl_v2"))
+    ap.add_argument("--data-dir", type=Path, default=Path("scratch/icl_v3"))
     ap.add_argument("--repo", default=REPO)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
