@@ -309,4 +309,5 @@ def main():
         print(f"-> {args.md}")
 
 
-main()
+if __name__ == "__main__":
+    main()
