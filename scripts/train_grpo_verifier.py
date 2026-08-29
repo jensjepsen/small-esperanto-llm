@@ -617,6 +617,12 @@ class GreedyEvalCallback(TrainerCallback):
                             for o, r in zip(outs, self.items[:done])
                         ]
                         print(f"  [greedy-eval] {done}/{len(self.items)} mean_reward={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
+                    elif self.task == "struct":
+                        # items are (prompt, gold, fields, fmt, passage)
+                        from esperanto_lm.rl_rewards import reward_structured
+                        scores_so_far = [reward_structured(o, r[1], r[2], r[3], r[4])
+                                         for o, r in zip(outs, self.items[:done])]
+                        print(f"  [greedy-eval] {done}/{len(self.items)} mean_f1={sum(scores_so_far)/len(scores_so_far):.4f}", flush=True)
                     elif self.task == "ner":
                         # items are (prompt, gold_values_json)
                         scores_so_far = [reward_ner(o, r[1])
@@ -651,6 +657,11 @@ class GreedyEvalCallback(TrainerCallback):
                                    gold_values=(r[5] if len(r) > 5 else None))
                 for o, r in zip(outs, self.items)
             ]
+            acc = sum(scores) / max(1, len(scores))
+        elif self.task == "struct":
+            from esperanto_lm.rl_rewards import reward_structured
+            scores = [reward_structured(o, r[1], r[2], r[3], r[4])
+                      for o, r in zip(outs, self.items)]
             acc = sum(scores) / max(1, len(scores))
         elif self.task == "ner":
             scores = [reward_ner(o, r[1]) for o, r in zip(outs, self.items)]
@@ -1718,13 +1729,41 @@ def main():
             trainer.add_callback(cb)
 
         def _attach_ner():
-            # dev split — train is used for rollouts, test stays fully held out
-            nds = build_ner_dataset(args.ner_source, split="dev",
-                                    max_rows=args.greedy_eval_max_rows,
-                                    empty_frac=-1.0)
-            n_items = [(r["prompt"], r["gold_values"]) for r in nds]
+            # The SFT set has no `dev` split (train/val/eval/eval_format) and
+            # its rows are format-tagged, so it needs both the other builder
+            # and the other scorer. Missing this dispatch crashed the first
+            # real launch after the training path had already been switched.
+            if "ner-sft" in (args.ner_source or ""):
+                nds = build_ner_sft_dataset(args.ner_source, split="val",
+                                            max_rows=args.greedy_eval_max_rows)
+                n_items = [(r["prompt"], r["gold"], r["fields"],
+                            r["types"][0], r["passage"]) for r in nds]
+                n_task = "struct"
+            else:
+                # dev split — train is used for rollouts, test stays held out
+                nds = build_ner_dataset(args.ner_source, split="dev",
+                                        max_rows=args.greedy_eval_max_rows,
+                                        empty_frac=-1.0)
+                n_items = [(r["prompt"], r["gold_values"]) for r in nds]
+                n_task = "ner"
             cb = GreedyEvalCallback(
-                tokenizer=tok, items=n_items, task="ner",
+                tokenizer=tok, items=n_items, task=n_task,
+                every_n_steps=args.greedy_eval_steps,
+                max_new_tokens=args.max_completion_length,
+                batch_size=args.greedy_eval_batch_size,
+            )
+            cb._trainer = trainer
+            trainer.add_callback(cb)
+
+        def _attach_icl():
+            # eval_schema: unseen schemas, seen formats. Never trained on --- the
+            # GRPO rows come from the train split.
+            ids_ = build_icl_dataset(args.icl_source, split="eval_schema",
+                                     max_rows=args.greedy_eval_max_rows)
+            i_items = [(r["prompt"], r["gold"], r["fields"], r["types"][0], None)
+                       for r in ids_]
+            cb = GreedyEvalCallback(
+                tokenizer=tok, items=i_items, task="struct",
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
                 batch_size=args.greedy_eval_batch_size,
@@ -1746,6 +1785,8 @@ def main():
             _attach_gsm8k()
             _attach_json()
             _attach_ner()
+            if args.icl_frac > 0:
+                _attach_icl()
         elif eval_task == "json":
             _attach_json()
         elif eval_task == "ner":
