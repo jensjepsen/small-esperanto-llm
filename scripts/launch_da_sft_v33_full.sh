@@ -41,7 +41,11 @@ export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export ESPLLM_NUM_PROC=8
 export ESPLLM_LIGER=0          # mutually exclusive with torch.compile
 
-uv run python -u scripts/train_sft_packed.py \
+# --no-sync: WORKLOAD=sft pins torch<2.9 so a prebuilt FA2 wheel matches, but
+# the `all` extra still declares vllm>=0.17 (torch>=2.10), so a plain `uv run`
+# re-resolves and dies with "requirements are unsatisfiable" before training
+# starts. --no-sync runs the already-built venv untouched.
+uv run --no-sync python -u scripts/train_sft_packed.py \
   --checkpoint jensjepsen/danish-lm-400m-base-ropext8048-v1 \
   --tokenizer jensjepsen/danish-tokenizer \
   --output-dir /root/runs/da_sft_v33_full \
