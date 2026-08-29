@@ -116,6 +116,45 @@ came from a third harness and is not comparable to either.
 (2,276 rows) and the `[x]...[/x]` delimiter pair via `spans_bracket`. Of its
 three held-out formats only `kv_eq` (82.7) is unseen in this mix.
 
+### NER
+
+`jensjepsen/danish-ner-sft-v1`, exact match on the parsed answer and micro-F1
+over (type, span) pairs. Both splits are built from DANSK test text. FAITHFUL
+is span-wrap only: the answer both strips back to the source passage and
+carries at least one well-formed tag pair.
+
+**`eval`** — formats seen in training, n=1500: **exact 58.7, entity-F1 70.0**,
+faithful 73% (strip 86, tagged 87, bare 12)
+
+| format | exact | F1 | | format | exact | F1 |
+|---|---|---|---|---|---|---|
+| `brace_pair` | 69.9 | 77.6 | | `tagged` | 63.4 | 72.2 |
+| `tsv` | 66.7 | 74.5 | | `kv_bracket` | 58.9 | 71.7 |
+| `numbered` | 64.2 | 72.3 | | `kv_colon` | 58.2 | 73.5 |
+| `json` | 63.5 | 73.4 | | `kv_arrow` | 55.1 | 66.4 |
+| `spans_angle` | 52.3 | 62.5 | | `spans_bracket` | 50.0 | 65.3 |
+| `spans_paren` | 42.6 | 57.3 | | | | |
+
+**`eval_format`** — formats held out of both `danish-ner-sft-v1` and
+`danish-icl-schema-format-v3` training splits, n=1500: **exact 40.1,
+entity-F1 56.8**
+
+| format | exact | F1 | faithful |
+|---|---|---|---|
+| `bracket_pair` | 60.5 | 71.3 | — |
+| `kv_eq` | 53.1 | 66.4 | — |
+| `spans_brace` | 7.5 | 17.2 | 6% (strip 83, tagged 15, bare 70) |
+
+Key-value formats transfer to unseen delimiters; span-wrap does not. Three
+span-wrap delimiters are trained (`spans_angle`, `spans_bracket`,
+`spans_paren`) and the fourth returns the passage untagged in 70% of rows.
+
+| prompt mode | `eval` exact | `eval_format` exact |
+|---|---|---|
+| `icl` | 60.4 | 42.9 |
+| `both` | 63.1 | 38.0 |
+| `instruction` | 48.4 | 36.0 |
+
 ### Checkpoint comparison
 
 Full test splits, `scripts/eval_downstream_once.py`, ICL capped at 1000 rows.
