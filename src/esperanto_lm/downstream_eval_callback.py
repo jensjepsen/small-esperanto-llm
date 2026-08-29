@@ -123,12 +123,28 @@ class DownstreamEvalCallback(TrainerCallback):
 
     # ── dataset loaders (called lazily on first eval) ──────────────────────
 
-    def _maybe_subsample(self, ds, step: int):
-        if not self.n:
+    # Per-eval row caps, applied on top of --downstream-n. The four real
+    # benchmarks are small enough to run whole (ifeval-da 541, citgen 720,
+    # sciq 1000, gsm8k 1317 = 3,578 rows); our own icl eval_schema is 6,067,
+    # which is 63% of the generation cost of a full sweep and would dominate
+    # the eval budget for a split we control the size of. Capping it keeps the
+    # published benchmarks unsampled, where sampling noise would actually
+    # compromise a comparison.
+    PER_EVAL_CAP = {"icl": 1000}
+
+    def _maybe_subsample(self, ds, step: int, name: str | None = None):
+        # Effective n = tightest of the global --downstream-n and this eval's
+        # cap; neither set means the full split.
+        limits = [x for x in (self.n or None, self.PER_EVAL_CAP.get(name))
+                  if x]
+        if not limits:
             return ds  # full set
+        n = min(limits)
+        if n >= len(ds):
+            return ds
         # Rotate seed by training step so different subsets each eval —
         # bias averages out across the trajectory.
-        return ds.shuffle(seed=self.seed + step).select(range(min(self.n, len(ds))))
+        return ds.shuffle(seed=self.seed + step).select(range(n))
 
     def _load_gsm8k(self, step: int = 0):
         ds = load_dataset("jensjepsen/danish-gsm8k", "sft", split="test")
@@ -270,7 +286,7 @@ class DownstreamEvalCallback(TrainerCallback):
         parsed object, so it measures induction rather than loss."""
         ds = load_dataset("jensjepsen/danish-icl-schema-format-v3",
                           "default", split="eval_schema")
-        ds = self._maybe_subsample(ds, step)
+        ds = self._maybe_subsample(ds, step, "icl")
         items = []
         for r in ds:
             items.append((r["messages"][0]["content"],
