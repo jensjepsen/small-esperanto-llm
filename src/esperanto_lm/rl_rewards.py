@@ -948,6 +948,79 @@ def reward_ner(completion: str, gold_values) -> float:
     return round(max(0.0, r - NER_DUPE_PENALTY * min(n_dupes, 4)), 4)
 
 
+ICL_SCHEMA_WEIGHT = float(os.environ.get("GRPO_ICL_SCHEMA_WEIGHT", "0.25"))
+
+
+def _icl_canon():
+    """gen_icl_schema_format lives in scripts/ (already on sys.path above).
+    Imported lazily so the base reward layer does not pay for it."""
+    from gen_icl_schema_format import NULL, canon
+    return canon, NULL
+
+
+def reward_icl(completion: str, gold: str, fields, fmt: str) -> float:
+    """(key, value)-pair F1 for schema/format induction, times a key-set term.
+
+    F1 rather than exact match for the same reason as reward_ner: exact match
+    zeroes a whole group the moment one value is wrong, so most groups have no
+    spread and give no gradient. Measured on this task's own eval splits, exact
+    match runs ~11pp below key-set match (85.3 vs 96.4 on eval_format) --- that
+    gap is precisely the rows where partial credit exists and binary scoring
+    throws it away.
+
+    Unparseable output scores 0.0: the format IS the task here, so an answer
+    that cannot be parsed in the requested format is not partially right.
+
+    The key-set term is MULTIPLICATIVE, following reward_ner. Additive paid a
+    floor for merely naming the right keys, which is the failure mode this task
+    is most prone to --- the model already reaches 93-96% key-set match while
+    exact sits at 47-85%, so an additive term would hand out most of its mass
+    for the part that is already solved.
+    """
+    canon, NULL = _icl_canon()
+    keys = list(fields or [])
+    if not keys or not fmt:
+        return 0.0
+    try:
+        pred_d = canon(completion, fmt, keys)
+        gold_d = canon(gold, fmt, keys)
+    except Exception:
+        return 0.0
+    if pred_d is None or gold_d is None:
+        return 0.0
+
+    def _pairs(d):
+        return {(k, v) for k, vs in d.items() for v in vs if v != NULL}
+
+    pred, gld = _pairs(pred_d), _pairs(gold_d)
+    if not pred and not gld:
+        f1 = 1.0                       # both all-empty: correct abstention
+    elif not pred or not gld:
+        f1 = 0.0
+    else:
+        tp = len(pred & gld)
+        if tp == 0:
+            f1 = 0.0
+        else:
+            prec, rec = tp / len(pred), tp / len(gld)
+            f1 = 2 * prec * rec / (prec + rec)
+
+    if ICL_SCHEMA_WEIGHT <= 0:
+        return round(f1, 4)
+    # Emitting keys that were never requested is spurious, not free --- the
+    # demonstrations define the key set and inventing one is a schema error.
+    pk, gk = set(pred_d), set(gold_d)
+    if not pk and not gk:
+        kf1 = 1.0
+    elif not pk or not gk:
+        kf1 = 0.0
+    else:
+        ktp = len(pk & gk)
+        kf1 = 0.0 if ktp == 0 else (2 * (ktp / len(pk)) * (ktp / len(gk))
+                                    / ((ktp / len(pk)) + (ktp / len(gk))))
+    return round(f1 * ((1 - ICL_SCHEMA_WEIGHT) + ICL_SCHEMA_WEIGHT * kf1), 4)
+
+
 def reward_mixed(completions: list[str],
                  task: list[str],
                  gold: list[str],
@@ -971,6 +1044,7 @@ def reward_mixed(completions: list[str],
       ifeval/combined → reward_ifeval_combined
       json           → reward_json_schema
       ner            → reward_ner (gold entities ride in `gold_values`)
+      icl            → reward_icl (keys in `fields`, format in `types[0]`)
     """
     N = len(completions)
     fields = fields or [None] * N
@@ -987,6 +1061,11 @@ def reward_mixed(completions: list[str],
             out.append(reward_gsm8k([text], gold=[g])[0])
         elif t == "ner":
             out.append(reward_ner(text, gv))
+        elif t == "icl":
+            # keys ride in `fields`, the format name in `types[0]` --- reusing
+            # the union columns rather than widening the schema, which every
+            # other builder would then have to default.
+            out.append(reward_icl(text, g, f, (ty or [None])[0]))
         elif t == "json":
             if not f:
                 out.append(0.0)

@@ -884,6 +884,49 @@ def build_ner_dataset(source: str = "KennethEnevoldsen/dane_plus",
     return Dataset.from_list(rows)
 
 
+def build_icl_dataset(source: str, split: str = "train", max_rows: int = 0,
+                      seed: int = 42):
+    """ICL schema/format induction rows for GRPO.
+
+    The prompt already carries the demonstrations, so the policy has to induce
+    both the key set and the output format from them. The verifier needs three
+    things: the gold answer, the key set, and which format to parse with ---
+    carried in `gold`, `fields` and `types[0]` respectively, reusing the union
+    columns rather than widening the schema for every other builder.
+
+    Keys come from metadata (schema / symbol scheme), never by regexing the
+    rendered answer --- a per-format pattern table is the maintenance trap that
+    broke twice when bracket_pair/brace_pair were added.
+    """
+    import random as _rnd
+    from datasets import load_dataset as _ld
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from gen_icl_schema_format import SYMBOLS as _SYM
+
+    ds = _ld(source, "default", split=split)
+    rows = []
+    for r in ds:
+        if r.get("symbols", "none") == "none":
+            keys = sorted(set(r["schema"].split("|")))
+        else:
+            keys = sorted(set(_SYM[r["symbols"]][:r["n_fields"]]))
+        if not keys or not r.get("format"):
+            continue
+        rows.append({
+            "prompt": r["messages"][0]["content"],
+            "task": "icl",
+            "gold": r["messages"][1]["content"],
+            "constraints": [], "params": [],
+            "fields": keys, "types": [r["format"]], "strict": False,
+            "passage": "", "gold_values": "",
+        })
+    _rnd.Random(seed).shuffle(rows)
+    if max_rows:
+        rows = rows[:max_rows]
+    print(f"  [build_icl] {len(rows)} rows from {source}:{split}", flush=True)
+    return Dataset.from_list(rows)
+
+
 def build_mixed_dataset(combined_source: str, max_rows: int = 0,
                         gsm_frac: float = 0.5, seed: int = 42,
                         json_source: str | None = None,
@@ -891,6 +934,8 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
                         ner_source: str | None = None,
                         ner_frac: float = 0.0,
                         ner_empty_frac: float = 0.28,
+                        icl_source: str | None = None,
+                        icl_frac: float = 0.0,
                         interleave_strategy: str = "all_exhausted"):
     """Mix gsm8k train + combined-IF (+ optional json) via
     datasets.interleave_datasets with per-task probabilities [if_share,
@@ -917,7 +962,7 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
     # Sources are loaded ONLY when their fraction is non-zero — otherwise a
     # json+ner run still downloads and builds the IF and gsm8k splits it will
     # never sample from.
-    _if_share = 1.0 - gsm_frac - json_frac - ner_frac
+    _if_share = 1.0 - gsm_frac - json_frac - ner_frac - icl_frac
     if_ds = None
     if _if_share > 1e-9:
         ifds = build_combined_dataset(combined_source, max_rows=0)
@@ -966,9 +1011,17 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
     # forces if_share to a 1e-6 floor so the probabilities no longer sum to 1,
     # and it leaves an unused source in the interleave. Dropping them makes
     # any subset a valid mix (e.g. json+ner only).
-    if_share = 1.0 - gsm_frac - json_frac - ner_frac
+    # ICL side (optional)
+    icl_ds = None
+    if icl_frac > 0:
+        icl_ds = build_icl_dataset(
+            icl_source or "jensjepsen/danish-icl-schema-format-v3",
+            split="train", max_rows=0, seed=seed)
+
+    if_share = 1.0 - gsm_frac - json_frac - ner_frac - icl_frac
     cand = [(if_ds, if_share, "if"), (gsm_ds, gsm_frac, "gsm"),
-            (json_ds, json_frac, "json"), (ner_ds, ner_frac, "ner")]
+            (json_ds, json_frac, "json"), (ner_ds, ner_frac, "ner"),
+            (icl_ds, icl_frac, "icl")]
     parts, probs, names = [], [], []
     for d, w, nm in cand:
         if d is not None and w > 1e-9:
@@ -1019,8 +1072,14 @@ def build_ifeval_da_dataset(max_rows: int = 0):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["gsm8k", "ifeval", "combined", "mixed", "json", "ner"],
+    ap.add_argument("--task", choices=["gsm8k", "ifeval", "combined", "mixed", "json", "ner", "icl"],
                     required=True)
+    ap.add_argument("--icl-source",
+                    default="jensjepsen/danish-icl-schema-format-v3",
+                    help="Source for --icl-frac / --task=icl.")
+    ap.add_argument("--icl-frac", type=float, default=0.0,
+                    help="Share of the mixed dataset drawn from the ICL "
+                         "schema/format set. Verified by reward_icl.")
     ap.add_argument("--json-source", default="jensjepsen/danish-json-grpo-v1",
                     help="Source for --task=json (HF repo or local path).")
     ap.add_argument("--checkpoint", required=True,
@@ -1264,6 +1323,11 @@ def main():
         from esperanto_lm.rl_rewards import reward_mixed as _reward_mixed
         reward_fn = _reward_mixed
         # Held-out eval is the dane_plus dev split via --greedy-eval-task ner.
+    elif args.task == "icl":
+        ds = build_icl_dataset(args.icl_source, split="train",
+                               max_rows=args.max_rows or 0)
+        from esperanto_lm.rl_rewards import reward_mixed as _reward_mixed
+        reward_fn = _reward_mixed
     else:  # mixed
         assert args.combined_source, "--combined-source required for --task=mixed"
         ds = build_mixed_dataset(args.combined_source,
@@ -1276,6 +1340,9 @@ def main():
                                              if args.ner_frac > 0 else None),
                                  ner_frac=args.ner_frac,
                                  ner_empty_frac=args.ner_empty_frac,
+                                 icl_source=(args.icl_source
+                                             if args.icl_frac > 0 else None),
+                                 icl_frac=args.icl_frac,
                                  interleave_strategy=args.interleave_strategy)
         reward_fn = reward_mixed
         # Greedy-eval callback attaches ifeval-da, gsm8k, and optionally json below.
