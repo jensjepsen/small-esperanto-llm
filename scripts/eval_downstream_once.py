@@ -29,10 +29,12 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--evals", nargs="+",
                     default=["gsm8k", "citgen", "sciq", "ifeval", "icl"])
-    ap.add_argument("--n", type=int, default=200,
-                    help="rows per eval; match the training run's "
-                         "--downstream-n or the numbers are not comparable")
-    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--n", type=int, default=0,
+                    help="rows per eval; 0 = full set (default), matching the "
+                         "trainer's --downstream-n default. Per-eval caps in "
+                         "DownstreamEvalCallback.PER_EVAL_CAP still apply. "
+                         "Set non-zero only to reproduce a run that sampled.")
+    ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--dtype", default="bfloat16")
     args = ap.parse_args()
 
