@@ -20,6 +20,7 @@ short-row-dominated mixes.
 """
 
 import argparse
+import os
 import json
 import re
 from pathlib import Path
@@ -32,15 +33,24 @@ from rich.console import Console
 # reach the classes at import time. `fused_linear_cross_entropy=True`
 # swaps the LM head → optimizer state from a non-Liger run won't
 # resume cleanly, so we only apply it on fresh SFT-from-base runs.
-try:
-    from liger_kernel.transformers import apply_liger_kernel_to_llama
-    apply_liger_kernel_to_llama(
-        rope=True, rms_norm=True, swiglu=True,
-        fused_linear_cross_entropy=True, cross_entropy=False,
-    )
-    _LIGER_ON = True
-except ImportError:
-    _LIGER_ON = False
+# ESPLLM_LIGER=0 disables. Needed because Liger and torch.compile are
+# mutually exclusive on this stack: inductor raises AssertionError in
+# replace_by_example when both are on. Measured at bs128/FA2 on an H100 --
+# Liger alone 110.6k tok/s, compile alone 127.3k, neither 98.3k, both crash.
+# Note fused_linear_cross_entropy swaps the LM head, so optimizer state does
+# not transfer between Liger and non-Liger runs; do not flip this mid-lineage.
+_LIGER_WANT = os.environ.get("ESPLLM_LIGER", "1") != "0"
+_LIGER_ON = False
+if _LIGER_WANT:
+    try:
+        from liger_kernel.transformers import apply_liger_kernel_to_llama
+        apply_liger_kernel_to_llama(
+            rope=True, rms_norm=True, swiglu=True,
+            fused_linear_cross_entropy=True, cross_entropy=False,
+        )
+        _LIGER_ON = True
+    except ImportError:
+        pass
 
 from transformers import (
     AutoModelForCausalLM,
