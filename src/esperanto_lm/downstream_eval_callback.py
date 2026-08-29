@@ -14,6 +14,9 @@ Adds metrics to the eval-loss dict:
   eval_downstream_gsm8k   — greedy GSM accuracy
   eval_downstream_sciq    — SciQ open-Q accuracy
   eval_downstream_citgen  — citizen-tests generative accuracy
+  eval_downstream_ifeval  — mean constraint pass-rate on held-out IF v4,
+                            verified programmatically by the GRPO verifiers
+  eval_downstream_icl     — exact match on UNSEEN-schema ICL rows
 
 These show up in wandb and stdout alongside eval_loss. Overhead: ~1-2 min
 per eval step with n=100 rows and bs=32 on a 5090; ~8-12 min with full set.
@@ -247,6 +250,34 @@ class DownstreamEvalCallback(TrainerCallback):
             items.append((prompt, gold))
         return items
 
+    def _load_ifeval(self, step: int = 0):
+        """Held-out rows of our IF v4, kept with their constraint names and
+        params so scoring is programmatic rather than a judge. Uses the
+        `default` config (the `sft` one drops the verifier fields)."""
+        ds = load_dataset("jensjepsen/danish-instruction-following-v4",
+                          "default", split="eval")
+        ds = self._maybe_subsample(ds, step)
+        items = []
+        for r in ds:
+            msgs = r["messages"]
+            user = next((m["content"] for m in msgs if m["role"] == "user"), "")
+            if user and r["constraints"]:
+                items.append((user, (list(r["constraints"]), r["params"])))
+        return items
+
+    def _load_icl(self, step: int = 0):
+        """Unseen-SCHEMA rows of the ICL set. Scored by exact match on the
+        parsed object, so it measures induction rather than loss."""
+        ds = load_dataset("jensjepsen/danish-icl-schema-format-v3",
+                          "default", split="eval_schema")
+        ds = self._maybe_subsample(ds, step)
+        items = []
+        for r in ds:
+            items.append((r["messages"][0]["content"],
+                          (r["messages"][1]["content"], r["format"],
+                           r["schema"], r["symbols"], r["n_fields"])))
+        return items
+
     def _load_citmc(self, step: int = 0):
         """Cit-MC: same source as cit-gen, formatted as labeled MC. The
         citizen-tests dataset has variable option count (2, 3, sometimes 4)
@@ -338,6 +369,44 @@ class DownstreamEvalCallback(TrainerCallback):
         n_ok = sum(1 for out, (_, gold) in zip(outs, items)
                    if _matches_text(out, gold))
         return n_ok / len(items)
+
+    def _score_ifeval(self, model) -> float:
+        """Mean fraction of each row's constraints that the output satisfies,
+        via the same verifiers the GRPO reward uses."""
+        from esperanto_lm.rl_rewards import reward_ifeval
+        items = self._get("ifeval")
+        if not items:
+            return 0.0
+        prompts = [f"{USER}{q}{END}{ASST}" for q, _ in items]
+        outs = self._generate(model, prompts, self.max_new_gsm)
+        cons = [c for _, (c, _) in items]
+        pars = [p for _, (_, p) in items]
+        try:
+            scores = reward_ifeval(outs, cons, pars)
+        except Exception:
+            return 0.0
+        return sum(scores) / len(scores)
+
+    def _score_icl(self, model) -> float:
+        """Exact match on the parsed answer, using the generator's own
+        per-format parser so a flat format and JSON are scored alike."""
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
+        from gen_icl_schema_format import canon, SYMBOLS
+        items = self._get("icl")
+        if not items:
+            return 0.0
+        prompts = [f"{USER}{q}{END}{ASST}" for q, _ in items]
+        outs = self._generate(model, prompts, self.max_new_gsm)
+        ok = 0
+        for out, (_, (gold, fmt, schema, sym, nf)) in zip(outs, items):
+            keys = (set(schema.split("|")) if sym == "none"
+                    else set(SYMBOLS[sym][:nf]))
+            g = canon(gold, fmt, keys)
+            p = canon(out, fmt, keys)
+            ok += (p is not None and p == g)
+        return ok / len(items)
 
     def _score_citmc(self, model) -> float:
         """MC on citizen-tests. Uses the wiki-mc-letters prompt shape.
