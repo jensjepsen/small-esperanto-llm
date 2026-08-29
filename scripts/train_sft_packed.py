@@ -809,10 +809,19 @@ def main():
             return_position_ids=True,
         )
         if attn_impl != "flash_attention_2":
-            console.print(f"[bold yellow]WARNING:[/] --flatten-packing wants "
-                          f"attn_implementation=flash_attention_2 but got "
-                          f"{attn_impl!r}. Varlen packing may fall back to "
-                          f"padded attention and lose the perf/quality win.")
+            # Hard failure, not a warning. Under SDPA the flattening collator
+            # emits no cu_seq_lens, so one causal mask spans the whole packed
+            # batch and samples attend across their boundaries -- measured at
+            # a 7.8 logit shift on a 400M ckpt, versus 0.0 under FA2. That is
+            # silent training-data contamination, and it went unnoticed across
+            # five runs because it only ever printed a line saying
+            # "Attention impl: sdpa".
+            raise SystemExit(
+                f"--flatten-packing requires attn_implementation="
+                f"flash_attention_2, got {attn_impl!r}. Packed samples would "
+                f"attend across sample boundaries. Install flash-attn "
+                f"(WORKLOAD=sft bash scripts/setup_vastai.sh), or pass "
+                f"--no-flatten-packing to accept the legacy pre-packer.")
     else:
         from transformers import default_data_collator
         data_collator = default_data_collator

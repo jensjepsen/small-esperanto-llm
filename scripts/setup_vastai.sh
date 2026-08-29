@@ -35,12 +35,36 @@ GPU_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null |
 GPU_CAP_MAJOR=$(echo "$GPU_CAP" | cut -d. -f1)
 echo "Detected CUDA driver: ${CUDA_VERSION:-none}  GPU compute cap: ${GPU_CAP:-none}"
 
-# TRL 1.10 supports vllm 0.17-0.26. vllm>=0.17 requires torch>=2.10. No
-# flash-attn prebuilt wheel exists for torch 2.10 (would source-compile ~2h+),
-# so we fall back to SDPA. This matches the pre-kill Aug 22 stack exactly and
-# is the only way to stay inside TRL 1.10's officially-supported vllm range.
-# Set SKIP_FLASH_ATTN=1 to skip the flash-attn install below.
-export SKIP_FLASH_ATTN=${SKIP_FLASH_ATTN:-1}
+# Two mutually exclusive stacks. Pick with WORKLOAD=grpo|sft.
+#
+#   grpo (default)  vllm>=0.17 for rollouts -> torch>=2.10 -> NO flash-attn
+#                   wheel exists for py3.11+torch2.10+cu12 (torch 2.10 wheels
+#                   are cp312+cu13 only), so attention falls back to SDPA.
+#                   Fine here: GRPO does not pack sequences.
+#
+#   sft             torch pinned <2.9 so the cp311+cu12 FA2 wheel matches, and
+#                   flash-attn installed. REQUIRED for SFT: train_sft_packed.py
+#                   uses DataCollatorWithFlattening, and under SDPA the packed
+#                   samples attend across their boundaries. Measured on a
+#                   400M ckpt: swapping the first packed sample moved the
+#                   second sample's logits by 7.8 under SDPA and by 0.0 under
+#                   FA2. That is the exact contamination the flattening
+#                   collator was adopted to remove.
+#
+# Do not set SKIP_FLASH_ATTN=1 for an SFT box. The old default was 1 with the
+# note "SDPA is fine for GRPO on 400M" -- true for GRPO, and silently wrong
+# once the same image was used for packed SFT.
+export WORKLOAD=${WORKLOAD:-grpo}
+if [ "$WORKLOAD" = "sft" ]; then
+    export SKIP_VLLM=1
+    export SKIP_FLASH_ATTN=${SKIP_FLASH_ATTN:-0}
+    # vllm lives in the `all` extra, so the resolver rejects torch<2.9 even
+    # with --extra train. Pin torch explicitly after the sync instead.
+    export PIN_TORCH=${PIN_TORCH:-2.8.0}
+else
+    export SKIP_FLASH_ATTN=${SKIP_FLASH_ATTN:-1}
+fi
+echo "=== WORKLOAD=$WORKLOAD  SKIP_VLLM=${SKIP_VLLM:-0}  SKIP_FLASH_ATTN=$SKIP_FLASH_ATTN ==="
 
 if [ "$CUDA_MAJOR" = "13" ]; then
     # CUDA 13 driver → cu128 wheels. Don't pin torch; let vllm 0.17+ pull torch 2.10.
@@ -98,8 +122,21 @@ fi
 #   flash_attn-{VER}+cu12torch{TORCH_MM}cxx11abi{ABI}-cp{PY}-cp{PY}-linux_x86_64.whl
 # where TORCH_MM is e.g. "2.8" (major.minor) and ABI is TRUE/FALSE matching
 # `torch.compiled_with_cxx11_abi()`.
+# For an SFT box, force torch onto a version that HAS a prebuilt FA2 wheel.
+# `uv sync` cannot do this: the `all` extra carries vllm>=0.17 which requires
+# torch>=2.10, so the resolver calls torch<2.9 unsatisfiable no matter which
+# extras are selected. Installing torch directly sidesteps that; torchvision
+# and torchaudio are not used by the SFT path.
+if [ -n "${PIN_TORCH:-}" ]; then
+    CUR=$(uv run python -c "import torch;print(torch.__version__.split('+')[0])" 2>/dev/null || echo none)
+    if [ "$CUR" != "$PIN_TORCH" ]; then
+        echo "=== Pinning torch $CUR -> $PIN_TORCH (so a prebuilt FA2 wheel exists) ==="
+        uv pip install --index-url "https://download.pytorch.org/whl/${UV_TORCH_BACKEND}" "torch==${PIN_TORCH}"
+    fi
+fi
+
 if [ "$SKIP_FLASH_ATTN" = "1" ]; then
-    echo "=== Skipping flash-attn install (SKIP_FLASH_ATTN=1; torch 2.10+ has no wheel, would source-compile ~2h+; SDPA is fine for GRPO on 400M) ==="
+    echo "=== Skipping flash-attn install (SKIP_FLASH_ATTN=1). OK for GRPO. NOT OK for packed SFT: SDPA leaks attention across packed samples. Use WORKLOAD=sft. ==="
 elif [ "$UV_TORCH_BACKEND" = "cu128" ] || [ "$UV_TORCH_BACKEND" = "cu126" ]; then
     echo "=== Installing flash-attn ==="
     uv pip install setuptools wheel packaging
@@ -112,8 +149,33 @@ elif [ "$UV_TORCH_BACKEND" = "cu128" ] || [ "$UV_TORCH_BACKEND" = "cu126" ]; the
     WHEEL="https://github.com/Dao-AILab/flash-attention/releases/download/v${FA_VER}/flash_attn-${FA_VER}+cu12torch${TORCH_MM}cxx11abi${TORCH_ABI}-${PY_CP}-${PY_CP}-linux_x86_64.whl"
     echo "  torch=${TORCH_MM}  abi=${TORCH_ABI}  py=${PY_CP}  fa=${FA_VER}"
     echo "  wheel: ${WHEEL}"
-    uv pip install "${WHEEL}"
+    # --no-deps: flash-attn declares torch and would otherwise re-resolve it.
+    # einops is its only other runtime import, so install that explicitly.
+    uv pip install --no-deps "${WHEEL}"
+    uv pip install --no-deps einops
     uv run python -c "import flash_attn; print(f'flash-attn OK ({flash_attn.__version__})')"
+    # Prove ISOLATION, not just import. A packed batch must not let one sample
+    # attend to another; that is the whole reason FA2 is required here.
+    uv run python - <<'FAVERIFY'
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorWithFlattening
+C = "jensjepsen/danish-lm-400m-sft-v31-avg-top3"
+tok = AutoTokenizer.from_pretrained(C)
+coll = DataCollatorWithFlattening()
+enc = lambda s: tok(s, add_special_tokens=False)["input_ids"]
+a, b = enc("Danmark er et land i Norden."), enc("Kvantemekanik beskriver partikler.")
+t = enc("Hovedstaden i Danmark hedder")
+m = AutoModelForCausalLM.from_pretrained(
+    C, attn_implementation="flash_attention_2", dtype=torch.bfloat16).cuda().eval()
+def lg(p):
+    f = [{"input_ids": p, "labels": p}, {"input_ids": t, "labels": t}]
+    batch = {k: (v.cuda() if hasattr(v, "cuda") else v) for k, v in coll(f).items()}
+    with torch.no_grad():
+        return m(**{k: v for k, v in batch.items() if k != "labels"}).logits[0, -1].float()
+d = (lg(a) - lg(b)).abs().max().item()
+assert d < 1e-3, f"packed samples still leak under FA2 (max logit delta {d})"
+print(f"packed-sample isolation verified (max logit delta {d})")
+FAVERIFY
 fi
 
 # Verify Liger kernel actually applies. Install can succeed while
