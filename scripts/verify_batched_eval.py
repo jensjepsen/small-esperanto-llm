@@ -54,11 +54,18 @@ def main():
     ap.add_argument("--n", type=int, default=24)
     ap.add_argument("--bs", type=int, default=8)
     ap.add_argument("--tol", type=float, default=2e-3)
+    ap.add_argument("--dtype", default="bf16", choices=["fp32", "bf16"],
+                    help="fp32 isolates real indexing bugs from bf16 "
+                         "batch-shape nondeterminism: reduction order changes "
+                         "with batch width, so bf16 diffs of ~1e-1 on a "
+                         "near-tie are expected and mean nothing.")
     args = ap.parse_args()
 
     tok = AutoTokenizer.from_pretrained(args.ckpt)
     model = AutoModelForCausalLM.from_pretrained(
-        args.ckpt, torch_dtype=torch.bfloat16).cuda().eval()
+        args.ckpt,
+        torch_dtype=torch.float32 if args.dtype == "fp32"
+        else torch.bfloat16).cuda().eval()
     end_id = tok.convert_tokens_to_ids(END)
     eos = [tok.eos_token_id] + ([end_id] if end_id != tok.unk_token_id else [])
 
@@ -80,7 +87,13 @@ def main():
     print(f"scoring {len(pairs)} (prompt,cont) pairs both ways...", flush=True)
     batched = score_cont_batch(model, tok, pairs, bs=args.bs)
     single = [score_cont_single(model, tok, p, c) for p, c in pairs]
-    diffs = [abs(a - b) for a, b in zip(batched, single)]
+    import math
+    diffs = [0.0 if (math.isinf(a) and math.isinf(b)) else abs(a - b)
+             for a, b in zip(batched, single)]
+    n_inf = sum(1 for a in batched if math.isinf(a))
+    if n_inf:
+        print(f"  ({n_inf} pairs scored -inf on both sides: empty "
+              f"continuation after tokenization)")
     worst = max(diffs)
     print(f"  max |batched - single| = {worst:.2e}   mean = "
           f"{sum(diffs)/len(diffs):.2e}")
