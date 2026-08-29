@@ -56,7 +56,7 @@ $PY -u scripts/train_grpo_verifier.py \
   --epochs 3 --batch-size 8 --grad-accum 4 --num-generations 32 \
   --max-prompt-length 2048 --max-completion-length 384 \
   --learning-rate 1e-6 --beta 0.004 --warmup-steps 10 --logging-steps 5 \
-  --use-vllm-server --vllm-mode colocate --vllm-gpu-memory-utilization 0.30 \
+  --use-vllm-server --vllm-mode colocate --vllm-gpu-memory-utilization 0.40 \
   --save-steps 125 --eval-steps 0 \
   --greedy-eval-steps 125 --greedy-eval-max-rows 200 \
   --skip-zero-adv --best-k 3 \
