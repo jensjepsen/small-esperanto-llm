@@ -29,7 +29,12 @@
 #     WORKLOAD=sft bash scripts/setup_vastai.sh large
 #
 # ~1.98M rows x 3 epochs at eff_bs 128 = ~46,400 steps, ~4.5 h plus eval.
-# Eval and save every 0.25 epoch = 12 points; top-3 by downstream aggregate
+# Eval and save every 0.25 epoch = 12 points; top-3 by downstream aggregate.
+# --downstream-n 0 = FULL test sets. A 200-row subsample carries ~3.5pp of
+# sampling noise per eval, which is the same order as the gaps the top-k
+# ranking is built from -- so checkpoint selection ends up partly noise-driven
+# even though the step-rotated seed removes the v15 fixed-subset bias. Full
+# sets cost ~4-5x the eval-generation time; pay it, the ranking is the point.
 # are preserved in best/ so save_total_limit rotation cannot evict them.
 set -euo pipefail
 cd /root/espllm
@@ -80,7 +85,7 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
   --torch-compile \
   --save-fraction-of-epoch 0.25 --eval-fraction-of-epoch 0.25 \
   --save-total-limit 3 --top-k-downstream 3 \
-  --downstream-evals gsm8k citgen sciq ifeval icl --downstream-n 200 --downstream-batch-size 32 \
+  --downstream-evals gsm8k citgen sciq ifeval icl --downstream-n 0 --downstream-batch-size 32 \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_sft_v33_full_mix20_bs128_fa2_compile \
   --wandb-tags sft da v33 full-resft mix20 ner icl span-wrap fa2 torch-compile no-liger epochs-3 h100

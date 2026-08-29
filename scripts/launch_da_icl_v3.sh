@@ -59,7 +59,7 @@ uv run python -u scripts/train_sft_packed.py \
   --flatten-packing \
   --save-fraction-of-epoch 0.5 --eval-fraction-of-epoch 1.0 \
   --save-total-limit 8 \
-  --downstream-evals gsm8k citgen --downstream-n 200 --downstream-batch-size 32 \
+  --downstream-evals gsm8k citgen --downstream-n 0 --downstream-batch-size 32 \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_icl_v3_paired_bs16ga2_lr1e-5 \
   --wandb-tags sft da icl multi-format paired-formats symbol-tuning icl-only constant-lr epochs-3 flatten-packing \

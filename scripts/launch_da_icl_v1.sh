@@ -48,7 +48,7 @@ uv run python -u scripts/train_sft_packed.py \
   --max-length 3072 \
   --flatten-packing \
   --save-fraction-of-epoch 0.34 --save-total-limit 10 \
-  --downstream-evals gsm8k citgen --downstream-n 200 --downstream-batch-size 32 \
+  --downstream-evals gsm8k citgen --downstream-n 0 --downstream-batch-size 32 \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_icl_v1_only_bs8ga4_lr1e-5 \
   --wandb-tags sft da icl symbol-tuning json-schema icl-only constant-lr epochs-3 flatten-packing \
