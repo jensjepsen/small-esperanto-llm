@@ -336,6 +336,11 @@ class IFEvalDACallback(TrainerCallback):
     def __init__(self, tokenizer, every_n_steps: int = 125,
                  max_new_tokens: int = 512, batch_size: int = 16):
         import time as _time
+        # Several callbacks can share a task (two `struct` evals: NER and
+        # ICL). Without an explicit name they collide on one log key and
+        # silently overwrite each other --- and `struct` fell through to the
+        # ifeval key, corrupting that curve too.
+        self.metric_name = metric_name
         self.tok = tokenizer
         self.every = int(every_n_steps)
         self.max_new = max_new_tokens
@@ -535,7 +540,7 @@ class GreedyEvalCallback(TrainerCallback):
 
     def __init__(self, tokenizer, items, task,
                  every_n_steps: int, max_new_tokens: int = 256,
-                 batch_size: int = 16):
+                 batch_size: int = 16, metric_name: str | None = None):
         """items schema:
              gsm8k:   list of (prompt, gold_answer_string)
              ifeval:  list of (prompt, constraints_list, params_json_string)
@@ -671,13 +676,15 @@ class GreedyEvalCallback(TrainerCallback):
                                    [row[1] for row in self.items],
                                    [row[2] for row in self.items])
             acc = sum(scores) / max(1, len(scores))
-        print(f"  [greedy-eval] step={state.global_step} {self.task}={100*acc:.2f}%",
+        print(f"  [greedy-eval] step={state.global_step} "
+              f"{self.metric_name or self.task}={100*acc:.2f}%",
               flush=True)
-        key = ("eval_greedy_gsm8k_pass@1" if self.task == "gsm8k"
-               else "eval_greedy_ifeval_combined_mean_pass" if self.task == "combined"
-               else "eval_greedy_json_mean_reward" if self.task == "json"
-               else "eval_greedy_ner_f1" if self.task == "ner"
-               else "eval_greedy_ifeval_mean_pass")
+        key = (self.metric_name
+               or ("eval_greedy_gsm8k_pass@1" if self.task == "gsm8k"
+                   else "eval_greedy_ifeval_combined_mean_pass" if self.task == "combined"
+                   else "eval_greedy_json_mean_reward" if self.task == "json"
+                   else "eval_greedy_ner_f1" if self.task == "ner"
+                   else "eval_greedy_ifeval_mean_pass"))
         m = {key: acc}
         # Direct trainer.log() bypasses TRL 0.16's mid-step log-decision
         # (control.should_log=True doesn't force a log at the current step).
@@ -1748,6 +1755,8 @@ def main():
                 n_task = "ner"
             cb = GreedyEvalCallback(
                 tokenizer=tok, items=n_items, task=n_task,
+                metric_name=("eval_greedy_ner_reward_mean"
+                             if n_task == "struct" else None),
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
                 batch_size=args.greedy_eval_batch_size,
@@ -1764,6 +1773,7 @@ def main():
                        for r in ids_]
             cb = GreedyEvalCallback(
                 tokenizer=tok, items=i_items, task="struct",
+                metric_name="eval_greedy_icl_reward_mean",
                 every_n_steps=args.greedy_eval_steps,
                 max_new_tokens=args.max_completion_length,
                 batch_size=args.greedy_eval_batch_size,
