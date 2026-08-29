@@ -18,9 +18,30 @@ import sys
 import time
 from pathlib import Path
 
+import os
+
 import torch
-from datasets import load_dataset
-from transformers import (AutoModelForCausalLM, AutoTokenizer,
+
+# Liger MUST be patched before transformers is imported -- it swaps methods on
+# the model classes at import time, exactly as train_sft_packed.py does. An
+# earlier version of this file called it inside main(), after the import
+# below, where it silently did nothing. Flags mirror the trainer verbatim:
+# fused_linear_cross_entropy (not plain cross_entropy) is the one that avoids
+# materialising the logits, which is what moves the OOM boundary.
+LIGER = os.environ.get("BENCH_LIGER", "1") == "1"
+_LIGER_ON = False
+if LIGER:
+    try:
+        from liger_kernel.transformers import apply_liger_kernel_to_llama
+        apply_liger_kernel_to_llama(
+            rope=True, rms_norm=True, swiglu=True,
+            fused_linear_cross_entropy=True, cross_entropy=False)
+        _LIGER_ON = True
+    except ImportError:
+        pass
+
+from datasets import load_dataset  # noqa: E402
+from transformers import (AutoModelForCausalLM, AutoTokenizer,  # noqa: E402
                           DataCollatorWithFlattening)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -55,32 +76,36 @@ def main():
                       add_special_tokens=False)["input_ids"][:3072]
             rows.append({"input_ids": ids, "labels": ids})
     ntok = sum(len(r["input_ids"]) for r in rows)
-    print(f"{len(rows)} rows, {ntok:,} tokens, mean {ntok/len(rows):.0f}/row\n",
-          flush=True)
+    print(f"{len(rows)} rows, {ntok:,} tokens, mean {ntok/len(rows):.0f}/row"
+          f"   liger={_LIGER_ON}\n", flush=True)
 
     coll = DataCollatorWithFlattening()
-    print(f"{'attn':<20}{'bs':>5}{'compile':>9}{'optim':>20}"
+    print(f"{'attn':<20}{'liger':>6}{'bs':>5}{'compile':>9}{'optim':>20}"
           f"{'tok/s':>11}{'MFU':>7}{'s/step':>9}")
     results = []
-    for attn in args.attn:
-        for comp in args.compile:
-            for opt in args.optim:
-                for bs in args.batch_sizes:
-                    try:
-                        r = bench(args, tok, rows, coll, attn, bool(comp), opt, bs)
-                    except torch.cuda.OutOfMemoryError:
-                        print(f"{attn:<20}{bs:>5}{comp:>9}{opt:>20}{'OOM':>11}")
-                        torch.cuda.empty_cache()
-                        continue
-                    results.append(r)
-                    print(f"{attn:<20}{bs:>5}{comp:>9}{opt:>20}"
-                          f"{r['tok_s']:>11,.0f}{100*r['mfu']:>6.0f}%"
-                          f"{r['s_step']:>9.3f}", flush=True)
+    for lig in [int(_LIGER_ON)]:
+        for attn in args.attn:
+            for comp in args.compile:
+                for opt in args.optim:
+                    for bs in args.batch_sizes:
+                        try:
+                            r = bench(args, tok, rows, coll, attn, bool(comp), opt, bs)
+                        except torch.cuda.OutOfMemoryError:
+                            print(f"{attn:<20}{lig:>6}{bs:>5}{comp:>9}"
+                                  f"{opt:>20}{'OOM':>11}", flush=True)
+                            torch.cuda.empty_cache()
+                            continue
+                        r["liger"] = bool(lig)
+                        results.append(r)
+                        print(f"{attn:<20}{lig:>6}{bs:>5}{comp:>9}{opt:>20}"
+                              f"{r['tok_s']:>11,.0f}{100*r['mfu']:>6.0f}%"
+                              f"{r['s_step']:>9.3f}", flush=True)
     best = max(results, key=lambda r: r["tok_s"]) if results else None
     if best:
         base = min(results, key=lambda r: r["tok_s"])
         print(f"\nbest {best['tok_s']:,.0f} tok/s at bs={best['bs']} "
-              f"compile={best['compile']} optim={best['optim']} "
+              f"liger={best.get('liger')} compile={best['compile']} "
+              f"optim={best['optim']} "
               f"({best['tok_s']/base['tok_s']:.2f}x the slowest cell)")
         print(json.dumps(results, indent=2)[:0] or "", end="")
 
