@@ -123,27 +123,46 @@ over (type, span) pairs. Both splits are built from DANSK test text. FAITHFUL
 is span-wrap only: the answer both strips back to the source passage and
 carries at least one well-formed tag pair.
 
-**`eval`** — formats seen in training, n=1500: **exact 58.7, entity-F1 70.0**,
-faithful 73% (strip 86, tagged 87, bare 12)
+`jensjepsen/danish-lm-400m-sft-v31-avg-top3` is the same mix without
+`danish-ner-sft-v1` or `danish-icl-schema-format-v3`; both models were scored
+by the same script on the same day.
 
-| format | exact | F1 | | format | exact | F1 |
-|---|---|---|---|---|---|---|
-| `brace_pair` | 69.9 | 77.6 | | `tagged` | 63.4 | 72.2 |
-| `tsv` | 66.7 | 74.5 | | `kv_bracket` | 58.9 | 71.7 |
-| `numbered` | 64.2 | 72.3 | | `kv_colon` | 58.2 | 73.5 |
-| `json` | 63.5 | 73.4 | | `kv_arrow` | 55.1 | 66.4 |
-| `spans_angle` | 52.3 | 62.5 | | `spans_bracket` | 50.0 | 65.3 |
-| `spans_paren` | 42.6 | 57.3 | | | | |
+| split | metric | v31-avg-top3 | v33-avg-top3 |
+|---|---|---|---|
+| `eval` | exact | 0.2 | **58.7** |
+| | entity-F1 | 0.7 | **70.0** |
+| | span faithful | 0 | **73** |
+| `eval_format` | exact | 0.0 | **40.1** |
+| | entity-F1 | 0.0 | **56.8** |
+
+**`eval`** — formats seen in training, n=1500
+
+| format | v31 exact | v33 exact | v33 F1 |
+|---|---|---|---|
+| `brace_pair` | 0.0 | 69.9 | 77.6 |
+| `tsv` | 0.0 | 66.7 | 74.5 |
+| `numbered` | 0.0 | 64.2 | 72.3 |
+| `json` | 2.2 | 63.5 | 73.4 |
+| `tagged` | 0.0 | 63.4 | 72.2 |
+| `kv_bracket` | 0.0 | 58.9 | 71.7 |
+| `kv_colon` | 0.0 | 58.2 | 73.5 |
+| `kv_arrow` | 0.0 | 55.1 | 66.4 |
+| `spans_angle` | 0.0 | 52.3 | 62.5 |
+| `spans_bracket` | 0.0 | 50.0 | 65.3 |
+| `spans_paren` | 0.0 | 42.6 | 57.3 |
+
+v33 span faithfulness on this split is 73% (strip 86, tagged 87, bare 12);
+v31 is 0% (strip 2, tagged 25, bare 2) — it emits tag-like output but does not
+reproduce the passage verbatim.
 
 **`eval_format`** — formats held out of both `danish-ner-sft-v1` and
-`danish-icl-schema-format-v3` training splits, n=1500: **exact 40.1,
-entity-F1 56.8**
+`danish-icl-schema-format-v3` training splits, n=1500
 
-| format | exact | F1 | faithful |
-|---|---|---|---|
-| `bracket_pair` | 60.5 | 71.3 | — |
-| `kv_eq` | 53.1 | 66.4 | — |
-| `spans_brace` | 7.5 | 17.2 | 6% (strip 83, tagged 15, bare 70) |
+| format | v31 exact | v33 exact | v33 F1 | v33 faithful |
+|---|---|---|---|---|
+| `bracket_pair` | 0.0 | 60.5 | 71.3 | — |
+| `kv_eq` | 0.0 | 53.1 | 66.4 | — |
+| `spans_brace` | 0.0 | 7.5 | 17.2 | 6% (strip 83, tagged 15, bare 70) |
 
 Key-value formats transfer to unseen delimiters; span-wrap does not. Three
 span-wrap delimiters are trained (`spans_angle`, `spans_bracket`,
