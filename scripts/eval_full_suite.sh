@@ -82,8 +82,13 @@ run openbookqa    "=== openbookqa" -- \
       --dataset jensjepsen/danish-openbookqa --config main \
       --mode chat-mc --batch-size "$BS"
 
+# --mode chat-mc, pinned: eval_piqa_da defaults to `raw` (continuation
+# log-prob), which scores ~7pp higher than the letter-generation mode the
+# cards report PIQA under. Leaving it default silently produced a v33 number
+# that could not be compared to v31's 53.00.
 run piqa          "=== piqa" -- \
-  $PY -u scripts/eval_piqa_da.py --ckpt "$CKPT" --batch-size "$BS"
+  $PY -u scripts/eval_piqa_da.py --ckpt "$CKPT" --batch-size "$BS" \
+      --mode chat-mc
 
 run gpqa          "=== gpqa" -- \
   $PY -u scripts/eval_gpqa_da.py --ckpt "$CKPT" \
