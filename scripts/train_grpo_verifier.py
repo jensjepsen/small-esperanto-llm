@@ -336,11 +336,6 @@ class IFEvalDACallback(TrainerCallback):
     def __init__(self, tokenizer, every_n_steps: int = 125,
                  max_new_tokens: int = 512, batch_size: int = 16):
         import time as _time
-        # Several callbacks can share a task (two `struct` evals: NER and
-        # ICL). Without an explicit name they collide on one log key and
-        # silently overwrite each other --- and `struct` fell through to the
-        # ifeval key, corrupting that curve too.
-        self.metric_name = metric_name
         self.tok = tokenizer
         self.every = int(every_n_steps)
         self.max_new = max_new_tokens
@@ -544,7 +539,13 @@ class GreedyEvalCallback(TrainerCallback):
         """items schema:
              gsm8k:   list of (prompt, gold_answer_string)
              ifeval:  list of (prompt, constraints_list, params_json_string)
-             json:    list of (prompt, fields_list, types_list, strict_bool, passage_str, gold_dict_or_None)"""
+             json:    list of (prompt, fields_list, types_list, strict_bool, passage_str, gold_dict_or_None)
+             struct:  list of (prompt, gold, fields, fmt, passage_or_None)"""
+        # Several callbacks can share a task (two `struct` evals: NER and
+        # ICL). Without an explicit name they collide on one log key and
+        # silently overwrite each other --- and `struct` fell through to the
+        # ifeval key, corrupting that curve too.
+        self.metric_name = metric_name
         self.tok = tokenizer
         self.items = items
         self.task = task
