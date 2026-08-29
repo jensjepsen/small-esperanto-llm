@@ -363,12 +363,22 @@ def main():
         choices=["cosine_with_min_lr", "constant",
                  "constant_with_warmup", "linear", "cosine"])
     parser.add_argument("--warmup-steps", type=int, default=100)
+    # Choices are DERIVED from the callback rather than restated here. A
+    # hardcoded copy silently rejects any eval added to the callback -- adding
+    # ifeval/icl failed at argparse with the callback already supporting them.
+    def _available_evals():
+        try:
+            from esperanto_lm.downstream_eval_callback import (
+                DownstreamEvalCallback as _C)
+            return sorted(n[len("_load_"):] for n in dir(_C)
+                          if n.startswith("_load_")
+                          and hasattr(_C, f"_score_{n[len('_load_'):]}"))
+        except Exception:
+            return None          # fall back to unrestricted rather than block
+
     parser.add_argument("--downstream-evals", nargs="*",
                         default=["gsm8k", "sciq", "citgen", "citmc"],
-                        choices=["gsm8k", "sciq", "citgen", "citmc",
-                                 "piqa", "arc", "arc_easy", "arc_challenge",
-                                 "gpqa",
-                                 "textman_summary", "textman_rewrite"],
+                        choices=_available_evals(),
                         help="Run these downstream evals on every eval step. "
                              "Empty list disables. See "
                              "esperanto_lm.downstream_eval_callback.")
