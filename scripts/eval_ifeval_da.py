@@ -54,7 +54,7 @@ def build_instructions(row):
 
 
 def score_row(response: str, insts):
-    """Return (all_follow_strict, all_follow_loose, per-inst list)."""
+    """Return (strict_flags, loose_flags): one bool per instruction."""
     strict_flags = []
     loose_flags = []
     for _, inst in insts:

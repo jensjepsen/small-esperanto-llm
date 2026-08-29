@@ -14,8 +14,8 @@ Adds metrics to the eval-loss dict:
   eval_downstream_gsm8k   — greedy GSM accuracy
   eval_downstream_sciq    — SciQ open-Q accuracy
   eval_downstream_citgen  — citizen-tests generative accuracy
-  eval_downstream_ifeval  — mean constraint pass-rate on held-out IF v4,
-                            verified programmatically by the GRPO verifiers
+  eval_downstream_ifeval  — IFEval-DA instruction-level strict accuracy,
+                            the same definition the model cards report
   eval_downstream_icl     — exact match on UNSEEN-schema ICL rows
 
 These show up in wandb and stdout alongside eval_loss. Overhead: ~1-2 min
@@ -251,19 +251,19 @@ class DownstreamEvalCallback(TrainerCallback):
         return items
 
     def _load_ifeval(self, step: int = 0):
-        """Held-out rows of our IF v4, kept with their constraint names and
-        params so scoring is programmatic rather than a judge. Uses the
-        `default` config (the `sft` one drops the verifier fields)."""
-        ds = load_dataset("jensjepsen/danish-instruction-following-v4",
-                          "default", split="eval")
+        """IFEval-DA, the benchmark the model cards already report.
+
+        An earlier version scored held-out rows of our own IF v4 with the 46
+        GRPO verifiers, as a mean fraction of constraints satisfied. That is a
+        valid within-run signal but sits on a different scale from anything
+        published: the v31 card records prompt-strict 21.2 / inst-strict 35.2
+        on IFEval-DA, and 'mean fraction passed on our data' cannot be put in
+        the same table. Scoring the benchmark itself makes the in-loop curve
+        comparable to the card, to v22-avg and to the mid-run v31 checkpoint.
+        """
+        ds = load_dataset("danish-foundation-models/ifeval-da", split="train")
         ds = self._maybe_subsample(ds, step)
-        items = []
-        for r in ds:
-            msgs = r["messages"]
-            user = next((m["content"] for m in msgs if m["role"] == "user"), "")
-            if user and r["constraints"]:
-                items.append((user, (list(r["constraints"]), r["params"])))
-        return items
+        return [(r["prompt"], r) for r in ds]
 
     def _load_icl(self, step: int = 0):
         """Unseen-SCHEMA rows of the ICL set. Scored by exact match on the
@@ -371,21 +371,34 @@ class DownstreamEvalCallback(TrainerCallback):
         return n_ok / len(items)
 
     def _score_ifeval(self, model) -> float:
-        """Mean fraction of each row's constraints that the output satisfies,
-        via the same verifiers the GRPO reward uses."""
-        from esperanto_lm.rl_rewards import reward_ifeval
+        """IFEval-DA instruction-level STRICT accuracy.
+
+        inst-strict rather than prompt-strict: prompt-strict needs every
+        constraint in a row to pass, so at this model's level it is mostly
+        zeros and moves too coarsely to read a training curve from. The card
+        reports both (21.2 prompt / 35.2 inst for v31-avg-top3); this logs the
+        one with usable resolution and the same definition.
+        """
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
+        from eval_ifeval_da import build_instructions, score_row
         items = self._get("ifeval")
         if not items:
             return 0.0
         prompts = [f"{USER}{q}{END}{ASST}" for q, _ in items]
         outs = self._generate(model, prompts, self.max_new_gsm)
-        cons = [c for _, (c, _) in items]
-        pars = [p for _, (_, p) in items]
-        try:
-            scores = reward_ifeval(outs, cons, pars)
-        except Exception:
-            return 0.0
-        return sum(scores) / len(scores)
+        ok = tot = 0
+        for out, (_, row) in zip(outs, items):
+            insts = build_instructions(row)
+            if not insts:
+                continue
+            # score_row returns (strict_flags, loose_flags) -- two values,
+            # despite a docstring promising three
+            strict_flags, _ = score_row(out, insts)
+            ok += sum(bool(x) for x in strict_flags)
+            tot += len(strict_flags)
+        return ok / tot if tot else 0.0
 
     def _score_icl(self, model) -> float:
         """Exact match on the parsed answer, using the generator's own
