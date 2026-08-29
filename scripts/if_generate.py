@@ -111,6 +111,9 @@ async def _call_openrouter(prompt: str) -> str | None:
                      "Content-Type": "application/json",
                      "HTTP-Referer": "https://claude-code-if",
                      "X-Title": "danish-if-generation"},
+            # Default connector caps at 100 sockets; bump so --concurrency > 100
+            # actually gets used. limit_per_host=0 means "no per-host cap".
+            connector=aiohttp.TCPConnector(limit=1000, limit_per_host=0),
             timeout=aiohttp.ClientTimeout(total=60))
     body = {
         "model": MODEL_ID,

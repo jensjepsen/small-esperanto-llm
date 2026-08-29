@@ -30,10 +30,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import sys as _sys
 _sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gen_icl_json import canon, SYMBOLS  # noqa: E402
+from gen_icl_schema_format import canon, SYMBOLS  # noqa: E402
 
 USER, ASST, END = "<|user|>", "<|assistant|>", "<|end|>"
-DATASET = "jensjepsen/danish-icl-json-v2"
+DATASET = "jensjepsen/danish-icl-schema-format-v3"
 
 
 def parse(text: str):

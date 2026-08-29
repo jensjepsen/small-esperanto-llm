@@ -45,7 +45,7 @@ the formats we happened to generate. The eval split uses combinations that
 never appear in training.
 
 Usage:
-  python scripts/gen_icl_sft.py --n 200 --out scratch/icl_smoke
+  python scripts/gen_icl_ner_patterns.py --n 200 --out scratch/icl_smoke
 """
 from __future__ import annotations
 

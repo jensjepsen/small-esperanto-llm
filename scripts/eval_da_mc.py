@@ -20,10 +20,10 @@ from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
-def score_choice(model, tok, prompt: str, choice: str) -> tuple[float, int]:
+def score_choice(model, tok, prompt: str, choice: str, joiner: str = " ") -> tuple[float, int]:
     """Return (sum_logprob, num_tokens) of `choice` given `prompt`."""
     prompt_ids = tok(prompt, return_tensors="pt").input_ids
-    full_ids = tok(prompt + " " + choice, return_tensors="pt").input_ids.cuda()
+    full_ids = tok(prompt + joiner + choice, return_tensors="pt").input_ids.cuda()
     plen = prompt_ids.shape[1]
     with torch.no_grad():
         logits = model(full_ids).logits
@@ -32,18 +32,25 @@ def score_choice(model, tok, prompt: str, choice: str) -> tuple[float, int]:
     return lp.gather(-1, tgt.unsqueeze(-1)).squeeze(-1).sum().item(), tgt.numel()
 
 
-def eval_arc(model, tok, verbose=True):
+def wrap_chat(q: str, chat: bool) -> tuple[str, str]:
+    """Return (prompt, joiner). Chat mode wraps in <|user|>…<|end|><|assistant|>."""
+    if chat:
+        return f"<|user|>{q}<|end|><|assistant|>", ""
+    return f"Spørgsmål: {q}\nSvar:", " "
+
+
+def eval_arc(model, tok, verbose=True, chat=False):
     ds = load_dataset("alexandrainst/m_arc", "da", split="test")
     n = len(ds)
     correct = 0
     t0 = time.time()
     for i, row in enumerate(ds):
-        prompt = f"Spørgsmål: {row['instruction']}\nSvar:"
+        prompt, joiner = wrap_chat(row["instruction"], chat)
         opts = {k: row[f"option_{k.lower()}"] for k in "ABCDE"
                 if row[f"option_{k.lower()}"] is not None}
         scores = {}
         for k, text in opts.items():
-            lp, ntok = score_choice(model, tok, prompt, text)
+            lp, ntok = score_choice(model, tok, prompt, text, joiner)
             scores[k] = lp / max(ntok, 1)
         pred = max(scores, key=scores.get)
         if pred == row["answer"]:
@@ -54,7 +61,7 @@ def eval_arc(model, tok, verbose=True):
     return correct / n, n
 
 
-def eval_hellaswag(model, tok, k_samples=1000, seed=42, verbose=True):
+def eval_hellaswag(model, tok, k_samples=1000, seed=42, verbose=True, chat=False):
     ds = load_dataset("alexandrainst/m_hellaswag", "da", split="val")
     idxs = list(range(len(ds)))
     random.Random(seed).shuffle(idxs)
@@ -80,9 +87,10 @@ def eval_hellaswag(model, tok, k_samples=1000, seed=42, verbose=True):
             gold = "ABCD"[gold]
         elif isinstance(gold, str) and gold.isdigit():
             gold = "ABCD"[int(gold)]
+        prompt, joiner = wrap_chat(ctx, chat) if chat else (ctx, "")
         scores = {}
         for k, text in opts.items():
-            lp, ntok = score_choice(model, tok, ctx, text)
+            lp, ntok = score_choice(model, tok, prompt, text, joiner)
             scores[k] = lp / max(ntok, 1)
         pred = max(scores, key=scores.get)
         if pred == gold:
@@ -93,7 +101,7 @@ def eval_hellaswag(model, tok, k_samples=1000, seed=42, verbose=True):
     return correct / n, n
 
 
-def eval_citizen(model, tok, verbose=True):
+def eval_citizen(model, tok, verbose=True, chat=False):
     """Danish citizenship (indfødsret) + civics (medborgerskab) MC test.
 
     Reported random baseline is weighted by choice count (2- vs 3-choice mix)
@@ -106,13 +114,13 @@ def eval_citizen(model, tok, verbose=True):
     counts = Counter()
     t0 = time.time()
     for i, row in enumerate(ds):
-        prompt = f"Spørgsmål: {row['question']}\nSvar:"
+        prompt, joiner = wrap_chat(row["question"], chat)
         opts = {k: row[f"option_{k.lower()}"] for k in "ABC"
                 if row[f"option_{k.lower()}"] is not None}
         counts[len(opts)] += 1
         scores = {}
         for k, text in opts.items():
-            lp, ntok = score_choice(model, tok, prompt, text)
+            lp, ntok = score_choice(model, tok, prompt, text, joiner)
             scores[k] = lp / max(ntok, 1)
         pred = max(scores, key=scores.get)
         if pred == row["answer"]:
@@ -122,6 +130,47 @@ def eval_citizen(model, tok, verbose=True):
             print(f"  CIT {i+1}/{n} acc={correct/(i+1):.3f} eta={elapsed*(n-i-1)/(i+1):.0f}s")
     baseline = sum(counts[k] / n * (1 / k) for k in counts)
     return correct / n, n, baseline
+
+
+def eval_sciq_da(model, tok, split="test", verbose=True, chat=False):
+    """Danish SciQ MC test — 4-choice science questions.
+
+    Uses `jensjepsen/danish-sciq` (config=default) which has da_question
+    and da_correct_answer + da_distractor1/2/3 fields. Randomizes option
+    order per row (seed=42, idx) to avoid any first-slot preference.
+    """
+    import random
+    ds = load_dataset("jensjepsen/danish-sciq", "default", split=split)
+    n = len(ds)
+    correct = 0
+    t0 = time.time()
+    for i, row in enumerate(ds):
+        prompt, joiner = wrap_chat(row["da_question"], chat)
+        # 4 options, shuffled deterministically per row
+        opts_list = [row["da_correct_answer"],
+                     row["da_distractor1"],
+                     row["da_distractor2"],
+                     row["da_distractor3"]]
+        rng = random.Random(42 + i)
+        idxs = list(range(4))
+        rng.shuffle(idxs)
+        letters = "ABCD"
+        scores = {}
+        gold_letter = None
+        for slot, orig_idx in enumerate(idxs):
+            text = opts_list[orig_idx]
+            lp, ntok = score_choice(model, tok, prompt, text, joiner)
+            scores[letters[slot]] = lp / max(ntok, 1)
+            if orig_idx == 0:  # correct answer
+                gold_letter = letters[slot]
+        pred = max(scores, key=scores.get)
+        if pred == gold_letter:
+            correct += 1
+        if verbose and (i + 1) % 100 == 0:
+            elapsed = time.time() - t0
+            print(f"  SCI {i+1}/{n} acc={correct/(i+1):.3f} "
+                  f"eta={elapsed*(n-i-1)/(i+1):.0f}s")
+    return correct / n, n
 
 
 def main():
@@ -135,6 +184,9 @@ def main():
     ap.add_argument("--skip-arc", action="store_true")
     ap.add_argument("--skip-hs", action="store_true")
     ap.add_argument("--skip-cit", action="store_true")
+    ap.add_argument("--skip-sciq", action="store_true")
+    ap.add_argument("--chat", action="store_true",
+                    help="Wrap prompts in <|user|>…<|end|><|assistant|> for SFT models")
     args = ap.parse_args()
 
     print(f"Loading model from {args.ckpt}")
@@ -145,22 +197,29 @@ def main():
     row = {"step": args.step, "timestamp": datetime.utcnow().isoformat(timespec="seconds")}
 
     if not args.skip_arc:
-        print(f"\n=== ARC[da] test (full) ===")
-        arc_acc, arc_n = eval_arc(model, tok)
+        print(f"\n=== ARC[da] test (full){' [chat]' if args.chat else ''} ===")
+        arc_acc, arc_n = eval_arc(model, tok, chat=args.chat)
         print(f"ARC[da]: {arc_acc:.4f} ({int(arc_acc*arc_n)}/{arc_n})")
         row["arc_da_acc"] = round(arc_acc, 4)
         row["arc_da_n"] = arc_n
 
     if not args.skip_hs:
-        print(f"\n=== HellaSwag[da] val (n={args.hs_samples}) ===")
-        hs_acc, hs_n = eval_hellaswag(model, tok, k_samples=args.hs_samples)
+        print(f"\n=== HellaSwag[da] val (n={args.hs_samples}){' [chat]' if args.chat else ''} ===")
+        hs_acc, hs_n = eval_hellaswag(model, tok, k_samples=args.hs_samples, chat=args.chat)
         print(f"HellaSwag[da]: {hs_acc:.4f} ({int(hs_acc*hs_n)}/{hs_n})")
         row["hs_da_acc"] = round(hs_acc, 4)
         row["hs_da_n"] = hs_n
 
+    if not args.skip_sciq:
+        print(f"\n=== danish-sciq test (1000){' [chat]' if args.chat else ''} ===")
+        sci_acc, sci_n = eval_sciq_da(model, tok, chat=args.chat)
+        print(f"SciQ[da]: {sci_acc:.4f} ({int(sci_acc*sci_n)}/{sci_n}) — random baseline 0.2500")
+        row["sciq_da_acc"] = round(sci_acc, 4)
+        row["sciq_da_n"] = sci_n
+
     if not args.skip_cit:
-        print(f"\n=== danish-citizen-tests (720) ===")
-        cit_acc, cit_n, cit_baseline = eval_citizen(model, tok)
+        print(f"\n=== danish-citizen-tests (720){' [chat]' if args.chat else ''} ===")
+        cit_acc, cit_n, cit_baseline = eval_citizen(model, tok, chat=args.chat)
         print(f"Citizen: {cit_acc:.4f} ({int(cit_acc*cit_n)}/{cit_n}) — random baseline {cit_baseline:.4f}")
         row["cit_acc"] = round(cit_acc, 4)
         row["cit_n"] = cit_n

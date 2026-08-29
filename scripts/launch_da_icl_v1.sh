@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Danish ICL v1 — continued SFT on schema-induction rows only.
 #
-# Data: jensjepsen/danish-icl-json-v1:sft:train (8,469 rows). Each row packs
+# Data: jensjepsen/danish-icl-schema-format-v1:sft:train (8,469 rows). Each row packs
 # 1-5 worked examples sharing a JSON schema into ONE user turn with no
 # instruction, so the schema must be induced from the examples; ~half the rows
 # replace field names with meaning-free symbols (symbol tuning).
@@ -41,7 +41,7 @@ uv run python -u scripts/train_sft_packed.py \
   --tokenizer "$CKPT" \
   --output-dir /root/runs/da_icl_v1 \
   --no-morpheme-preprocess \
-  --sft-data jensjepsen/danish-icl-json-v1:sft:train \
+  --sft-data jensjepsen/danish-icl-schema-format-v1:sft:train \
   --epochs 3 --batch-size 8 --gradient-accumulation 4 \
   --optim adamw_bnb_8bit \
   --learning-rate 1e-5 --lr-scheduler constant_with_warmup --warmup-steps 50 \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Danish ICL v3 — continued SFT on multi-format schema-induction rows.
 #
-# Data: jensjepsen/danish-icl-json-v3:sft:train (33,937 rows, 4x v1). Two
+# Data: jensjepsen/danish-icl-schema-format-v3:sft:train (33,937 rows, 4x v1). Two
 # induction axes now vary per row: the schema (113 field-sets in train) and
 # the output format (6 renderers in train; kv_eq and tagged are held out for
 # the eval_format / eval_both splits).
@@ -51,7 +51,7 @@ uv run python -u scripts/train_sft_packed.py \
   --tokenizer "$CKPT" \
   --output-dir /root/runs/da_icl_v3 \
   --no-morpheme-preprocess \
-  --sft-data jensjepsen/danish-icl-json-v3:sft:train \
+  --sft-data jensjepsen/danish-icl-schema-format-v3:sft:train \
   --epochs 3 --batch-size 16 --gradient-accumulation 2 \
   --optim adamw_bnb_8bit \
   --learning-rate 1e-5 --lr-scheduler constant_with_warmup --warmup-steps 50 \

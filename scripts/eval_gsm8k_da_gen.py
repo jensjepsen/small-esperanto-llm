@@ -47,7 +47,7 @@ def main():
     ap.add_argument("--split", default="test")
     ap.add_argument("--n", type=int, default=None)
     ap.add_argument("--max-new", type=int, default=384)
-    ap.add_argument("--dtype", default="fp16", choices=["fp16", "bf16"])
+    ap.add_argument("--dtype", default="fp16", choices=["fp16", "fp32", "bf16"])
     ap.add_argument("--batch-size", type=int, default=1,
                     help="Rows per generate() call. On 5090/32GB with a 400M "
                          "model + max_new=300, bs=64 fits comfortably.")
@@ -58,7 +58,8 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     tok.padding_side = "left"
-    dtype = torch.float16 if args.dtype == "fp16" else torch.bfloat16
+    dtype = {"fp16": torch.float16, "fp32": torch.float32,
+             "bf16": torch.bfloat16}[args.dtype]
     model = AutoModelForCausalLM.from_pretrained(args.ckpt, torch_dtype=dtype).cuda().eval()
     end_id = tok.convert_tokens_to_ids(END)
     eos_ids = [tok.eos_token_id]

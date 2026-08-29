@@ -36,7 +36,7 @@ seen schemas measures memorisation of the 134 schemas that happen to be in
 the data; the eval split uses field-sets that never appear in training.
 
 Usage:
-  python scripts/gen_icl_json.py --n 200 --out scratch/icl_json
+  python scripts/gen_icl_schema_format.py --n 200 --out scratch/icl_json
 """
 from __future__ import annotations
 

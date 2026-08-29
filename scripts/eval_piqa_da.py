@@ -110,10 +110,12 @@ def main():
         gen = tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
         m = LETTER_RE.search(gen)
         if not m:
+            print(f"    [PARSEFAIL row={i}] gen={gen!r}", flush=True)
             return -1  # parse-fail (counts as wrong)
         return 0 if m.group(1) == "A" else 1
 
     n_ok = 0
+    n_parsefail = 0
     t0 = time.time()
     for i, row in enumerate(ds, 1):
         prompt = row["prompt"].strip()
@@ -121,15 +123,17 @@ def main():
         s1 = row["solution1"].strip()
         gold = row["label"]
         pred = score_pair(prompt, s0, s1, gold, i)
+        if pred == -1:
+            n_parsefail += 1
         ok = pred == gold
         n_ok += ok
 
         if i % 25 == 0 or i == n:
             el = time.time() - t0
             eta = el * (n - i) / i
-            print(f"  {i}/{n}  acc={n_ok/i:.3f}  eta={eta:.0f}s", flush=True)
+            print(f"  {i}/{n}  acc={n_ok/i:.3f}  parsefail={n_parsefail}  eta={eta:.0f}s", flush=True)
 
-    print(f"\n=== piqa-da[{args.mode}]  n={n}  acc={100*n_ok/n:.2f}%  ({n_ok}/{n}) ===",
+    print(f"\n=== piqa-da[{args.mode}]  n={n}  acc={100*n_ok/n:.2f}%  ({n_ok}/{n})  parsefail={n_parsefail} ===",
           flush=True)
 
 

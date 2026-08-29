@@ -30,7 +30,7 @@ from pathlib import Path
 from datasets import Dataset
 from huggingface_hub import HfApi
 
-REPO = "jensjepsen/danish-icl-json-v3"
+REPO = "jensjepsen/danish-icl-schema-format-v3"
 SPLITS = ["train", "val", "eval_schema", "eval_format", "eval_both"]
 
 
@@ -56,7 +56,7 @@ configs:
 {_cfg_block("sft", "sft")}
 ---
 
-# danish-icl-json-v3
+# danish-icl-schema-format-v3
 
 In-context-learning rows derived from `jensjepsen/danish-json-grpo-v1`. Each row
 packs 1-5 worked examples into a single user turn, followed by a held-out
@@ -78,7 +78,7 @@ from passages reserved before any training row was generated. All values are
 rendered from the source dataset's `gold_values` rather than generated, and rows
 are filtered so that every value is recoverable from its own passage and every
 key, boolean value, empty marker and notation appearing in the answer is
-demonstrated by at least one example. Built by `scripts/gen_icl_json.py`.
+demonstrated by at least one example. Built by `scripts/gen_icl_schema_format.py`.
 """
 
 

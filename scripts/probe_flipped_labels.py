@@ -34,7 +34,7 @@ from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gen_icl_json import canon, render  # noqa: E402
+from gen_icl_schema_format import canon, render  # noqa: E402
 
 USER, ASST, END = "<|user|>", "<|assistant|>", "<|end|>"
 SOURCE = "jensjepsen/danish-json-grpo-v1"

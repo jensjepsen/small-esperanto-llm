@@ -39,7 +39,7 @@ passage.
 ## Recipe
 
 - **Base**: [`jensjepsen/danish-lm-400m-sft-v31-avg-top3`](https://huggingface.co/jensjepsen/danish-lm-400m-sft-v31-avg-top3)
-- **Data**: [`jensjepsen/danish-icl-json-v3`](https://huggingface.co/datasets/jensjepsen/danish-icl-json-v3) `sft:train`, 33,933 rows, **ICL-only, no ballast**
+- **Data**: [`jensjepsen/danish-icl-schema-format-v3`](https://huggingface.co/datasets/jensjepsen/danish-icl-schema-format-v3) `sft:train`, 33,933 rows, **ICL-only, no ballast**
 - **3 epochs**, 3,024 steps, eff_bs 32 (16 x 2), lr 1e-5 constant + 50 warmup,
   `adamw_bnb_8bit`, seq 3072, FA2 varlen (`DataCollatorWithFlattening`)
 - 1,208s on one RTX 5090. Tokenizer is the base checkpoint's (16007 tokens,

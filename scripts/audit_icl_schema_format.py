@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, "scripts")
-from gen_icl_json import canon, NULL, SYMBOLS  # noqa: E402
+from gen_icl_schema_format import canon, NULL, SYMBOLS  # noqa: E402
 
 SPLITS = ("train", "eval_schema", "eval_format", "eval_both", "val")
 
