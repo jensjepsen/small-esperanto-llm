@@ -32,6 +32,22 @@ export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export WANDB_PROJECT=danish-lm-grpo
 unset WANDB_RUN_ID WANDB_RESUME
 
+# DAPO dynamic sampling. These are env-driven, not CLI flags, which is exactly
+# why the first launch silently ran without them --- recording them here so the
+# run config is in the script rather than in whatever shell started it.
+#
+# RESAMPLE=4: retry the generation batch up to 4x while any prompt-group has
+# zero reward std, keep the attempt with the most active groups. Costs up to 5x
+# generation in the worst case but recovers gradient from dead groups; the
+# smoke measured gsm8k at fzs=0.33, i.e. a third of its groups were being
+# discarded by --skip-zero-adv alone.
+# FRESH_PROMPTS: draw new prompts on retry rather than re-rolling the same
+# ones, and MATCH_TASK keeps the replacement on the same task so the 5-way
+# mix ratio is not distorted by resampling.
+export GRPO_DAPO_RESAMPLE=${GRPO_DAPO_RESAMPLE:-4}
+export GRPO_DAPO_FRESH_PROMPTS=${GRPO_DAPO_FRESH_PROMPTS:-1}
+export GRPO_DAPO_FRESH_MATCH_TASK=${GRPO_DAPO_FRESH_MATCH_TASK:-1}
+
 OUTPUT_DIR=${OUTPUT_DIR:-/root/runs/grpo/mixed5_v1}
 BASE_REPO=${BASE_REPO:-jensjepsen/danish-lm-400m-sft-v33-avg-top3}
 CKPT_LOCAL="$OUTPUT_DIR/base_ckpt"
@@ -60,5 +76,5 @@ $PY -u scripts/train_grpo_verifier.py \
   --save-steps 125 --eval-steps 0 \
   --greedy-eval-steps 125 --greedy-eval-max-rows 200 \
   --skip-zero-adv --best-k 3 \
-  --wandb-run-name grpo_mixed5_v1_ner_icl_from_v33 \
+  --wandb-run-name grpo_mixed5_v2_ner_icl_dapo_from_v33 \
   $EXTRA
