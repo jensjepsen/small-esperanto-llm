@@ -884,6 +884,58 @@ def build_ner_dataset(source: str = "KennethEnevoldsen/dane_plus",
     return Dataset.from_list(rows)
 
 
+def build_ner_sft_dataset(source: str = "jensjepsen/danish-ner-sft-v1",
+                          split: str = "train", max_rows: int = 0,
+                          seed: int = 42):
+    """NER GRPO rows from the SFT set rather than raw dane_plus.
+
+    dane_plus goes through a synthesised prompt and a JSON-only verifier, which
+    reaches neither of the two things v33 is actually weak at: instruction mode
+    (48.4 exact vs 60.4 for demonstrations) and span-wrap on an unseen
+    delimiter (7.5). This set carries all three prompt modes and all fourteen
+    formats with gold answers verified to strip back to their own passage, so
+    GRPO pressure lands where the headroom is.
+
+    passage is recovered from the prompt because span-wrap faithfulness is
+    scored against it; the rendering is fixed ("Tekst:\n...\nSvar:") and is the
+    same slice eval_ner_sft.py takes.
+    """
+    import random as _rnd
+    from datasets import load_dataset as _ld
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from gen_icl_schema_format import SYMBOLS as _SYM
+
+    ds = _ld(source, "default", split=split)
+    rows = []
+    for r in ds:
+        fmt = r.get("format")
+        if not fmt:
+            continue
+        if r.get("symbols", "none") == "none":
+            keys = sorted(set(r["types"].split("|")))
+        else:
+            keys = sorted(set(_SYM[r["symbols"]][:r["n_types"]]))
+        if not keys:
+            continue
+        prompt = r["messages"][0]["content"]
+        if "Tekst:\n" not in prompt or "\nSvar:" not in prompt:
+            continue
+        passage = prompt.rsplit("Tekst:\n", 1)[1].split("\nSvar:")[0]
+        rows.append({
+            "prompt": prompt,
+            "task": "ner",
+            "gold": r["messages"][1]["content"],
+            "constraints": [], "params": [],
+            "fields": keys, "types": [fmt], "strict": False,
+            "passage": passage, "gold_values": "",
+        })
+    _rnd.Random(seed).shuffle(rows)
+    if max_rows:
+        rows = rows[:max_rows]
+    print(f"  [build_ner_sft] {len(rows)} rows from {source}:{split}", flush=True)
+    return Dataset.from_list(rows)
+
+
 def build_icl_dataset(source: str, split: str = "train", max_rows: int = 0,
                       seed: int = 42):
     """ICL schema/format induction rows for GRPO.
@@ -1003,9 +1055,13 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
     # NER side (optional)
     ner_ds = None
     if ner_frac > 0:
-        ner_ds = build_ner_dataset(ner_source or "KennethEnevoldsen/dane_plus",
-                                   split="train", max_rows=0,
-                                   empty_frac=ner_empty_frac, seed=seed)
+        src = ner_source or "KennethEnevoldsen/dane_plus"
+        if "ner-sft" in src:
+            ner_ds = build_ner_sft_dataset(src, split="train", max_rows=0,
+                                           seed=seed)
+        else:
+            ner_ds = build_ner_dataset(src, split="train", max_rows=0,
+                                       empty_frac=ner_empty_frac, seed=seed)
 
     # Drop zero-weight sources rather than passing probability 0. Keeping them
     # forces if_share to a 1e-6 floor so the probabilities no longer sum to 1,
@@ -1099,9 +1155,14 @@ def main():
     ap.add_argument("--ner-frac", type=float, default=0.0,
                     help="For --task=mixed: fraction of NER rows in the "
                          "interleaved mix (0 = no NER).")
-    ap.add_argument("--ner-source", default="KennethEnevoldsen/dane_plus",
-                    help="Source for NER rows (dane_plus schema: text + ents "
-                         "with char offsets).")
+    ap.add_argument("--ner-source", default="jensjepsen/danish-ner-sft-v1",
+                    help="Source for NER rows. A repo whose name contains "
+                         "'ner-sft' is read as the SFT set (3 prompt modes, "
+                         "14 formats, gold verified to strip back to its own "
+                         "passage) and scored by reward_structured; anything "
+                         "else is read as the dane_plus schema (text + ents "
+                         "with char offsets) and keeps the legacy JSON-only "
+                         "verifier.")
     ap.add_argument("--ner-empty-frac", type=float, default=0.28,
                     help="Share of entity-FREE sentences in the NER split. "
                          "Natural rate is ~53%%, but empty-on-empty scores 1.0, "

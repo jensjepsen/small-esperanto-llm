@@ -951,6 +951,10 @@ def reward_ner(completion: str, gold_values) -> float:
 ICL_SCHEMA_WEIGHT = float(os.environ.get("GRPO_ICL_SCHEMA_WEIGHT", "0.25"))
 
 
+SPAN_FAITHFUL_WEIGHT = float(
+    os.environ.get("GRPO_SPAN_FAITHFUL_WEIGHT", "0.5"))
+
+
 def _icl_canon():
     """gen_icl_schema_format lives in scripts/ (already on sys.path above).
     Imported lazily so the base reward layer does not pay for it."""
@@ -958,29 +962,66 @@ def _icl_canon():
     return canon, NULL
 
 
-def reward_icl(completion: str, gold: str, fields, fmt: str) -> float:
-    """(key, value)-pair F1 for schema/format induction, times a key-set term.
+def _span_parts():
+    from gen_ner_sft import SPAN_WRAPS, parse_spans
+    return SPAN_WRAPS, parse_spans
 
-    F1 rather than exact match for the same reason as reward_ner: exact match
-    zeroes a whole group the moment one value is wrong, so most groups have no
-    spread and give no gradient. Measured on this task's own eval splits, exact
-    match runs ~11pp below key-set match (85.3 vs 96.4 on eval_format) --- that
-    gap is precisely the rows where partial credit exists and binary scoring
-    throws it away.
 
-    Unparseable output scores 0.0: the format IS the task here, so an answer
-    that cannot be parsed in the requested format is not partially right.
+def _pair_f1(pred: set, gold: set) -> float:
+    if not pred and not gold:
+        return 1.0                      # both empty: correct abstention
+    if not pred or not gold:
+        return 0.0
+    tp = len(pred & gold)
+    if tp == 0:
+        return 0.0
+    prec, rec = tp / len(pred), tp / len(gold)
+    return 2 * prec * rec / (prec + rec)
 
-    The key-set term is MULTIPLICATIVE, following reward_ner. Additive paid a
-    floor for merely naming the right keys, which is the failure mode this task
-    is most prone to --- the model already reaches 93-96% key-set match while
-    exact sits at 47-85%, so an additive term would hand out most of its mass
-    for the part that is already solved.
+
+def reward_structured(completion: str, gold: str, fields, fmt: str,
+                      passage: str | None = None) -> float:
+    """One reward for every structured-output row, NER-SFT and ICL alike.
+
+    Both datasets emit the same fourteen formats over the same task shape
+    ("pull these keys out of this text"), so they get one verifier rather than
+    two that can drift. The format name selects the parser, exactly as
+    eval_ner_sft.py does:
+
+      ten key-value formats -> canon()      {key: [values]}
+      four span-wrap formats -> parse_spans()  tags inline in the passage
+
+    Span-wrap additionally has to be FAITHFUL: stripping the tags must give
+    the passage back. That check is not optional decoration --- the measured
+    failure mode is a model returning the passage untouched, which strips
+    perfectly while extracting nothing (70% of held-out rows on v33, and an
+    earlier eval read 67% "faithful" on exactly that). Pair-F1 already scores
+    a bare passage 0, so the strip term only has to stop the opposite failure:
+    tagging correctly while mangling the text. Multiplicative, like
+    reward_ner's schema term --- additive pays a floor for merely reproducing
+    the passage.
     """
-    canon, NULL = _icl_canon()
     keys = list(fields or [])
     if not keys or not fmt:
         return 0.0
+    SPAN_WRAPS, parse_spans = _span_parts()
+
+    if fmt in SPAN_WRAPS:
+        try:
+            G, _ = parse_spans(gold, set(keys), fmt)
+            P, stripped = parse_spans(completion, set(keys), fmt)
+        except Exception:
+            return 0.0
+        gp = {(k, v) for k, vs in (G or {}).items() for v in vs}
+        pp = {(k, v) for k, vs in (P or {}).items() for v in vs}
+        f1 = _pair_f1(pp, gp)
+        if SPAN_FAITHFUL_WEIGHT <= 0 or passage is None:
+            return round(f1, 4)
+        ok = 1.0 if stripped.strip() == (passage or "").strip() else 0.0
+        return round(f1 * ((1 - SPAN_FAITHFUL_WEIGHT)
+                           + SPAN_FAITHFUL_WEIGHT * ok), 4)
+
+    canon, NULL = _icl_canon()
     try:
         pred_d = canon(completion, fmt, keys)
         gold_d = canon(gold, fmt, keys)
@@ -992,33 +1033,17 @@ def reward_icl(completion: str, gold: str, fields, fmt: str) -> float:
     def _pairs(d):
         return {(k, v) for k, vs in d.items() for v in vs if v != NULL}
 
-    pred, gld = _pairs(pred_d), _pairs(gold_d)
-    if not pred and not gld:
-        f1 = 1.0                       # both all-empty: correct abstention
-    elif not pred or not gld:
-        f1 = 0.0
-    else:
-        tp = len(pred & gld)
-        if tp == 0:
-            f1 = 0.0
-        else:
-            prec, rec = tp / len(pred), tp / len(gld)
-            f1 = 2 * prec * rec / (prec + rec)
-
+    f1 = _pair_f1(_pairs(pred_d), _pairs(gold_d))
     if ICL_SCHEMA_WEIGHT <= 0:
         return round(f1, 4)
-    # Emitting keys that were never requested is spurious, not free --- the
-    # demonstrations define the key set and inventing one is a schema error.
-    pk, gk = set(pred_d), set(gold_d)
-    if not pk and not gk:
-        kf1 = 1.0
-    elif not pk or not gk:
-        kf1 = 0.0
-    else:
-        ktp = len(pk & gk)
-        kf1 = 0.0 if ktp == 0 else (2 * (ktp / len(pk)) * (ktp / len(gk))
-                                    / ((ktp / len(pk)) + (ktp / len(gk))))
+    kf1 = _pair_f1({(k, "") for k in pred_d}, {(k, "") for k in gold_d})
     return round(f1 * ((1 - ICL_SCHEMA_WEIGHT) + ICL_SCHEMA_WEIGHT * kf1), 4)
+
+
+def reward_icl(completion: str, gold: str, fields, fmt: str) -> float:
+    """Back-compat alias: ICL rows have no passage, so span faithfulness is
+    not applicable and this is reward_structured's key-value branch."""
+    return reward_structured(completion, gold, fields, fmt)
 
 
 def reward_mixed(completions: list[str],
@@ -1060,12 +1085,18 @@ def reward_mixed(completions: list[str],
         if t == "gsm8k":
             out.append(reward_gsm8k([text], gold=[g])[0])
         elif t == "ner":
-            out.append(reward_ner(text, gv))
+            # SFT-derived rows carry a format in types[0]; dane_plus rows do
+            # not and keep the legacy JSON-only verifier.
+            fmt_n = (ty or [None])[0]
+            if fmt_n:
+                out.append(reward_structured(text, g, f, fmt_n, ps))
+            else:
+                out.append(reward_ner(text, gv))
         elif t == "icl":
             # keys ride in `fields`, the format name in `types[0]` --- reusing
             # the union columns rather than widening the schema, which every
             # other builder would then have to default.
-            out.append(reward_icl(text, g, f, (ty or [None])[0]))
+            out.append(reward_structured(text, g, f, (ty or [None])[0]))
         elif t == "json":
             if not f:
                 out.append(0.0)

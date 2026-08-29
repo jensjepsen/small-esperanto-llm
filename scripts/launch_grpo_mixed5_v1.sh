@@ -13,6 +13,13 @@
 # round away the small updates (KL doubled in the A/B). L40S is Ada, so bf16 is
 # native and there is no reason to reach for the FP16-everywhere recipe here.
 #
+# NER comes from danish-ner-sft-v1, not dane_plus: three prompt modes and
+# fourteen formats scored by reward_structured, which is where the headroom is
+# (instruction mode 48.4 vs demonstrations 60.4; span-wrap 7.5 on an unseen
+# delimiter). Both NER and ICL rows were in v33's SFT mix, so watch
+# rewards/*/fzs --- if a channel saturates it stops producing advantage and
+# should be swapped for a harder split.
+#
 # max-prompt-length 2048: ICL prompts carry their demonstrations and run to
 # 2154 tokens (mean 395). The 768 the 3-way recipe used would silently truncate
 # the demonstrations off a large share of ICL rows, making them unanswerable
@@ -42,6 +49,7 @@ $PY -u scripts/train_grpo_verifier.py \
   --combined-source jensjepsen/danish-if-grpo-combined-v1 \
   --json-source jensjepsen/danish-json-grpo-v1 \
   --icl-source jensjepsen/danish-icl-schema-format-v3 \
+  --ner-source jensjepsen/danish-ner-sft-v1 \
   --gsm-frac 0.2 --json-frac 0.2 --ner-frac 0.2 --icl-frac 0.2 \
   --checkpoint "$CKPT_LOCAL" \
   --output-dir "$OUTPUT_DIR" \
