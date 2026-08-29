@@ -37,12 +37,24 @@ export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export ESPLLM_NUM_PROC=8
 
 CKPT=jensjepsen/danish-lm-400m-sft-v31-avg-top3
+# Pick a pinning that this container actually permits. --membind needs
+# set_mempolicy, which RunPod blocks ("Operation not permitted"), and under
+# `set -e` that killed the run before a single step. Probe each candidate with
+# `true` and take the first that works; no pinning is a valid outcome.
+GPU_NODE=-1
+NODE_FILE=$(ls -d /sys/bus/pci/devices/*/numa_node 2>/dev/null | head -1)
+BUS=$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader | head -1 | tr "A-Z" "a-z" | sed "s/^0000//")
+[ -e "/sys/bus/pci/devices/0000$BUS/numa_node" ] &&   GPU_NODE=$(cat "/sys/bus/pci/devices/0000$BUS/numa_node")
 PIN=""
-if command -v numactl >/dev/null && [ -e /sys/bus/pci/devices/0000:05:00.0/numa_node ]; then
-  GPU_NODE=$(cat /sys/bus/pci/devices/0000:05:00.0/numa_node)
-  [ "$GPU_NODE" -ge 0 ] && PIN="numactl --cpunodebind=$GPU_NODE --membind=$GPU_NODE"
+if command -v numactl >/dev/null && [ "$GPU_NODE" -ge 0 ]; then
+  CPUS=$(cat /sys/devices/system/node/node$GPU_NODE/cpulist 2>/dev/null || echo "")
+  for cand in "numactl --cpunodebind=$GPU_NODE --membind=$GPU_NODE" \
+              "numactl --cpunodebind=$GPU_NODE" \
+              ${CPUS:+"taskset -c $CPUS"}; do
+    if $cand true 2>/dev/null; then PIN="$cand"; break; fi
+  done
 fi
-echo "pinning: ${PIN:-none}"
+echo "pinning: ${PIN:-none}  (gpu numa node $GPU_NODE)"
 
 $PIN uv run python -u scripts/train_sft_packed.py \
   --checkpoint "$CKPT" \
