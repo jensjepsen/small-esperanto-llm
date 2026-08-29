@@ -85,7 +85,8 @@ Full test splits, chat-format, greedy. Run with `scripts/eval_full_suite.sh`.
 | ARC-Easy | 41.12 |
 | ARC-Challenge | 27.30 |
 | OpenBookQA | 35.40 |
-| PIQA (chat-mc) | 49.00 |
+| PIQA (`raw`, length-norm logp) | 60.00 |
+| PIQA (`chat-mc`, letter generation) | 49.00 |
 | GPQA-Diamond | 26.77 |
 | SciQ (length-norm logp) | 42.80 |
 | CitMC (length-norm logp) | 56.39 |
@@ -94,6 +95,12 @@ Full test splits, chat-format, greedy. Run with `scripts/eval_full_suite.sh`.
 | IFEval-DA prompt-loose | 25.2 |
 | IFEval-DA inst-strict | 38.9 |
 | IFEval-DA inst-loose | 40.0 |
+
+Both PIQA modes are listed because they differ by 11 points and the
+conventions disagree: `raw` is the standard PIQA protocol (score each solution
+as a continuation, pick the higher length-normalized log-prob), `chat-mc` asks
+for a letter. Neither reproduces the 53.00 on the v31 cards, so the v31 figure
+came from a third harness and is not comparable to either.
 
 ### ICL schema/format induction
 
