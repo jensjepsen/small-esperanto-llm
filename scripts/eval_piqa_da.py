@@ -14,12 +14,17 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 import time
+from pathlib import Path as _Path
 
 import torch
 import torch.nn.functional as F
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from batched_eval import generate_batch, ratchet, score_cont_batch  # noqa: E402
 
 USER, ASST, END = "<|user|>", "<|assistant|>", "<|end|>"
 LETTER_RE = re.compile(r"\b([AB])\b")
@@ -54,6 +59,8 @@ def main():
                     choices=["fp32", "fp16", "bf16"],
                     help="fp32 matches HF master weights (default). "
                          "fp16/bf16 downcast at load — faster but lossy.")
+    ap.add_argument("--batch-size", type=int, default=64,
+                    help="Rows per forward/generate batch.")
     ap.add_argument("--mode", default="raw",
                     choices=["raw", "chat-completion", "chat-mc"],
                     help="raw: standard PIQA continuation scoring. "
@@ -80,58 +87,49 @@ def main():
     A_TOKEN = a_id[-1]
     B_TOKEN = b_id[-1]
 
-    def score_pair(prompt, s0, s1, gold, idx):
-        if args.mode == "raw":
-            lp0 = score_conditional(model, tok, prompt + " ", s0)
-            lp1 = score_conditional(model, tok, prompt + " ", s1)
-            return (0 if lp0 > lp1 else 1)
-        if args.mode == "chat-completion":
-            u = (f"Fuldstændiggør sætningen på den mest logiske måde. "
-                 f"Skriv KUN den manglende del.\n\n\"{prompt}\"")
-            base = f"{USER}{u}{END}{ASST}"
-            lp0 = score_conditional(model, tok, base, s0)
-            lp1 = score_conditional(model, tok, base, s1)
-            return (0 if lp0 > lp1 else 1)
-        # chat-mc: match cit-mc's prompt structure — {q}\n\n{opts}\n\n{ask}.
-        # For PIQA, phrase the completion prompt as a question.
-        q = f"Hvilken fortsættelse passer bedst? \"{prompt}\""
-        u = (f"{q}\n\n"
-             f"A) {s0}\nB) {s1}\n\n"
-             f"Svar med bogstavet på det korrekte svar.")
-        prompt_str = f"{USER}{u}{END}{ASST}"
-        ids = tok(prompt_str, return_tensors="pt", add_special_tokens=False,
-                  return_token_type_ids=False).input_ids.cuda()
-        end_id = tok.convert_tokens_to_ids(END)
-        eos_ids = [tok.eos_token_id] + ([end_id] if end_id != tok.unk_token_id else [])
-        with torch.no_grad():
-            out = model.generate(ids, max_new_tokens=8, do_sample=False,
-                                 num_beams=1, pad_token_id=tok.pad_token_id or tok.eos_token_id,
-                                 eos_token_id=eos_ids)
-        gen = tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
-        m = LETTER_RE.search(gen)
-        if not m:
-            print(f"    [PARSEFAIL row={i}] gen={gen!r}", flush=True)
-            return -1  # parse-fail (counts as wrong)
-        return 0 if m.group(1) == "A" else 1
-
-    n_ok = 0
-    n_parsefail = 0
+    rows = [(r["prompt"].strip(), r["solution0"].strip(),
+             r["solution1"].strip(), r["label"]) for r in ds]
     t0 = time.time()
-    for i, row in enumerate(ds, 1):
-        prompt = row["prompt"].strip()
-        s0 = row["solution0"].strip()
-        s1 = row["solution1"].strip()
-        gold = row["label"]
-        pred = score_pair(prompt, s0, s1, gold, i)
-        if pred == -1:
-            n_parsefail += 1
-        ok = pred == gold
-        n_ok += ok
+    n_parsefail = 0
 
-        if i % 25 == 0 or i == n:
-            el = time.time() - t0
-            eta = el * (n - i) / i
-            print(f"  {i}/{n}  acc={n_ok/i:.3f}  parsefail={n_parsefail}  eta={eta:.0f}s", flush=True)
+    if args.mode in ("raw", "chat-completion"):
+        pairs = []
+        for prompt, s0, s1, _ in rows:
+            if args.mode == "raw":
+                base = prompt + " "
+            else:
+                u = (f"Fuldstændiggør sætningen på den mest logiske måde. "
+                     f"Skriv KUN den manglende del.\n\n\"{prompt}\"")
+                base = f"{USER}{u}{END}{ASST}"
+            pairs += [(base, s0), (base, s1)]
+        lps = score_cont_batch(model, tok, pairs, bs=args.batch_size,
+                               progress=ratchet(args.mode))
+        preds = [0 if lps[2 * k] > lps[2 * k + 1] else 1
+                 for k in range(len(rows))]
+    else:  # chat-mc
+        prompts = []
+        for prompt, s0, s1, _ in rows:
+            q = f"Hvilken fortsættelse passer bedst? \"{prompt}\""
+            u = (f"{q}\n\n"
+                 f"A) {s0}\nB) {s1}\n\n"
+                 f"Svar med bogstavet på det korrekte svar.")
+            prompts.append(f"{USER}{u}{END}{ASST}")
+        end_id = tok.convert_tokens_to_ids(END)
+        eos_ids = [tok.eos_token_id] + (
+            [end_id] if end_id != tok.unk_token_id else [])
+        gens = generate_batch(model, tok, prompts, 8, eos_ids,
+                              bs=args.batch_size, progress=ratchet("chat-mc"))
+        preds = []
+        for g in gens:
+            m = LETTER_RE.search(g)
+            if not m:
+                n_parsefail += 1
+                preds.append(-1)
+            else:
+                preds.append(0 if m.group(1) == "A" else 1)
+
+    n_ok = sum(1 for pr, (_, _, _, gold) in zip(preds, rows) if pr == gold)
+    print(f"  done in {time.time() - t0:.0f}s", flush=True)
 
     print(f"\n=== piqa-da[{args.mode}]  n={n}  acc={100*n_ok/n:.2f}%  ({n_ok}/{n})  parsefail={n_parsefail} ===",
           flush=True)

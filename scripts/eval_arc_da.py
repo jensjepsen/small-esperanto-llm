@@ -5,12 +5,16 @@ Usage:
     uv run python scripts/eval_arc_da.py --ckpt HF_ID [--config arc_easy|arc_challenge]
 """
 from __future__ import annotations
-import argparse, re, time
+import argparse, re, sys, time
+from pathlib import Path as _Path
 
 import torch
 import torch.nn.functional as F
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from batched_eval import generate_batch, ratchet, score_cont_batch  # noqa: E402
 
 USER, ASST, END = "<|user|>", "<|assistant|>", "<|end|>"
 LETTER_RE = re.compile(r"\b([ABCDE])\b")
@@ -41,6 +45,10 @@ def main():
     ap.add_argument("--dtype", default="fp32", choices=["fp32","fp16","bf16"])
     ap.add_argument("--max-new", type=int, default=8)
     ap.add_argument("--report-every", type=int, default=50)
+    ap.add_argument("--batch-size", type=int, default=64,
+                    help="Rows per forward/generate batch. raw-logp scores "
+                         "n_options sequences per row, so the effective "
+                         "batch there is batch-size (option-level).")
     ap.add_argument("--config", default="arc_easy",
                     help="Dataset config passed to load_dataset. "
                          "For --dataset jensjepsen/danish-arc: 'arc_easy' or 'arc_challenge'. "
@@ -70,40 +78,49 @@ def main():
 
     import ast as _ast
 
-    n_ok = 0
-    n_parsefail = 0
-    t0 = time.time()
-    for i, r in enumerate(ds, 1):
-        q = r["question"]
+    # Phase 1: build every prompt (or prompt/option pair) up front, so the
+    # model sees full batches instead of one row at a time.
+    rows = []
+    for r in ds:
         choices = r["choices"]
         if isinstance(choices, str):
             choices = _ast.literal_eval(choices)
-        opts = [(c["label"], c["text"]) for c in choices]
-        answer = r["answerKey"]
+        rows.append((r["question"], [(c["label"], c["text"]) for c in choices],
+                     r["answerKey"]))
 
-        if args.mode == "chat-mc":
+    t0 = time.time()
+    n_parsefail = 0
+    if args.mode == "chat-mc":
+        prompts = []
+        for q, opts, _ in rows:
             opts_str = "\n".join(f"{lab}) {v}" for lab, v in opts)
             body = f"{q}\n\n{opts_str}\n\nSvar med bogstavet på det korrekte svar."
-            prompt = f"{USER}{body}{END}{ASST}"
-            ids = tok(prompt, return_tensors="pt", add_special_tokens=False,
-                      return_token_type_ids=False).input_ids.cuda()
-            with torch.no_grad():
-                out = model.generate(ids, max_new_tokens=args.max_new, do_sample=False,
-                                     pad_token_id=tok.pad_token_id, eos_token_id=eos_ids)
-            gen = tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
-            m = LETTER_RE.search(gen)
-            if not m: n_parsefail += 1; pred = "?"
-            else: pred = m.group(1)
-        else:  # raw-logp: score each option as a continuation, pick highest
+            prompts.append(f"{USER}{body}{END}{ASST}")
+        gens = generate_batch(model, tok, prompts, args.max_new, eos_ids,
+                              bs=args.batch_size, progress=ratchet("chat-mc"))
+        preds = []
+        for g in gens:
+            m = LETTER_RE.search(g)
+            if not m:
+                n_parsefail += 1
+                preds.append("?")
+            else:
+                preds.append(m.group(1))
+    else:  # raw-logp
+        pairs, spans = [], []
+        for q, opts, _ in rows:
             base = f"{q.strip()}\nSvar: "
-            lps = [(lab, score_cont(model, tok, base, v)) for lab, v in opts]
-            pred = max(lps, key=lambda x: x[1])[0]
-        if pred == answer: n_ok += 1
-        if i % args.report_every == 0 or i == n:
-            el = time.time() - t0
-            eta = el * (n - i) / i
-            print(f"  {i}/{n}  acc={n_ok/i:.3f}  parsefail={n_parsefail}  eta={eta:.0f}s",
-                  flush=True)
+            spans.append((len(pairs), len(opts)))
+            pairs += [(base, v) for _, v in opts]
+        lps = score_cont_batch(model, tok, pairs, bs=args.batch_size,
+                               progress=ratchet("raw-logp"))
+        preds = []
+        for (q, opts, _), (off, k) in zip(rows, spans):
+            best = max(range(k), key=lambda j: lps[off + j])
+            preds.append(opts[best][0])
+
+    n_ok = sum(1 for p_, (_, _, ans) in zip(preds, rows) if p_ == ans)
+    print(f"  done in {time.time() - t0:.0f}s", flush=True)
 
     _ds_tag = args.dataset.rsplit("/", 1)[-1].replace("danish-", "")
     print(f"\n=== {_ds_tag}[{args.config}][{args.mode}]  n={n}  acc={100*n_ok/n:.2f}%  ({n_ok}/{n})  "

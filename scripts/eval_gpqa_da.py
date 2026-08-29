@@ -13,11 +13,16 @@ import argparse
 import json
 import random
 import re
+import sys
 import time
+from pathlib import Path as _Path
 
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from batched_eval import generate_batch, ratchet, score_cont_batch  # noqa: E402
 
 USER, ASST, END = "<|user|>", "<|assistant|>", "<|end|>"
 LETTER_RE = re.compile(r"\b([ABCD])\b")
@@ -50,6 +55,9 @@ def main():
     ap.add_argument("--max-new", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--report-every", type=int, default=25)
+    ap.add_argument("--batch-size", type=int, default=64,
+                    help="Rows per forward/generate batch. The logp modes "
+                         "score 4 sequences per row, batched at this size.")
     ap.add_argument("--mode", default="chat-mc",
                     choices=["chat-mc", "raw-logp", "chat-logp"],
                     help="chat-mc: chat-wrapped letter gen + parse. "
@@ -75,70 +83,66 @@ def main():
         rows = list(load_dataset(args.data, split="train"))
     print(f"  {len(rows)} rows", flush=True)
 
-    n_ok = 0
-    n_parsefail = 0
-    t0 = time.time()
-    for i, r in enumerate(rows, 1):
-        q = r["question_da"]
-        answers = list(r["answers_da"])  # [correct, w1, w2, w3]
+    LETTERS = "ABCD"
 
-        if args.mode == "chat-mc":
-            rng = random.Random(args.seed + r["orig_idx"])
-            idxs = list(range(4))
-            rng.shuffle(idxs)
-            letters = "ABCD"
-            opts_lines = []
-            gold_letter = None
-            for slot, orig in enumerate(idxs):
-                opts_lines.append(f"{letters[slot]}) {answers[orig]}")
-                if orig == 0:
-                    gold_letter = letters[slot]
-            body = (f"{q}\n\n" + "\n".join(opts_lines) +
+    def shuffled(r):
+        """Per-row A/B/C/D permutation, same deterministic seed as before."""
+        rng = random.Random(args.seed + r["orig_idx"])
+        idxs = list(range(4))
+        rng.shuffle(idxs)
+        lines, gold = [], None
+        for slot, orig in enumerate(idxs):
+            lines.append(f"{LETTERS[slot]}) {list(r['answers_da'])[orig]}")
+            if orig == 0:
+                gold = LETTERS[slot]
+        return lines, gold
+
+    t0 = time.time()
+    n_parsefail = 0
+
+    if args.mode == "raw-logp":
+        pairs = []
+        for r in rows:
+            base = f"{r['question_da'].strip()}\nSvar: "
+            pairs += [(base, a) for a in list(r["answers_da"])]
+        lps = score_cont_batch(model, tok, pairs, bs=args.batch_size,
+                               progress=ratchet("raw-logp"))
+        n_ok = sum(1 for k in range(len(rows))
+                   if max(range(4), key=lambda j: lps[4 * k + j]) == 0)
+    elif args.mode == "chat-mc":
+        prompts, golds = [], []
+        for r in rows:
+            lines, gold = shuffled(r)
+            body = (f"{r['question_da']}\n\n" + "\n".join(lines) +
                     "\n\nSvar med bogstavet på det korrekte svar.")
-            prompt = f"{USER}{body}{END}{ASST}"
-            ids = tok(prompt, return_tensors="pt", add_special_tokens=False,
-                      return_token_type_ids=False).input_ids.cuda()
-            with torch.no_grad():
-                out = model.generate(ids, max_new_tokens=args.max_new, do_sample=False,
-                                     pad_token_id=tok.pad_token_id, eos_token_id=eos_ids)
-            gen = tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
-            m = LETTER_RE.search(gen)
+            prompts.append(f"{USER}{body}{END}{ASST}")
+            golds.append(gold)
+        gens = generate_batch(model, tok, prompts, args.max_new, eos_ids,
+                              bs=args.batch_size, progress=ratchet("chat-mc"))
+        n_ok = 0
+        for g, gold in zip(gens, golds):
+            m = LETTER_RE.search(g)
             if not m:
                 n_parsefail += 1
-                pred = "?"
-            else:
-                pred = m.group(1)
-            if pred == gold_letter:
-                n_ok += 1
-        elif args.mode == "raw-logp":
-            base = f"{q.strip()}\nSvar: "
-            lps = [(orig, score_cont(model, tok, base, ans)) for orig, ans in enumerate(answers)]
-            pred_orig = max(lps, key=lambda x: x[1])[0]
-            if pred_orig == 0:
-                n_ok += 1
-        else:  # chat-logp
-            rng = random.Random(args.seed + r["orig_idx"])
-            idxs = list(range(4))
-            rng.shuffle(idxs)
-            letters = "ABCD"
-            opts_lines = []
-            gold_letter = None
-            for slot, orig in enumerate(idxs):
-                opts_lines.append(f"{letters[slot]}) {answers[orig]}")
-                if orig == 0:
-                    gold_letter = letters[slot]
-            body = (f"{q}\n\n" + "\n".join(opts_lines) +
+                continue
+            n_ok += (m.group(1) == gold)
+    else:  # chat-logp
+        pairs, golds = [], []
+        for r in rows:
+            lines, gold = shuffled(r)
+            body = (f"{r['question_da']}\n\n" + "\n".join(lines) +
                     "\n\nSvar med bogstavet på det korrekte svar.")
             prompt = f"{USER}{body}{END}{ASST}"
-            lps = [(lab, score_cont(model, tok, prompt, lab)) for lab in letters]
-            pred = max(lps, key=lambda x: x[1])[0]
-            if pred == gold_letter:
-                n_ok += 1
-        if i % args.report_every == 0 or i == len(rows):
-            el = time.time() - t0
-            eta = el * (len(rows) - i) / i
-            print(f"  {i}/{len(rows)}  acc={n_ok/i:.3f}  parsefail={n_parsefail}  eta={eta:.0f}s",
-                  flush=True)
+            pairs += [(prompt, lab) for lab in LETTERS]
+            golds.append(gold)
+        lps = score_cont_batch(model, tok, pairs, bs=args.batch_size,
+                               progress=ratchet("chat-logp"))
+        n_ok = 0
+        for k, gold in enumerate(golds):
+            best = max(range(4), key=lambda j: lps[4 * k + j])
+            n_ok += (LETTERS[best] == gold)
+
+    print(f"  done in {time.time() - t0:.0f}s", flush=True)
 
     print(f"\n=== gpqa-diamond-da[{args.mode}]  n={len(rows)}  "
           f"acc={100*n_ok/len(rows):.2f}%  ({n_ok}/{len(rows)})  "
