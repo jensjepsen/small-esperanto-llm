@@ -903,9 +903,39 @@ def build_ner_dataset(source: str = "KennethEnevoldsen/dane_plus",
     return Dataset.from_list(rows)
 
 
+def _drop_overlong(rows, tokenizer, max_prompt_tokens, label):
+    """Drop rows whose prompt exceeds the vLLM window.
+
+    TRL 1.x dropped max_prompt_length as a TRUNCATION control -- it now only
+    feeds vllm_max_model_length = max_prompt + max_completion. Nothing clips
+    the prompt, so a single over-long row aborts the whole run mid-training
+    ("maximum context length is 2432 tokens ... your prompt contains 2699").
+    That killed mixed5_v2 at step 9,795 after four hours.
+
+    Filtering here rather than truncating: a truncated ICL prompt loses its
+    demonstrations and becomes unanswerable, which would feed the reward
+    channel pure noise instead of crashing loudly.
+    """
+    if not tokenizer or not max_prompt_tokens:
+        return rows
+    keep, dropped, longest = [], 0, 0
+    for r in rows:
+        n = len(tokenizer(r["prompt"], add_special_tokens=False)["input_ids"])
+        longest = max(longest, n)
+        if n <= max_prompt_tokens:
+            keep.append(r)
+        else:
+            dropped += 1
+    print(f"  [{label}] dropped {dropped}/{len(rows)} rows over "
+          f"{max_prompt_tokens} prompt tokens (longest seen {longest})",
+          flush=True)
+    return keep
+
+
 def build_ner_sft_dataset(source: str = "jensjepsen/danish-ner-sft-v1",
                           split: str = "train", max_rows: int = 0,
-                          seed: int = 42):
+                          seed: int = 42, tokenizer=None,
+                          max_prompt_tokens: int = 0):
     """NER GRPO rows from the SFT set rather than raw dane_plus.
 
     dane_plus goes through a synthesised prompt and a JSON-only verifier, which
@@ -948,6 +978,7 @@ def build_ner_sft_dataset(source: str = "jensjepsen/danish-ner-sft-v1",
             "fields": keys, "types": [fmt], "strict": False,
             "passage": passage, "gold_values": "",
         })
+    rows = _drop_overlong(rows, tokenizer, max_prompt_tokens, "build_ner_sft")
     _rnd.Random(seed).shuffle(rows)
     if max_rows:
         rows = rows[:max_rows]
@@ -956,7 +987,8 @@ def build_ner_sft_dataset(source: str = "jensjepsen/danish-ner-sft-v1",
 
 
 def build_icl_dataset(source: str, split: str = "train", max_rows: int = 0,
-                      seed: int = 42):
+                      seed: int = 42, tokenizer=None,
+                      max_prompt_tokens: int = 0):
     """ICL schema/format induction rows for GRPO.
 
     The prompt already carries the demonstrations, so the policy has to induce
@@ -991,6 +1023,7 @@ def build_icl_dataset(source: str, split: str = "train", max_rows: int = 0,
             "fields": keys, "types": [r["format"]], "strict": False,
             "passage": "", "gold_values": "",
         })
+    rows = _drop_overlong(rows, tokenizer, max_prompt_tokens, "build_icl")
     _rnd.Random(seed).shuffle(rows)
     if max_rows:
         rows = rows[:max_rows]
@@ -1007,6 +1040,7 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
                         ner_empty_frac: float = 0.28,
                         icl_source: str | None = None,
                         icl_frac: float = 0.0,
+                        tokenizer=None, max_prompt_tokens: int = 0,
                         interleave_strategy: str = "all_exhausted"):
     """Mix gsm8k train + combined-IF (+ optional json) via
     datasets.interleave_datasets with per-task probabilities [if_share,
@@ -1077,7 +1111,8 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
         src = ner_source or "KennethEnevoldsen/dane_plus"
         if "ner-sft" in src:
             ner_ds = build_ner_sft_dataset(src, split="train", max_rows=0,
-                                           seed=seed)
+                                           seed=seed, tokenizer=tokenizer,
+                                           max_prompt_tokens=max_prompt_tokens)
         else:
             ner_ds = build_ner_dataset(src, split="train", max_rows=0,
                                        empty_frac=ner_empty_frac, seed=seed)
@@ -1091,7 +1126,8 @@ def build_mixed_dataset(combined_source: str, max_rows: int = 0,
     if icl_frac > 0:
         icl_ds = build_icl_dataset(
             icl_source or "jensjepsen/danish-icl-schema-format-v3",
-            split="train", max_rows=0, seed=seed)
+            split="train", max_rows=0, seed=seed, tokenizer=tokenizer,
+            max_prompt_tokens=max_prompt_tokens)
 
     if_share = 1.0 - gsm_frac - json_frac - ner_frac - icl_frac
     cand = [(if_ds, if_share, "if"), (gsm_ds, gsm_frac, "gsm"),
@@ -1423,6 +1459,8 @@ def main():
                                  icl_source=(args.icl_source
                                              if args.icl_frac > 0 else None),
                                  icl_frac=args.icl_frac,
+                                 tokenizer=tok,
+                                 max_prompt_tokens=args.max_prompt_length,
                                  interleave_strategy=args.interleave_strategy)
         reward_fn = reward_mixed
         # Greedy-eval callback attaches ifeval-da, gsm8k, and optionally json below.
@@ -1743,7 +1781,9 @@ def main():
             # real launch after the training path had already been switched.
             if "ner-sft" in (args.ner_source or ""):
                 nds = build_ner_sft_dataset(args.ner_source, split="val",
-                                            max_rows=args.greedy_eval_max_rows)
+                                            max_rows=args.greedy_eval_max_rows,
+                                            tokenizer=tok,
+                                            max_prompt_tokens=args.max_prompt_length)
                 n_items = [(r["prompt"], r["gold"], r["fields"],
                             r["types"][0], r["passage"]) for r in nds]
                 n_task = "struct"
@@ -1769,7 +1809,9 @@ def main():
             # eval_schema: unseen schemas, seen formats. Never trained on --- the
             # GRPO rows come from the train split.
             ids_ = build_icl_dataset(args.icl_source, split="eval_schema",
-                                     max_rows=args.greedy_eval_max_rows)
+                                     max_rows=args.greedy_eval_max_rows,
+                                     tokenizer=tok,
+                                     max_prompt_tokens=args.max_prompt_length)
             i_items = [(r["prompt"], r["gold"], r["fields"], r["types"][0], None)
                        for r in ids_]
             cb = GreedyEvalCallback(

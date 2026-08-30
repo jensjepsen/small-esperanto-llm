@@ -30,7 +30,16 @@ export PATH="$HOME/.local/bin:$PATH"
 export HF_HOME=/tmp/hf-cache
 export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export WANDB_PROJECT=danish-lm-grpo
-unset WANDB_RUN_ID WANDB_RESUME
+# RESUME_FROM=<checkpoint dir> continues a crashed run. When set, the wandb
+# run id must be reused or the trajectory splits across two runs and the
+# in-training curves stop being comparable.
+RESUME_FROM=${RESUME_FROM:-}
+if [ -n "$RESUME_FROM" ]; then
+  export WANDB_RUN_ID=${WANDB_RUN_ID:?set WANDB_RUN_ID when resuming}
+  export WANDB_RESUME=allow
+else
+  unset WANDB_RUN_ID WANDB_RESUME
+fi
 
 # DAPO dynamic sampling. These are env-driven, not CLI flags, which is exactly
 # why the first launch silently ran without them --- recording them here so the
@@ -77,4 +86,5 @@ $PY -u scripts/train_grpo_verifier.py \
   --greedy-eval-steps 125 --greedy-eval-max-rows 200 \
   --skip-zero-adv --best-k 3 \
   --wandb-run-name grpo_mixed5_v2_ner_icl_dapo_from_v33 \
+  ${RESUME_FROM:+--resume "$RESUME_FROM"} \
   $EXTRA
