@@ -20,6 +20,13 @@ The rules are chosen to separate kinds of induction:
 Vocabulary is sampled from a real Danish corpus rather than a hand-written
 list, so the items are not quietly selected to be easy.
 
+The demonstrations use the SAME scaffold the ICL training data uses
+("Eksempler:" / "Tekst:" / "Svar:"). A first version used a bare
+input-newline-output layout and the model emitted nothing at all on 9 of 12
+rules -- 0% nonempty, identical for the SFT and GRPO models. That measured
+scaffold familiarity, not rule induction: two things were novel at once. Only
+the RULE should be unfamiliar.
+
 Usage:
   python scripts/probe_icl_rules.py --ckpt <path> [--n 40] [--shots 5]
 """
@@ -154,8 +161,9 @@ def main():
         for _ in range(args.n):
             pairs = [fn() for _ in range(args.shots + 1)]
             demos, (qi, qo) = pairs[:-1], pairs[-1]
-            body = "\n\n".join(f"{i}\n{o}" for i, o in demos)
-            body += f"\n\n{qi}\n"
+            body = "Eksempler:\n\n" + "\n\n".join(
+                f"Tekst:\n{i}\nSvar: {o}" for i, o in demos)
+            body += f"\n\nTekst:\n{qi}\nSvar:"
             items.append((f"{USER}{body}{END}{ASST}", qo, qi))
 
         outs = []
