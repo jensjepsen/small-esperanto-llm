@@ -73,8 +73,8 @@ $PY -u scripts/train_grpo_verifier.py \
   --task mixed \
   --combined-source jensjepsen/danish-if-grpo-combined-v1 \
   --json-source jensjepsen/danish-json-grpo-v1 \
-  --icl-source jensjepsen/danish-icl-schema-format-v3 \
-  --ner-source jensjepsen/danish-ner-sft-v1 \
+  --icl-source jensjepsen/danish-icl-schema-format-v3,jensjepsen/danish-icl-grpo-v1 \
+  --ner-source jensjepsen/danish-ner-sft-v1,jensjepsen/danish-ner-grpo-v1 \
   --gsm-frac 0.2 --json-frac 0.2 --ner-frac 0.2 --icl-frac 0.2 \
   --checkpoint "$CKPT_LOCAL" \
   --output-dir "$OUTPUT_DIR" \
@@ -85,6 +85,6 @@ $PY -u scripts/train_grpo_verifier.py \
   --save-steps 125 --eval-steps 0 \
   --greedy-eval-steps 125 --greedy-eval-max-rows 200 \
   --skip-zero-adv --best-k 3 \
-  --wandb-run-name grpo_mixed5_v2_ner_icl_dapo_from_v33 \
+  --wandb-run-name grpo_mixed5_v3_freshold_dapo_from_v33 \
   ${RESUME_FROM:+--resume "$RESUME_FROM"} \
   $EXTRA

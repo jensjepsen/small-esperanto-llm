@@ -324,6 +324,13 @@ def main():
     ap.add_argument("--sym-frac", type=float, default=0.4)
     ap.add_argument("--min-len", type=int, default=25)
     ap.add_argument("--max-len", type=int, default=400)
+    ap.add_argument("--exclude-src", default=None,
+                    help="HF dataset id or JSONL whose PASSAGES to drop before "
+                         "generating. Pass the earlier build to get rows that "
+                         "share no text with it. DANSK train holds 11,740 "
+                         "passages and the v1 SFT build used 7,054, so ~4,686 "
+                         "remain for a genuinely unseen GRPO split -- rows "
+                         "the policy cannot have memorised.")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--show", type=int, default=2)
     args = ap.parse_args()
@@ -341,6 +348,22 @@ def main():
     assert seen_f, "every format held out"
 
     train_rows = load_rows("train", args.min_len, args.max_len)
+    if args.exclude_src:
+        import json as _json
+        import re as _re
+        _BL = _re.compile(r"Tekst:\n(.*?)\nSvar:", _re.S)
+        if args.exclude_src.endswith(".jsonl"):
+            _src = [_json.loads(l) for l in open(args.exclude_src) if l.strip()]
+        else:
+            from datasets import load_dataset as _ld
+            _src = list(_ld(args.exclude_src, "default", split="train"))
+        used = {x.strip() for r in _src
+                for x in _BL.findall(r["messages"][0]["content"])}
+        before = len(train_rows)
+        train_rows = [r for r in train_rows if r["text"].strip() not in used]
+        print(f"--exclude-src {args.exclude_src}: {len(used)} passages used "
+              f"there; train {before} -> {len(train_rows)} unseen", flush=True)
+        assert train_rows, "exclusion left no train passages"
     dev_rows = load_rows("dev", args.min_len, args.max_len)
     # Every eval split is built from DANSK's own TEST text. An earlier version
     # drew the held-out-format and held-out-type rows from train passages, so

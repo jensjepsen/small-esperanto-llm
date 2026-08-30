@@ -903,6 +903,24 @@ def build_ner_dataset(source: str = "KennethEnevoldsen/dane_plus",
     return Dataset.from_list(rows)
 
 
+def _concat_sources(loader, spec: str, split: str):
+    """`spec` may name several datasets, comma-separated. A source missing the
+    requested split is skipped with a warning rather than aborting -- the fresh
+    GRPO sets do not carry every split the SFT sets do."""
+    out = []
+    for src in [x.strip() for x in str(spec).split(",") if x.strip()]:
+        try:
+            d = loader(src, "default", split=split)
+        except Exception as e:
+            print(f"  [sources] {src}:{split} unavailable ({type(e).__name__}) "
+                  f"-- skipped", flush=True)
+            continue
+        print(f"  [sources] {src}:{split} -> {len(d)} rows", flush=True)
+        out.extend(list(d))
+    assert out, f"no rows from any of {spec!r} for split {split!r}"
+    return out
+
+
 def _drop_overlong(rows, tokenizer, max_prompt_tokens, label):
     """Drop rows whose prompt exceeds the vLLM window.
 
@@ -954,7 +972,7 @@ def build_ner_sft_dataset(source: str = "jensjepsen/danish-ner-sft-v1",
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from gen_icl_schema_format import SYMBOLS as _SYM
 
-    ds = _ld(source, "default", split=split)
+    ds = _concat_sources(_ld, source, split)
     rows = []
     for r in ds:
         fmt = r.get("format")
@@ -1006,7 +1024,11 @@ def build_icl_dataset(source: str, split: str = "train", max_rows: int = 0,
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from gen_icl_schema_format import SYMBOLS as _SYM
 
-    ds = _ld(source, "default", split=split)
+    # Comma-separated sources are concatenated. The old set gives volume, the
+    # fresh one gives gradient: the policy already fits the old train split
+    # (reward ~1.0), so on its own it trains recall, while the fresh split
+    # shares no passages with anything the policy has seen.
+    ds = _concat_sources(_ld, source, split)
     rows = []
     for r in ds:
         if r.get("symbols", "none") == "none":
