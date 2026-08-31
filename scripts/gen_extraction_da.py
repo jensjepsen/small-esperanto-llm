@@ -43,7 +43,31 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gen_icl_schema_format import FORMATS, NULL, SYMBOLS, canon, render  # noqa: E402
 
+# Register mix. The generator previously read one wiki-STEM corpus, so every
+# passage was an encyclopedic lead paragraph -- the model could learn
+# "Wikipedia lead" rather than "extraction". These are dynaword `source`
+# values, grouped by register, with a share each.
+#
+# Conversation, subtitles, social media and poetry are deliberately absent:
+# dialogue and verse have little to extract, so the proposer would spend calls
+# on fields that come back empty.
+REGISTERS = {
+    "encyclopedic": (["wikipedia", "wikisource"],                     0.30),
+    # ncc_* are Norwegian Colossal Corpus derivatives and carry Norwegian
+    # text despite being in a Danish corpus: 43/300 sampled ncc_newspaper docs
+    # match nei|jeg heter|hva|ikkje against only 10 with Danish equivalents.
+    # tv2r and nordjyllandnews sample clean (0/300).
+    "news":         (["tv2r", "nordjyllandnews"],                     0.25),
+    "legal":        (["retsinformationdk", "domsdatabasen",
+                      "retspraksis", "skat", "fm-udgivelser"],        0.20),
+    "web_admin":    (["ai-aktindsigt", "miljoeportalen"],             0.15),
+    "medical":      (["health_hovedstaden"],                          0.05),
+    "books":        (["memo", "adl"],                                 0.05),
+}
+
 MODEL = "google/gemini-2.5-flash-lite"
+# bump when SYS_KEYS / SYS_VALUES change, so a mixed cache is detectable
+PROMPT_V = 2
 URL = "https://openrouter.ai/api/v1/chat/completions"
 USER, ASST, END = "<|user|>", "<|assistant|>", "<|end|>"
 
@@ -95,8 +119,93 @@ SCHEMA_VALUES = {
 # a field name should be a short noun phrase; the smoke produced things like
 # "Definition af dværgkanin" and "Årsager til dværgvækst", which are captions
 KEY_OK = re.compile(r"^[a-zæøå][\wæøåÆØÅ /-]{1,28}$")
-NUMRE = re.compile(r"^[\d\s.,%+-]+$")
-MAX_VALUE_CHARS = 80
+# Length is NOT a correctness constraint. An 80-char cap was imposed on the
+# aesthetic view that "extraction values should be short spans"; measured, it
+# was the direct cause of definitional fields coming back empty 60-100% of the
+# time (`definition`, `beskrivelse`), because a passage's definition of a term
+# is a sentence, not a phrase. That taught a shortcut: emit the empty marker
+# whenever the field name looks abstract, without reading the passage.
+#
+# What actually matters is verifiability: the value must be verbatim, must not
+# contain a newline (it would break the line-based formats), and must survive a
+# render/canon round trip. Checked against 33 long values (median 123, max 233
+# chars): none contained a newline and all ten formats round-tripped them.
+MAX_VALUE_CHARS = 400          # backstop against a runaway paste, not a shape rule
+NEWLINE = re.compile(r"[\r\n]")
+_WS = re.compile(r"\s+")
+
+
+def _ws(t):
+    return _WS.sub(" ", t).strip()
+
+
+def is_verbatim(value, passage):
+    """Verbatim up to whitespace.
+
+    An exact `value in passage` test is stricter than the scorer: canon()
+    collapses whitespace when parsing, and hard-wrapped sources put newlines
+    mid-phrase. Measured on the register pilot, that alone accounted for the
+    books register's 76.3% verbatim rate against 94-99% elsewhere -- the model
+    was copying correctly from text that reads
+    'en af \\nkunstnernes ateliers'.
+    """
+    return _ws(value) in _ws(passage)
+
+# Danish prose spells numbers out ("Tre", "ni") and qualifies them
+# ("4,22 millioner", "5,5 millioner ar siden", "1950'erne"). A strict numeric
+# test rejected 19.4% of `tal` values in the smoke -- all of them CORRECT
+# verbatim answers. So `tal` requires a numeric SIGNAL, not a bare number:
+# digits, or a spelled-out Danish numeral. A value with neither is a genuine
+# mislabel and is dropped.
+_DA_NUMWORD = (r"nul|en|et|to|tre|fire|fem|seks|syv|otte|ni|ti|elleve|tolv|"
+               r"tretten|fjorten|femten|seksten|sytten|atten|nitten|tyve|"
+               r"tredive|fyrre|halvtreds|tres|halvfjerds|firs|halvfems|"
+               r"hundrede|tusind|million|milliard|billion")
+HAS_NUM = re.compile(r"(\d|\b(" + _DA_NUMWORD + r")\w*)", re.IGNORECASE)
+HAS_DATE = re.compile(r"\d")
+
+
+def type_ok(t, v):
+    """A value must carry the signal its declared type implies."""
+    if t == "tal":
+        return bool(HAS_NUM.search(v))
+    if t == "dato":
+        return bool(HAS_DATE.search(v))
+    return True
+
+
+def chunk_article(text, lo, hi):
+    """Split an article into passage-sized chunks on paragraph boundaries.
+
+    The corpus is full Wikipedia articles (median 10,941 chars), so a length
+    FILTER keeps only 3% -- and biases that 3% toward stubs, the articles with
+    least to extract. Chunking instead gives several DIFFERENT schemas per
+    article: a physics article's history section proposes different fields than
+    its maths section.
+
+    Bounds are enforced on the ACTUAL joined length, not a running counter. A
+    first version tracked `len(para) + 2` per paragraph and checked the limit
+    before appending, which let chunks out at 349 and 1784 chars against a
+    [350, 1500] window -- close enough to look right in a spot check.
+    """
+    out, buf = [], []
+
+    def flush():
+        if buf:
+            joined = "\n\n".join(buf)
+            if len(joined) >= lo:
+                out.append(joined)
+        buf.clear()
+
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if not para or len(para) > hi:
+            continue                      # oversized paragraph: not splittable
+        if buf and len("\n\n".join(buf + [para])) > hi:
+            flush()
+        buf.append(para)
+    flush()
+    return out
 
 
 def _key():
@@ -145,16 +254,15 @@ async def extract_one(session, sem, pid, passage):
         if not v:
             return None
         got = {f["navn"]: f["vaerdi"] for f in v.get("felter", [])}
-        out = []
-        for f in fields:
-            # verbatim gate: keep only spans that really occur in the passage
-            # length cap: the smoke had 14% of values over 80 chars (max 329)
-            # -- whole sentences rather than extraction spans
-            vals = [x for x in got.get(f["navn"], [])
-                    if x and x in passage and len(x) <= MAX_VALUE_CHARS]
-            out.append({"navn": f["navn"].strip(), "type": f["type"],
-                        "vaerdi": vals})
-        return {"pid": pid, "passage": passage, "felter": out}
+        # Store what the model RETURNED, ungated. Gates run at render time
+        # only. An earlier version filtered here, which permanently discarded
+        # values a later rule would have kept -- lifting the 80-char cap then
+        # meant re-paying for the whole extraction. Raw output is the expensive
+        # artifact; gate decisions are cheap and revisable.
+        return {"pid": pid, "passage": passage,
+                "felter": [{"navn": f["navn"].strip(), "type": f["type"],
+                            "vaerdi": got.get(f["navn"], [])} for f in fields],
+                "meta": {"model": MODEL, "prompt_v": PROMPT_V}}
 
 
 async def phase_extract(args):
@@ -172,19 +280,79 @@ async def phase_extract(args):
                 pass
         print(f"resuming: {len(done)} passages already extracted", flush=True)
 
-    ds = load_dataset(args.source, split=args.split)
-    col = args.text_col if args.text_col in ds.column_names else ds.column_names[0]
     todo = []
-    for i, r in enumerate(ds):
-        t = (r[col] or "").strip()
-        pid = hashlib.md5(t.encode()).hexdigest()[:16]
-        if pid in done or not (args.min_chars <= len(t) <= args.max_chars):
-            continue
-        todo.append((pid, t))
-        if len(todo) >= args.n:
-            break
-    print(f"source={args.source}:{args.split} col={col!r}  to extract: {len(todo)}",
-          flush=True)
+    if args.registers:
+        # Per-source parquet, one file per dynaword source:
+        #   data/tv2r/data.parquet, data/retsinformationdk/data.parquet, ...
+        # so the FILE is the filter and only the ~14 sources in REGISTERS are
+        # read. Loading the whole dataset instead cost 28GB of arrow cache and
+        # 25GB resident on a 31GB box before it was killed -- it materialises
+        # 7.4M rows to filter on a column that the directory layout already
+        # encodes.
+        want = ({reg: max(1, args.n // len(REGISTERS)) for reg in REGISTERS}
+                if args.uniform else
+                {reg: int(args.n * share) for reg, (_, share) in REGISTERS.items()})
+        got = Counter()
+        for reg, (srcs, _) in REGISTERS.items():
+            per_src = max(1, want[reg] // len(srcs))
+            for src in srcs:
+                if got[reg] >= want[reg]:
+                    break
+                try:
+                    ds = load_dataset(args.source,
+                                      # data.parquet only: the directory also
+                                      # holds metadata.parquet with a different
+                                      # schema, and a *.parquet glob picks up
+                                      # both -> CastError mid-generation
+                                      data_files=f"data/{src}/data.parquet",
+                                      split="train")
+                except Exception as e:
+                    print(f"    [{reg}/{src}] unavailable: "
+                          f"{type(e).__name__}", flush=True)
+                    continue
+                n_before = got[reg]
+                for r in ds:
+                    if got[reg] >= want[reg] or got[reg] - n_before >= per_src:
+                        break
+                    t = (r.get(args.text_col) or "").strip()
+                    if not t:
+                        continue
+                    for piece in chunk_article(
+                            t, args.min_chars,
+                            args.max_chars)[:args.max_chunks_per_article]:
+                        if got[reg] >= want[reg]:
+                            break
+                        pid = hashlib.md5(piece.encode()).hexdigest()[:16]
+                        if pid in done:
+                            continue
+                        todo.append((pid, piece, reg))
+                        got[reg] += 1
+                print(f"    [{reg}/{src}] +{got[reg]-n_before} "
+                      f"(source has {len(ds):,} docs)", flush=True)
+                del ds
+        print(f"  register mix: {dict(got)}", flush=True)
+    else:
+        ds = load_dataset(args.source, split=args.split)
+        col = args.text_col if args.text_col in ds.column_names else ds.column_names[0]
+        n_art = 0
+        for r in ds:
+            t = (r[col] or "").strip()
+            if not t:
+                continue
+            n_art += 1
+            pieces = (chunk_article(t, args.min_chars, args.max_chars)
+                      if args.chunk else
+                      ([t] if args.min_chars <= len(t) <= args.max_chars else []))
+            for piece in pieces[:args.max_chunks_per_article]:
+                pid = hashlib.md5(piece.encode()).hexdigest()[:16]
+                if pid in done:
+                    continue
+                todo.append((pid, piece, "encyclopedic"))
+            if len(todo) >= args.n:
+                break
+        print(f"  {n_art} articles -> {len(todo)} passages", flush=True)
+    todo = todo[:args.n]
+    print(f"source={args.source}  to extract: {len(todo)} passages", flush=True)
 
     sem = asyncio.Semaphore(args.concurrency)
     fh = raw.open("a")
@@ -197,9 +365,10 @@ async def phase_extract(args):
         for i in range(0, len(todo), args.batch):
             chunk = todo[i:i + args.batch]
             res = await asyncio.gather(*[extract_one(s, sem, p, t)
-                                         for p, t in chunk])
-            for r in res:
+                                         for p, t, _ in chunk])
+            for r, (_, _, reg) in zip(res, chunk):
                 if r:
+                    r["meta"]["register"] = reg
                     fh.write(json.dumps(r, ensure_ascii=False) + "\n")
                     ok += 1
             fh.flush()
@@ -215,15 +384,28 @@ def phase_render(args):
     # Re-apply the value gates here as well as in extract: raw.jsonl may
     # predate a gate, and re-rendering a cached extraction should not
     # resurrect values a later rule would have dropped.
-    dropped = 0
+    why = Counter()
     for r in rows_in:
         for f in r["felter"]:
-            keep = [v for v in f["vaerdi"]
-                    if v in r["passage"] and len(v) <= MAX_VALUE_CHARS]
-            dropped += len(f["vaerdi"]) - len(keep)
+            keep, seen_v = [], set()
+            for v in f["vaerdi"]:
+                v = _ws(v)
+                if not v or v in seen_v:
+                    why["duplicate/empty"] += 1
+                elif not is_verbatim(v, r["passage"]):
+                    why["not-verbatim"] += 1
+                elif NEWLINE.search(v):
+                    why["newline"] += 1
+                elif len(v) > MAX_VALUE_CHARS:
+                    why["too-long"] += 1
+                elif not type_ok(f["type"], v):
+                    why[f"type:{f['type']}"] += 1
+                else:
+                    seen_v.add(v)
+                    keep.append(v)
+                    continue
             f["vaerdi"] = keep
-    print(f"{len(rows_in)} extracted passages "
-          f"({dropped} values dropped by the re-applied gates)", flush=True)
+    print(f"{len(rows_in)} extracted passages; gate drops: {dict(why)}", flush=True)
 
     fmts = sorted(FORMATS)
     held_f = set(args.held_formats)
@@ -346,6 +528,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", choices=["extract", "render"], required=True)
     ap.add_argument("--source", default="jensjepsen/danish-vital-stem-da-v1")
+    ap.add_argument("--uniform", action="store_true",
+                    help="equal quota per register instead of REGISTERS shares")
+    ap.add_argument("--registers", action="store_true",
+                    help="draw a register-balanced mix from dynaword "
+                         "(implies --source danish-foundation-models/"
+                         "danish-dynaword). Without it, one corpus is read "
+                         "whole and every passage is the same register.")
     ap.add_argument("--split", default="train")
     ap.add_argument("--text-col", default="text")
     ap.add_argument("--out", type=Path, default=Path("scratch/extraction_da"))
@@ -353,7 +542,15 @@ def main():
     ap.add_argument("--concurrency", type=int, default=12)
     ap.add_argument("--batch", type=int, default=120)
     ap.add_argument("--min-chars", type=int, default=350)
-    ap.add_argument("--max-chars", type=int, default=1800)
+    ap.add_argument("--max-chars", type=int, default=1500)
+    ap.add_argument("--chunk", action="store_true", default=True,
+                    help="split articles on paragraph boundaries (default). "
+                         "--no-chunk filters by length instead, which keeps 3%% "
+                         "of this corpus and biases toward stubs.")
+    ap.add_argument("--no-chunk", dest="chunk", action="store_false")
+    ap.add_argument("--max-chunks-per-article", type=int, default=3,
+                    help="cap per article so a few long articles cannot "
+                         "dominate the passage pool")
     ap.add_argument("--rows-per-passage", type=int, default=4)
     ap.add_argument("--shots", type=int, default=3)
     ap.add_argument("--sym-frac", type=float, default=0.35)
