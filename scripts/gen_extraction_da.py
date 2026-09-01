@@ -156,6 +156,8 @@ L_FIELDS = ["Felter", "Nøgler", "Feltnavne", "Ønskede felter",
 L_ANSWER = ["Svar", "Resultat", "Uddrag", "Udtræk", "Besvarelse",
             "Oplysninger"]
 L_FILL = ["Udfyld", "Udfyldning", "Manglende tekst", "Svar", "Indsæt"]
+L_VALUES = ["Tekststumper", "Manglende stumper", "Brikker", "Udeladte dele",
+            "Tekstdele", "Stumper i tilfældig rækkefølge"]
 L_DEMOS = ["Eksempler", "Eksempler på opgaven", "Løste eksempler",
            "Her er nogle eksempler", "Demonstrationer"]
 
@@ -199,18 +201,19 @@ INSTR_EXTRACT = [
     "Manglende oplysninger angives som {null}.",
 ]
 INSTR_FILL = [
-    "Teksten mangler nogle stykker. Udfyld hvert hul med den ordrette tekst, "
-    "der hører til det angivne felt. Svar med en linje per hul.",
-    "Der er fjernet nogle tekststumper. Genskab hver enkelt ud fra feltnavnet "
-    "og sammenhængen. En linje per hul.",
-    "Nogle passager er erstattet af markeringer. Angiv for hver markering "
-    "hvilken tekst der manglede. Svar med en linje per hul.",
-    "Udfyld hullerne i teksten. Hvert hul svarer til et af de nævnte felter. "
-    "Skriv en linje per hul.",
-    "Teksten er ufuldstændig. Gengiv den manglende tekst for hvert hul, "
-    "en linje ad gangen.",
-    "Hullerne nedenfor dækker over konkrete tekststumper. Skriv hvad der "
-    "hørte hjemme i hvert hul, en linje per hul.",
+    "Teksten mangler nogle stykker, og de er listet nedenfor i tilfældig "
+    "rækkefølge. Sæt hver stump tilbage på sin rette plads og gengiv hele "
+    "teksten samlet.",
+    "Nedenfor er en tekst med huller og de tekststumper, der er taget ud af "
+    "den. Placer hver stump korrekt og skriv den fulde tekst.",
+    "Nogle passager er erstattet af markeringer. De udeladte stumper står "
+    "efter teksten i vilkårlig orden. Genskab teksten, som den så ud.",
+    "Sæt stumperne tilbage i teksten. Rækkefølgen, de er listet i, siger "
+    "intet om, hvor de hører hjemme. Skriv teksten fuldt ud.",
+    "Teksten er ufuldstændig, og de manglende dele er givet. Afgør ud fra "
+    "sammenhængen hvor hver del hører til, og gengiv hele teksten.",
+    "Alle de manglende stumper er oplyst. Find den rigtige plads til hver "
+    "enkelt og skriv teksten sammenhængende igen.",
 ]
 
 KEY_OK = re.compile(r"^[a-zæøå][\wæøåÆØÅ /-]{1,28}$")
@@ -621,15 +624,16 @@ def phase_render(args):
                 "text": rng.choice(L_TEXT), "gap": rng.choice(L_TEXT_GAP),
                 "fields": rng.choice(L_FIELDS), "answer": rng.choice(L_ANSWER),
                 "fill": rng.choice(L_FILL), "demos": rng.choice(L_DEMOS),
+                "values": rng.choice(L_VALUES),
             }
-            marker = None
+            marker, fill_pairs = None, []
             if task == "fill":
                 built = build_fill(r, chosen, names, km, mode, rng,
                                    rows_in, args)
                 if built is None:
                     stats["fill_unmaskable"] += 1
                     continue
-                prompt, ans, marker = built
+                prompt, ans, marker, fill_pairs = built
             else:
                 prompt = build_prompt(r["passage"], names, km, fmt, mode, rng,
                                       rows_in, args)
@@ -641,6 +645,11 @@ def phase_render(args):
                              {"role": "assistant", "content": ans}],
                 "meta": {"task": task, "format": fmt, "mode": mode,
                          "marker": marker,
+                         # the correct spans, in TEXT order. Scoring needs
+                         # the order to tell placement from copying: a model
+                         # that echoes the shuffled value list contains every
+                         # span but in the wrong sequence.
+                         "fill_pairs": [list(x) for x in fill_pairs],
                          "shots": (getattr(args, "_shots", args.shots)
                                    if mode in ("icl", "both") else 0),
                          "symbols": scheme or "none", "n_fields": len(names),
@@ -690,52 +699,80 @@ def _mask(passage, spans, marker, numbered, rng):
     return "".join(out), pairs
 
 
-def build_fill(r, chosen, names, km, mode, rng, pool, args):
-    """Reverse task: the passage has gaps, the model supplies what belongs.
+def _window(text, pairs, budget=700):
+    """Contiguous slice of `text` covering every gap, capped at `budget` chars.
 
-    Forward teaches 'find this in the text'; this teaches 'this text is missing
-    something of this type'. Same supervision, opposite direction, and copying
-    cannot shortcut it -- the answer is absent from the prompt by construction.
-
-    The marker is drawn from a large pool on purpose. A single fixed blank
-    teaches the marker rather than the task, and `___` collides with OCR
-    artefacts in the books register.
+    The answer is the reconstructed passage, so its length is the generation
+    length. Unwindowed, a 1,500-char passage would make this a verbatim-copying
+    test rather than a placement test -- the model would fail for reasons that
+    have nothing to do with the task, which is the failure mode this rewrite
+    exists to remove. Snapped to whitespace so the slice does not start or end
+    mid-word.
     """
-    # only fields that actually have values can be blanked
-    fillable = [(n, f) for n, f in zip(names, chosen) if f["vaerdi"]]
-    if not fillable:
+    if not pairs:
         return None
+    first = min(text.find(sp) for _, sp in pairs)
+    last = max(text.find(sp) + len(sp) for _, sp in pairs)
+    if first < 0 or last - first > budget:
+        return None
+    slack = budget - (last - first)
+    a, b = max(0, first - slack // 2), min(len(text), last + slack // 2)
+    while a > 0 and not text[a - 1].isspace():
+        a -= 1
+    while b < len(text) and not text[b].isspace():
+        b += 1
+    return text[a:b].strip()
+
+
+def build_fill(r, chosen, names, km, mode, rng, pool, args):
+    """Placement, not clairvoyance: the values are GIVEN, the gaps are not.
+
+    The previous design masked a span and asked the model to produce it, under
+    a rule that the span occur exactly once in the passage -- so that no copy
+    of the answer remained visible. Those two requirements are in direct
+    conflict. "Occurs exactly once" means the text contains no evidence for
+    what was removed, and the masked spans are extraction values (entities,
+    dates, facts), which are precisely the tokens NOT predictable from context.
+    Probed on step-30240 the model produced the right marker set, the right
+    count and a clean parse on 5/5 rows, and scored F1 0.000 on every one: for
+    a gap cut from a bulleted list of political posts it supplied a different
+    political post from the same list. The task was unanswerable, so it was
+    training the model to invent plausible facts for gaps -- the opposite of
+    the abstention the absent-field rows teach.
+
+    Now the correct values are supplied in the prompt in shuffled order and the
+    model reconstructs the text. Fully determined by the prompt, verifiable by
+    comparing against the original window, and the skill under test is reading
+    comprehension rather than guessing.
+    """
+    fillable = [(n, f) for n, f in zip(names, chosen) if f["vaerdi"]]
+    if len(fillable) < 2:
+        return None                       # one value has only one placement
     numbered = rng.random() < args.numbered_blank_frac
     marker = rng.choice(BLANKS_NUM if numbered else BLANKS)
-    # one span per field: masking every occurrence of a multi-value field makes
-    # the count ambiguous, and the model cannot know how many to supply
     spans = [f["vaerdi"][0] for _, f in fillable]
-    got = _mask(r["passage"], spans, marker, numbered, rng)
+    win = _window(r["passage"], [(None, sp) for sp in spans])
+    if win is None:
+        return None
+    got = _mask(win, spans, marker, numbered, rng)
     if got is None:
         return None
     masked, pairs = got
 
-    def block(text, pairs_, with_answer):
-        # The spec line MUST list the gap markers, because the answer is keyed
-        # by markers. Listing field names instead made the two vocabularies
-        # disjoint in 100% of fill rows (20,091/20,091 in v1) and put the count
-        # off in 13.6%, since `names` includes absent fields that can never be
-        # masked. That made the line pure noise on this task -- and, worse,
-        # taught 20% of the corpus that the field-name line does not determine
-        # the answer keys, which is exactly what `extract` relies on it for.
-        # It also made fill unlearnable in `instruction` mode, where there are
-        # no demonstrations to reveal the marker vocabulary.
-        spec = ", ".join(shown for shown, _ in pairs_)
-        head = (f"{args._lab['gap']}:\n{text}\n"
-                f"{args._lab['fields']}: {spec}\n{args._lab['fill']}:")
-        if not with_answer:
-            return head
-        body = "\n".join(f"{shown} = {sp}" for shown, sp in pairs_)
-        return head + "\n" + body
+    def block(gapped, pairs_, original, with_answer):
+        # Shuffled, so position in the list carries no signal about which gap
+        # a value belongs to -- otherwise the task collapses to "emit them in
+        # the order given".
+        vals = [sp for _, sp in pairs_]
+        rng.shuffle(vals)
+        head = (f"{args._lab['gap']}:\n{gapped}\n"
+                f"{args._lab['values']}: {' | '.join(vals)}\n"
+                f"{args._lab['fill']}:")
+        return head + (f"\n{original}" if with_answer else "")
 
     parts = []
     if mode in ("instruction", "both"):
-        parts.append(rng.choice(INSTR_FILL) + " Formen er: hul = tekst.")
+        parts.append(rng.choice(INSTR_FILL))
     if mode in ("icl", "both"):
         demos, want = [], getattr(args, "_shots", args.shots)
         for other in rng.sample(pool, min(len(pool), want + 8)):
@@ -744,16 +781,18 @@ def build_fill(r, chosen, names, km, mode, rng, pool, args):
             pres = [f for f in other["felter"] if f["vaerdi"]][:3]
             if len(pres) < 2:
                 continue
-            dgot = _mask(other["passage"][:700],
-                         [f["vaerdi"][0] for f in pres], marker, numbered, rng)
+            dspans = [f["vaerdi"][0] for f in pres]
+            dwin = _window(other["passage"], [(None, sp) for sp in dspans], 500)
+            if dwin is None:
+                continue
+            dgot = _mask(dwin, dspans, marker, numbered, rng)
             if dgot is None:
                 continue
-            demos.append(block(dgot[0], dgot[1], True))
+            demos.append(block(dgot[0], dgot[1], dwin, True))
         if demos:
             parts.append(f"{args._lab['demos']}:\n\n" + "\n\n".join(demos))
-    parts.append(block(masked, pairs, False))
-    answer = "\n".join(f"{shown} = {sp}" for shown, sp in pairs)
-    return "\n\n".join(parts), answer, marker
+    parts.append(block(masked, pairs, win, False))
+    return "\n\n".join(parts), win, marker, pairs
 
 
 def format_clause(fmt):

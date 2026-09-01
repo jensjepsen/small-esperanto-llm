@@ -30,6 +30,7 @@ it survives HF Trainer's save_total_limit rotation.
 from __future__ import annotations
 
 import json
+from collections import Counter
 import os
 import re
 import shutil
@@ -471,6 +472,59 @@ class DownstreamEvalCallback(TrainerCallback):
         return ok / len(items)
 
     @staticmethod
+    def _score_fill(gold: str, pred: str, meta: dict) -> tuple[float, float]:
+        """Score a reconstructed passage. Returns (placement, exact).
+
+        `fill` no longer asks the model to recall a masked span — the spans are
+        given in the prompt in shuffled order and the model puts them back. So
+        the question is placement, and the metric has to be able to tell
+        placement from two degenerate strategies:
+
+          * echoing the gapped text with the markers stripped — high token
+            overlap with gold, nothing actually filled. Caught by requiring no
+            marker to survive.
+          * echoing the supplied value list — every span present, but in the
+            shuffled order they were given in, not the text's order. Caught by
+            scoring the ORDER of the spans, via longest common subsequence
+            against their true sequence.
+
+        Whitespace-normalised, since gold comes from real prose and the model's
+        line breaks are not the thing under test.
+        """
+        pairs = meta.get("fill_pairs") or []
+        norm = lambda s: " ".join(s.split())                    # noqa: E731
+        g, p = norm(gold), norm(pred)
+        exact = float(g == p)
+        if not pairs:
+            return exact, exact
+        # a surviving marker means the gap was never filled
+        if any(norm(shown) in p for shown, _ in pairs):
+            return 0.0, exact
+        spans = [norm(sp) for _, sp in pairs]
+        pos = [(p.find(sp), i) for i, sp in enumerate(spans) if sp and sp in p]
+        pos.sort()
+        seq = [i for _, i in pos]                # span indices, in PRED order
+        want = list(range(len(spans)))           # span indices, in GOLD order
+        # LCS: how much of the true ordering survived
+        dp = [[0] * (len(want) + 1) for _ in range(len(seq) + 1)]
+        for a in range(len(seq)):
+            for b in range(len(want)):
+                dp[a + 1][b + 1] = (dp[a][b] + 1 if seq[a] == want[b]
+                                    else max(dp[a][b + 1], dp[a + 1][b]))
+        order = dp[len(seq)][len(want)] / len(spans)
+        # Multiplied by context fidelity, because order alone is coarse at
+        # n=2-4: a shuffled echo of the supplied value list still contains a
+        # long increasing subsequence by chance (0.67 on a 3-span case). The
+        # echo has almost none of the surrounding prose, so token overlap
+        # separates it. Multiplicative, not additive — reproducing the context
+        # while placing nothing should not earn a floor.
+        gt, pt = Counter(g.split()), Counter(p.split())
+        inter = sum((gt & pt).values())
+        tf1 = (0.0 if not inter else
+               2 * inter / (sum(gt.values()) + sum(pt.values())))
+        return order * tf1, exact
+
+    @staticmethod
     def _parse_fill(text: str) -> list | None:
         """`fill` answers are always `<marker> = <span>` lines, regardless of
         the row's `format` — build_fill() overwrites the rendered answer. So
@@ -536,9 +590,14 @@ class DownstreamEvalCallback(TrainerCallback):
         for out, (_, (gold, meta)) in zip(outs, items):
             task, fmt = meta["task"], meta["format"]
             if task == "fill":
-                g, p = self._parse_fill(gold), self._parse_fill(out)
-                gp = set(g or [])
-                pp = set(p or [])
+                f1, ex = self._score_fill(gold, out, meta)
+                f1s.append(f1)
+                exact.append(ex)
+                parsed.append(1.0)   # free-text reconstruction always "parses"
+                held = fmt in self.EXTRACTION_HELD_FORMATS
+                by.setdefault(f"fill/{'unseen-fmt' if held else 'seen-fmt'}",
+                              []).append(f1)
+                continue
             else:
                 keys = (list(meta["schema"].split("|"))
                         if meta["symbols"] == "none"

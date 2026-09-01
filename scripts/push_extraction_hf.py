@@ -83,13 +83,20 @@ from the format itself (`Svar i formatet: felt\tværdi`). An earlier release
 named no format in instruction-only prompts, which left one format out of ten
 unspecified and the row unanswerable.
 
-**fill** — the reverse: the passage has gaps and the model supplies what
-belongs in each. The answer is absent from the prompt by construction, so
-copying cannot shortcut it. A span is masked only if it occurs exactly once in
-its passage; otherwise later copies would leave the answer visible. The field
-line lists the gap markers, which are what the answer is keyed by — an earlier
-release listed field names instead, making the two vocabularies disjoint in
-every fill row and the task unlearnable without demonstrations.
+**fill** — placement. The passage has gaps, the removed spans are listed
+**in shuffled order**, and the model reconstructs the text. Fully determined by
+the prompt: the information is all present and the task is to work out where
+each piece belongs. Scored on whether the spans land in the right sequence and
+the surrounding prose is reproduced, so neither echoing the gapped text nor
+echoing the value list earns credit.
+
+An earlier release masked spans and asked the model to recall them, under a
+rule that a span occur exactly once so no copy stayed visible. Those two
+requirements conflict: "occurs exactly once" means the text holds no evidence
+for what was removed, and the masked spans are extraction values — the tokens
+least predictable from context. Probed, the model returned the right marker
+set, the right count and a clean parse, and scored 0 on every row, supplying a
+different plausible item from the same list.
 
 ## What varies
 
