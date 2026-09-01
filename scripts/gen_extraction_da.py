@@ -709,8 +709,17 @@ def build_fill(r, chosen, names, km, mode, rng, pool, args):
         return None
     masked, pairs = got
 
-    def block(text, ns, keymap, pairs_, with_answer):
-        spec = ", ".join(keymap[n] for n in ns)
+    def block(text, pairs_, with_answer):
+        # The spec line MUST list the gap markers, because the answer is keyed
+        # by markers. Listing field names instead made the two vocabularies
+        # disjoint in 100% of fill rows (20,091/20,091 in v1) and put the count
+        # off in 13.6%, since `names` includes absent fields that can never be
+        # masked. That made the line pure noise on this task -- and, worse,
+        # taught 20% of the corpus that the field-name line does not determine
+        # the answer keys, which is exactly what `extract` relies on it for.
+        # It also made fill unlearnable in `instruction` mode, where there are
+        # no demonstrations to reveal the marker vocabulary.
+        spec = ", ".join(shown for shown, _ in pairs_)
         head = (f"{args._lab['gap']}:\n{text}\n"
                 f"{args._lab['fields']}: {spec}\n{args._lab['fill']}:")
         if not with_answer:
@@ -729,17 +738,14 @@ def build_fill(r, chosen, names, km, mode, rng, pool, args):
             pres = [f for f in other["felter"] if f["vaerdi"]][:3]
             if len(pres) < 2:
                 continue
-            dn = [f["navn"] for f in pres]
-            dkm = ({n: SYMBOLS[args._scheme][i] for i, n in enumerate(dn)}
-                   if args._scheme else {n: n for n in dn})
             dgot = _mask(other["passage"][:700],
                          [f["vaerdi"][0] for f in pres], marker, numbered, rng)
             if dgot is None:
                 continue
-            demos.append(block(dgot[0], dn, dkm, dgot[1], True))
+            demos.append(block(dgot[0], dgot[1], True))
         if demos:
             parts.append(f"{args._lab['demos']}:\n\n" + "\n\n".join(demos))
-    parts.append(block(masked, names, km, None, False))
+    parts.append(block(masked, pairs, False))
     answer = "\n".join(f"{shown} = {sp}" for shown, sp in pairs)
     return "\n\n".join(parts), answer, marker
 

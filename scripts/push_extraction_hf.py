@@ -82,7 +82,10 @@ targets rather than annotation gaps.
 **fill** — the reverse: the passage has gaps and the model supplies what
 belongs in each. The answer is absent from the prompt by construction, so
 copying cannot shortcut it. A span is masked only if it occurs exactly once in
-its passage; otherwise later copies would leave the answer visible.
+its passage; otherwise later copies would leave the answer visible. The field
+line lists the gap markers, which are what the answer is keyed by — an earlier
+release listed field names instead, making the two vocabularies disjoint in
+every fill row and the task unlearnable without demonstrations.
 
 ## What varies
 
