@@ -128,7 +128,7 @@ fi
 # extras are selected. Installing torch directly sidesteps that; torchvision
 # and torchaudio are not used by the SFT path.
 if [ -n "${PIN_TORCH:-}" ]; then
-    CUR=$(uv run python -c "import torch;print(torch.__version__.split('+')[0])" 2>/dev/null || echo none)
+    CUR=$(uv run --no-sync python -c "import torch;print(torch.__version__.split('+')[0])" 2>/dev/null || echo none)
     if [ "$CUR" != "$PIN_TORCH" ]; then
         echo "=== Pinning torch $CUR -> $PIN_TORCH (so a prebuilt FA2 wheel exists) ==="
         uv pip install --index-url "https://download.pytorch.org/whl/${UV_TORCH_BACKEND}" "torch==${PIN_TORCH}"
@@ -142,9 +142,19 @@ elif [ "$UV_TORCH_BACKEND" = "cu128" ] || [ "$UV_TORCH_BACKEND" = "cu126" ]; the
     uv pip install setuptools wheel packaging
     # Query the pinned torch version + ABI + python version to build the
     # correct wheel URL. This avoids any source compile path.
-    TORCH_MM=$(uv run python -c "import torch, re; print(re.match(r'(\d+\.\d+)', torch.__version__).group(1))")
-    TORCH_ABI=$(uv run python -c "import torch; print('TRUE' if torch.compiled_with_cxx11_abi() else 'FALSE')")
-    PY_CP=$(uv run python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+    TORCH_MM=$(uv run --no-sync python -c "import torch, re; print(re.match(r'(\d+\.\d+)', torch.__version__).group(1))")
+    TORCH_ABI=$(uv run --no-sync python -c "import torch; print('TRUE' if torch.compiled_with_cxx11_abi() else 'FALSE')")
+    PY_CP=$(uv run --no-sync python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+    # A plain `uv run` re-syncs the venv from pyproject and silently reverts
+    # the PIN_TORCH install above -- every query here must be --no-sync, or
+    # TORCH_MM reads the resolver's torch (2.10) instead of the pinned one and
+    # the wheel URL 404s. Assert rather than trusting: FA 2.8.3 publishes a
+    # torch2.8 wheel only (2.9 and 2.10 are both 404).
+    if [ -n "${PIN_TORCH:-}" ] && [ "$TORCH_MM" != "${PIN_TORCH%.*}" ]; then
+        echo "FATAL: pinned torch ${PIN_TORCH} but venv reports ${TORCH_MM}." >&2
+        echo "       The pin was reverted -- check for a plain 'uv run'." >&2
+        exit 1
+    fi
     FA_VER=${FA_VER:-2.8.3}
     WHEEL="https://github.com/Dao-AILab/flash-attention/releases/download/v${FA_VER}/flash_attn-${FA_VER}+cu12torch${TORCH_MM}cxx11abi${TORCH_ABI}-${PY_CP}-${PY_CP}-linux_x86_64.whl"
     echo "  torch=${TORCH_MM}  abi=${TORCH_ABI}  py=${PY_CP}  fa=${FA_VER}"
@@ -153,10 +163,10 @@ elif [ "$UV_TORCH_BACKEND" = "cu128" ] || [ "$UV_TORCH_BACKEND" = "cu126" ]; the
     # einops is its only other runtime import, so install that explicitly.
     uv pip install --no-deps "${WHEEL}"
     uv pip install --no-deps einops
-    uv run python -c "import flash_attn; print(f'flash-attn OK ({flash_attn.__version__})')"
+    uv run --no-sync python -c "import flash_attn; print(f'flash-attn OK ({flash_attn.__version__})')"
     # Prove ISOLATION, not just import. A packed batch must not let one sample
     # attend to another; that is the whole reason FA2 is required here.
-    uv run python - <<'FAVERIFY'
+    uv run --no-sync python - <<'FAVERIFY'
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorWithFlattening
 C = "jensjepsen/danish-lm-400m-sft-v31-avg-top3"
@@ -185,7 +195,7 @@ fi
 # time. `set -e` aborts the script if this fails so the next launch can't
 # quietly run without Liger.
 echo "=== Verifying Liger kernel ==="
-uv run python -c "
+uv run --no-sync python -c "
 from liger_kernel.transformers import apply_liger_kernel_to_llama
 apply_liger_kernel_to_llama(rope=True, rms_norm=True, swiglu=True,
                              cross_entropy=True, fused_linear_cross_entropy=False)
@@ -197,14 +207,14 @@ print('Liger kernel OK')
 # optim=paged_adamw_8bit — but the install can fail silently in
 # CUDA-mismatch situations, so we catch it here.
 echo "=== Verifying bitsandbytes ==="
-uv run python -c "
+uv run --no-sync python -c "
 import bitsandbytes as bnb
 print(f'bitsandbytes OK ({bnb.__version__})')
 "
 
 # Download tokenizer from HF Hub
 echo "=== Downloading tokenizer from HF Hub ==="
-uv run python scripts/download_from_hub.py --tokenizer
+uv run --no-sync python scripts/download_from_hub.py --tokenizer
 
 # All data (Wikipedia, HPLT, Gutenberg, factoids, sentences) is loaded
 # automatically from HF Hub during training when local files are missing.
@@ -212,7 +222,7 @@ uv run python scripts/download_from_hub.py --tokenizer
 # Print GPU info
 echo "=== GPU Info ==="
 nvidia-smi
-uv run python -c "
+uv run --no-sync python -c "
 import torch
 print(f'CUDA available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
