@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import random
+import time
 import re
 import sys
 from collections import Counter, defaultdict
@@ -118,6 +119,100 @@ SCHEMA_VALUES = {
 
 # a field name should be a short noun phrase; the smoke produced things like
 # "Definition af dværgkanin" and "Årsager til dværgvækst", which are captions
+# Blank markers for the reverse (fill-the-gap) task. Deliberately many and
+# structurally different: a single marker teaches the marker, not the task, and
+# `___` in particular collides with OCR artefacts in the books register. The
+# {i} slot is filled with a 1-based index when numbering is on, so a passage
+# with several gaps can name which is which.
+BLANKS = [
+    "____", "_____", "[...]", "[BLANK]", "[MANGLER]", "<mangler>", "###",
+    "***", "(?)", "<?>", "{{}}", "[__]", "«...»", "…", "[X]", "[FELT]",
+    "[UDFYLD]", "<udfyld>", "[?]", "\u2588\u2588\u2588",
+]
+BLANKS_NUM = [
+    "[{i}]", "[BLANK {i}]", "[MANGLER {i}]", "<{i}>", "___{i}___",
+    "[FELT {i}]", "(({i}))", "#{i}#", "[UDFYLD {i}]", "<felt{i}>",
+]
+
+# Prompt-surface variation. Everything here is Danish -- no English labels,
+# since the model is Danish-only and an English scaffold would be a token the
+# task never actually appears with.
+#
+# Before this there were exactly TWO instruction sentences across 60,376 rows
+# and one fixed set of labels, so the wording was more uniform than
+# textman_extraction's (whose three commonest phrasings covered only 80 of
+# 400 rows). A model can key on the literal string instead of the task, which
+# is the surface-token dependence that made `org` unreachable in the NER work.
+#
+# Labels are drawn per row but held CONSISTENT within a row, so demonstrations
+# and query agree -- varying them inside one prompt would teach noise.
+L_TEXT = ["Tekst", "Kildetekst", "Uddrag", "Tekststykke", "Afsnit",
+          "Tekstuddrag"]
+L_TEXT_GAP = ["Tekst med huller", "Tekst med manglende dele", "Hullet tekst",
+              "Tekst med tomme felter", "Ufuldstændig tekst",
+              "Tekst med udeladelser"]
+L_FIELDS = ["Felter", "Nøgler", "Feltnavne", "Ønskede felter",
+            "Felter der skal udtrækkes", "Efterspurgte felter"]
+L_ANSWER = ["Svar", "Resultat", "Uddrag", "Udtræk", "Besvarelse",
+            "Oplysninger"]
+L_FILL = ["Udfyld", "Udfyldning", "Manglende tekst", "Svar", "Indsæt"]
+L_DEMOS = ["Eksempler", "Eksempler på opgaven", "Løste eksempler",
+           "Her er nogle eksempler", "Demonstrationer"]
+
+def load_instr_bank():
+    """Hand-written shapes only.
+
+    A generated bank of 181 was produced and read. It gave lexical variety
+    (~40 distinct verbs) but a single structure: essentially every one was
+    `[verb] ordret [felterne]. [mangel-clause] {null}.` It also carried
+    grammatical slips -- five uninflected `ordret` where `ordrette` is
+    required, `feltsværdier`, a dangling `der svarer til` -- so it would have
+    needed hand-checking anyway, which is most of the work of writing them.
+
+    The 34 hand-written ones span nine shapes the generator never produced:
+    questions, telegraphic fragments, numbered rules, null-rule-first,
+    role framing, negative framing, explanatory paragraphs.
+    """
+    try:
+        from instruction_shapes_da import ALL as _shapes
+        return _shapes
+    except Exception:
+        return INSTR_EXTRACT
+
+
+INSTR_EXTRACT = [
+    "Udtræk de angivne felter fra hver tekst. Svar i samme format som "
+    "felterne er navngivet. Er et felt ikke nævnt i teksten, så skriv {null}.",
+    "Find værdien for hvert af de nævnte felter i teksten. Kopier ordret. "
+    "Mangler et felt i teksten, skriv {null}.",
+    "Læs teksten og udfyld de efterspurgte felter med ordrette tekststumper. "
+    "Brug {null} for felter teksten ikke nævner.",
+    "Nedenfor er en tekst og en liste af felter. Angiv hvert felts værdi, "
+    "præcis som det står i teksten. Ukendte felter markeres med {null}.",
+    "Udfyld felterne ud fra teksten. Værdier skal være ordret afskrift. "
+    "Er oplysningen der ikke, så skriv {null}.",
+    "Gennemgå teksten og hent de oplysninger, felterne beder om. Skriv dem "
+    "af ordret. Findes en oplysning ikke, skriv {null}.",
+    "Til hver tekst hører nogle felter. Udfyld dem med ordret tekst fra "
+    "passagen, og brug {null} hvor teksten intet siger.",
+    "Uddrag de nævnte oplysninger fra teksten. Gengiv dem ordret. "
+    "Manglende oplysninger angives som {null}.",
+]
+INSTR_FILL = [
+    "Teksten mangler nogle stykker. Udfyld hvert hul med den ordrette tekst, "
+    "der hører til det angivne felt. Svar med en linje per hul.",
+    "Der er fjernet nogle tekststumper. Genskab hver enkelt ud fra feltnavnet "
+    "og sammenhængen. En linje per hul.",
+    "Nogle passager er erstattet af markeringer. Angiv for hver markering "
+    "hvilken tekst der manglede. Svar med en linje per hul.",
+    "Udfyld hullerne i teksten. Hvert hul svarer til et af de nævnte felter. "
+    "Skriv en linje per hul.",
+    "Teksten er ufuldstændig. Gengiv den manglende tekst for hvert hul, "
+    "en linje ad gangen.",
+    "Hullerne nedenfor dækker over konkrete tekststumper. Skriv hvad der "
+    "hørte hjemme i hvert hul, en linje per hul.",
+]
+
 KEY_OK = re.compile(r"^[a-zæøå][\wæøåÆØÅ /-]{1,28}$")
 # Length is NOT a correctness constraint. An 80-char cap was imposed on the
 # aesthetic view that "extraction values should be short spans"; measured, it
@@ -130,6 +225,7 @@ KEY_OK = re.compile(r"^[a-zæøå][\wæøåÆØÅ /-]{1,28}$")
 # contain a newline (it would break the line-based formats), and must survive a
 # render/canon round trip. Checked against 33 long values (median 123, max 233
 # chars): none contained a newline and all ten formats round-tripped them.
+FAILS = Counter()
 MAX_VALUE_CHARS = 400          # backstop against a runaway paste, not a shape rule
 NEWLINE = re.compile(r"[\r\n]")
 _WS = re.compile(r"\s+")
@@ -226,16 +322,27 @@ async def _call(session, sys_msg, user_msg, schema, temp):
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": "svar", "strict": True,
                                                 "schema": schema}}}
+    last = None
     for attempt in range(4):
         try:
             async with session.post(URL, json=body) as r:
                 if r.status != 200:
+                    last = f"HTTP {r.status}"
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
                 d = await r.json()
                 return json.loads(d["choices"][0]["message"]["content"])
-        except Exception:
+        except Exception as e:
+            last = type(e).__name__
             await asyncio.sleep(1.5 * (attempt + 1))
+    # Exhausted retries. Reported, not swallowed: a silent None is
+    # indistinguishable from a hang, and a 17-minute stall at concurrency 100
+    # looked exactly like one -- no rows, no errors, connections open.
+    FAILS[last or "unknown"] += 1
+    n = sum(FAILS.values())
+    if n <= 5 or n % 50 == 0:
+        print(f"  [call failed after 4 tries: {last}]  total failures={n} "
+              f"{dict(FAILS)}", flush=True)
     return None
 
 
@@ -323,10 +430,22 @@ async def phase_extract(args):
                         if got[reg] >= want[reg]:
                             break
                         pid = hashlib.md5(piece.encode()).hexdigest()[:16]
+                        # Count EVERY candidate against the quota, including
+                        # ones already extracted -- then drop the done ones
+                        # from todo. Counting only new passages made the
+                        # candidate set grow on every rerun: already-done work
+                        # did not fill the quota, so the sampler walked deeper
+                        # into each source and collected fresh passages instead
+                        # of the ones it had missed. A rerun meant to recover
+                        # 2,325 dropped passages queued 18,758 new ones.
+                        #
+                        # With this, the candidate set is identical on every
+                        # run for the same --n/--uniform, so todo is exactly
+                        # (candidates - done) and a rerun recovers the gaps.
+                        got[reg] += 1
                         if pid in done:
                             continue
                         todo.append((pid, piece, reg))
-                        got[reg] += 1
                 print(f"    [{reg}/{src}] +{got[reg]-n_before} "
                       f"(source has {len(ds):,} docs)", flush=True)
                 del ds
@@ -357,23 +476,41 @@ async def phase_extract(args):
     sem = asyncio.Semaphore(args.concurrency)
     fh = raw.open("a")
     ok = 0
+    lock = asyncio.Lock()
+    t0 = time.time()
+
+    async def run_one(s, pid, text, reg):
+        """Write as each passage completes -- no batch barrier.
+
+        The previous version gathered a fixed chunk of 120 and waited for all
+        of them before writing, printing and starting the next chunk. With
+        concurrency 100 that drains the pool at every boundary: 100 start, 20
+        trickle in, then everything idles waiting for the slowest straggler.
+        The chunking existed only to get incremental flushes and a progress
+        line, and neither needs a barrier.
+        """
+        nonlocal ok
+        r = await extract_one(s, sem, pid, text)
+        if not r:
+            return
+        r["meta"]["register"] = reg
+        async with lock:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+            ok += 1
+            if ok % 200 == 0:
+                fh.flush()
+                el = time.time() - t0
+                print(f"  {ok}/{len(todo)} kept  {ok/el:.1f}/s  "
+                      f"eta {(len(todo)-ok)/max(ok/el, .01)/60:.0f}min",
+                      flush=True)
+
     async with aiohttp.ClientSession(
             headers={"Authorization": f"Bearer {_key()}",
                      "Content-Type": "application/json",
                      "X-Title": "extraction-da"},
             timeout=aiohttp.ClientTimeout(total=180)) as s:
-        for i in range(0, len(todo), args.batch):
-            chunk = todo[i:i + args.batch]
-            res = await asyncio.gather(*[extract_one(s, sem, p, t)
-                                         for p, t, _ in chunk])
-            for r, (_, _, reg) in zip(res, chunk):
-                if r:
-                    r["meta"]["register"] = reg
-                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-                    ok += 1
-            fh.flush()
-            print(f"  {min(i+args.batch, len(todo))}/{len(todo)}  kept {ok}",
-                  flush=True)
+        await asyncio.gather(*[run_one(s, pid, text, reg)
+                               for pid, text, reg in todo])
     fh.close()
     print(f"\nextracted {ok}/{len(todo)} -> {raw}")
 
@@ -412,9 +549,17 @@ def phase_render(args):
     seen_f = [f for f in fmts if f not in held_f]
     assert seen_f, "every format held out"
     rng = random.Random(args.seed)
+    args._bank = load_instr_bank()
+    print(f"instruction bank: {len(args._bank)} hand-written instructions",
+          flush=True)
 
     # partition on PASSAGE and on SCHEMA, so eval_both is unseen on both axes
-    def bucket(s, mod):
+    def bucket(s, mod=100):
+        """Stable hash bucket in [0, mod). mod MUST be 100: the thresholds are
+        PERCENTAGES, and an earlier version used mod=10, which turned
+        `--schema-heldout-pct 5` into 5-of-10 = 50% per axis and collapsed
+        train to a quarter of the data. At the original pct=2 it was 20% per
+        axis, which is why the pilot's train split was 62% and not ~96%."""
         return int(hashlib.md5(s.encode()).hexdigest(), 16) % mod
 
     out = defaultdict(list)
@@ -426,10 +571,12 @@ def phase_render(args):
             stats["no_present_fields"] += 1
             continue
         schema_key = "|".join(sorted(f["navn"] for f in r["felter"]))
-        held_schema = bucket(schema_key, 10) < args.schema_heldout_pct
-        held_pass = bucket(r["pid"], 10) < args.passage_heldout_pct
+        held_schema = bucket(schema_key) < args.schema_heldout_pct
+        held_pass = bucket(r["pid"]) < args.passage_heldout_pct
 
         for _ in range(args.rows_per_passage):
+            task = rng.choices(["extract", "fill"],
+                               weights=[1 - args.fill_frac, args.fill_frac])[0]
             k = rng.randint(1, min(len(present), 4))
             chosen = rng.sample(present, k)
             # absent fields are real abstention targets: the model must emit the
@@ -455,18 +602,45 @@ def phase_render(args):
             mode = rng.choices(["icl", "instruction", "both"],
                                weights=args.mode_frac)[0]
             args._scheme = scheme
-            prompt = build_prompt(r["passage"], names, km, fmt, mode, rng,
-                                  rows_in, args)
+            # Vary the shot count per row. Pinned at 3, the model never sees
+            # 1-shot or 5-shot and cannot learn to use more context when given
+            # it -- the shot-scaling probe measured 53.2 / 55.9 / 58.5 / 59.8 /
+            # 56.6 across 1-5 shots, so the useful range is wider than one
+            # value. 0 is included so `icl` mode also covers the no-example
+            # case, which is what an instruction-only prompt looks like.
+            args._shots = rng.randint(args.min_shots, args.shots)
+            # one surface per row: demos and query must agree, or the labels
+            # become noise rather than a learnable convention
+            args._lab = {
+                "text": rng.choice(L_TEXT), "gap": rng.choice(L_TEXT_GAP),
+                "fields": rng.choice(L_FIELDS), "answer": rng.choice(L_ANSWER),
+                "fill": rng.choice(L_FILL), "demos": rng.choice(L_DEMOS),
+            }
+            marker = None
+            if task == "fill":
+                built = build_fill(r, chosen, names, km, mode, rng,
+                                   rows_in, args)
+                if built is None:
+                    stats["fill_unmaskable"] += 1
+                    continue
+                prompt, ans, marker = built
+            else:
+                prompt = build_prompt(r["passage"], names, km, fmt, mode, rng,
+                                      rows_in, args)
             split = ("eval_both" if held_schema and held_pass else
                      "eval_schema" if held_schema else
                      "eval_passage" if held_pass else "train")
             out[split].append({
                 "messages": [{"role": "user", "content": prompt},
                              {"role": "assistant", "content": ans}],
-                "meta": {"format": fmt, "mode": mode,
+                "meta": {"task": task, "format": fmt, "mode": mode,
+                         "marker": marker,
+                         "shots": (getattr(args, "_shots", args.shots)
+                                   if mode in ("icl", "both") else 0),
                          "symbols": scheme or "none", "n_fields": len(names),
                          "schema": "|".join(names), "pid": r["pid"]}})
             stats[f"split:{split}"] += 1
+            stats[f"task:{task}"] += 1
 
     for split, rows in out.items():
         p = args.out / f"{split}.jsonl"
@@ -475,6 +649,99 @@ def phase_render(args):
                 f.write(json.dumps(x, ensure_ascii=False) + "\n")
         print(f"  {split:<14} {len(rows)}")
     print("\nstats:", dict(stats))
+
+
+def _mask(passage, spans, marker, numbered, rng):
+    """Blank out `spans` in `passage`, left to right, no overlaps.
+
+    Returns (masked_text, [(marker_shown, original_span)]) or None if any span
+    cannot be located -- which happens when whitespace differs, since values
+    were normalised at gate time but the passage was not.
+    """
+    hits = []
+    for sp in spans:
+        # The span must occur EXACTLY once. Masking only the first occurrence
+        # leaves later copies visible, and the model reads the answer straight
+        # off the prompt -- measured at 1,167 of 4,000 rows (29%) before this
+        # check, which defeats the point of the task.
+        if passage.count(sp) != 1:
+            return None
+        i = passage.find(sp)
+        if i < 0:
+            return None
+        hits.append((i, i + len(sp), sp))
+    hits.sort()
+    for a, b in zip(hits, hits[1:]):          # overlapping spans are ambiguous
+        if a[1] > b[0]:
+            return None
+    out, prev, pairs = [], 0, []
+    for n, (i, j, sp) in enumerate(hits, 1):
+        shown = marker.format(i=n) if numbered else marker
+        out.append(passage[prev:i]); out.append(shown)
+        pairs.append((shown, sp))
+        prev = j
+    out.append(passage[prev:])
+    return "".join(out), pairs
+
+
+def build_fill(r, chosen, names, km, mode, rng, pool, args):
+    """Reverse task: the passage has gaps, the model supplies what belongs.
+
+    Forward teaches 'find this in the text'; this teaches 'this text is missing
+    something of this type'. Same supervision, opposite direction, and copying
+    cannot shortcut it -- the answer is absent from the prompt by construction.
+
+    The marker is drawn from a large pool on purpose. A single fixed blank
+    teaches the marker rather than the task, and `___` collides with OCR
+    artefacts in the books register.
+    """
+    # only fields that actually have values can be blanked
+    fillable = [(n, f) for n, f in zip(names, chosen) if f["vaerdi"]]
+    if not fillable:
+        return None
+    numbered = rng.random() < args.numbered_blank_frac
+    marker = rng.choice(BLANKS_NUM if numbered else BLANKS)
+    # one span per field: masking every occurrence of a multi-value field makes
+    # the count ambiguous, and the model cannot know how many to supply
+    spans = [f["vaerdi"][0] for _, f in fillable]
+    got = _mask(r["passage"], spans, marker, numbered, rng)
+    if got is None:
+        return None
+    masked, pairs = got
+
+    def block(text, ns, keymap, pairs_, with_answer):
+        spec = ", ".join(keymap[n] for n in ns)
+        head = (f"{args._lab['gap']}:\n{text}\n"
+                f"{args._lab['fields']}: {spec}\n{args._lab['fill']}:")
+        if not with_answer:
+            return head
+        body = "\n".join(f"{shown} = {sp}" for shown, sp in pairs_)
+        return head + "\n" + body
+
+    parts = []
+    if mode in ("instruction", "both"):
+        parts.append(rng.choice(INSTR_FILL) + " Formen er: hul = tekst.")
+    if mode in ("icl", "both"):
+        demos, want = [], getattr(args, "_shots", args.shots)
+        for other in rng.sample(pool, min(len(pool), want + 8)):
+            if len(demos) >= want or other["pid"] == r["pid"]:
+                continue
+            pres = [f for f in other["felter"] if f["vaerdi"]][:3]
+            if len(pres) < 2:
+                continue
+            dn = [f["navn"] for f in pres]
+            dkm = ({n: SYMBOLS[args._scheme][i] for i, n in enumerate(dn)}
+                   if args._scheme else {n: n for n in dn})
+            dgot = _mask(other["passage"][:700],
+                         [f["vaerdi"][0] for f in pres], marker, numbered, rng)
+            if dgot is None:
+                continue
+            demos.append(block(dgot[0], dn, dkm, dgot[1], True))
+        if demos:
+            parts.append(f"{args._lab['demos']}:\n\n" + "\n\n".join(demos))
+    parts.append(block(masked, names, km, None, False))
+    answer = "\n".join(f"{shown} = {sp}" for shown, sp in pairs)
+    return "\n\n".join(parts), answer, marker
 
 
 def build_prompt(passage, names, km, fmt, mode, rng, pool, args):
@@ -492,17 +759,22 @@ def build_prompt(passage, names, km, fmt, mode, rng, pool, args):
     """
     def block(text, ns, keymap, obj, with_answer):
         spec = ", ".join(keymap[n] for n in ns)
-        head = f"Tekst:\n{text}\nFelter: {spec}\nSvar:"
+        head = (f"{args._lab['text']}:\n{text}\n"
+                f"{args._lab['fields']}: {spec}\n{args._lab['answer']}:")
         return head + (f"\n{render(obj, ns, keymap, fmt)}" if with_answer else "")
 
     parts = []
     if mode in ("instruction", "both"):
-        parts.append(f"Udtræk de angivne felter fra hver tekst. Svar i samme "
-                     f"format som felterne er navngivet. Er et felt ikke nævnt "
-                     f"i teksten, så skriv {NULL}.")
+        # `args._bank`, not a local named `pool` -- that is the parameter
+        # holding the passage rows, and shadowing it made the demonstration
+        # loop iterate over instruction strings
+        parts.append(rng.choice(args._bank).format(null=NULL))
     if mode in ("icl", "both"):
         demos = []
-        for other in rng.sample(pool, min(len(pool), args.shots + 6)):
+        want_shots = getattr(args, "_shots", args.shots)
+        if want_shots <= 0:
+            demos = []
+        for other in rng.sample(pool, min(len(pool), want_shots + 6)):
             if other["passage"] == passage:
                 continue
             pres = [f for f in other["felter"] if f["vaerdi"]]
@@ -516,10 +788,10 @@ def build_prompt(passage, names, km, fmt, mode, rng, pool, args):
             dobj = {n: (f["vaerdi"] if len(f["vaerdi"]) != 1 else f["vaerdi"][0])
                     for n, f in zip(dn, pres)}
             demos.append(block(other["passage"][:700], dn, dkm, dobj, True))
-            if len(demos) >= args.shots:
+            if len(demos) >= getattr(args, "_shots", args.shots):
                 break
         if demos:
-            parts.append("Eksempler:\n\n" + "\n\n".join(demos))
+            parts.append(f"{args._lab['demos']}:\n\n" + "\n\n".join(demos))
     parts.append(block(passage, names, km, {}, False))
     return "\n\n".join(parts)
 
@@ -552,13 +824,25 @@ def main():
                     help="cap per article so a few long articles cannot "
                          "dominate the passage pool")
     ap.add_argument("--rows-per-passage", type=int, default=4)
-    ap.add_argument("--shots", type=int, default=3)
+    ap.add_argument("--shots", type=int, default=5,
+                    help="max demonstrations; each row draws "
+                         "randint(--min-shots, --shots)")
+    ap.add_argument("--min-shots", type=int, default=1)
+    ap.add_argument("--fill-frac", type=float, default=0.3,
+                    help="share of rows rendered as the reverse "
+                         "fill-the-gap task instead of extraction")
+    ap.add_argument("--numbered-blank-frac", type=float, default=0.4,
+                    help="share of fill rows using an indexed marker "
+                         "([BLANK 1], <2>, ...) rather than a bare one")
     ap.add_argument("--sym-frac", type=float, default=0.35)
     ap.add_argument("--mode-frac", nargs=3, type=float, default=[0.5, 0.2, 0.3])
     ap.add_argument("--held-formats", nargs="*",
                     default=["kv_eq", "bracket_pair", "brace_pair"])
-    ap.add_argument("--schema-heldout-pct", type=int, default=2)
-    ap.add_argument("--passage-heldout-pct", type=int, default=2)
+    # 5% on each axis, so eval_both (their intersection) is ~0.25% of
+    # passages rather than the 0.04% that 2%x2% gives -- the pilot produced
+    # 9 rows there, too few to read anything from.
+    ap.add_argument("--schema-heldout-pct", type=int, default=5)
+    ap.add_argument("--passage-heldout-pct", type=int, default=5)
     ap.add_argument("--seed", type=int, default=11)
     args = ap.parse_args()
     if args.phase == "extract":
