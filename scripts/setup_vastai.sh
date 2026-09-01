@@ -175,16 +175,36 @@ coll = DataCollatorWithFlattening()
 enc = lambda s: tok(s, add_special_tokens=False)["input_ids"]
 a, b = enc("Danmark er et land i Norden."), enc("Kvantemekanik beskriver partikler.")
 t = enc("Hovedstaden i Danmark hedder")
-m = AutoModelForCausalLM.from_pretrained(
-    C, attn_implementation="flash_attention_2", dtype=torch.bfloat16).cuda().eval()
-def lg(p):
+# EQUAL TOKEN LENGTHS. These two sentences are 8 and 9 tokens, and feeding
+# different lengths changes cu_seqlens, hence the varlen kernel's tile
+# boundaries, hence float reduction order: measured 0.0625 = exactly one bf16
+# ulp at this logit magnitude, with attention perfectly isolated. That is
+# rounding, not leakage, and it failed a `< 1e-3` assert on an H100 box.
+# Truncating to a common length removes the confound; the leak signal is ~8.1,
+# so nothing real can hide under it.
+n = min(len(a), len(b))
+a, b = a[:n], b[:n]
+def lg(m, p):
     f = [{"input_ids": p, "labels": p}, {"input_ids": t, "labels": t}]
     batch = {k: (v.cuda() if hasattr(v, "cuda") else v) for k, v in coll(f).items()}
     with torch.no_grad():
         return m(**{k: v for k, v in batch.items() if k != "labels"}).logits[0, -1].float()
-d = (lg(a) - lg(b)).abs().max().item()
+def delta(impl):
+    m = AutoModelForCausalLM.from_pretrained(
+        C, attn_implementation=impl, dtype=torch.bfloat16).cuda().eval()
+    d = (lg(m, a) - lg(m, b)).abs().max().item()
+    del m; torch.cuda.empty_cache()
+    return d
+d = delta("flash_attention_2")
+# POSITIVE CONTROL. A test that only asserts "small" passes just as happily
+# when the harness is broken and every delta is 0. SDPA genuinely leaks here
+# (~8.1), so requiring it to fire proves the probe can see a leak at all.
+ctrl = delta("sdpa")
+assert ctrl > 1.0, (
+    f"control did not fire: SDPA should leak across packed samples but "
+    f"measured {ctrl}. The probe is broken, so the FA2 result means nothing.")
 assert d < 1e-3, f"packed samples still leak under FA2 (max logit delta {d})"
-print(f"packed-sample isolation verified (max logit delta {d})")
+print(f"packed-sample isolation verified (FA2 {d}, SDPA control {ctrl:.2f})")
 FAVERIFY
 fi
 
