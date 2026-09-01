@@ -679,10 +679,19 @@ def main():
                     "labels": labels}
 
         import hashlib as _h
+        # CONTENT, not just shape. `len(raw_ds)` was meant to stand in for the
+        # data, but --source-cap normalises a source back to exactly N rows, so
+        # republishing a fixed dataset left the total identical and the
+        # fingerprint unchanged -- and the run silently trained on the stale
+        # tokenised copy of the *old* data. Sampling conversations makes the
+        # cache key sensitive to what the rows actually say, at O(1) cost.
+        _probe = [conversations[i] for i in
+                  range(0, len(conversations), max(1, len(conversations) // 64))]
         fingerprint = _h.md5(
             (str(sorted(args.sft_data)) + str(args.max_length)
              + str(args.max_examples) + str(len(raw_ds))
              + str(sorted(args.source_cap))
+             + _h.md5("".join(_probe).encode()).hexdigest()
              ).encode()
         ).hexdigest()[:12]
         cache_root = Path(args.output_dir or ".") / "prep_cache"
