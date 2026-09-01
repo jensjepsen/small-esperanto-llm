@@ -17,6 +17,7 @@ Adds metrics to the eval-loss dict:
   eval_downstream_ifeval  — IFEval-DA instruction-level strict accuracy,
                             the same definition the model cards report
   eval_downstream_icl     — exact match on UNSEEN-schema ICL rows
+  eval_downstream_extraction — exact match on unseen-passage extraction rows
 
 These show up in wandb and stdout alongside eval_loss. Overhead: ~1-2 min
 per eval step with n=100 rows and bs=32 on a 5090; ~8-12 min with full set.
@@ -130,7 +131,7 @@ class DownstreamEvalCallback(TrainerCallback):
     # the eval budget for a split we control the size of. Capping it keeps the
     # published benchmarks unsampled, where sampling noise would actually
     # compromise a comparison.
-    PER_EVAL_CAP = {"icl": 1000}
+    PER_EVAL_CAP = {"icl": 1000, "extraction": 1000}
 
     def _maybe_subsample(self, ds, step: int, name: str | None = None):
         # Effective n = tightest of the global --downstream-n and this eval's
@@ -294,6 +295,27 @@ class DownstreamEvalCallback(TrainerCallback):
                            r["schema"], r["symbols"], r["n_fields"])))
         return items
 
+    # Formats withheld from the extraction training split
+    # (gen_extraction_da.py --held-formats). Rows using one of these are the
+    # format-transfer question; the rest are the schema-transfer question.
+    EXTRACTION_HELD_FORMATS = ("kv_eq", "bracket_pair", "brace_pair")
+
+    def _load_extraction(self, step: int = 0):
+        """Extraction rows whose schema was never trained on.
+
+        Note what this split actually withholds. The schema is proposed per
+        passage, so schema and passage are ~1:1 and the two hash partitions
+        coincide: only 6 of eval_schema's 1,801 passages also occur in train.
+        The metric is therefore unseen text AND unseen field set, not a clean
+        schema-only ablation — which makes it the harder of the two readings,
+        not a weaker one.
+        """
+        ds = load_dataset("jensjepsen/danish-extraction-v1",
+                          "default", split="eval_schema")
+        ds = self._maybe_subsample(ds, step, "extraction")
+        return [(r["messages"][0]["content"],
+                 (r["messages"][1]["content"], r["meta"])) for r in ds]
+
     def _load_citmc(self, step: int = 0):
         """Cit-MC: same source as cit-gen, formatted as labeled MC. The
         citizen-tests dataset has variable option count (2, 3, sometimes 4)
@@ -435,6 +457,60 @@ class DownstreamEvalCallback(TrainerCallback):
             g = canon(gold, fmt, keys)
             p = canon(out, fmt, keys)
             ok += (p is not None and p == g)
+        return ok / len(items)
+
+    @staticmethod
+    def _parse_fill(text: str) -> dict | None:
+        """`fill` answers are always `<marker> = <span>` lines, regardless of
+        the row's `format` — build_fill() overwrites the rendered answer. So
+        meta['format'] must NOT be used to parse them; it describes the
+        extract-shaped answer that was discarded.
+        """
+        out = {}
+        for line in text.strip().splitlines():
+            if " = " not in line:
+                continue
+            k, v = line.split(" = ", 1)
+            out[k.strip()] = v.strip()
+        return out or None
+
+    def _score_extraction(self, model) -> float:
+        """Exact match on the parsed answer, per-task parser.
+
+        Reuses the generator's own canon() for extract rows so a flat format
+        and JSON are scored alike — the same contract _score_icl uses, and the
+        two datasets share a format vocabulary, so the numbers are comparable.
+        """
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
+        from gen_icl_schema_format import SYMBOLS, canon
+        items = self._get("extraction")
+        if not items:
+            return 0.0
+        prompts = [f"{USER}{q}{END}{ASST}" for q, _ in items]
+        outs = self._generate(model, prompts, self.max_new_gsm)
+        ok = 0
+        # task x format-heldout breakdown: one number hides which of the two
+        # transfers moved, and they are different capabilities
+        by: dict[str, list[int]] = {}
+        for out, (_, (gold, meta)) in zip(outs, items):
+            task, fmt = meta["task"], meta["format"]
+            if task == "fill":
+                g, p = self._parse_fill(gold), self._parse_fill(out)
+            else:
+                keys = (list(meta["schema"].split("|"))
+                        if meta["symbols"] == "none"
+                        else list(SYMBOLS[meta["symbols"]][:meta["n_fields"]]))
+                g, p = canon(gold, fmt, keys), canon(out, fmt, keys)
+            hit = int(p is not None and p == g)
+            ok += hit
+            held = fmt in self.EXTRACTION_HELD_FORMATS
+            by.setdefault(f"{task}/{'unseen-fmt' if held else 'seen-fmt'}",
+                          []).append(hit)
+        parts = "  ".join(f"{k} {100*sum(v)/len(v):.1f}% (n={len(v)})"
+                          for k, v in sorted(by.items()))
+        print(f"  [downstream] extraction breakdown: {parts}", flush=True)
         return ok / len(items)
 
     def _score_citmc(self, model) -> float:

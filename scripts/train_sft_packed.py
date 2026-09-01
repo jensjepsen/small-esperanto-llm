@@ -308,7 +308,7 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--torch-compile", action=argparse.BooleanOptionalAction,
                         default=True,
-                        help="Wrap model with torch.compile (~10-20% wall win). "
+                        help="Wrap model with torch.compile (~10-20%% wall win). "
                              "Packed SFT has constant seq shape so recompiles "
                              "are rare. Disable with --no-torch-compile if a "
                              "Liger/compile interaction misbehaves.")
@@ -431,6 +431,17 @@ def main():
                              "well-conditioned Adam moments from the base, "
                              "start a fresh linear-decay schedule from step 0. "
                              "Mutually exclusive with --resume.")
+    parser.add_argument("--source-cap", nargs="*", default=[],
+                        metavar="SUBSTRING=N",
+                        help="Cap one source to N randomly-sampled rows, e.g. "
+                             "--source-cap danish-extraction-v1=60000. Matches "
+                             "any --sft-data entry containing SUBSTRING. A new "
+                             "source's share of the mix is set by its BYTES, "
+                             "not its row count (extraction is 4.2 KB/row "
+                             "against the mix's 0.9 KB), so introducing one "
+                             "uncapped can silently make it the second-largest "
+                             "source. Overrides the positional "
+                             "`repo:cfg:split:N` form.")
     parser.add_argument("--optim", default="adamw_torch_fused")
     parser.add_argument("--attn-impl", default="auto",
                         choices=["auto", "flash_attention_2", "sdpa", "eager"])
@@ -486,6 +497,7 @@ def main():
             config={
                 "task": "sft-packed", "checkpoint": args.checkpoint,
                 "sft_data": args.sft_data, "epochs": args.epochs,
+                "source_cap": args.source_cap,
                 "batch_size": args.batch_size,
                 "gradient_accumulation": args.gradient_accumulation,
                 "learning_rate": args.learning_rate,
@@ -569,6 +581,20 @@ def main():
     if splits is None:
         per_source_cap = (args.max_examples // len(args.sft_data)
                           if args.max_examples else 0)
+        # --source-cap SUBSTRING=N, applied by substring match on the spec.
+        # Fail loudly on a cap that matches nothing: a typo'd repo name would
+        # otherwise silently train the source at full size, which is exactly
+        # the outcome the flag exists to prevent.
+        named_caps = {}
+        for spec in args.source_cap:
+            if "=" not in spec:
+                raise SystemExit(f"--source-cap wants SUBSTRING=N, got {spec!r}")
+            key, _, val = spec.partition("=")
+            named_caps[key] = int(val)
+        for key in named_caps:
+            if not any(key in s for s in args.sft_data):
+                raise SystemExit(
+                    f"--source-cap {key}=... matches no --sft-data entry")
         conversations = []
         for source in args.sft_data:
             console.print(f"[bold green]Loading SFT data from {source}...")
@@ -587,6 +613,12 @@ def main():
                     ds = hf_load(repo_id, config, split=split)
                 else:
                     ds = hf_load(source, split="train")
+                for key, cap in named_caps.items():
+                    if key in source:
+                        source_cap = cap
+                        console.print(f"[bold yellow]  --source-cap: "
+                                      f"{len(ds):,} -> {cap:,} rows")
+                        break
                 if source_cap:
                     ds = ds.shuffle(seed=42).select(
                         range(min(source_cap, len(ds))))
@@ -650,6 +682,7 @@ def main():
         fingerprint = _h.md5(
             (str(sorted(args.sft_data)) + str(args.max_length)
              + str(args.max_examples) + str(len(raw_ds))
+             + str(sorted(args.source_cap))
              ).encode()
         ).hexdigest()[:12]
         cache_root = Path(args.output_dir or ".") / "prep_cache"
