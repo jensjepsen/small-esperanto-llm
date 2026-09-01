@@ -466,18 +466,26 @@ class DownstreamEvalCallback(TrainerCallback):
         return ok / len(items)
 
     @staticmethod
-    def _parse_fill(text: str) -> dict | None:
+    def _parse_fill(text: str) -> list | None:
         """`fill` answers are always `<marker> = <span>` lines, regardless of
         the row's `format` — build_fill() overwrites the rendered answer. So
         meta['format'] must NOT be used to parse them; it describes the
         extract-shaped answer that was discarded.
+
+        Returns an ORDERED LIST, not a dict. Only ~60% of fill rows use
+        numbered markers; the rest repeat one marker (`…`, `___`) for every
+        gap, so a dict keyed by marker silently collapses them — measured 39.8%
+        of eval_schema fill rows collapsing and 33.0% of all gap lines dropped,
+        leaving the score to rest on whichever gap happened to be last. The
+        gold round-trip check could not catch this because gold and prediction
+        collapse identically; it reads as a pass either way.
         """
-        out = {}
+        out = []
         for line in text.strip().splitlines():
             if " = " not in line:
                 continue
             k, v = line.split(" = ", 1)
-            out[k.strip()] = v.strip()
+            out.append((k.strip(), v.strip()))
         return out or None
 
     def _score_extraction(self, model) -> float:
