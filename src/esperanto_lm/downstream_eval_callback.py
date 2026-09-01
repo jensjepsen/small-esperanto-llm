@@ -121,6 +121,11 @@ class DownstreamEvalCallback(TrainerCallback):
         self.top: list[tuple[float, int]] = []  # (agg_score, step), desc by score
         self._preserve_pending: tuple[int, float] | None = None
         self._demote_pending: list[int] = []
+        # Diagnostic sub-metrics a scorer wants logged but which must NOT enter
+        # the top-k aggregate: adding a breakdown should never silently
+        # reweight checkpoint selection toward whichever eval reports the most
+        # sub-numbers.
+        self._extra_metrics: dict[str, float] = {}
 
     # ── dataset loaders (called lazily on first eval) ──────────────────────
 
@@ -488,44 +493,84 @@ class DownstreamEvalCallback(TrainerCallback):
             out.append((k.strip(), v.strip()))
         return out or None
 
-    def _score_extraction(self, model) -> float:
-        """Exact match on the parsed answer, per-task parser.
+    @staticmethod
+    def _pair_f1(pred: set, gold: set) -> float:
+        if not pred and not gold:
+            return 1.0
+        if not pred or not gold:
+            return 0.0
+        tp = len(pred & gold)
+        if not tp:
+            return 0.0
+        p, r = tp / len(pred), tp / len(gold)
+        return 2 * p * r / (p + r)
 
-        Reuses the generator's own canon() for extract rows so a flat format
-        and JSON are scored alike — the same contract _score_icl uses, and the
-        two datasets share a format vocabulary, so the numbers are comparable.
+    def _score_extraction(self, model) -> float:
+        """Field-level pair-F1 on the parsed answer, per-task parser.
+
+        The headline is F1, not exact match. Exact match on a multi-field
+        object over unseen text has no resolution at this sample size: three
+        consecutive evals read 0.8% / 0.5% / 0.0%, which is 8 / 1 / 0 hits and
+        indistinguishable from noise, while hand-written probes at the same
+        checkpoint showed the model extracting verbatim spans and abstaining
+        correctly on absent fields. One wrong span in one field scored those
+        rows zero. F1 over (key, value) pairs is the same measure
+        rl_rewards.reward_structured uses for GRPO, so the training signal and
+        the eval agree.
+
+        Exact match, parse rate and the per-cell splits are still reported as
+        sub-metrics — they diagnose *why* a number moved (format rendering vs
+        field routing vs extraction), which one aggregate cannot.
         """
         import sys as _sys
         from pathlib import Path as _P
         _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
-        from gen_icl_schema_format import SYMBOLS, canon
+        from gen_icl_schema_format import NULL, SYMBOLS, canon
         items = self._get("extraction")
         if not items:
             return 0.0
         prompts = [f"{USER}{q}{END}{ASST}" for q, _ in items]
         outs = self._generate(model, prompts, self.max_new_gsm)
-        ok = 0
-        # task x format-heldout breakdown: one number hides which of the two
-        # transfers moved, and they are different capabilities
-        by: dict[str, list[int]] = {}
+        f1s, exact, parsed = [], [], []
+        by: dict[str, list[float]] = {}
         for out, (_, (gold, meta)) in zip(outs, items):
             task, fmt = meta["task"], meta["format"]
             if task == "fill":
                 g, p = self._parse_fill(gold), self._parse_fill(out)
+                gp = set(g or [])
+                pp = set(p or [])
             else:
                 keys = (list(meta["schema"].split("|"))
                         if meta["symbols"] == "none"
                         else list(SYMBOLS[meta["symbols"]][:meta["n_fields"]]))
                 g, p = canon(gold, fmt, keys), canon(out, fmt, keys)
-            hit = int(p is not None and p == g)
-            ok += hit
+                # NULL pairs are dropped: crediting "absent field left absent"
+                # as a matched pair inflates F1 on rows that are mostly
+                # abstentions, which is the opposite of what we want to measure
+                gp = {(k, v) for k, vs in (g or {}).items()
+                      for v in vs if v != NULL}
+                pp = {(k, v) for k, vs in (p or {}).items()
+                      for v in vs if v != NULL}
+            f1 = self._pair_f1(pp, gp)
+            f1s.append(f1)
+            exact.append(float(p is not None and p == g))
+            parsed.append(float(p is not None))
             held = fmt in self.EXTRACTION_HELD_FORMATS
             by.setdefault(f"{task}/{'unseen-fmt' if held else 'seen-fmt'}",
-                          []).append(hit)
-        parts = "  ".join(f"{k} {100*sum(v)/len(v):.1f}% (n={len(v)})"
+                          []).append(f1)
+        mean = lambda v: sum(v) / len(v) if v else 0.0  # noqa: E731
+        parts = "  ".join(f"{k} F1 {100*mean(v):.1f}% (n={len(v)})"
                           for k, v in sorted(by.items()))
-        print(f"  [downstream] extraction breakdown: {parts}", flush=True)
-        return ok / len(items)
+        print(f"  [downstream] extraction F1 by cell: {parts}", flush=True)
+        print(f"  [downstream]   exact={100*mean(exact):.1f}%  "
+              f"parsed={100*mean(parsed):.1f}%", flush=True)
+        self._extra_metrics.update({
+            "eval_downstream_extraction_exact": mean(exact),
+            "eval_downstream_extraction_parse_rate": mean(parsed),
+            **{f"eval_downstream_extraction_f1_{k.replace('/', '_')}": mean(v)
+               for k, v in by.items()},
+        })
+        return mean(f1s)
 
     def _score_citmc(self, model) -> float:
         """MC on citizen-tests. Uses the wiki-mc-letters prompt shape.
@@ -614,6 +659,7 @@ class DownstreamEvalCallback(TrainerCallback):
         model.eval()
         t0 = time.time()
         downstream_metrics = {}
+        self._extra_metrics = {}
         for name in self.evals:
             score = getattr(self, f"_score_{name}")(model)
             key = f"eval_downstream_{name}"
@@ -640,9 +686,12 @@ class DownstreamEvalCallback(TrainerCallback):
         try:
             import wandb
             if wandb.run is not None:
-                wandb.log(downstream_metrics, step=state.global_step)
+                wandb.log({**downstream_metrics, **self._extra_metrics},
+                          step=state.global_step)
         except ImportError:
             pass
+        if metrics is not None:
+            metrics.update(self._extra_metrics)
 
         # Top-K bookkeeping: decide if this ckpt deserves preservation.
         # NOTE ordering: HF Trainer flow at an eval+save step is
