@@ -312,6 +312,14 @@ class DownstreamEvalCallback(TrainerCallback):
     # format-transfer question; the rest are the schema-transfer question.
     EXTRACTION_HELD_FORMATS = ("kv_eq", "bracket_pair", "brace_pair")
 
+    # Extraction answers are multi-value and, for `fill`, a whole reconstructed
+    # passage — far longer than the 300 tokens the GSM-shaped default allows.
+    # Measured on eval_schema gold: extract median 72 / p99 564 / max 1644, fill
+    # median 164 / p99 300 / max 390, so 6.2% of extract answers and 1.0% of
+    # fill answers were being truncated mid-answer, failing to parse, and
+    # scoring zero on length rather than on content. 640 covers p99 of both.
+    EXTRACTION_MAX_NEW = 640
+
     def _load_extraction(self, step: int = 0):
         """Extraction rows whose schema was never trained on.
 
@@ -584,7 +592,7 @@ class DownstreamEvalCallback(TrainerCallback):
         if not items:
             return 0.0
         prompts = [f"{USER}{q}{END}{ASST}" for q, _ in items]
-        outs = self._generate(model, prompts, self.max_new_gsm)
+        outs = self._generate(model, prompts, self.EXTRACTION_MAX_NEW)
         f1s, exact, parsed = [], [], []
         by: dict[str, list[float]] = {}
         for out, (_, (gold, meta)) in zip(outs, items):
