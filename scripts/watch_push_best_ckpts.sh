@@ -13,20 +13,29 @@
 # Usage:
 #   HF_TOKEN=$(cat /root/hf_token) \
 #   bash scripts/watch_push_best_ckpts.sh <output-dir> <hf-repo> [interval_s]
+#
+# For a packed-SFT run set BEST_SUBDIR=best (the callback's layout):
+#   BEST_SUBDIR=best bash scripts/watch_push_best_ckpts.sh /root/runs/X repo 300
 set -u
 OUT="${1:?output dir required}"
 REPO="${2:?hf repo required}"
 EVERY="${3:-300}"
-STATE=/root/.pushed_ckpts
+# Which subdirectory holds the preserved snapshots. The GRPO trainer writes
+# `_best_ckpts/`; the SFT downstream-eval callback writes `best/step-N-agg-X`.
+# Pointing this at the wrong one is silent -- the loop just never finds a
+# directory and reports nothing -- which is worse than not running it, so the
+# name is explicit rather than guessed.
+SUB="${BEST_SUBDIR:-_best_ckpts}"
+STATE="${STATE:-/root/.pushed_ckpts}"
 touch "$STATE"
 export PATH="$HOME/.local/bin:$PATH"
 export HF_HOME="${HF_HOME:-/tmp/hf-cache}"
 PY="${PY:-uv run --no-sync python}"
 
-echo "[watch] $OUT/_best_ckpts -> $REPO every ${EVERY}s"
+echo "[watch] $OUT/$SUB -> $REPO every ${EVERY}s"
 while true; do
-  if [ -d "$OUT/_best_ckpts" ]; then
-    for d in "$OUT"/_best_ckpts/*/; do
+  if [ -d "$OUT/$SUB" ]; then
+    for d in "$OUT"/"$SUB"/*/; do
       [ -d "$d" ] || continue
       name=$(basename "$d")
       grep -qxF "$name" "$STATE" && continue
