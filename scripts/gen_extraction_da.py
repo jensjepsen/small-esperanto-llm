@@ -587,8 +587,14 @@ def phase_render(args):
             scheme = rng.choice(sorted(SYMBOLS)) if sym else None
             km = ({n: SYMBOLS[scheme][i] for i, n in enumerate(names)}
                   if sym else {n: n for n in names})
-            fmt = rng.choice(sorted(held_f)) if (held_schema or held_pass) and \
-                rng.random() < 0.5 else rng.choice(seen_f)
+            # With --held-formats empty, every format is trained and eval rows
+            # draw from the same pool: format transfer has been measured and is
+            # ~0 (6/6 parse with demos on a trained format, 0/6 with demos on a
+            # held-out one), so spending half of every eval row on a settled
+            # negative costs resolution on the axis that can still move.
+            fmt = (rng.choice(sorted(held_f))
+                   if held_f and (held_schema or held_pass) and rng.random() < 0.5
+                   else rng.choice(seen_f))
             obj = {n: (f["vaerdi"] if len(f["vaerdi"]) != 1 else f["vaerdi"][0])
                    or None for n, f in zip(names, chosen)}
             ans = render(obj, names, km, fmt)
@@ -750,6 +756,26 @@ def build_fill(r, chosen, names, km, mode, rng, pool, args):
     return "\n\n".join(parts), answer, marker
 
 
+def format_clause(fmt):
+    """A one-line statement of the required output format, in the format.
+
+    Instruction-mode prompts previously named no format at all: the whole
+    instruction was e.g. "Findes oplysningen? Så skriv den af ordret. Findes
+    den ikke? Så -." while the gold was TSV. One format out of ten, with
+    nothing in the prompt to say which -- unanswerable, and measured at 0/6
+    parse against 6/6 for the same trained format when demonstrations were
+    present. That is ~21% of rows teaching that the requested format is
+    unknowable.
+
+    The clause is RENDERED, not written by hand, so it cannot drift from the
+    renderer. Control characters are shown as escapes (a literal tab in the
+    prompt is invisible and unlearnable as a spec).
+    """
+    example = render({"felt": "værdi"}, ["felt"], {"felt": "felt"}, fmt)
+    shown = example.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+    return f"Svar i formatet: {shown}"
+
+
 def build_prompt(passage, names, km, fmt, mode, rng, pool, args):
     """Every block -- demonstrations and query alike -- carries its OWN text and
     its OWN key list. The demonstrations therefore teach the task (extract the
@@ -774,7 +800,8 @@ def build_prompt(passage, names, km, fmt, mode, rng, pool, args):
         # `args._bank`, not a local named `pool` -- that is the parameter
         # holding the passage rows, and shadowing it made the demonstration
         # loop iterate over instruction strings
-        parts.append(rng.choice(args._bank).format(null=NULL))
+        parts.append(rng.choice(args._bank).format(null=NULL)
+                     + " " + format_clause(fmt))
     if mode in ("icl", "both"):
         demos = []
         want_shots = getattr(args, "_shots", args.shots)
@@ -842,8 +869,14 @@ def main():
                          "([BLANK 1], <2>, ...) rather than a bare one")
     ap.add_argument("--sym-frac", type=float, default=0.35)
     ap.add_argument("--mode-frac", nargs=3, type=float, default=[0.5, 0.2, 0.3])
-    ap.add_argument("--held-formats", nargs="*",
-                    default=["kv_eq", "bracket_pair", "brace_pair"])
+    ap.add_argument("--held-formats", nargs="*", default=[],
+                    help="Formats withheld from training, to measure format "
+                         "transfer. Now EMPTY by default: transfer was "
+                         "measured at 0/6 (demos + held-out format) against "
+                         "6/6 (demos + trained format), so holding three of "
+                         "ten out spent ~50%% of every eval row re-confirming "
+                         "a settled negative. Pass them explicitly to restore "
+                         "the transfer measurement.")
     # 5% on each axis, so eval_both (their intersection) is ~0.25% of
     # passages rather than the 0.04% that 2%x2% gives -- the pilot produced
     # 9 rows there, too few to read anything from.

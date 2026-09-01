@@ -78,6 +78,10 @@ targets rather than annotation gaps.
 ## Tasks
 
 **extract** — given a passage and field names, produce each field's value.
+Prompts carrying an instruction also state the required output format, rendered
+from the format itself (`Svar i formatet: felt\tværdi`). An earlier release
+named no format in instruction-only prompts, which left one format out of ten
+unspecified and the row unanswerable.
 
 **fill** — the reverse: the passage has gaps and the model supplies what
 belongs in each. The answer is absent from the prompt by construction, so
@@ -93,7 +97,7 @@ every fill row and the task unlearnable without demonstrations.
 |---|---|
 | field subset | 1-4 present fields, plus 0-2 absent ones |
 | key naming | real names, or symbols (`alfa`, `kat_a`, `f1`, `foo`) |
-| output format | 7 in train; `kv_eq`, `bracket_pair`, `brace_pair` held out |
+| output format | all 10, in train and eval |
 | prompt mode | `icl` (demonstrations only) / `instruction` / `both` |
 | shots | 1-5, resampled per row |
 | instruction | 34 hand-written, across 9 shapes |
