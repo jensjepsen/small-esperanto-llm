@@ -92,4 +92,5 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_sft_v34_full_mix21_extraction60k_adam8bit_bs128 \
   --wandb-tags sft da v34 full-resft mix21 extraction adam8bit ner icl \
-               fa2 torch-compile no-liger epochs-3 h100
+               fa2 torch-compile no-liger epochs-3 h100 \
+  "$@"

@@ -131,7 +131,13 @@ class DownstreamEvalCallback(TrainerCallback):
     # the eval budget for a split we control the size of. Capping it keeps the
     # published benchmarks unsampled, where sampling noise would actually
     # compromise a comparison.
-    PER_EVAL_CAP = {"icl": 1000, "extraction": 1000}
+    # extraction is capped harder than icl because its prompts are ~3x longer
+    # (multi-shot, each demo carrying a full passage). At 1000 rows one eval
+    # pass measured 685s wall, which across 12 eval points is ~2h17m of a ~7h30m
+    # run -- the eval was costing more than the capability it measures is worth
+    # mid-run. 200 rows keeps the trajectory readable; the published number
+    # should come from a full-split run afterwards, not from this.
+    PER_EVAL_CAP = {"icl": 1000, "extraction": 200}
 
     def _maybe_subsample(self, ds, step: int, name: str | None = None):
         # Effective n = tightest of the global --downstream-n and this eval's
