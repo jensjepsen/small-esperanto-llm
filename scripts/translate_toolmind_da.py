@@ -215,6 +215,13 @@ def segments(row):
                 segs.append((("conversations", j, "content"), "result", content))
                 continue
             for p, v in _walk(obj):
+                # A scalar at the JSON root gives an EMPTY path, which _set()
+                # cannot address (it indexes path[-1]) -- it crashed the run at
+                # row ~2,250. 14 of 9,276 tool results are like this and every
+                # one is double-encoded JSON ('"{\\"tax_amount\\": 10000}"'),
+                # i.e. machine data with nothing to translate. Skip them.
+                if not p:
+                    continue
                 if _translatable_value(v, pinned):
                     segs.append((("conversations", j, "content", "#json") + p,
                                  "result", v))
@@ -621,6 +628,7 @@ async def main():
         sem = asyncio.Semaphore(args.concurrency)
         write_lock = asyncio.Lock()
         n_done = [0]
+        errs = Counter()
         # line-buffered append: each row is durable the moment it lands
         with cache.open("a", buffering=1) as fh:
             async with aiohttp.ClientSession(
@@ -628,15 +636,24 @@ async def main():
                              "Content-Type": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=300)) as s:
                 async def one(i, r):
-                    segs = segments(r)
-                    async with sem:
-                        tr = await translate(s, r, segs)
-                    n_done[0] += 1
-                    if n_done[0] % 25 == 0:
-                        print(f"  {n_done[0]}/{len(todo)}", flush=True)
-                    if tr is None:
+                    # One malformed row must not abort the job. asyncio.gather
+                    # propagates the first exception and cancels the rest, so
+                    # an IndexError on row 2,250 killed a 20k run outright.
+                    # Failures return None and stay uncached, so a rerun
+                    # retries them.
+                    try:
+                        segs = segments(r)
+                        async with sem:
+                            tr = await translate(s, r, segs)
+                        n_done[0] += 1
+                        if n_done[0] % 250 == 0:
+                            print(f"  {n_done[0]}/{len(todo)}", flush=True)
+                        if tr is None:
+                            return None
+                        rec = {"idx": i, "orig": r, "da": splice(r, segs, tr)}
+                    except Exception as e:
+                        errs[type(e).__name__] += 1
                         return None
-                    rec = {"idx": i, "orig": r, "da": splice(r, segs, tr)}
                     async with write_lock:
                         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
                     return rec
@@ -645,6 +662,8 @@ async def main():
         pairs = list(done.values()) + fresh
         print(f"\ntranslated {len(fresh):,} new "
               f"({len(fresh) + len(done):,} total) -> {cache}")
+        if errs:
+            print(f"  row errors: {dict(errs)}", flush=True)
         failed = len(todo) - len(fresh)
         if failed:
             print(f"  {failed:,} rows returned nothing and are NOT cached; "
