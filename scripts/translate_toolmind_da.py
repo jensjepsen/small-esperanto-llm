@@ -567,30 +567,88 @@ async def main():
         print(f"\nsegment kinds over {len(rows)} rows: {dict(kinds)}")
         return
 
+    # RESUME. Rows are appended as they return, keyed by their index in the
+    # source file, and a rerun skips whatever is already there. Previously the
+    # cache was written once after asyncio.gather, so a crash at row 19,000 of
+    # 20,000 lost the run and everything it cost. Append-and-skip also makes
+    # the job interruptible on purpose: stop it, inspect, restart.
+    # Repair a torn tail BEFORE appending. A hard kill can leave a partial
+    # final line with no newline; opening in append mode then writes the next
+    # record directly onto it, corrupting both. Measured: one row silently lost
+    # per interrupted run, and the in-memory count still reported success.
+    if cache.exists() and cache.stat().st_size:
+        with cache.open("rb+") as f:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                size = f.seek(0, os.SEEK_END)
+                pos = size
+                while pos > 0:
+                    step = min(65536, pos)
+                    pos -= step
+                    f.seek(pos)
+                    nl = f.read(step).rfind(b"\n")
+                    if nl != -1:
+                        keep = pos + nl + 1
+                        f.truncate(keep)
+                        break
+                else:
+                    keep = 0
+                    f.truncate(0)
+                print(f"repaired torn tail in {cache} "
+                      f"({size - keep:,} bytes dropped)", flush=True)
+
+    done = {}
+    if cache.exists():
+        with cache.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    p = json.loads(line)
+                except Exception:
+                    continue          # a torn last line from a hard kill
+                if "idx" in p:
+                    done[p["idx"]] = p
+        print(f"resume: {len(done):,} rows already in {cache}", flush=True)
+
     if args.gate_only:
-        pairs = [json.loads(l) for l in cache.open()]
+        pairs = list(done.values()) or [json.loads(l) for l in cache.open()]
     else:
         import aiohttp
+        todo = [(i, r) for i, r in enumerate(rows) if i not in done]
+        print(f"to translate: {len(todo):,} of {len(rows):,}", flush=True)
         sem = asyncio.Semaphore(args.concurrency)
-        async with aiohttp.ClientSession(
-                headers={"Authorization": f"Bearer {_key()}",
-                         "Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=300)) as s:
-            async def one(i, r):
-                segs = segments(r)
-                async with sem:
-                    tr = await translate(s, r, segs)
-                if i % 5 == 0:
-                    print(f"  {i+1}/{len(rows)}", flush=True)
-                if tr is None:
-                    return None
-                return {"orig": r, "da": splice(r, segs, tr)}
-            got = await asyncio.gather(*[one(i, r) for i, r in enumerate(rows)])
-        pairs = [g for g in got if g]
-        with cache.open("w") as f:
-            for p in pairs:
-                f.write(json.dumps(p, ensure_ascii=False) + "\n")
-        print(f"\ntranslated {len(pairs)}/{len(rows)} -> {cache}")
+        write_lock = asyncio.Lock()
+        n_done = [0]
+        # line-buffered append: each row is durable the moment it lands
+        with cache.open("a", buffering=1) as fh:
+            async with aiohttp.ClientSession(
+                    headers={"Authorization": f"Bearer {_key()}",
+                             "Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=300)) as s:
+                async def one(i, r):
+                    segs = segments(r)
+                    async with sem:
+                        tr = await translate(s, r, segs)
+                    n_done[0] += 1
+                    if n_done[0] % 25 == 0:
+                        print(f"  {n_done[0]}/{len(todo)}", flush=True)
+                    if tr is None:
+                        return None
+                    rec = {"idx": i, "orig": r, "da": splice(r, segs, tr)}
+                    async with write_lock:
+                        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    return rec
+                got = await asyncio.gather(*[one(i, r) for i, r in todo])
+        fresh = [g for g in got if g]
+        pairs = list(done.values()) + fresh
+        print(f"\ntranslated {len(fresh):,} new "
+              f"({len(fresh) + len(done):,} total) -> {cache}")
+        failed = len(todo) - len(fresh)
+        if failed:
+            print(f"  {failed:,} rows returned nothing and are NOT cached; "
+                  f"rerun to retry them", flush=True)
 
     fails = Counter()
     ok = 0
