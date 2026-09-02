@@ -74,7 +74,11 @@ LANGUAGE_TOOL = re.compile(r"translat|language|lang_", re.I)
 def is_language_tool_row(row) -> bool:
     return any(LANGUAGE_TOOL.search(((t.get("function") or {}).get("name") or ""))
                for t in row.get("tools", []))
-_TAG = re.compile(r"^\s*\[(?:tool_desc|param_desc|user|think|response|arg|result)\]\s*")
+# The model echoes the "[kind]" hint back, and TRANSLATES it: [svar] 1,408,
+# [taenk] 1,219, [tanke], [respons]... The English-only list missed every
+# Danish variant, so ~2,650 assistant turns kept a stray bracket tag. Match
+# any short bracketed token at the start instead of enumerating words.
+_TAG = re.compile(r"^\s*\[[^\]\n]{1,14}\]\s*")
 def _is_english(text: str) -> bool:
     """Proper language identification, not a word list.
 
@@ -110,6 +114,11 @@ ABSOLUTTE KRAV:
 - Optræder det samme stykke tekst flere steder -- fx både i brugerens
   besked, i værktøjskaldet og i svaret -- SKAL du bruge nøjagtig samme
   danske ord alle steder. Ellers hænger samtalen ikke sammen.
+- VIGTIGST: linjer mærket [arg] er værdier, der sendes til værktøjet. De
+  SKAL oversættes til dansk med præcis det ord, brugeren selv brugte i sin
+  besked. Siger brugeren "komediefilm", skal [arg] "comedy" blive til
+  "komedie" -- ikke forblive "comedy". Et dansk spørgsmål med en engelsk
+  værdi i kaldet er den hyppigste fejl i dette datasæt.
 - Bevar tone og længde. Et <think>-stykke er modellens indre ræsonnement og
   skal lyde som en person, der tænker højt på dansk.
 - Svar KUN med oversættelserne, én per linje, uden numre og UDEN
@@ -260,9 +269,31 @@ def _walk(obj, prefix=()):
         yield prefix, obj
 
 
-def splice(row, segs, translations):
-    """Write translations back by path. Structure cannot change here."""
+# The tool catalogue belongs to the row, not to the conversation, so its text
+# is row-independent and gets translated ONCE globally (see the spec pass).
+# Conversation text is per-row and carries the do-not-translate list.
+SPEC_KINDS = ("tool_desc", "param_desc", "enum")
+
+
+def spec_segments(row):
+    return [s for s in segments(row) if s[1] in SPEC_KINDS]
+
+
+def conv_segments(row):
+    return [s for s in segments(row) if s[1] not in SPEC_KINDS]
+
+
+def splice(row, segs, translations, spec_map=None):
+    """Write translations back by path. Structure cannot change here.
+
+    `segs`/`translations` cover the conversation; `spec_map` supplies the tool
+    catalogue from the global pass, keyed by the English string.
+    """
     out = json.loads(json.dumps(row))          # deep copy
+    if spec_map:
+        segs = list(segs) + [s for s in spec_segments(row) if s[2] in spec_map]
+        translations = list(translations) + [
+            spec_map[s[2]] for s in spec_segments(row) if s[2] in spec_map]
     json_cache = {}
     for (path, _kind, _orig), new in zip(segs, translations):
         if "#json" in path:
@@ -497,6 +528,105 @@ def _key():
     raise SystemExit("no OpenRouter key (~/or)")
 
 
+SPEC_SYS = """Du oversætter engelske feltbeskrivelser fra et værktøjs-API til dansk.
+
+Du får en nummereret liste. Oversæt HVER linje til naturligt, grammatisk dansk
+og svar med præcis lige så mange linjer i samme rækkefølge.
+
+- Skriv almindeligt dansk. "The name of the artist" bliver til "Kunstnerens
+  navn", ikke "Navnet på artist".
+- Tal, datoer, koder, valutaer og URL'er skrives uændret.
+- Svar KUN med oversættelserne, én per linje, uden numre."""
+
+
+async def translate_spec(session, strings, tries=3):
+    """Translate distinct catalogue strings, WITHOUT a do-not-translate list.
+
+    This pass exists because the per-row prompt pins every parameter key, and
+    43% of those keys are ordinary English words -- title, location, category,
+    amount, length, text, genre, weight, shape. Obeying the pin inside a
+    description produced "Navnet på artist" and "Beregn procentdelen af et
+    number" in 6,701 rows. Descriptions never refer to another parameter by
+    identifier, so the pin has no business being applied to them; keeping them
+    out of that request is a structural fix rather than a prompt plea.
+
+    Deduplicating is the other half: 75,468 description segments are only
+    10,124 distinct strings, so this is ~7.5x cheaper AND makes the rendering
+    deterministic -- the same English description cannot come back as two
+    different Danish ones in two different rows.
+    """
+    body = {"model": MODEL, "temperature": 0.2,
+            "messages": [{"role": "system", "content": SPEC_SYS},
+                         {"role": "user", "content": "\n".join(
+                             f"{i+1}. {s}" for i, s in enumerate(strings))}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "oversaettelser", "strict": True, "schema": {
+                    "type": "object",
+                    "properties": {"linjer": {"type": "array",
+                                              "items": {"type": "string"}}},
+                    "required": ["linjer"], "additionalProperties": False}}}}
+    for a in range(tries):
+        try:
+            async with session.post(URL, json=body) as r:
+                if r.status != 200:
+                    if a == tries - 1:
+                        print(f"  spec HTTP {r.status}: "
+                              f"{(await r.text())[:120]}", flush=True)
+                    await asyncio.sleep(1.5 * (a + 1))
+                    continue
+                d = await r.json()
+                out = json.loads(
+                    d["choices"][0]["message"]["content"])["linjer"]
+                out = [_TAG.sub("", x, count=1).lstrip() for x in out]
+                if len(out) == len(strings):
+                    return out
+        except Exception:
+            await asyncio.sleep(1.5 * (a + 1))
+    return None
+
+
+async def build_spec_map(session, rows, cache_path, batch=40, concurrency=24):
+    """english -> danish for every distinct catalogue string. Resumable."""
+    have = {}
+    if cache_path.exists():
+        for line in cache_path.open():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                have[r["en"]] = r["da"]
+            except Exception:
+                continue
+    want = sorted({s[2].strip() for r in rows for s in spec_segments(r)})
+    todo = [s for s in want if s not in have]
+    print(f"spec strings: {len(want):,} distinct, {len(have):,} cached, "
+          f"{len(todo):,} to translate", flush=True)
+    if not todo:
+        return have
+    chunks = [todo[i:i + batch] for i in range(0, len(todo), batch)]
+    sem = asyncio.Semaphore(concurrency)
+    lock = asyncio.Lock()
+    n = [0]
+    with cache_path.open("a", buffering=1) as fh:
+        async def one(chunk):
+            async with sem:
+                got = await translate_spec(session, chunk)
+            n[0] += 1
+            if n[0] % 20 == 0:
+                print(f"  spec {n[0]}/{len(chunks)} batches", flush=True)
+            if not got:
+                return
+            async with lock:
+                for en, da in zip(chunk, got):
+                    have[en] = da
+                    fh.write(json.dumps({"en": en, "da": da},
+                                        ensure_ascii=False) + "\n")
+        await asyncio.gather(*[one(c) for c in chunks])
+    print(f"spec map: {len(have):,} strings", flush=True)
+    return have
+
+
 def build_request(row, segs):
     pinned = sorted(x for x in _pinned_values(row) if x)
     lines = "\n".join(f"{i+1}. [{k}] {t}" for i, (_p, k, t) in enumerate(segs))
@@ -556,6 +686,18 @@ async def main():
                     help="keep only rows whose calls use an enum-constrained "
                          "argument -- 3.3% of values, so they need selecting "
                          "for on purpose or the enum path never gets smoked")
+    ap.add_argument("--retry-failed", action="store_true",
+                    help="gate the cache, DROP the rows that fail, then run "
+                         "normally so they are re-translated. Failures are "
+                         "mostly recoverable -- a single skipped description "
+                         "or an argument left English -- so retrying beats "
+                         "discarding the conversation.")
+    ap.add_argument("--respec", action="store_true",
+                    help="rebuild the global catalogue map and re-splice tool/"
+                         "parameter descriptions into an EXISTING cache, "
+                         "leaving conversation text untouched. Repairs a cache "
+                         "translated before the spec pass existed, without "
+                         "paying to redo conversations that are already right.")
     ap.add_argument("--show", type=int, default=2,
                     help="print this many translated rows in full")
     args = ap.parse_args()
@@ -649,7 +791,64 @@ async def main():
                     done[p["idx"]] = p
         print(f"resume: {len(done):,} rows already in {cache}", flush=True)
 
-    if args.gate_only:
+    if args.retry_failed and done:
+        keep, drop = {}, 0
+        for i, p in done.items():
+            if gate(p["orig"], p["da"]):
+                drop += 1
+            else:
+                keep[i] = p
+        if drop:
+            with cache.open("w") as f:
+                for i in sorted(keep):
+                    f.write(json.dumps(keep[i], ensure_ascii=False) + "\n")
+            done = keep
+            print(f"retry-failed: dropped {drop:,} failing rows, "
+                  f"{len(keep):,} kept", flush=True)
+
+    if args.respec:
+        import aiohttp
+        pairs = list(done.values())
+        async with aiohttp.ClientSession(
+                headers={"Authorization": f"Bearer {_key()}",
+                         "Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=300)) as s:
+            spec_map = await build_spec_map(
+                s, [p["orig"] for p in pairs], args.out / "spec_map.jsonl")
+        fixed = 0
+        for p in pairs:
+            new = json.loads(json.dumps(p["da"]))
+            for path, kind, en in spec_segments(p["orig"]):
+                da = spec_map.get(en.strip())
+                if da is None:
+                    continue
+                cur = _get(new, path)
+                if cur != da:
+                    _set(new, path, da)
+                    fixed += 1
+            # enum edits must propagate to the invocations, exactly as in the
+            # main path -- otherwise the spec and the calls desynchronise
+            emap = {en.strip(): spec_map[en.strip()]
+                    for _p, k, en in spec_segments(p["orig"])
+                    if k == "enum" and en.strip() in spec_map}
+            if emap:
+                for m in new.get("conversations", []):
+                    for tc in (m.get("tool_calls") or []):
+                        a = (tc.get("function") or {}).get("arguments")
+                        if isinstance(a, dict):
+                            for k, v in list(a.items()):
+                                if isinstance(v, str) and v in emap:
+                                    a[k] = emap[v]
+            p["da"] = new
+        tmp = cache.with_suffix(".respec")
+        with tmp.open("w") as f:
+            for p in sorted(pairs, key=lambda x: x["idx"]):
+                f.write(json.dumps(p, ensure_ascii=False) + "\n")
+        tmp.replace(cache)
+        print(f"respec: {fixed:,} description/enum fields rewritten across "
+              f"{len(pairs):,} rows -> {cache}", flush=True)
+
+    if args.gate_only or args.respec:
         pairs = list(done.values()) or [json.loads(l) for l in cache.open()]
     else:
         import aiohttp
@@ -666,6 +865,7 @@ async def main():
         print(f"to translate: {len(todo):,} of {len(rows):,}", flush=True)
         sem = asyncio.Semaphore(args.concurrency)
         write_lock = asyncio.Lock()
+        spec_map = {}
         n_done = [0]
         errs = Counter()
         # line-buffered append: each row is durable the moment it lands
@@ -674,6 +874,10 @@ async def main():
                     headers={"Authorization": f"Bearer {_key()}",
                              "Content-Type": "application/json"},
                     timeout=aiohttp.ClientTimeout(total=300)) as s:
+                # Catalogue text first, once, globally.
+                spec_map = await build_spec_map(
+                    s, [r for _i, r in todo], args.out / "spec_map.jsonl")
+
                 async def one(i, r):
                     # One malformed row must not abort the job. asyncio.gather
                     # propagates the first exception and cancels the rest, so
@@ -681,7 +885,7 @@ async def main():
                     # Failures return None and stay uncached, so a rerun
                     # retries them.
                     try:
-                        segs = segments(r)
+                        segs = conv_segments(r)      # catalogue handled above
                         async with sem:
                             tr = await translate(s, r, segs)
                         n_done[0] += 1
@@ -689,7 +893,8 @@ async def main():
                             print(f"  {n_done[0]}/{len(todo)}", flush=True)
                         if tr is None:
                             return None
-                        rec = {"idx": i, "orig": r, "da": splice(r, segs, tr)}
+                        rec = {"idx": i, "orig": r,
+                               "da": splice(r, segs, tr, spec_map)}
                     except Exception as e:
                         errs[type(e).__name__] += 1
                         return None
@@ -726,7 +931,7 @@ async def main():
     # looks identical to data that is always right.
     if pairs:
         base = pairs[0]
-        ctrl = {}
+        ctrl, ctrl_base = {}, {}
         c1 = json.loads(json.dumps(base["da"]))
         for t in c1.get("tools", []):
             if t.get("function", {}).get("name"):
@@ -747,16 +952,24 @@ async def main():
         # identifier inside the prose the way the model did before the prompt
         # fix ("parameteren company_name" -> "parameteren firma_navn"). Without
         # this the DNT check could be vacuous and the pass rate would not say so.
-        c4 = json.loads(json.dumps(base["da"]))
-        idents = sorted(t for t in _pinned_values(base["orig"])
-                        if IDENT_STRICT.match(t))
-        if idents:
-            tok = idents[0]
-            for m in c4.get("conversations", []):
-                if m.get("content") and tok in m["content"]:
-                    m["content"] = m["content"].replace(tok, "dansk_navn")
-                    ctrl["identifier translated in prose"] = c4
-                    break
+        # SYNTHETIC, like the enum control. Sampling the batch's first row
+        # made this blind: if that row happened to carry no snake_case
+        # identifier inside a conversation segment, the control corrupted
+        # nothing and PASSED, which is exactly what happened on the 19,347-row
+        # run -- the dnt-token-lost count was real but unverifiable.
+        dnt_ok = {"tools": [{"function": {
+            "name": "get_stock_price", "description": "Hent aktiekurs",
+            "parameters": {"properties": {"company_name": {"type": "string"}}}}}],
+            "conversations": [
+                {"role": "user", "content": "Hvad er kursen?"},
+                {"role": "assistant",
+                 "content": "Jeg bruger parameteren company_name til opslaget."}]}
+        dnt_bad = json.loads(json.dumps(dnt_ok))
+        dnt_bad["conversations"][1]["content"] = (
+            "Jeg bruger parameteren firma_navn til opslaget.")
+        ctrl["identifier translated in prose"] = dnt_bad
+        ctrl_base["identifier translated in prose"] = dnt_ok
+
         # SYNTHETIC, not sampled: enum-constrained arguments are rare (3.3% of
         # values), so a control drawn from the batch silently disappears on
         # most samples and the enum gate would look tested when it was not.
@@ -770,7 +983,7 @@ async def main():
         enum_bad = json.loads(json.dumps(enum_spec))
         enum_bad["conversations"][0]["tool_calls"][0]["function"]["arguments"]["shape"] = "circle"
         ctrl["enum desynced from spec"] = enum_bad
-        ctrl_base = {"enum desynced from spec": enum_spec}
+        ctrl_base["enum desynced from spec"] = enum_spec
 
         c6 = json.loads(json.dumps(base["da"]))
         for m in c6.get("conversations", []):
