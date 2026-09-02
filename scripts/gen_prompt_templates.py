@@ -101,16 +101,6 @@ POOLS = {
         ),
         example='"Omskriv artiklens indledning i {style} stil."',
     ),
-    "textman_extraction": dict(
-        n=20,
-        placeholders="",
-        semantic=(
-            "Måde at bede om struktureret udtræk af entities (personer, steder, "
-            "datoer, tal) fra artiklen som JSON. Vær tydelig om JSON-formatet og "
-            "nøglerne."
-        ),
-        example='"Udtræk personer, steder, datoer og tal fra artiklen som JSON med nøglerne people, places, dates, numbers."',
-    ),
     "textman_elaborate": dict(
         n=20,
         placeholders="",

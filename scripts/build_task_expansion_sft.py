@@ -19,6 +19,12 @@ Sample counts:
     rc      = ~21k articles × ~4 Qs   ≈ 84k rows
     reason  = ~21k articles × 6 types = 126k rows
     textman = ~21k articles × 6 types = 126k rows
+
+textman_extraction is deliberately NOT generated. It had ONE fixed schema
+across all 20,018 rows -- people/places/dates/numbers -- so it could not teach
+"read the keys you were given", and 26% of its `numbers` were not present in
+the passage at all. `danish-extraction-v1` supersedes it with a schema proposed
+per passage, verbatim-gated values, and real abstention targets.
 """
 from __future__ import annotations
 
@@ -43,11 +49,10 @@ POOL_FOR = {
     "reason_ranking":       "reason_qa",
     "reason_analogy":       "reason_qa",
     "reason_fact_check":    "reason_fact_check",
-    # Textman (6 distinct)
+    # Textman (5 distinct; extraction removed -- see below)
     "textman_summary":         "textman_summary",
     "textman_rewrite":         "textman_rewrite",
     "textman_style_transfer":  "textman_style_transfer",
-    "textman_extraction":      "textman_extraction",
     "textman_elaborate":       "textman_elaborate",
     "textman_genre_transform": "textman_genre_transform",
 }
@@ -124,8 +129,6 @@ def textman_rows(raw, wrappers, pools, rng):
         ("textman_rewrite",         "rewrite",         lambda i: i["rewrite"],           {}),
         ("textman_style_transfer",  "style_transfer",  lambda i: i["style_transfer"]["text"],
                                                                                           {"style": raw["style_target"]}),
-        ("textman_extraction",      "extraction",      lambda i: json.dumps(i["extraction"], ensure_ascii=False, separators=(',', ':')),
-                                                                                          {}),
         ("textman_elaborate",       "elaborate",       lambda i: f"KILDEPASSAGE: {i['elaborate'].get('source_passage','')}\n\nUDVIDET:\n{i['elaborate']['expanded']}",
                                                                                           {}),
         ("textman_genre_transform", "genre_transform", lambda i: i["genre_transform"]["text"],
