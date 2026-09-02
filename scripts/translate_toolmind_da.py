@@ -497,6 +497,14 @@ async def translate(session, row, segs, tries=3):
         try:
             async with session.post(URL, json=body) as r:
                 if r.status != 200:
+                    # SURFACE THE STATUS. Swallowing it made a $150 key cap
+                    # look like silent attrition: 6,345 rows returned None with
+                    # zero exceptions logged and no clue why. The same 403 wall
+                    # was misdiagnosed twice on the extraction job before the
+                    # status code was printed.
+                    if a == tries - 1:
+                        body_txt = (await r.text())[:160]
+                        print(f"  HTTP {r.status}: {body_txt}", flush=True)
                     await asyncio.sleep(1.5 * (a + 1))
                     continue
                 d = await r.json()
