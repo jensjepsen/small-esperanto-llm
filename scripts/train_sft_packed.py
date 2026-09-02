@@ -208,15 +208,34 @@ def _build_label_masker(assistant_id, tool_open_id, tool_close_id, unk_id,
     model_starts = {t for t in (assistant_id, tool_call_id)
                     if t is not None and t != unk_id}
 
+    # THE TWO MODEL MARKERS ARE NOT SYMMETRIC.
+    #
+    # <|assistant|> is SUPPLIED by the harness: every inference path prompts
+    # with f"{USER}{q}{END}{ASST}", so the model never has to produce it and
+    # training it as a target teaches nothing useful.
+    #
+    # <|tool_call|> is GENERATED: nobody supplies it, and without emitting it
+    # the model cannot make a call at all. Masking it was a real bug -- v35
+    # measured P(<|tool_call|>) = 0.000000 at rank 3,313 exactly where the data
+    # has it next, while the model reasoned correctly to the right tool and the
+    # right arguments and then emitted <|end|>. It had never been a target.
+    supplied = {t for t in (assistant_id,) if t is not None and t != unk_id}
+
     def mask(input_ids: list[int]) -> list[int] | None:
         labels = list(input_ids)
         in_world = True          # the prompt precedes any model turn
         saw_model = False
         for i, t in enumerate(input_ids):
             if t in model_starts:
+                was_world = in_world
                 in_world = False
                 saw_model = True
-                labels[i] = -100          # the marker is scaffolding
+                # A generated marker is a target -- but only once the model is
+                # already speaking. The <|tool_call|> that opens a turn right
+                # after a world turn still follows a supplied <|assistant|> in
+                # our render, so this only ever fires mid-burst.
+                if t in supplied or was_world:
+                    labels[i] = -100
                 continue
             if t in world_starts:
                 in_world = True
@@ -724,7 +743,7 @@ def main():
         # to a fingerprint built only from the data: a resumed run would reload
         # labels produced by the old rule and report success. v2 = mask every
         # world turn, not just the first prompt (multi-turn fix).
-        LABEL_SCHEMA_V = "labels-v2-multiturn"
+        LABEL_SCHEMA_V = "labels-v3-toolcall-target"
         fingerprint = _h.md5(
             (str(sorted(args.sft_data)) + str(args.max_length)
              + str(args.max_examples) + str(len(raw_ds))
