@@ -143,7 +143,8 @@ class DownstreamEvalCallback(TrainerCallback):
     # run -- the eval was costing more than the capability it measures is worth
     # mid-run. 200 rows keeps the trajectory readable; the published number
     # should come from a full-split run afterwards, not from this.
-    PER_EVAL_CAP = {"icl": 1000, "extraction": 200}
+    PER_EVAL_CAP = {"icl": 1000, "extraction": 200,
+                    "tool_seen": 250, "tool_unseen": 250}
 
     def _maybe_subsample(self, ds, step: int, name: str | None = None):
         # Effective n = tightest of the global --downstream-n and this eval's
@@ -319,6 +320,50 @@ class DownstreamEvalCallback(TrainerCallback):
     # fill answers were being truncated mid-answer, failing to parse, and
     # scoring zero on length rather than on content. 640 covers p99 of both.
     EXTRACTION_MAX_NEW = 640
+
+    # Reasoning plus a call; the reasoning runs ~140 words in the source.
+    TOOL_MAX_NEW = 512
+    TOOL_REPO = "jensjepsen/danish-tool-dialogues-v1"
+
+    def _tool_items(self, split: str, step: int = 0, name: str = "tool"):
+        """Prompt = the dialogue up to the model's turn; gold = the call.
+
+        The prompt stops BEFORE the assistant turn that precedes the call, so
+        the model must produce the reasoning and the call itself -- which is
+        how format_conversation trains it (one burst, no stop between them)
+        and how it will be prompted at inference.
+        """
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
+        from train_sft_packed import format_conversation
+        ds = load_dataset(self.TOOL_REPO, "sft", split=split)
+        ds = self._maybe_subsample(ds, step, name)
+        items = []
+        for r in ds:
+            msgs = r["messages"]
+            call_at = next((i for i, m in enumerate(msgs)
+                            if m["role"] == "tool_call"), None)
+            if call_at is None:
+                continue
+            start = call_at
+            if start and msgs[start - 1]["role"] == "assistant":
+                start -= 1          # the reasoning is the model's too
+            if start == 0:
+                continue            # nothing left to prompt with
+            try:
+                gold = json.loads(msgs[call_at]["content"])
+            except Exception:
+                continue
+            prompt = format_conversation(msgs[:start])
+            items.append((prompt, gold))
+        return items
+
+    def _load_tool_seen(self, step: int = 0):
+        return self._tool_items("eval_seen_tools", step, "tool_seen")
+
+    def _load_tool_unseen(self, step: int = 0):
+        return self._tool_items("eval_unseen_tools", step, "tool_unseen")
 
     def _load_extraction(self, step: int = 0):
         """Extraction rows whose schema was never trained on.
@@ -566,6 +611,67 @@ class DownstreamEvalCallback(TrainerCallback):
             return 0.0
         p, r = tp / len(pred), tp / len(gold)
         return 2 * p * r / (p + r)
+
+    _CALL_RE = re.compile(r"<\|tool_call\|>(.*?)(?:<\|/tool_call\|>|$)", re.S)
+
+    def _tool_score(self, model, name: str) -> float:
+        """Graded: wrong tool scores 0, right tool scores pair-F1 on arguments.
+
+        Not exact match. Calling the right tool with three of four arguments
+        right is most of the way there and an all-or-nothing score cannot say
+        so -- the same reason the extraction eval moved to F1 after three
+        consecutive readings of 0.8 / 0.5 / 0.0 told us nothing.
+
+        Calling the WRONG tool scores zero regardless of arguments: correct
+        parameters aimed at the wrong function are not partial credit.
+        """
+        items = self._get(name)
+        if not items:
+            return 0.0
+        prompts = [f"{USER}{q}{END}{ASST}" if not q.startswith(USER)
+                   else f"{q} {ASST}" for q, _ in items]
+        outs = self._generate(model, prompts, self.TOOL_MAX_NEW)
+        scores, parsed, named = [], [], []
+        for out, (_, gold) in zip(outs, items):
+            m = self._CALL_RE.search(out)
+            if not m:
+                scores.append(0.0), parsed.append(0.0), named.append(0.0)
+                continue
+            try:
+                got = json.loads(m.group(1).strip())
+            except Exception:
+                scores.append(0.0), parsed.append(0.0), named.append(0.0)
+                continue
+            parsed.append(1.0)
+            if not isinstance(got, dict) or got.get("name") != gold.get("name"):
+                scores.append(0.0), named.append(0.0)
+                continue
+            named.append(1.0)
+            ga = gold.get("arguments") or {}
+            pa = got.get("arguments") or {}
+            if not isinstance(pa, dict) or not isinstance(ga, dict):
+                scores.append(0.0)
+                continue
+            gp = {(k, json.dumps(v, sort_keys=True, ensure_ascii=False))
+                  for k, v in ga.items()}
+            pp = {(k, json.dumps(v, sort_keys=True, ensure_ascii=False))
+                  for k, v in pa.items()}
+            scores.append(self._pair_f1(pp, gp))
+        mean = lambda v: sum(v) / len(v) if v else 0.0  # noqa: E731
+        print(f"  [downstream] {name}: emitted-a-call {100*mean(parsed):.1f}%  "
+              f"right-tool {100*mean(named):.1f}%  argF1 {100*mean(scores):.1f}%",
+              flush=True)
+        self._extra_metrics.update({
+            f"eval_downstream_{name}_call_rate": mean(parsed),
+            f"eval_downstream_{name}_tool_acc": mean(named),
+        })
+        return mean(scores)
+
+    def _score_tool_seen(self, model) -> float:
+        return self._tool_score(model, "tool_seen")
+
+    def _score_tool_unseen(self, model) -> float:
+        return self._tool_score(model, "tool_unseen")
 
     def _score_extraction(self, model) -> float:
         """Field-level pair-F1 on the parsed answer, per-task parser.
