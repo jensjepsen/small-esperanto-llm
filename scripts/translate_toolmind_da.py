@@ -2,8 +2,10 @@
 
 WHAT MOVES AND WHAT DOES NOT
     translated : user turns, <think> blocks, assistant prose, tool and
-                 parameter DESCRIPTIONS, and natural-language VALUES in tool
-                 calls and tool results
+                 parameter DESCRIPTIONS, enum values, and natural-language
+                 VALUES in tool calls and results -- including content the
+                 user chose, such as a note title, which must then read the
+                 same everywhere it recurs
     untouched  : tool names, parameter keys, every JSON key, and machine
                  values -- acronyms, dates, numbers, emails, URLs, ISO codes,
                  snake_case identifiers (EUR, AAPL, 1990-05-15, en-US)
@@ -75,9 +77,13 @@ ABSOLUTTE KRAV:
 - Oversæt ALDRIG de navne, der står under "BEVAR UÆNDRET". De skal stå
   ordret på engelsk i din oversættelse, også midt i en dansk sætning.
 - Tal, datoer, koder, valutaer, URL'er og filstier skrives uændret.
-- Er et tekststykke et egennavn eller en værdi, som brugeren selv har valgt
-  (fx en titel), så oversæt det kun hvis det giver mening på dansk -- og
-  brug SAMME oversættelse hver gang det stykke optræder.
+- Indhold som brugeren selv har valgt -- en titel, en note, en besked -- SKAL
+  oversættes til dansk. "Team Meeting Agenda" bliver til "Dagsorden til
+  teammøde". Kun rigtige egennavne (personer, byer, film, restauranter,
+  firmaer) beholder deres oprindelige form.
+- Optræder det samme stykke tekst flere steder -- fx både i brugerens
+  besked, i værktøjskaldet og i svaret -- SKAL du bruge nøjagtig samme
+  danske ord alle steder. Ellers hænger samtalen ikke sammen.
 - Bevar tone og længde. Et <think>-stykke er modellens indre ræsonnement og
   skal lyde som en person, der tænker højt på dansk.
 - Svar KUN med oversættelserne, én per linje, uden numre og UDEN
@@ -396,6 +402,26 @@ def gate(orig, new):
         bad.append(f"enum-desynced({broke})")
 
     # language: translated fields should read as Danish, not English
+    # VALUE-CHAIN CONSISTENCY. User content translates, so a value now moves in
+    # several places at once: the user says it, the call carries it, the result
+    # echoes it, the response repeats it. If the translator renders it
+    # differently in each, the conversation stops cohering and nothing
+    # downstream can ground the argument in what the user actually asked for.
+    # Rule: if the English value appeared in the row's other prose, the Danish
+    # value must appear in the Danish prose.
+    def _prose(segs):
+        return " ".join(t for _p, k, t in segs
+                        if k in ("user", "think", "response", "result")).lower()
+    o_prose, n_prose = _prose(o_segs), _prose(n_segs)
+    drift = 0
+    for (_p, kind, en_v), (_p2, _k2, da_v) in zip(o_segs, n_segs):
+        if kind != "arg" or len(en_v) < 4:
+            continue
+        if en_v.lower() in o_prose and da_v.lower() not in n_prose:
+            drift += 1
+    if drift:
+        bad.append(f"value-chain-broken({drift})")
+
     # ANY clearly-English segment fails the row. This was a ratio
     # (en > da * 0.15) and it went blind exactly where it mattered: on a row
     # with many segments, one untranslated field sits under the threshold, and
@@ -616,6 +642,24 @@ async def main():
         ctrl["enum desynced from spec"] = enum_bad
         ctrl_base = {"enum desynced from spec": enum_spec}
 
+        c6 = json.loads(json.dumps(base["da"]))
+        for m in c6.get("conversations", []):
+            hit = False
+            for tc in (m.get("tool_calls") or []):
+                a = (tc.get("function") or {}).get("arguments") or {}
+                for k, v in list(a.items()):
+                    if isinstance(v, str) and len(v) > 4:
+                        # spaces, no underscore: must stay a translatable
+                        # segment, or it trips segment-count instead and
+                        # the value-chain check goes untested
+                        a[k] = "en helt anden formulering"
+                        ctrl["value chain broken"] = c6
+                        hit = True
+                        break
+                if hit:
+                    break
+            if hit:
+                break
         print("\nPLANTED CONTROLS (each must FAIL):")
         for name, bad_row in ctrl.items():
             ref = ctrl_base.get(name, base["orig"])
