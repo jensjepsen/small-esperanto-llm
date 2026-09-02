@@ -103,13 +103,30 @@ def main():
                     default=Path("scratch/toolmind_da_v2"))
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--n", type=int, default=0, help="print N rendered rows")
+    ap.add_argument("--clean-only", action="store_true",
+                    help="render only rows the gate passed, read from "
+                         "gate_verdicts.jsonl. Without it EVERY translated row "
+                         "is rendered, failures included.")
     ap.add_argument("--tokenizer",
                     default="jensjepsen/danish-lm-400m-sft-v34-mid")
     ap.add_argument("--subfolder", default="step-30240-agg-0.264")
     args = ap.parse_args()
 
-    rows = [json.loads(l)["da"]
-            for l in (args.src / "translated.jsonl").open() if l.strip()]
+    recs = [json.loads(l) for l in (args.src / "translated.jsonl").open()
+            if l.strip()]
+    if args.clean_only:
+        vp = args.src / "gate_verdicts.jsonl"
+        if not vp.exists():
+            raise SystemExit(f"--clean-only needs {vp}; run --gate-only first")
+        verdicts = {}
+        for line in vp.open():
+            v = json.loads(line)
+            verdicts[v["idx"]] = v["bad"]
+        before = len(recs)
+        recs = [r for r in recs if not verdicts.get(r.get("idx"), ["unknown"])]
+        print(f"clean-only: {len(recs):,} of {before:,} rows passed the gate",
+              flush=True)
+    rows = [r["da"] for r in recs]
     print(f"loaded {len(rows):,} translated rows", flush=True)
 
     rendered, drops = [], Counter()

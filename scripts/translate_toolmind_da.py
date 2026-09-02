@@ -913,15 +913,23 @@ async def main():
             print(f"  {failed:,} rows returned nothing and are NOT cached; "
                   f"rerun to retry them", flush=True)
 
+    # Verdicts are PERSISTED, not just printed. The gate takes ~10 minutes of
+    # langdetect over the corpus, so anything downstream that needs to know
+    # which rows passed -- the renderer, a publish step -- would otherwise have
+    # to recompute it or, worse, silently use every row.
     fails = Counter()
     ok = 0
-    for p in pairs:
-        bad = gate(p["orig"], p["da"])
-        if bad:
-            for b in bad:
-                fails[b.split("(")[0]] += 1
-        else:
-            ok += 1
+    verdict_path = args.out / "gate_verdicts.jsonl"
+    with verdict_path.open("w") as vf:
+        for p in pairs:
+            bad = gate(p["orig"], p["da"])
+            vf.write(json.dumps({"idx": p.get("idx"), "bad": bad}) + "\n")
+            if bad:
+                for b in bad:
+                    fails[b.split("(")[0]] += 1
+            else:
+                ok += 1
+    print(f"verdicts -> {verdict_path}", flush=True)
     print(f"\nGATE: {ok}/{len(pairs)} clean")
     for k, v in fails.most_common():
         print(f"   {v:>4}  {k}")
