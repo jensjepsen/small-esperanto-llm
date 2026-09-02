@@ -177,29 +177,53 @@ def _build_preprocess_and_tokenize(tokenizer, special_tokens, max_length,
     return fn
 
 
-def _build_label_masker(assistant_id, tool_open_id, tool_close_id, unk_id):
-    """Return a fn that takes input_ids and yields a labels list with
-    -100 for prompt tokens (everything up to and including the first
-    <|assistant|>) and tool-result span tokens. Returns None if the row
-    has no <|assistant|> (malformed → drop)."""
+def _build_label_masker(assistant_id, tool_open_id, tool_close_id, unk_id,
+                        user_id=None, tool_call_id=None):
+    """Loss on MODEL-generated tokens only, across every turn.
+
+    The previous version masked up to the FIRST <|assistant|> and left
+    everything after it as a training target apart from tool-result spans.
+    That is correct for a single-turn row and wrong for a multi-turn one: in
+    `user → assistant → user → assistant`, the second <|user|> turn and its
+    content were trained on, i.e. the model was taught to write the user's
+    messages. It went unnoticed because all 21 sources in the v33/v34 mix are
+    single-turn; the ToolMind conversations are median 4 turns, so it matters
+    now.
+
+    Implemented as a state machine over the turn markers rather than an index
+    scan, because a conversation alternates arbitrarily many times:
+
+        WORLD (masked)  : <|user|> ... , <|tool_result|> ...
+        MODEL (trained) : <|assistant|> ... , <|tool_call|> ...
+
+    A turn stays in its state until the next marker flips it, so `<|end|>`
+    after a model turn is trained (the model must learn to stop) while the
+    same token after world text is not. Marker tokens themselves are always
+    masked -- they are scaffolding, not targets.
+    """
     mask_tool = (tool_open_id is not None and tool_open_id != unk_id
                  and tool_close_id is not None and tool_close_id != unk_id)
+    world_starts = {t for t in (user_id, tool_open_id if mask_tool else None)
+                    if t is not None and t != unk_id}
+    model_starts = {t for t in (assistant_id, tool_call_id)
+                    if t is not None and t != unk_id}
 
     def mask(input_ids: list[int]) -> list[int] | None:
-        try:
-            first = input_ids.index(assistant_id)
-        except ValueError:
-            return None
         labels = list(input_ids)
-        for i in range(first + 1):
-            labels[i] = -100
-        if mask_tool:
-            opens = [i for i, t in enumerate(input_ids) if t == tool_open_id]
-            closes = [i for i, t in enumerate(input_ids) if t == tool_close_id]
-            for o, c in zip(opens, closes):
-                if c >= o:
-                    for i in range(o, c + 1):
-                        labels[i] = -100
+        in_world = True          # the prompt precedes any model turn
+        saw_model = False
+        for i, t in enumerate(input_ids):
+            if t in model_starts:
+                in_world = False
+                saw_model = True
+                labels[i] = -100          # the marker is scaffolding
+                continue
+            if t in world_starts:
+                in_world = True
+            if in_world:
+                labels[i] = -100
+        if not saw_model:
+            return None                   # malformed row -> drop
         return labels
     return mask
 
@@ -647,15 +671,23 @@ def main():
         tr_open_id = tokenizer.convert_tokens_to_ids(TOOL_RESULT_OPEN)
         tr_close_id = tokenizer.convert_tokens_to_ids(TOOL_RESULT_CLOSE)
         mask_tool = (tr_open_id != unk_id and tr_close_id != unk_id)
+        user_id = tokenizer.convert_tokens_to_ids(USER_TOKEN)
+        tc_open_id = tokenizer.convert_tokens_to_ids(TOOL_CALL_OPEN)
+        multiturn = (user_id is not None and user_id != unk_id)
         console.print(
-            f"[bold]Masking prompt before+including {ASSISTANT_TOKEN!r} "
-            f"(id={assistant_id}); tool-result spans masked: {mask_tool}")
+            f"[bold]Loss on model turns only; world turns masked "
+            f"(user={multiturn}, tool_result={mask_tool}, "
+            f"tool_call trained={tc_open_id != unk_id})")
+        if not multiturn:
+            console.print("[bold red]  WARNING: no <|user|> in vocab -- later "
+                          "user turns in a multi-turn row would be TRAINED ON")
 
         tokenize_fn = _build_preprocess_and_tokenize(
             tokenizer, special_tokens, args.max_length,
             morpheme_preprocess=not args.no_morpheme_preprocess)
         label_fn = _build_label_masker(
-            assistant_id, tr_open_id, tr_close_id, unk_id)
+            assistant_id, tr_open_id, tr_close_id, unk_id,
+            user_id=user_id, tool_call_id=tc_open_id)
 
         console.print("[bold green]Tokenizing + computing labels...")
         from datasets import Dataset
