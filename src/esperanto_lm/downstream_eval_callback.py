@@ -412,7 +412,8 @@ class DownstreamEvalCallback(TrainerCallback):
 
     # ── batched greedy generation ──────────────────────────────────────────
 
-    def _generate(self, model, prompts: list[str], max_new: int) -> list[str]:
+    def _generate(self, model, prompts: list[str], max_new: int,
+                  skip_special: bool = True) -> list[str]:
         tok = self.tokenizer
         # Save + set left padding for generation, restore after
         prev_side = tok.padding_side
@@ -441,7 +442,9 @@ class DownstreamEvalCallback(TrainerCallback):
                     )
                 plen = enc["input_ids"].shape[1]
                 for row in gen:
-                    outs.append(tok.decode(row[plen:], skip_special_tokens=True).strip())
+                    outs.append(tok.decode(
+                        row[plen:],
+                        skip_special_tokens=skip_special).strip())
         finally:
             tok.padding_side = prev_side
             tok.pad_token = prev_pad
@@ -612,7 +615,10 @@ class DownstreamEvalCallback(TrainerCallback):
         p, r = tp / len(pred), tp / len(gold)
         return 2 * p * r / (p + r)
 
+    # Prefer the marker; fall back to the first {"name": ...} object so the
+    # eval still scores if the marker is absent for any reason.
     _CALL_RE = re.compile(r"<\|tool_call\|>(.*?)(?:<\|/tool_call\|>|$)", re.S)
+    _CALL_FALLBACK = re.compile(r"(\{\s*\"name\"\s*:.*)", re.S)
 
     def _tool_score(self, model, name: str) -> float:
         """Graded: wrong tool scores 0, right tool scores pair-F1 on arguments.
@@ -630,15 +636,23 @@ class DownstreamEvalCallback(TrainerCallback):
             return 0.0
         prompts = [f"{USER}{q}{END}{ASST}" if not q.startswith(USER)
                    else f"{q} {ASST}" for q, _ in items]
-        outs = self._generate(model, prompts, self.TOOL_MAX_NEW)
+        # skip_special=False: <|tool_call|> IS a special token, so the
+        # default decode strips it and the marker regex can never match --
+        # emitted-a-call read 0.0% on every row while the model may well
+        # have been emitting calls.
+        outs = self._generate(model, prompts, self.TOOL_MAX_NEW,
+                              skip_special=False)
         scores, parsed, named = [], [], []
         for out, (_, gold) in zip(outs, items):
-            m = self._CALL_RE.search(out)
+            m = self._CALL_RE.search(out) or self._CALL_FALLBACK.search(out)
             if not m:
                 scores.append(0.0), parsed.append(0.0), named.append(0.0)
                 continue
             try:
-                got = json.loads(m.group(1).strip())
+                # raw_decode, not loads: the fallback capture runs to the end
+                # of the generation, so there is usually trailing text after
+                # the object and a strict parse would reject a valid call.
+                got, _ = json.JSONDecoder().raw_decode(m.group(1).strip())
             except Exception:
                 scores.append(0.0), parsed.append(0.0), named.append(0.0)
                 continue
