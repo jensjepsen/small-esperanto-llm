@@ -63,10 +63,24 @@ CODE_VALUE = re.compile(
     r"\S+@\S+|https?://\S+|[A-Za-z]+[_.][\w._]+|\W+)$")
 IDENT_STRICT = re.compile(r"^(?=.*[_.\d]|.*[a-z][A-Z])[A-Za-z][\w.]{3,}$")
 _TAG = re.compile(r"^\s*\[(?:tool_desc|param_desc|user|think|response|arg|result)\]\s*")
-DA_MARK = re.compile(r"\b(og|er|det|den|til|for|ikke|med|som|har|kan|jeg|du|"
-                     r"af|på|en|et|de|der)\b|[æøåÆØÅ]", re.I)
-EN_MARK = re.compile(r"\b(the|and|is|are|to|of|you|for|with|that|this|"
-                     r"your|have|will|from)\b", re.I)
+def _is_english(text: str) -> bool:
+    """Proper language identification, not a word list.
+
+    This was a hand-rolled regex twice over and wrong twice: first it fired on
+    a RATIO and went blind on long rows, then its "English" markers included
+    `to`, `for`, `is`, `have` and `and` -- all Danish words too (to=two,
+    is=ice, and=duck) -- so "Beregn afstanden mellem to lokationer" read as
+    untranslated English, 15 of 18 apparent failures at n=200. langdetect was
+    already a dependency the whole time. It is decisive even on three words
+    ("Mødets dato" -> da:1.00), which is well below anything we check.
+    """
+    from langdetect import DetectorFactory, detect_langs
+    DetectorFactory.seed = 0          # else results vary between calls
+    try:
+        top = detect_langs(text)[0]
+    except Exception:
+        return False                  # too short / no letters: not a failure
+    return top.lang == "en" and top.prob >= 0.90
 
 SYS = """Du oversætter engelsk til dansk i et datasæt om værktøjskald.
 
@@ -431,9 +445,9 @@ def gate(orig, new):
     for (_p, kind, txt), (_p2, _k2, new_txt) in zip(o_segs, n_segs):
         if kind not in ("user", "think", "response", "tool_desc", "param_desc"):
             continue
-        if len(new_txt.split()) < 5:
+        if len(new_txt.split()) < 3:
             continue
-        if EN_MARK.search(new_txt) and not DA_MARK.search(new_txt):
+        if _is_english(new_txt):
             en += 1
         else:
             da += 1
