@@ -719,10 +719,16 @@ def main():
         # cache key sensitive to what the rows actually say, at O(1) cost.
         _probe = [conversations[i] for i in
                   range(0, len(conversations), max(1, len(conversations) // 64))]
+        # LABEL_SCHEMA_V is bumped whenever the masking rule changes. The cache
+        # stores computed LABELS, not just tokens, so a masker fix is invisible
+        # to a fingerprint built only from the data: a resumed run would reload
+        # labels produced by the old rule and report success. v2 = mask every
+        # world turn, not just the first prompt (multi-turn fix).
+        LABEL_SCHEMA_V = "labels-v2-multiturn"
         fingerprint = _h.md5(
             (str(sorted(args.sft_data)) + str(args.max_length)
              + str(args.max_examples) + str(len(raw_ds))
-             + str(sorted(args.source_cap))
+             + str(sorted(args.source_cap)) + LABEL_SCHEMA_V
              + _h.md5("".join(_probe).encode()).hexdigest()
              ).encode()
         ).hexdigest()[:12]
