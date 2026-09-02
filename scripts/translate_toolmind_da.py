@@ -62,6 +62,18 @@ CODE_VALUE = re.compile(
     r"^(?:[A-Z0-9]{2,6}|[a-z]{2}(?:[-_][A-Za-z]{2})?|[\d\s:/.,+%-]+|"
     r"\S+@\S+|https?://\S+|[A-Za-z]+[_.][\w._]+|\W+)$")
 IDENT_STRICT = re.compile(r"^(?=.*[_.\d]|.*[a-z][A-Z])[A-Za-z][\w.]{3,}$")
+# Tools whose SUBJECT is language. Translating the conversation destroys the
+# premise: a user who says "translate this English sentence: 'I love to
+# travel'" ends up saying "oversæt denne engelske sætning: 'Jeg elsker at
+# rejse'" while the call still carries source_language="English". Same for
+# detect_language -- the text whose language is being identified has changed
+# language. 467 of 19,919 rows (2.3%); they are dropped, not repaired.
+LANGUAGE_TOOL = re.compile(r"translat|language|lang_", re.I)
+
+
+def is_language_tool_row(row) -> bool:
+    return any(LANGUAGE_TOOL.search(((t.get("function") or {}).get("name") or ""))
+               for t in row.get("tools", []))
 _TAG = re.compile(r"^\s*\[(?:tool_desc|param_desc|user|think|response|arg|result)\]\s*")
 def _is_english(text: str) -> bool:
     """Proper language identification, not a word list.
@@ -373,7 +385,14 @@ def gate(orig, new):
     pin_o = _pinned_values(orig)
     for m in new.get("conversations", []):
         for tc in (m.get("tool_calls") or []):
-            for k, v in ((tc.get("function") or {}).get("arguments") or {}).items():
+            # `arguments` is a dict on all 4,000 rows I first surveyed, but not
+            # across the full 20k -- some are lists, and an unguarded .items()
+            # crashed the gate report AFTER a completed 20k translation. Every
+            # other access already guards; this one did not.
+            call_args = (tc.get("function") or {}).get("arguments")
+            if not isinstance(call_args, dict):
+                continue
+            for k, v in call_args.items():
                 if isinstance(v, str) and v not in pin_o:
                     continue
     # DNT tokens (tool + parameter names) must survive inside the prose.
@@ -415,7 +434,10 @@ def gate(orig, new):
     for m in new.get("conversations", []):
         for tc in (m.get("tool_calls") or []):
             fn = tc.get("function") or {}
-            for k, v in (fn.get("arguments") or {}).items():
+            fn_args = fn.get("arguments")
+            if not isinstance(fn_args, dict):
+                continue
+            for k, v in fn_args.items():
                 allowed = spec_enums.get((fn.get("name"), k))
                 if allowed and isinstance(v, str) and v not in allowed:
                     broke += 1
@@ -631,7 +653,16 @@ async def main():
         pairs = list(done.values()) or [json.loads(l) for l in cache.open()]
     else:
         import aiohttp
-        todo = [(i, r) for i, r in enumerate(rows) if i not in done]
+        # Excluded by INDEX, never by filtering `rows` -- idx is the row's
+        # position in the source file and the resume key, so dropping entries
+        # from the list would renumber everything after them and invalidate the
+        # entire cache.
+        skip = {i for i, r in enumerate(rows) if is_language_tool_row(r)}
+        if skip:
+            print(f"skipping {len(skip):,} language-tool rows "
+                  f"(translation destroys their premise)", flush=True)
+        todo = [(i, r) for i, r in enumerate(rows)
+                if i not in done and i not in skip]
         print(f"to translate: {len(todo):,} of {len(rows):,}", flush=True)
         sem = asyncio.Semaphore(args.concurrency)
         write_lock = asyncio.Lock()
