@@ -164,9 +164,54 @@ def _translatable_value(v, pinned: set) -> bool:
     return not CODE_VALUE.match(v.strip())
 
 
-def _pinned_names(row) -> set:
-    """Tool names and parameter keys. These never translate, anywhere."""
+# Tools whose answer depends on the LITERAL CHARACTERS of the value. These are
+# not language tools -- the name filter does not catch them -- but they fail the
+# same way: "racecar" is a palindrome and "racerbil" is not, so translating the
+# value makes the assistant assert something false, against a tool result that
+# was computed on the English string. check_word_count on a translated sentence
+# counts different words; reverse_string reverses different characters.
+# 363 of 17,138 rows (2.12%).
+#
+# Pinned, not dropped: a Danish user can perfectly well ask whether 'racecar'
+# is a palindrome, so the row stays usable once the value holds still.
+CHAR_DEPENDENT = re.compile(
+    r"palindrom|anagram|spell|rhym|syllab|acronym|letter|reverse|cipher|"
+    r"encod|decod|word_count|character_count", re.I)
+
+
+def _char_dependent_values(row) -> set:
+    """Argument values belonging to a character-dependent tool."""
+    names = set()
+    for t in row.get("tools", []) or []:
+        f = t.get("function") or {}
+        if (CHAR_DEPENDENT.search(f.get("name") or "")
+                or CHAR_DEPENDENT.search(f.get("description") or "")):
+            names.add(f.get("name"))
+    if not names:
+        return set()
     out = set()
+    for m in row.get("conversations", []):
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            if fn.get("name") not in names:
+                continue
+            a = fn.get("arguments")
+            if isinstance(a, str):
+                try:
+                    a = json.loads(a)
+                except Exception:
+                    continue
+            if isinstance(a, dict):
+                out.update(v.strip() for v in a.values()
+                           if isinstance(v, str) and v.strip())
+    return out
+
+
+def _pinned_names(row) -> set:
+    """Tool names, parameter keys, and character-dependent values. Never
+    translated, anywhere -- and listed under BEVAR UAENDRET so the prose keeps
+    them too, which is what stops the user turn asking about 'racerbil'."""
+    out = set(_char_dependent_values(row))
     for t in row.get("tools", []):
         f = t.get("function") or {}
         out.add(f.get("name"))
@@ -964,13 +1009,14 @@ def _glossary(row, value_map=None, spec_map=None, limit=24):
             da = value_map.get(key)
             if da and da.strip().lower() != en.strip().lower():
                 terms[en.strip()] = da.strip()
-    if spec_map:
-        for _p, _k, en in spec_segments(row):
-            en = en.strip()
-            da = spec_map.get(en)
-            # descriptions only: whole sentences are cited, not inflected
-            if da and da.strip().lower() != en.lower() and len(en) >= 15:
-                terms[en] = da.strip()
+    # DESCRIPTIONS ARE DELIBERATELY EXCLUDED. Offering "The principal amount of
+    # the loan" -> "Lanets hovedstol" taught the model to write the Danish
+    # description where it had been keeping the English parameter identifier,
+    # and dnt-token-lost went 0 -> 2 on a 198-row smoke (idx 108 `principal`,
+    # idx 179 `price_range`). Descriptions are cited verbatim in only 2.21% of
+    # rows and the substitution pass already handles those, so the glossary
+    # buys almost nothing here and costs DNT adherence. Values are what recur
+    # in prose and need inflecting, so values are what the glossary carries.
     # shortest first: single words are the ones that recur in prose, and a
     # truncated list should keep those rather than long descriptions
     return dict(sorted(terms.items(), key=lambda kv: len(kv[0]))[:limit])
