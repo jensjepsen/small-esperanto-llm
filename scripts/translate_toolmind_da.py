@@ -114,6 +114,11 @@ ABSOLUTTE KRAV:
 - Optræder det samme stykke tekst flere steder -- fx både i brugerens
   besked, i værktøjskaldet og i svaret -- SKAL du bruge nøjagtig samme
   danske ord alle steder. Ellers hænger samtalen ikke sammen.
+- Står der "FASTE OVERSÆTTELSER", er de danske ord dér allerede afgjort og
+  bruges i værktøjets skema. Brug dem hver gang begrebet nævnes -- også når
+  ordet skal bøjes ("rektangel" -> "rektangler", "rektanglets") og også når
+  du nævner det uden anførselstegn midt i en sætning. Skriv ALDRIG det
+  engelske ord, når der står en fast oversættelse for det.
 - VIGTIGST: linjer mærket [arg] er værdier, der sendes til værktøjet. De
   SKAL oversættes til dansk med præcis det ord, brugeren selv brugte i sin
   besked. Siger brugeren "komediefilm", skal [arg] "comedy" blive til
@@ -129,6 +134,18 @@ ABSOLUTTE KRAV:
 
 
 # ── segment extraction ──────────────────────────────────────────────────────
+
+# Quote delimiters seen around payload echoes in this corpus: straight double,
+# straight single, and the curly pair the translator sometimes emits. Matching
+# only `"x"` left 7 of 50 leaking assistant messages untouched -- every one of
+# them wrote 'circle' in single quotes.
+_Q = "\"'\u2018\u2019\u201c\u201d"
+
+
+def _quoted(term):
+    """Regex for `term` wrapped in any quote character."""
+    return f"[{_Q}]{re.escape(term)}[{_Q}]"
+
 
 def _translatable_value(v, pinned: set) -> bool:
     """Free text translates; machine tokens do not.
@@ -415,7 +432,7 @@ def splice(row, segs, translations, spec_map=None, value_map=None):
                 # and the reasoning quotes "the shape to calculate the area
                 # for". An exact match misses it, and the gate then declared
                 # idx 72 -- the row that motivated this whole check -- clean.
-                c = re.sub(f'"{re.escape(en)}"', lambda _m, d=da: f'"{d}"',
+                c = re.sub(_quoted(en), lambda _m, d=da: f'"{d}"',
                            c, flags=re.I)
             m["content"] = c
     return out
@@ -550,7 +567,7 @@ def gate(orig, new, value_map=None, spec_map=None):
                     continue
                 c = m.get("content")
                 if isinstance(c, str) and re.search(
-                        f'"{re.escape(en)}"', c, re.I):
+                        _quoted(en), c, re.I):
                     stale = True
                     break
             if stale:
@@ -569,7 +586,8 @@ def gate(orig, new, value_map=None, spec_map=None):
                     continue
                 c = m.get("content")
                 if isinstance(c, str) and re.search(
-                        f'"{re.escape(en.rstrip("."))}\\.?"', c, re.I):
+                        _quoted(en.rstrip('.')).replace('[' + _Q + ']', 
+                            '[' + _Q + ']', 1), c, re.I):
                     bad.append("stale-spec-citation")
                     break
             if "stale-spec-citation" in bad:
@@ -928,18 +946,54 @@ async def build_value_map(session, rows, cache_path, batch=40, concurrency=24):
     return have
 
 
-def build_request(row, segs):
+def _glossary(row, value_map=None, spec_map=None, limit=24):
+    """Canonical terms for THIS row, for the per-row prose request.
+
+    Both global passes finish before any row is translated, so by the time the
+    conversation is sent we already know that this row's `rectangle` is
+    `rektangel`. Handing that over is strictly better than rewriting the prose
+    afterwards: substitution can only touch an exact quoted string, so it
+    leaves inflected and unquoted mentions behind -- idx 72 kept saying
+    "standardformer som circle, rectangle osv." with no quotes to anchor to --
+    whereas a glossary lets the model decline the word properly (rektangler,
+    rektanglets) and use it in running text.
+    """
+    terms = {}
+    if value_map:
+        for _p, key, en in value_segments(row):
+            da = value_map.get(key)
+            if da and da.strip().lower() != en.strip().lower():
+                terms[en.strip()] = da.strip()
+    if spec_map:
+        for _p, _k, en in spec_segments(row):
+            en = en.strip()
+            da = spec_map.get(en)
+            # descriptions only: whole sentences are cited, not inflected
+            if da and da.strip().lower() != en.lower() and len(en) >= 15:
+                terms[en] = da.strip()
+    # shortest first: single words are the ones that recur in prose, and a
+    # truncated list should keep those rather than long descriptions
+    return dict(sorted(terms.items(), key=lambda kv: len(kv[0]))[:limit])
+
+
+def build_request(row, segs, value_map=None, spec_map=None):
     pinned = sorted(x for x in _pinned_values(row) if x)
     lines = "\n".join(f"{i+1}. [{k}] {t}" for i, (_p, k, t) in enumerate(segs))
-    return (f"BEVAR UÆNDRET (skriv disse ordret på engelsk):\n"
-            f"{', '.join(pinned)}\n\n"
-            f"Oversæt disse {len(segs)} tekststykker:\n{lines}")
+    gloss = _glossary(row, value_map, spec_map)
+    head = f"BEVAR UÆNDRET (skriv disse ordret på engelsk):\n{', '.join(pinned)}\n\n"
+    if gloss:
+        head += ("FASTE OVERSÆTTELSER (brug præcis disse danske ord, også når "
+                 "du bøjer dem):\n"
+                 + "\n".join(f'  "{en}" -> "{da}"' for en, da in gloss.items())
+                 + "\n\n")
+    return head + f"Oversæt disse {len(segs)} tekststykker:\n{lines}"
 
 
-async def translate(session, row, segs, tries=3):
+async def translate(session, row, segs, tries=3, value_map=None, spec_map=None):
     body = {"model": MODEL, "temperature": 0.3,
             "messages": [{"role": "system", "content": SYS},
-                         {"role": "user", "content": build_request(row, segs)}],
+                         {"role": "user", "content": build_request(
+                             row, segs, value_map, spec_map)}],
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "oversaettelser", "strict": True, "schema": {
                     "type": "object",
@@ -1042,7 +1096,10 @@ async def main():
             segs = segments(r)
             print(f"\n=== row: {len(segs)} segments, "
                   f"{sum(len(t) for _p, _k, t in segs):,} chars ===")
-            print(build_request(r, segs)[:2500])
+            print(build_request(
+                r, segs,
+                _load_value_map(args.out / "value_map.jsonl"),
+                _load_spec_map(args.out / "spec_map.jsonl"))[:2500])
         kinds = Counter(k for r in rows for _p, k, _t in segments(r))
         print(f"\nsegment kinds over {len(rows)} rows: {dict(kinds)}")
         return
@@ -1203,7 +1260,8 @@ async def main():
                     try:
                         segs = conv_segments(r)      # catalogue handled above
                         async with sem:
-                            tr = await translate(s, r, segs)
+                            tr = await translate(s, r, segs, value_map=value_map,
+                                             spec_map=spec_map)
                         n_done[0] += 1
                         if n_done[0] % 250 == 0:
                             print(f"  {n_done[0]}/{len(todo)}", flush=True)
@@ -1315,28 +1373,28 @@ async def main():
         ctrl["enum desynced from spec"] = enum_bad
         ctrl_base["enum desynced from spec"] = enum_spec
 
-        c6 = json.loads(json.dumps(base["da"]))
-        for m in c6.get("conversations", []):
-            hit = False
-            for tc in (m.get("tool_calls") or []):
-                a = (tc.get("function") or {}).get("arguments") or {}
-                for k, v in list(a.items()):
-                    if isinstance(v, str) and len(v) > 4:
-                        # spaces, no underscore: must stay a translatable
-                        # segment, or it trips segment-count instead and
-                        # the value-chain check goes untested
-                        a[k] = "en helt anden formulering"
-                        ctrl["value chain broken"] = c6
-                        hit = True
-                        break
-                if hit:
-                    break
-            if hit:
-                break
-        # SYNTHETIC for the same reason as the enum control: a sampled row
-        # only exercises this if it happens to quote a translated value, which
-        # is 5.0% of rows. It also needs its own lexicon entry, so the key is
-        # injected below rather than relying on whatever the run translated.
+        # SYNTHETIC. This was drawn from the batch -- it hunted for a call
+        # argument with a string value over 4 chars -- and on a rerun no row
+        # matched, so the control was never added and the output silently
+        # listed 7 controls instead of 8. A vanished control is worse than a
+        # failing one: nothing reports it, and the value check it guards was
+        # left unverified. Caught only by diffing against a previous run.
+        chain_ref = {"tools": [{"function": {
+            "name": "create_note", "parameters": {"properties": {
+                "title": {"type": "string"}}}}}],
+            "conversations": [{"role": "assistant", "content": "",
+                               "tool_calls": [{"function": {
+                                   "name": "create_note",
+                                   "arguments": {"title": "Shopping List"}}}]}]}
+        chain_bad = json.loads(json.dumps(chain_ref))
+        chain_bad["conversations"][0]["tool_calls"][0]["function"][
+            "arguments"]["title"] = "en helt anden formulering"
+        ctrl["value chain broken"] = chain_bad
+        ctrl_base["value chain broken"] = chain_ref
+        gate_vmap = dict(gate_vmap)
+        gate_vmap[_value_key("create_note", "title", "Shopping List")] = "Indkøbsliste"
+
+        # SYNTHETIC: a sampled row exercises this only 5% of the time.
         echo_ref = {"tools": [{"function": {
             "name": "search_restaurants", "parameters": {"properties": {
                 "cuisine": {"type": "string"}}}}}],
@@ -1346,8 +1404,7 @@ async def main():
                                    "name": "search_restaurants",
                                    "arguments": {"cuisine": "Italian"}}}]}]}
         echo_bad = json.loads(json.dumps(echo_ref))
-        # call IS canonical -- so this must be caught by the prose check alone,
-        # not fall through to value-not-canonical
+        # the CALL is canonical, so only the prose check can catch this
         echo_bad["conversations"][0]["tool_calls"][0]["function"][
             "arguments"]["cuisine"] = "italiensk"
         echo_bad["conversations"][0]["content"] = 'Jeg bruger cuisine: "Italian".'
@@ -1374,6 +1431,17 @@ async def main():
         gate_smap = dict(gate_smap)
         gate_smap[EN_D] = "Formen, som arealet skal beregnes for"
 
+        # A control that is never constructed reports nothing -- the output
+        # just lists one line fewer, and the check it guards goes unverified.
+        # That happened twice: the sampled value-chain control found no
+        # matching row on a rerun, and an edit deleted the prose-echo control
+        # outright. Both were caught only by diffing against an earlier run.
+        EXPECTED_CONTROLS = 8
+        if len(ctrl) != EXPECTED_CONTROLS:
+            missing = EXPECTED_CONTROLS - len(ctrl)
+            print(f"\n*** {missing} PLANTED CONTROL(S) MISSING: built "
+                  f"{len(ctrl)} of {EXPECTED_CONTROLS} -- "
+                  f"{sorted(ctrl)} ***", flush=True)
         print("\nPLANTED CONTROLS (each must FAIL):")
         for name, bad_row in ctrl.items():
             ref = ctrl_base.get(name, base["orig"])
