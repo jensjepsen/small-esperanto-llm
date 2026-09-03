@@ -380,22 +380,44 @@ def splice(row, segs, translations, spec_map=None, value_map=None):
     # payload echo from ordinary prose -- `"Italian"` is the echo, `italiensk`
     # in a sentence is Danish text -- and a user's own quoted words are theirs,
     # not an echo, so user turns are left alone.
+    # Reasoning also CITES the spec: `Vaerktojets beskrivelse siger "the shape
+    # to calculate the area for"`. Same defect one level up -- the description
+    # is now Danish, so the citation is stale English. 681 assistant messages
+    # (2.21%), 852 citations. Invisible to every structural check AND to
+    # langdetect, since one quoted phrase does not shift a long segment's
+    # verdict; found only by reading the output.
+    repl = {}
     if value_map:
-        repl = {}
         for _p, key, en in value_segments(row):
             da = value_map.get(key)
             if da and da.strip().lower() != en.strip().lower():
                 repl[en.strip()] = da
-        if repl:
-            for m in out.get("conversations", []):
-                if m.get("role") != "assistant":
-                    continue
-                c = m.get("content")
-                if not isinstance(c, str) or not c:
-                    continue
-                for en, da in repl.items():
-                    c = c.replace(f'"{en}"', f'"{da}"')
-                m["content"] = c
+    if spec_map:
+        for _p, _k, en in spec_segments(row):
+            da = spec_map.get(en.strip())
+            if da and da.strip().lower() != en.strip().lower():
+                repl[en.strip()] = da
+                # citations often drop a trailing period
+                repl.setdefault(en.strip().rstrip("."), da.strip().rstrip("."))
+    if repl:
+        # longest first: a description can contain a value as a substring, and
+        # rewriting the short one first would corrupt the long one.
+        ordered = sorted(repl.items(), key=lambda kv: -len(kv[0]))
+        for m in out.get("conversations", []):
+            if m.get("role") != "assistant":
+                continue
+            c = m.get("content")
+            if not isinstance(c, str) or not c:
+                continue
+            for en, da in ordered:
+                # CASE-INSENSITIVE. A citation is routinely re-cased to fit the
+                # sentence: the spec says "The shape to calculate the area for"
+                # and the reasoning quotes "the shape to calculate the area
+                # for". An exact match misses it, and the gate then declared
+                # idx 72 -- the row that motivated this whole check -- clean.
+                c = re.sub(f'"{re.escape(en)}"', lambda _m, d=da: f'"{d}"',
+                           c, flags=re.I)
+            m["content"] = c
     return out
 
 
@@ -457,7 +479,7 @@ def skeleton(row, blanks=None):
     return json.dumps(rec(row), ensure_ascii=False, sort_keys=True)
 
 
-def gate(orig, new, value_map=None):
+def gate(orig, new, value_map=None, spec_map=None):
     """Mechanical checks. Returns a list of failure reasons (empty = pass).
 
     `value_map` upgrades the value check from "did it change" to "is it the
@@ -527,13 +549,31 @@ def gate(orig, new, value_map=None):
                 if m.get("role") != "assistant":
                     continue
                 c = m.get("content")
-                if isinstance(c, str) and f'"{en}"' in c:
+                if isinstance(c, str) and re.search(
+                        f'"{re.escape(en)}"', c, re.I):
                     stale = True
                     break
             if stale:
                 break
         if stale:
             bad.append("stale-prose-echo")
+    # Same, for descriptions the reasoning cites verbatim.
+    if spec_map:
+        for _path, _k, en in spec_segments(orig):
+            en = en.strip()
+            da = spec_map.get(en)
+            if not da or da.strip().lower() == en.lower() or len(en) < 15:
+                continue
+            for m in new.get("conversations", []):
+                if m.get("role") != "assistant":
+                    continue
+                c = m.get("content")
+                if isinstance(c, str) and re.search(
+                        f'"{re.escape(en.rstrip("."))}\\.?"', c, re.I):
+                    bad.append("stale-spec-citation")
+                    break
+            if "stale-spec-citation" in bad:
+                break
     # pinned values (enums, identifiers, numbers) must survive untouched
     pin_o = _pinned_values(orig)
     for m in new.get("conversations", []):
@@ -807,6 +847,22 @@ async def translate_values(session, keys, tries=3):
         except Exception:
             await asyncio.sleep(1.5 * (a + 1))
     return None
+
+
+def _load_spec_map(cache_path):
+    """The catalogue table, off disk. Keyed by the english string."""
+    have = {}
+    if cache_path.exists():
+        for line in cache_path.open():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                have[r["en"]] = r["da"]
+            except Exception:
+                continue
+    return have
 
 
 def _load_value_map(cache_path):
@@ -1182,11 +1238,13 @@ async def main():
     # Read the lexicon off disk rather than requiring a session: --gate-only
     # and --respec both need it, and it is exactly the table the run just wrote.
     gate_vmap = _load_value_map(args.out / "value_map.jsonl")
-    print(f"gate: {len(gate_vmap):,} canonical values loaded", flush=True)
+    gate_smap = _load_spec_map(args.out / "spec_map.jsonl")
+    print(f"gate: {len(gate_vmap):,} canonical values, "
+          f"{len(gate_smap):,} catalogue strings loaded", flush=True)
     verdict_path = args.out / "gate_verdicts.jsonl"
     with verdict_path.open("w") as vf:
         for p in pairs:
-            bad = gate(p["orig"], p["da"], gate_vmap)
+            bad = gate(p["orig"], p["da"], gate_vmap, gate_smap)
             vf.write(json.dumps({"idx": p.get("idx"), "bad": bad}) + "\n")
             if bad:
                 for b in bad:
@@ -1298,10 +1356,28 @@ async def main():
         gate_vmap = dict(gate_vmap)
         gate_vmap[_value_key("search_restaurants", "cuisine", "Italian")] = "italiensk"
 
+        # SYNTHETIC: only 2.21% of rows cite a description verbatim, so a
+        # drawn control would leave this check looking tested when it was not.
+        EN_D = "The shape to calculate the area for"
+        cite_ref = {"tools": [{"function": {
+            "name": "calculate_area", "parameters": {"properties": {
+                "shape": {"type": "string", "description": EN_D}}}}}],
+            "conversations": [{"role": "assistant",
+                               "content": f'The description says "{EN_D}".'}]}
+        cite_bad = json.loads(json.dumps(cite_ref))
+        cite_bad["tools"][0]["function"]["parameters"]["properties"][
+            "shape"]["description"] = "Formen, som arealet skal beregnes for"
+        cite_bad["conversations"][0]["content"] = (
+            f'Beskrivelsen siger "{EN_D}", saa jeg bruger den.')
+        ctrl["stale spec citation"] = cite_bad
+        ctrl_base["stale spec citation"] = cite_ref
+        gate_smap = dict(gate_smap)
+        gate_smap[EN_D] = "Formen, som arealet skal beregnes for"
+
         print("\nPLANTED CONTROLS (each must FAIL):")
         for name, bad_row in ctrl.items():
             ref = ctrl_base.get(name, base["orig"])
-            res = gate(ref, bad_row, gate_vmap)
+            res = gate(ref, bad_row, gate_vmap, gate_smap)
             print(f"   {'FAIL ok' if res else '*** PASSED — GATE IS BLIND ***':<32}"
                   f" {name:<20} {res}")
 
