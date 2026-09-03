@@ -50,6 +50,37 @@ LEAD_TAG = re.compile(r"^\s*\[[^\]\n]{1,14}\]\s*")
 CATALOG_LABEL = "Værktøjer"
 
 
+def _strip_result_tags(content: str) -> str:
+    """Remove leaked "[resultat]" tags from tool-result payloads.
+
+    The translator echoed its own "[kind]" hint into 662 of 8,220 tool_result
+    messages (8.05%), inside the JSON leaves rather than at the front of the
+    string: {"status": "[resultat] succes", "data": {...}}. The assistant-turn
+    strip never reached them because they are not at the start of the message.
+
+    Tool results carry no loss, so this is input noise rather than a learned
+    pattern -- but the model reads it, and it is trivially removable. Parsed
+    and re-serialised leaf by leaf so a tag sitting mid-structure is caught and
+    the JSON shape is preserved; non-JSON results fall back to a plain strip.
+    """
+    if not content:
+        return content
+    try:
+        obj = json.loads(content)
+    except Exception:
+        return LEAD_TAG.sub("", content).strip()
+
+    def walk(o):
+        if isinstance(o, dict):
+            return {k: walk(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [walk(v) for v in o]
+        if isinstance(o, str):
+            return LEAD_TAG.sub("", o).strip()
+        return o
+    return json.dumps(walk(obj), ensure_ascii=False)
+
+
 def strip_think(text: str) -> str:
     out = LEAD_TAG.sub("", text or "")
     out = THINK.sub("", out)
@@ -87,7 +118,8 @@ def to_messages(row) -> list[dict] | None:
                 msgs.append({"role": "tool_call",
                              "content": json.dumps(fn, ensure_ascii=False)})
         elif role == "tool":
-            msgs.append({"role": "tool_result", "content": content})
+            msgs.append({"role": "tool_result",
+                         "content": _strip_result_tags(content)})
         else:
             return None                       # unknown role: drop the row
     if not any(m["role"] in ("assistant", "tool_call") for m in msgs):
