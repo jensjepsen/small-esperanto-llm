@@ -368,6 +368,34 @@ def splice(row, segs, translations, spec_map=None, value_map=None):
     # lexicon key, so they receive the same string by construction rather than
     # being reconciled afterwards; the old pass could only fix rows whose spec
     # HAPPENED to declare an enum, which is 543 of 17,138.
+    #
+    # Prose echoes are the one place the lexicon cannot reach. Reasoning text
+    # quotes the payload inline -- `Sa, shape: "rectangle", dimensions: {...}`
+    # -- and that copy is free text, not a value path. 1,133 of the 4,943
+    # values whose translation changes the string are quoted this way, across
+    # 861 rows (5.0%). Untouched, the row contradicts itself: the call carries
+    # "rektangel" while its own reasoning says "rectangle".
+    #
+    # Substitution is quote-delimited and assistant-only. Quotes separate the
+    # payload echo from ordinary prose -- `"Italian"` is the echo, `italiensk`
+    # in a sentence is Danish text -- and a user's own quoted words are theirs,
+    # not an echo, so user turns are left alone.
+    if value_map:
+        repl = {}
+        for _p, key, en in value_segments(row):
+            da = value_map.get(key)
+            if da and da.strip().lower() != en.strip().lower():
+                repl[en.strip()] = da
+        if repl:
+            for m in out.get("conversations", []):
+                if m.get("role") != "assistant":
+                    continue
+                c = m.get("content")
+                if not isinstance(c, str) or not c:
+                    continue
+                for en, da in repl.items():
+                    c = c.replace(f'"{en}"', f'"{da}"')
+                m["content"] = c
     return out
 
 
@@ -486,6 +514,26 @@ def gate(orig, new, value_map=None):
             if got != want:
                 bad.append("value-not-canonical")
                 break
+        # A canonical call is not enough: the reasoning must not still quote the
+        # pre-translation form of a value it is about to send. This is the check
+        # that would have caught row 22 -- call "rektangel", prose "rectangle".
+        stale = False
+        for _path, key, en in value_segments(orig):
+            want = value_map.get(key)
+            en = en.strip()
+            if not want or want.strip().lower() == en.lower():
+                continue
+            for m in new.get("conversations", []):
+                if m.get("role") != "assistant":
+                    continue
+                c = m.get("content")
+                if isinstance(c, str) and f'"{en}"' in c:
+                    stale = True
+                    break
+            if stale:
+                break
+        if stale:
+            bad.append("stale-prose-echo")
     # pinned values (enums, identifiers, numbers) must survive untouched
     pin_o = _pinned_values(orig)
     for m in new.get("conversations", []):
@@ -1227,6 +1275,29 @@ async def main():
                     break
             if hit:
                 break
+        # SYNTHETIC for the same reason as the enum control: a sampled row
+        # only exercises this if it happens to quote a translated value, which
+        # is 5.0% of rows. It also needs its own lexicon entry, so the key is
+        # injected below rather than relying on whatever the run translated.
+        echo_ref = {"tools": [{"function": {
+            "name": "search_restaurants", "parameters": {"properties": {
+                "cuisine": {"type": "string"}}}}}],
+            "conversations": [{"role": "assistant",
+                               "content": 'I will use cuisine: "Italian".',
+                               "tool_calls": [{"function": {
+                                   "name": "search_restaurants",
+                                   "arguments": {"cuisine": "Italian"}}}]}]}
+        echo_bad = json.loads(json.dumps(echo_ref))
+        # call IS canonical -- so this must be caught by the prose check alone,
+        # not fall through to value-not-canonical
+        echo_bad["conversations"][0]["tool_calls"][0]["function"][
+            "arguments"]["cuisine"] = "italiensk"
+        echo_bad["conversations"][0]["content"] = 'Jeg bruger cuisine: "Italian".'
+        ctrl["stale prose echo"] = echo_bad
+        ctrl_base["stale prose echo"] = echo_ref
+        gate_vmap = dict(gate_vmap)
+        gate_vmap[_value_key("search_restaurants", "cuisine", "Italian")] = "italiensk"
+
         print("\nPLANTED CONTROLS (each must FAIL):")
         for name, bad_row in ctrl.items():
             ref = ctrl_base.get(name, base["orig"])
