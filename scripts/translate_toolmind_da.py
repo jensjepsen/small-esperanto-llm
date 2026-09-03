@@ -741,13 +741,39 @@ def gate(orig, new, value_map=None, spec_map=None):
     # with many segments, one untranslated field sits under the threshold, and
     # the planted control passed. A segment of 8+ words carrying English
     # function words and not one Danish marker is unambiguous, so one is enough.
+    #
+    # Tokens we DELIBERATELY keep English are removed before asking what
+    # language the sentence is. They are not evidence of a failed translation
+    # -- they are the translation working. Left in, "Hvad med Microsoft?" and
+    # "Interessant! Hvad med 'computer'?" both read as English to langdetect,
+    # which flips easily on a three-word sentence whose only content word is a
+    # proper noun, a ticker, or a pinned palindrome word. That produced 967
+    # false failures on the full corpus (373 user turns, 102 responses), and
+    # the rate rose with pinning coverage -- i.e. the check was penalising the
+    # fix. Strip them, then judge the Danish that remains.
+    # Quoted spans go too. A quoted string in this corpus is a title, a name or
+    # a citation -- "Hvad med filmen \"The Godfather\"?" is correct Danish that
+    # langdetect calls English because the title outweighs the sentence, and
+    # "Her er nogle actionfilm fra 2020: \"Tenet\", \"Extraction\", ..." even
+    # more so. 443 further false failures, 99 responses and 73 user turns.
+    # The planted control leaves an UNQUOTED segment in English, so it still
+    # fires; a wholly untranslated sentence is not wrapped in quotes.
+    keep_en = {t for t in _pinned_names(orig) if isinstance(t, str) and t}
+    _QUOTED = re.compile(rf'[{_Q}][^{_Q}]{{0,120}}[{_Q}]')
+    def _strip_pinned(s: str) -> str:
+        s = _QUOTED.sub(" ", s)
+        for t in sorted(keep_en, key=len, reverse=True):
+            s = re.sub(rf'[{_Q}]?{re.escape(t)}[{_Q}]?', " ", s, flags=re.I)
+        return s
     en = da = 0
     for (_p, kind, txt), (_p2, _k2, new_txt) in zip(o_segs, n_segs):
         if kind not in ("user", "think", "response", "tool_desc", "param_desc"):
             continue
-        if len(new_txt.split()) < 3:
+        probe = _strip_pinned(new_txt)
+        # after stripping, a short remainder carries too little signal to judge
+        if len(probe.split()) < 5:
             continue
-        if _is_english(new_txt):
+        if _is_english(probe):
             en += 1
         else:
             da += 1
