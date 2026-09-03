@@ -323,7 +323,27 @@ class DownstreamEvalCallback(TrainerCallback):
 
     # Reasoning plus a call; the reasoning runs ~140 words in the source.
     TOOL_MAX_NEW = 512
-    TOOL_REPO = "jensjepsen/danish-tool-dialogues-v1"
+    # The eval gold must match the convention the model was TRAINED on, or the
+    # metric punishes the training data for being self-consistent.
+    #
+    # v1 translated argument values per row, so ~40% of mixed-slot values hold
+    # the English form and ~60% the Danish one, decided by translation-batch
+    # luck rather than by anything in the prompt. A model trained on v2 -- one
+    # canonical form per (tool, arg_key, value) -- emits the canonical string
+    # and is scored WRONG wherever v1's gold happens to hold the other variant.
+    # Measured: v36 at step 3777 read argF1 63.7/69.8 against v1 gold, versus
+    # v35's 72.6/76.3, i.e. the cleaner corpus looked 9pp worse because the
+    # yardstick was the defect.
+    #
+    # v2 is also the better yardstick in absolute terms: its gold is
+    # predictable from the prompt, whereas v1's is unanswerable by
+    # construction on those slots -- so v35's numbers were measured against a
+    # partly impossible test too.
+    #
+    # Env-overridable so a run can be pinned to the corpus it trained on
+    # without editing source.
+    TOOL_REPO = os.environ.get("ESPLLM_TOOL_EVAL_REPO",
+                               "jensjepsen/danish-tool-dialogues-v2")
 
     def _tool_items(self, split: str, step: int = 0, name: str = "tool"):
         """Prompt = the dialogue up to the model's turn; gold = the call.
