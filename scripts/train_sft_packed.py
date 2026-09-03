@@ -602,6 +602,33 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Teach `generate()` where a turn ends.
+    #
+    # Pretraining set eos = `</s>` (id 3), the document separator. SFT invents a
+    # SECOND terminator, `<|end|>`, and the model learns to emit it -- but
+    # add_special_tokens() files it under `additional_special_tokens`, which
+    # carries no special status, so `tokenizer.eos_token` still says `</s>` and
+    # the saved generation_config inherits eos_token_id=[3] from the base model.
+    # A plain from_pretrained() + generate() therefore never stops: the model
+    # emits `<|end|>` in the right place and then runs to max_new_tokens.
+    #
+    # Fixed here at the SOURCE rather than in each caller. The eval callback has
+    # been appending _end_id to its own eos list to compensate; that workaround
+    # is now redundant but harmless (duplicate ids are fine).
+    #
+    # Deliberately NOT touching tokenizer.eos_token: `</s>` remains the packing
+    # separator (see eos_id below), and repointing it would change both the
+    # packed stream and the prep-cache fingerprint. This is a generation-time
+    # concern only, so only generation_config moves.
+    _end_id = tokenizer.convert_tokens_to_ids(END_TOKEN)
+    if _end_id is not None and _end_id != tokenizer.unk_token_id:
+        _eos_ids = [i for i in (tokenizer.eos_token_id, _end_id) if i is not None]
+        model.generation_config.eos_token_id = _eos_ids
+        if model.generation_config.pad_token_id is None:
+            model.generation_config.pad_token_id = tokenizer.pad_token_id
+        console.print(f"[bold]generation eos_token_id -> {_eos_ids} "
+                      f"(</s>={tokenizer.eos_token_id}, {END_TOKEN}={_end_id})")
+
     # Fast path: if --tokenized-cache points at an already-tokenized
     # DatasetDict (HF Hub or local), skip loading + tokenizing + filtering
     # + splitting entirely and jump straight to packing.
