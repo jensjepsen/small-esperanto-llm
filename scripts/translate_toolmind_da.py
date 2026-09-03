@@ -429,8 +429,15 @@ def skeleton(row, blanks=None):
     return json.dumps(rec(row), ensure_ascii=False, sort_keys=True)
 
 
-def gate(orig, new):
-    """Mechanical checks. Returns a list of failure reasons (empty = pass)."""
+def gate(orig, new, value_map=None):
+    """Mechanical checks. Returns a list of failure reasons (empty = pass).
+
+    `value_map` upgrades the value check from "did it change" to "is it the
+    CANONICAL translation". A structural diff cannot tell a correct translation
+    from an arbitrary replacement -- blanking value paths hides both, not
+    blanking them flags both -- so before the lexicon existed there was no way
+    to verify a value at all. Now there is exactly one right answer per key.
+    """
     bad = []
     o_segs, n_segs = segments(orig), segments(new)
     if len(o_segs) != len(n_segs):
@@ -456,9 +463,29 @@ def gate(orig, new):
     # translation, but they are never SENT for translation, so they are absent
     # from the segment list and would compare literally -- the mechanism that
     # keeps the contract coherent would read as structural damage (8/10 rows).
-    blanks = {tuple(p) for p, _k, _t in o_segs} | _enum_arg_paths(orig)
+    # Values come from the global lexicon and are therefore absent from
+    # segments() -- exactly like enum args before them. Un-blanked, every
+    # legitimately translated value reads as structural damage: 45 of 198 rows
+    # on the first smoke after values went global.
+    blanks = ({tuple(p) for p, _k, _t in o_segs}
+              | {tuple(p) for p, _k, _t in value_segments(orig)}
+              | _enum_arg_paths(orig))
     if skeleton(orig, blanks) != skeleton(new, blanks):
         bad.append("structure-changed")
+    # Values are blanked above, so they must be verified HERE or not at all.
+    if value_map:
+        for path, key, _en in value_segments(orig):
+            want = value_map.get(key)
+            if want is None:
+                continue
+            try:
+                got = _get(new, path)
+            except Exception:
+                bad.append("value-path-missing")
+                continue
+            if got != want:
+                bad.append("value-not-canonical")
+                break
     # pinned values (enums, identifiers, numbers) must survive untouched
     pin_o = _pinned_values(orig)
     for m in new.get("conversations", []):
@@ -732,6 +759,22 @@ async def translate_values(session, keys, tries=3):
         except Exception:
             await asyncio.sleep(1.5 * (a + 1))
     return None
+
+
+def _load_value_map(cache_path):
+    """The lexicon, straight off disk. No session, no network."""
+    have = {}
+    if cache_path.exists():
+        for line in cache_path.open():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                have[r["k"]] = r["da"]
+            except Exception:
+                continue
+    return have
 
 
 async def build_value_map(session, rows, cache_path, batch=40, concurrency=24):
@@ -1088,10 +1131,14 @@ async def main():
     # to recompute it or, worse, silently use every row.
     fails = Counter()
     ok = 0
+    # Read the lexicon off disk rather than requiring a session: --gate-only
+    # and --respec both need it, and it is exactly the table the run just wrote.
+    gate_vmap = _load_value_map(args.out / "value_map.jsonl")
+    print(f"gate: {len(gate_vmap):,} canonical values loaded", flush=True)
     verdict_path = args.out / "gate_verdicts.jsonl"
     with verdict_path.open("w") as vf:
         for p in pairs:
-            bad = gate(p["orig"], p["da"])
+            bad = gate(p["orig"], p["da"], gate_vmap)
             vf.write(json.dumps({"idx": p.get("idx"), "bad": bad}) + "\n")
             if bad:
                 for b in bad:
@@ -1183,7 +1230,7 @@ async def main():
         print("\nPLANTED CONTROLS (each must FAIL):")
         for name, bad_row in ctrl.items():
             ref = ctrl_base.get(name, base["orig"])
-            res = gate(ref, bad_row)
+            res = gate(ref, bad_row, gate_vmap)
             print(f"   {'FAIL ok' if res else '*** PASSED — GATE IS BLIND ***':<32}"
                   f" {name:<20} {res}")
 
