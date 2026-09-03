@@ -698,6 +698,14 @@ class DownstreamEvalCallback(TrainerCallback):
         self._extra_metrics.update({
             f"eval_downstream_{name}_call_rate": mean(parsed),
             f"eval_downstream_{name}_tool_acc": mean(named),
+            # Explicit alias for the headline. The bare `eval_downstream_{name}`
+            # key IS the argF1, but nothing about the name says so, and the two
+            # keys that DO carry suffixes are the sub-metrics -- so the natural
+            # guess in wandb ("the F1 must be the suffixed one") lands on
+            # tool_acc, a different measure over a different thing. Logged as
+            # an extra so it stays out of the top-k aggregate and cannot
+            # double-count the score it mirrors.
+            f"eval_downstream_{name}_argf1": mean(scores),
         })
         return mean(scores)
 
