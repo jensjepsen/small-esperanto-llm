@@ -174,36 +174,51 @@ def _translatable_value(v, pinned: set) -> bool:
 #
 # Pinned, not dropped: a Danish user can perfectly well ask whether 'racecar'
 # is a palindrome, so the row stays usable once the value holds still.
+# Word order is not fixed in this corpus: `word_count` and `count_words` are
+# both present, as are `character_count` and `count_characters`. Spelling one
+# order missed 59 instances (count_words 55, count_characters 4) whose values
+# were then translated -- and a translated sentence has a different word count
+# than the tool result recorded.
 CHAR_DEPENDENT = re.compile(
     r"palindrom|anagram|spell|rhym|syllab|acronym|letter|reverse|cipher|"
-    r"encod|decod|word_count|character_count", re.I)
+    r"encod|decod|vowel|consonant|capitali[sz]|uppercase|lowercase|"
+    r"word.?count|count.?word|char.?count|count.?char", re.I)
+
+# Parameter keys whose value is a CREDENTIAL. Translating "password123" to
+# "kodeord123" changes the secret, and the row then teaches the model to
+# rewrite the thing it was asked to transmit verbatim.
+CREDENTIAL_KEY = re.compile(
+    r"password|passwd|secret|token|api_?key|access_?key|hash|salt|pin_?code",
+    re.I)
 
 
 def _char_dependent_values(row) -> set:
-    """Argument values belonging to a character-dependent tool."""
+    """Values that must hold still: character-dependent tools, and any
+    argument under a credential-shaped key."""
     names = set()
     for t in row.get("tools", []) or []:
         f = t.get("function") or {}
         if (CHAR_DEPENDENT.search(f.get("name") or "")
                 or CHAR_DEPENDENT.search(f.get("description") or "")):
             names.add(f.get("name"))
-    if not names:
-        return set()
     out = set()
     for m in row.get("conversations", []):
         for tc in (m.get("tool_calls") or []):
             fn = tc.get("function") or {}
-            if fn.get("name") not in names:
-                continue
             a = fn.get("arguments")
             if isinstance(a, str):
                 try:
                     a = json.loads(a)
                 except Exception:
                     continue
-            if isinstance(a, dict):
-                out.update(v.strip() for v in a.values()
-                           if isinstance(v, str) and v.strip())
+            if not isinstance(a, dict):
+                continue
+            char_tool = fn.get("name") in names
+            for k, v in a.items():
+                if not (isinstance(v, str) and v.strip()):
+                    continue
+                if char_tool or CREDENTIAL_KEY.search(str(k)):
+                    out.add(v.strip())
     return out
 
 
@@ -1022,6 +1037,48 @@ def _glossary(row, value_map=None, spec_map=None, limit=24):
     return dict(sorted(terms.items(), key=lambda kv: len(kv[0]))[:limit])
 
 
+# ── parallel gate ───────────────────────────────────────────────────────────
+#
+# langdetect over ~19.5k rows is the slow half of a build (~10 min single
+# threaded) and the work is embarrassingly parallel -- gate() is pure.
+#
+# FOUR workers, deliberately. This box goes down under sustained load on more
+# than four cores, so the pool is capped rather than sized from cpu_count().
+#
+# The maps go through `initializer`, not through each task: 10,057 catalogue
+# strings plus 4,106 values is far past the point where pickling them per row
+# costs more than the check itself.
+_G_VMAP = None
+_G_SMAP = None
+
+
+def _gate_init(vmap, smap):
+    global _G_VMAP, _G_SMAP
+    _G_VMAP, _G_SMAP = vmap, smap
+
+
+def _gate_one(pair):
+    return pair.get("idx"), gate(pair["orig"], pair["da"], _G_VMAP, _G_SMAP)
+
+
+def gate_all(pairs, vmap, smap, workers=4):
+    """[(idx, bad)] in input order. Falls back to serial for tiny inputs."""
+    if len(pairs) < 200 or workers <= 1:
+        _gate_init(vmap, smap)
+        return [_gate_one(p) for p in pairs]
+    import multiprocessing as mp
+    with mp.Pool(workers, initializer=_gate_init,
+                 initargs=(vmap, smap)) as pool:
+        # imap, not imap_unordered: the verdict file is joined on position by
+        # downstream readers, so order is part of the contract
+        out = []
+        for i, r in enumerate(pool.imap(_gate_one, pairs, chunksize=64), 1):
+            out.append(r)
+            if i % 5000 == 0:
+                print(f"  gate {i}/{len(pairs)}", flush=True)
+        return out
+
+
 def build_request(row, segs, value_map=None, spec_map=None):
     pinned = sorted(x for x in _pinned_values(row) if x)
     lines = "\n".join(f"{i+1}. [{k}] {t}" for i, (_p, k, t) in enumerate(segs))
@@ -1346,10 +1403,11 @@ async def main():
     print(f"gate: {len(gate_vmap):,} canonical values, "
           f"{len(gate_smap):,} catalogue strings loaded", flush=True)
     verdict_path = args.out / "gate_verdicts.jsonl"
+    verdicts = gate_all(pairs, gate_vmap, gate_smap,
+                        workers=int(os.environ.get("GATE_WORKERS", "4")))
     with verdict_path.open("w") as vf:
-        for p in pairs:
-            bad = gate(p["orig"], p["da"], gate_vmap, gate_smap)
-            vf.write(json.dumps({"idx": p.get("idx"), "bad": bad}) + "\n")
+        for idx, bad in verdicts:
+            vf.write(json.dumps({"idx": idx, "bad": bad}) + "\n")
             if bad:
                 for b in bad:
                     fails[b.split("(")[0]] += 1
