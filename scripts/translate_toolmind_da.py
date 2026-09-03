@@ -216,11 +216,7 @@ def segments(row):
                     segs.append((("tools", i, "function", "parameters",
                                   "properties", k, "description"),
                                  "param_desc", v["description"]))
-                for e_i, ev in enumerate(v.get("enum") or []):
-                    if isinstance(ev, str) and not CODE_VALUE.match(ev.strip()):
-                        segs.append((("tools", i, "function", "parameters",
-                                      "properties", k, "enum", e_i),
-                                     "enum", ev))
+                # enum entries are VALUES: see value_segments()
     for j, m in enumerate(row.get("conversations", [])):
         role, content = m.get("role"), m.get("content") or ""
         if role == "user" and content.strip():
@@ -246,15 +242,8 @@ def segments(row):
                 if _translatable_value(v, pinned):
                     segs.append((("conversations", j, "content", "#json") + p,
                                  "result", v))
-        for t_i, tc in enumerate(m.get("tool_calls") or []):
-            args = (tc.get("function") or {}).get("arguments") or {}
-            if isinstance(args, dict):
-                for k, v in args.items():
-                    if isinstance(v, str) and v in enums:
-                        continue          # inherits the spec's enum translation
-                    if _translatable_value(v, pinned):
-                        segs.append((("conversations", j, "tool_calls", t_i,
-                                      "function", "arguments", k), "arg", v))
+        # call arguments are VALUES and come from the global lexicon, not from
+        # this per-row request: see value_segments()
     return segs
 
 
@@ -272,7 +261,70 @@ def _walk(obj, prefix=()):
 # The tool catalogue belongs to the row, not to the conversation, so its text
 # is row-independent and gets translated ONCE globally (see the spec pass).
 # Conversation text is per-row and carries the do-not-translate list.
-SPEC_KINDS = ("tool_desc", "param_desc", "enum")
+SPEC_KINDS = ("tool_desc", "param_desc")
+
+
+# ---------------------------------------------------------------- value lexicon
+#
+# Argument VALUES used to be translated per row (kind="arg"), which is how the
+# same string acquired two Danish forms in two different rows: `shape` came back
+# "rektangel" 506 times and "rectangle" 69 times, `get_news.category` split
+# sports/sport 202/85. Nothing in a prompt tells the model which one that row
+# wants, so ~2,800 values were an unwinnable coin flip -- the model learns the
+# majority form and is scored against the minority whenever gold disagrees.
+#
+# Enum entries never had this problem: they were already translated globally,
+# keyed by the English string. Their failure mode is different and visible in
+# ['cirkel','rektangel','triangle'] -- one string the model declined to
+# translate, propagated CONSISTENTLY to every row. Consistent, so harmless to
+# learn from; still wrong, and fixed by retrying that string, not by re-keying.
+#
+# Both now draw from ONE table keyed by (tool, arg_key, value). Slot-keying
+# rather than bare-string keying keeps context: "Apple" under
+# get_stock_price.company is a ticker to pin, under a shopping tool it is a
+# fruit. And because an enum entry and a call value that share a slot share a
+# key, the spec cannot offer ["cirkel"] while the call carries "circle" -- not
+# by a post-hoc repair pass, but because they are the same lookup.
+#
+# 24,459 value occurrences are only 2,483 distinct strings, of which 1,195
+# appear more than once -- a singleton cannot contradict itself, so the whole
+# defect lives in those 1,195. Deduplicating is ~10x cheaper as a side effect.
+VALUE_SEP = "\x00"
+
+
+def _value_key(tool, arg_key, value):
+    return f"{tool or ''}.{arg_key or ''}{VALUE_SEP}{value.strip()}"
+
+
+def value_segments(row):
+    """[(path, key, text)] for every translatable VALUE: enum entries and call
+    arguments alike. Paths address the row; keys address the global lexicon."""
+    pinned = _pinned_names(row)
+    segs = []
+    for i, t in enumerate(row.get("tools", [])):
+        f = t.get("function") or {}
+        name = f.get("name")
+        props = ((f.get("parameters") or {}).get("properties")) or {}
+        if isinstance(props, dict):
+            for k, v in props.items():
+                if not isinstance(v, dict):
+                    continue
+                for e_i, ev in enumerate(v.get("enum") or []):
+                    if isinstance(ev, str) and _translatable_value(ev, pinned):
+                        segs.append((("tools", i, "function", "parameters",
+                                      "properties", k, "enum", e_i),
+                                     _value_key(name, k, ev), ev))
+    for j, m in enumerate(row.get("conversations", [])):
+        for t_i, tc in enumerate(m.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            args = fn.get("arguments") or {}
+            if isinstance(args, dict):
+                for k, v in args.items():
+                    if isinstance(v, str) and _translatable_value(v, pinned):
+                        segs.append((("conversations", j, "tool_calls", t_i,
+                                      "function", "arguments", k),
+                                     _value_key(fn.get("name"), k, v), v))
+    return segs
 
 
 def spec_segments(row):
@@ -283,17 +335,21 @@ def conv_segments(row):
     return [s for s in segments(row) if s[1] not in SPEC_KINDS]
 
 
-def splice(row, segs, translations, spec_map=None):
+def splice(row, segs, translations, spec_map=None, value_map=None):
     """Write translations back by path. Structure cannot change here.
 
     `segs`/`translations` cover the conversation; `spec_map` supplies the tool
-    catalogue from the global pass, keyed by the English string.
+    catalogue and `value_map` every argument/enum VALUE, both from global passes.
     """
     out = json.loads(json.dumps(row))          # deep copy
     if spec_map:
         segs = list(segs) + [s for s in spec_segments(row) if s[2] in spec_map]
         translations = list(translations) + [
             spec_map[s[2]] for s in spec_segments(row) if s[2] in spec_map]
+    if value_map:
+        vsegs = [s for s in value_segments(row) if s[1] in value_map]
+        segs = list(segs) + [(p, "value", t) for p, _k, t in vsegs]
+        translations = list(translations) + [value_map[k] for _p, k, _t in vsegs]
     json_cache = {}
     for (path, _kind, _orig), new in zip(segs, translations):
         if "#json" in path:
@@ -308,19 +364,10 @@ def splice(row, segs, translations, spec_map=None):
             _set(out, path, new)
     for key, obj in json_cache.items():
         _set(out, key, json.dumps(obj, ensure_ascii=False))
-    # Force the spec's enum translation onto every invocation. Translating the
-    # two independently is how a contract silently desynchronises: the spec
-    # would offer ["cirkel","rektangel"] while the call carried "circle".
-    emap = {orig: new for (_p, kind, orig), new in zip(segs, translations)
-            if kind == "enum"}
-    if emap:
-        for m in out.get("conversations", []):
-            for tc in (m.get("tool_calls") or []):
-                a = (tc.get("function") or {}).get("arguments")
-                if isinstance(a, dict):
-                    for k, v in list(a.items()):
-                        if isinstance(v, str) and v in emap:
-                            a[k] = emap[v]
+    # No post-hoc enum sync any more. Spec enums and call arguments share a
+    # lexicon key, so they receive the same string by construction rather than
+    # being reconciled afterwards; the old pass could only fix rows whose spec
+    # HAPPENED to declare an enum, which is 543 of 17,138.
     return out
 
 
@@ -627,6 +674,113 @@ async def build_spec_map(session, rows, cache_path, batch=40, concurrency=24):
     return have
 
 
+VALUE_SYS = """Du oversætter VÆRDIER fra kald til et værktøjs-API til dansk.
+
+Du får en nummereret liste. Hver linje har formen `felt: værdi`. Oversæt KUN
+værdien og svar med præcis lige så mange linjer i samme rækkefølge.
+
+- Feltnavnet er kun kontekst. Skriv det ikke i svaret.
+- Almindelige ord oversættes: "comedy" bliver "komedie", "rectangle" bliver
+  "rektangel", "sports" bliver "sport".
+- Egennavne, firmanavne, titler på film og bøger, personnavne og stednavne
+  skrives uændret.
+- Koder, forkortelser, ISO-sprogkoder ("en", "da"), valutaer ("USD"),
+  identifikatorer, tal, datoer, e-mails og URL'er skrives uændret.
+- Svar KUN med værdierne, én per linje, uden numre og uden feltnavn."""
+
+
+async def translate_values(session, keys, tries=3):
+    """Translate distinct (slot, value) pairs. `keys` are lexicon keys."""
+    shown = []
+    for k in keys:
+        slot, _, val = k.partition(VALUE_SEP)
+        shown.append(f"{slot.split('.')[-1] or 'værdi'}: {val}")
+    body = {"model": MODEL, "temperature": 0.2,
+            "messages": [{"role": "system", "content": VALUE_SYS},
+                         {"role": "user", "content": "\n".join(
+                             f"{i+1}. {s}" for i, s in enumerate(shown))}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "vaerdier", "strict": True, "schema": {
+                    "type": "object",
+                    "properties": {"linjer": {"type": "array",
+                                              "items": {"type": "string"}}},
+                    "required": ["linjer"], "additionalProperties": False}}}}
+    for a in range(tries):
+        try:
+            async with session.post(URL, json=body) as r:
+                if r.status != 200:
+                    if a == tries - 1:
+                        print(f"  value HTTP {r.status}: "
+                              f"{(await r.text())[:120]}", flush=True)
+                    await asyncio.sleep(1.5 * (a + 1))
+                    continue
+                d = await r.json()
+                out = json.loads(
+                    d["choices"][0]["message"]["content"])["linjer"]
+                # the model sometimes echoes "felt: værdi" back despite the
+                # instruction; keep only what follows the first colon when the
+                # prefix matches the field we sent.
+                cleaned = []
+                for k, o in zip(keys, out):
+                    slot = k.partition(VALUE_SEP)[0].split(".")[-1]
+                    o = _TAG.sub("", o, count=1).lstrip()
+                    if slot and o.lower().startswith(f"{slot.lower()}:"):
+                        o = o.split(":", 1)[1].strip()
+                    cleaned.append(o)
+                if len(cleaned) == len(keys):
+                    return cleaned
+        except Exception:
+            await asyncio.sleep(1.5 * (a + 1))
+    return None
+
+
+async def build_value_map(session, rows, cache_path, batch=40, concurrency=24):
+    """(tool, arg_key, value) -> danish, for every distinct value. Resumable.
+
+    Same shape as build_spec_map. The point is not the cost saving but the
+    determinism: one key, one translation, applied to the spec's enum and to
+    every invocation that uses it, so the contract cannot desynchronise.
+    """
+    have = {}
+    if cache_path.exists():
+        for line in cache_path.open():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                have[r["k"]] = r["da"]
+            except Exception:
+                continue
+    want = sorted({s[1] for r in rows for s in value_segments(r)})
+    todo = [k for k in want if k not in have]
+    print(f"values: {len(want):,} distinct (slot,value), {len(have):,} cached, "
+          f"{len(todo):,} to translate", flush=True)
+    if not todo:
+        return have
+    chunks = [todo[i:i + batch] for i in range(0, len(todo), batch)]
+    sem = asyncio.Semaphore(concurrency)
+    lock = asyncio.Lock()
+    n = [0]
+    with cache_path.open("a", buffering=1) as fh:
+        async def one(chunk):
+            async with sem:
+                got = await translate_values(session, chunk)
+            n[0] += 1
+            if n[0] % 20 == 0:
+                print(f"  values {n[0]}/{len(chunks)} batches", flush=True)
+            if not got:
+                return
+            async with lock:
+                for k, da in zip(chunk, got):
+                    have[k] = da
+                    fh.write(json.dumps({"k": k, "da": da},
+                                        ensure_ascii=False) + "\n")
+        await asyncio.gather(*[one(c) for c in chunks])
+    print(f"value map: {len(have):,} entries", flush=True)
+    return have
+
+
 def build_request(row, segs):
     pinned = sorted(x for x in _pinned_values(row) if x)
     lines = "\n".join(f"{i+1}. [{k}] {t}" for i, (_p, k, t) in enumerate(segs))
@@ -815,7 +969,13 @@ async def main():
                 timeout=aiohttp.ClientTimeout(total=300)) as s:
             spec_map = await build_spec_map(
                 s, [p["orig"] for p in pairs], args.out / "spec_map.jsonl")
-        fixed = 0
+            value_map = await build_value_map(
+                s, [p["orig"] for p in pairs], args.out / "value_map.jsonl")
+        # This is also the cheap upgrade path for an ALREADY translated corpus:
+        # conversations are left alone and only catalogue text and values are
+        # rewritten from the global tables, so v1 -> v2 costs one value pass
+        # (2,483 strings) instead of a full retranslation (24,459 segments).
+        fixed = fixed_v = 0
         for p in pairs:
             new = json.loads(json.dumps(p["da"]))
             for path, kind, en in spec_segments(p["orig"]):
@@ -826,27 +986,29 @@ async def main():
                 if cur != da:
                     _set(new, path, da)
                     fixed += 1
-            # enum edits must propagate to the invocations, exactly as in the
-            # main path -- otherwise the spec and the calls desynchronise
-            emap = {en.strip(): spec_map[en.strip()]
-                    for _p, k, en in spec_segments(p["orig"])
-                    if k == "enum" and en.strip() in spec_map}
-            if emap:
-                for m in new.get("conversations", []):
-                    for tc in (m.get("tool_calls") or []):
-                        a = (tc.get("function") or {}).get("arguments")
-                        if isinstance(a, dict):
-                            for k, v in list(a.items()):
-                                if isinstance(v, str) and v in emap:
-                                    a[k] = emap[v]
+            # Values: spec enums AND call arguments, from one table. Addressed
+            # by path off the ORIGINAL row, so an argument the per-row pass had
+            # already translated is overwritten with the canonical form -- that
+            # is the whole point, and it is what makes the two agree.
+            for path, key, _en in value_segments(p["orig"]):
+                da = value_map.get(key)
+                if da is None:
+                    continue
+                try:
+                    cur = _get(new, path)
+                except Exception:
+                    continue
+                if cur != da:
+                    _set(new, path, da)
+                    fixed_v += 1
             p["da"] = new
         tmp = cache.with_suffix(".respec")
         with tmp.open("w") as f:
             for p in sorted(pairs, key=lambda x: x["idx"]):
                 f.write(json.dumps(p, ensure_ascii=False) + "\n")
         tmp.replace(cache)
-        print(f"respec: {fixed:,} description/enum fields rewritten across "
-              f"{len(pairs):,} rows -> {cache}", flush=True)
+        print(f"respec: {fixed:,} description fields + {fixed_v:,} values "
+              f"rewritten across {len(pairs):,} rows -> {cache}", flush=True)
 
     if args.gate_only or args.respec:
         pairs = list(done.values()) or [json.loads(l) for l in cache.open()]
@@ -877,6 +1039,13 @@ async def main():
                 # Catalogue text first, once, globally.
                 spec_map = await build_spec_map(
                     s, [r for _i, r in todo], args.out / "spec_map.jsonl")
+                # Then every distinct VALUE, also once, also globally. Both
+                # tables are built before any row is spliced so a resumed run
+                # reuses identical mappings -- a value translated on Monday and
+                # a value translated on Friday must agree, or the corpus
+                # re-acquires exactly the defect this pass removes.
+                value_map = await build_value_map(
+                    s, [r for _i, r in todo], args.out / "value_map.jsonl")
 
                 async def one(i, r):
                     # One malformed row must not abort the job. asyncio.gather
@@ -894,7 +1063,7 @@ async def main():
                         if tr is None:
                             return None
                         rec = {"idx": i, "orig": r,
-                               "da": splice(r, segs, tr, spec_map)}
+                               "da": splice(r, segs, tr, spec_map, value_map)}
                     except Exception as e:
                         errs[type(e).__name__] += 1
                         return None
