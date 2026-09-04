@@ -803,6 +803,27 @@ class DownstreamEvalCallback(TrainerCallback):
             cands.add(str(int(value)))
         return any(c in a for c in cands)
 
+    @staticmethod
+    def _is_echo(answer: str, result_json: str) -> bool:
+        """Is the answer just the tool payload relayed back?
+
+        Three shapes, all of which ground perfectly while answering nothing:
+        a JSON-looking reply, a reply containing the raw payload verbatim, and
+        a reply that is mostly punctuation-and-keys rather than prose.
+        """
+        a = (answer or "").strip()
+        if not a:
+            return False
+        if a[0] in "{[" or a.endswith("}") or a.endswith("]"):
+            return True
+        raw = (result_json or "").strip()
+        if len(raw) > 12 and raw in a:
+            return True
+        # JSON-ish density: quotes+braces+colons vs letters
+        punct = sum(a.count(c) for c in '{}[]":')
+        letters = sum(ch.isalpha() for ch in a)
+        return letters > 0 and punct / max(letters, 1) > 0.25
+
     def _score_tool_answer(self, model) -> float:
         """Does the reply carry the values the tool actually returned?
 
@@ -833,23 +854,37 @@ class DownstreamEvalCallback(TrainerCallback):
         prompts = [f"{q} {ASST}" if q.startswith(USER) else f"{USER}{q}{END}{ASST}"
                    for q, _ in items]
         outs = self._generate(model, prompts, self.max_new_gsm)
-        scores, danish, nonempty = [], [], []
+        scores, danish, nonempty, echoed = [], [], [], []
         for out, (_, (result, _gold)) in zip(outs, items):
             vals = self._result_values(result)
             nonempty.append(1.0 if out.strip() else 0.0)
             if not vals:
                 continue          # nothing to ground on: not scored either way
+            # DEGENERATE CASE: dumping the tool result verbatim grounds
+            # PERFECTLY -- measured at 100.0% against gold's 83.8% -- and the
+            # danish check catches only 12% of such dumps. Grounding alone
+            # therefore rewards echoing over answering, so a model that drifts
+            # into pasting JSON would look like it improved. Scored zero: the
+            # task is to answer the user, not to relay the payload.
+            if self._is_echo(out, result):
+                echoed.append(1.0)
+                scores.append(0.0)
+                danish.append(0.0 if self._looks_english(out) else 1.0)
+                continue
+            echoed.append(0.0)
             hit = sum(1 for v in vals if self._mentions(out, v))
             scores.append(hit / len(vals))
             danish.append(0.0 if self._looks_english(out) else 1.0)
         mean = lambda v: sum(v) / len(v) if v else 0.0  # noqa: E731
         print(f"  [downstream] tool_answer: grounded {100*mean(scores):.1f}%  "
               f"danish {100*mean(danish):.1f}%  non-empty "
-              f"{100*mean(nonempty):.1f}%  (n={len(scores)})", flush=True)
+              f"{100*mean(nonempty):.1f}%  echoed {100*mean(echoed):.1f}%  "
+              f"(n={len(scores)})", flush=True)
         self._extra_metrics.update({
             "eval_downstream_tool_answer_danish": mean(danish),
             "eval_downstream_tool_answer_nonempty": mean(nonempty),
             "eval_downstream_tool_answer_grounded": mean(scores),
+            "eval_downstream_tool_answer_echoed": mean(echoed),
         })
         return mean(scores)
 
