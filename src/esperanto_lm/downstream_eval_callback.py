@@ -385,6 +385,45 @@ class DownstreamEvalCallback(TrainerCallback):
     def _load_tool_unseen(self, step: int = 0):
         return self._tool_items("eval_unseen_tools", step, "tool_unseen")
 
+    def _answer_items(self, split: str, step: int = 0, name: str = "tool_answer"):
+        """Prompt = dialogue THROUGH the tool result; gold = the reply to it.
+
+        tool_seen/tool_unseen stop at the call, so the second half of the loop
+        -- read the result, answer the user -- was never measured, while 46% of
+        call-bearing TRAINING rows teach exactly that. A model could emit
+        perfect calls and invent every answer, and nothing here would move.
+
+        Gold carries the tool result alongside the reference reply, because the
+        scorer grades grounding against the result rather than overlap with the
+        reference.
+        """
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
+        from train_sft_packed import format_conversation
+        ds = load_dataset(self.TOOL_REPO, "sft", split=split)
+        ds = self._maybe_subsample(ds, step, name)
+        items = []
+        for r in ds:
+            msgs = r["messages"]
+            res_at = next((i for i, m in enumerate(msgs)
+                           if m["role"] == "tool_result"), None)
+            if res_at is None or res_at + 1 >= len(msgs):
+                continue
+            if msgs[res_at + 1]["role"] != "assistant":
+                continue            # another call follows, not an answer
+            gold_text = msgs[res_at + 1].get("content") or ""
+            if not gold_text.strip():
+                continue
+            items.append((format_conversation(msgs[:res_at + 1]),
+                          (msgs[res_at]["content"], gold_text)))
+        return items
+
+    def _load_tool_answer(self, step: int = 0):
+        # seen-tools only: eval_unseen_tools has a follow-up answer on just 13%
+        # of its rows (98 of 768), which is too thin to read.
+        return self._answer_items("eval_seen_tools", step, "tool_answer")
+
     def _load_extraction(self, step: int = 0):
         """Extraction rows whose schema was never trained on.
 
@@ -706,6 +745,111 @@ class DownstreamEvalCallback(TrainerCallback):
             # an extra so it stays out of the top-k aggregate and cannot
             # double-count the score it mirrors.
             f"eval_downstream_{name}_argf1": mean(scores),
+        })
+        return mean(scores)
+
+    @staticmethod
+    def _looks_english(text: str) -> bool:
+        """langdetect, not a word list. Hand-rolled English markers get this
+        wrong in Danish -- `to`, `is`, `and` are all Danish words too -- which
+        produced 15 false positives in 18 the last time it was tried."""
+        if len(text.split()) < 5:
+            return False          # too short to judge
+        try:
+            from langdetect import DetectorFactory, detect_langs
+            DetectorFactory.seed = 0
+            top = detect_langs(text)[0]
+        except Exception:
+            return False
+        return top.lang == "en" and top.prob >= 0.90
+
+    # Scalars worth grounding on. Booleans and nulls are excluded: "true"
+    # rarely surfaces as a literal in Danish prose ("Ja, ..."), so requiring it
+    # would score correct answers as ungrounded.
+    @staticmethod
+    def _result_values(result_json: str) -> list[str]:
+        try:
+            obj = json.loads(result_json)
+        except Exception:
+            return []
+        out = []
+
+        def walk(o):
+            if isinstance(o, dict):
+                for v in o.values():
+                    walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+            elif isinstance(o, bool) or o is None:
+                return
+            elif isinstance(o, (int, float)):
+                out.append(o)
+            elif isinstance(o, str) and o.strip():
+                out.append(o.strip())
+        walk(obj)
+        return out
+
+    @staticmethod
+    def _mentions(answer: str, value) -> bool:
+        """Is `value` present in the answer, allowing for Danish formatting?"""
+        a = answer.lower()
+        if isinstance(value, str):
+            return value.lower() in a
+        # numbers: the model may write 150.75, 150,75 or 15075 in a date; and
+        # a float that is integral may be rendered without the decimal part
+        cands = {f"{value}", f"{value}".replace(".", ",")}
+        if isinstance(value, float) and value.is_integer():
+            cands.add(str(int(value)))
+        return any(c in a for c in cands)
+
+    def _score_tool_answer(self, model) -> float:
+        """Does the reply carry the values the tool actually returned?
+
+        Graded on GROUNDING, not on overlap with the reference reply. Two
+        answers can phrase the same fact differently and both be right, so
+        text similarity would punish paraphrase; what actually matters is
+        whether the numbers and strings the tool returned survive into the
+        answer, or whether the model invented its own.
+
+        Reported alongside: the share of answers that are Danish, because
+        replying in English is a silent failure a grounding score cannot see.
+
+        CALIBRATED, so the number means something:
+            gold reply (ceiling)          83.8%
+            reply from a different row     3.4%
+            fluent Danish, no facts        0.0%
+        Read a model score against 83.8, not 100. The ceiling is short of
+        perfect because some result fields never belong in a good answer -- a
+        `status` key, or a value the reply paraphrases rather than quotes --
+        and 68% of gold replies score exactly 1.0. The 80pp separation from
+        both floors is what makes it a measurement rather than a vibe: an
+        uncalibrated grounding score cannot distinguish "answered from the
+        tool" from "wrote plausible Danish".
+        """
+        items = self._get("tool_answer")
+        if not items:
+            return 0.0
+        prompts = [f"{q} {ASST}" if q.startswith(USER) else f"{USER}{q}{END}{ASST}"
+                   for q, _ in items]
+        outs = self._generate(model, prompts, self.max_new_gsm)
+        scores, danish, nonempty = [], [], []
+        for out, (_, (result, _gold)) in zip(outs, items):
+            vals = self._result_values(result)
+            nonempty.append(1.0 if out.strip() else 0.0)
+            if not vals:
+                continue          # nothing to ground on: not scored either way
+            hit = sum(1 for v in vals if self._mentions(out, v))
+            scores.append(hit / len(vals))
+            danish.append(0.0 if self._looks_english(out) else 1.0)
+        mean = lambda v: sum(v) / len(v) if v else 0.0  # noqa: E731
+        print(f"  [downstream] tool_answer: grounded {100*mean(scores):.1f}%  "
+              f"danish {100*mean(danish):.1f}%  non-empty "
+              f"{100*mean(nonempty):.1f}%  (n={len(scores)})", flush=True)
+        self._extra_metrics.update({
+            "eval_downstream_tool_answer_danish": mean(danish),
+            "eval_downstream_tool_answer_nonempty": mean(nonempty),
+            "eval_downstream_tool_answer_grounded": mean(scores),
         })
         return mean(scores)
 
