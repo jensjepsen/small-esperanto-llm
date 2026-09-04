@@ -40,6 +40,21 @@
 # well as the train. Expect a jump partly for that reason; the non-tool evals
 # are the unconfounded ones.
 #
+# NINTH EVAL: tool_answer. tool_seen/tool_unseen stop at the CALL, so the
+# second half of the loop -- read the result, answer the user -- went
+# unmeasured while 46% of call-bearing training rows teach exactly that. It
+# grades whether the values the tool RETURNED survive into the reply, not
+# overlap with the reference wording. Calibrated: gold replies score 83.8%,
+# a reply lifted from another row 3.4%, fluent Danish with no facts 0.0% --
+# so read a model score against 83.8, not 100.
+#
+# This CHANGES THE TOP-K AGGREGATE: it is now a mean over nine evals, not
+# eight, so aggregate values are not comparable with v35's, nor with v36's own
+# pre-resume checkpoints (0.314 / 0.357 / 0.374 / 0.371 / 0.397). Deliberate --
+# measuring the untested half of tool use is worth more than one clean A/B
+# column. The PER-EVAL numbers stay comparable throughout; only the aggregate
+# and therefore checkpoint SELECTION shift.
+#
 # FLASH-ATTENTION IS REQUIRED (flatten-packing refuses without it):
 #     WORKLOAD=sft bash scripts/setup_vastai.sh large
 set -euo pipefail
@@ -94,6 +109,7 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
   --save-fraction-of-epoch 0.25 --eval-fraction-of-epoch 0.25 \
   --save-total-limit 3 --top-k-downstream 3 \
   --downstream-evals gsm8k citgen sciq ifeval icl extraction tool_seen tool_unseen \
+                     tool_answer \
   --downstream-n 0 --downstream-batch-size 32 \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_sft_v36_full_mix22_tooldialogues_v2 \
