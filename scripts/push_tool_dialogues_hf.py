@@ -180,12 +180,18 @@ def main():
                     help="share of TOOL NAMES reserved for eval_unseen_tools")
     ap.add_argument("--eval-pct", type=int, default=4,
                     help="share of remaining rows for eval_seen_tools")
+    ap.add_argument("--catalogue-size", type=int, default=0,
+                    help="Shuffle each catalogue and pad it with distractor "
+                         "tools to this size. 0 = source order, in which the "
+                         "called tool is listed FIRST in 98.4%% of multi-tool "
+                         "rows -- 'call tool #1' then scores 99.2%% right-tool "
+                         "and selection is neither taught nor measured.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from render_toolmind_sft import to_messages
+    from render_toolmind_sft import to_messages, build_tool_pool
 
     recs = [json.loads(l) for l in (args.src / "translated.jsonl").open()
             if l.strip()]
@@ -204,9 +210,13 @@ def main():
     print(f"tools: {len(names):,} distinct, {len(heldout):,} held out",
           flush=True)
 
+    pool = build_tool_pool([r["da"] for r in clean]) if args.catalogue_size else []
+    if args.catalogue_size:
+        print(f"distractor pool: {len(pool):,} non-held-out tools; catalogues "
+              f"shuffled and padded to {args.catalogue_size}", flush=True)
     data = {s: [] for s in SPLITS}
     dropped = 0
-    for r in clean:
+    for _i, r in enumerate(clean):
         da = r["da"]
         tn = [n for n in tool_names(da) if n]
         cn = [n for n in called_names(da) if n]
@@ -224,7 +234,7 @@ def main():
             split = "eval_seen_tools"
         else:
             split = "train"
-        msgs = to_messages(da)
+        msgs = to_messages(da, pool, _i, args.catalogue_size)
         if msgs is None:
             continue
         data[split].append({
