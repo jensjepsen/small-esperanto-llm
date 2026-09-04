@@ -140,8 +140,18 @@ def build_tool_pool(rows) -> list[dict]:
     return pool
 
 
-def make_catalogue(tools, pool, idx, target, rng_seed=0):
-    """Shuffled catalogue of `tools` padded with distractors up to `target`.
+def make_catalogue(tools, pool, idx, target, rng_seed=0, minimum=2):
+    """Shuffled catalogue of `tools` padded with distractors.
+
+    `target` is a MAXIMUM, not a fixed width: the size is drawn per row from
+    [minimum, target]. A constant width is itself learnable -- the model can
+    condition on "there are always six" -- and real catalogues vary, so a
+    corpus that never varies teaches a habit that breaks at inference. It also
+    keeps `gold is first` at chance-for-THAT-row rather than at one global
+    constant, so no single positional prior fits the corpus.
+
+    The floor is the number of genuine tools: padding never removes a real
+    option, and rows whose source catalogue is already larger keep it.
 
     Deterministic in `idx` so a re-render reproduces the corpus exactly.
     """
@@ -149,19 +159,20 @@ def make_catalogue(tools, pool, idx, target, rng_seed=0):
     rng = random.Random(rng_seed * 1_000_003 + idx)
     out = list(tools)
     if pool and target > len(out):
-        # sample without replacement, skipping anything already offered
+        want = max(len(out), minimum, rng.randint(minimum, target))
         cand = [f for f in pool if f.get("name") not in names]
         rng.shuffle(cand)
-        out.extend(cand[:target - len(out)])
+        out.extend(cand[:max(0, want - len(out))])
     rng.shuffle(out)
     return out
 
 
-def to_messages(row, pool=None, idx=0, target=0) -> list[dict] | None:
+def to_messages(row, pool=None, idx=0, target=0, minimum=2) -> list[dict] | None:
     tools = [t.get("function") for t in row.get("tools", [])
              if isinstance(t, dict) and t.get("function")]
     if target:
-        tools = make_catalogue(tools, pool or [], idx, target)
+        tools = make_catalogue(tools, pool or [], idx, target,
+                               minimum=minimum)
     catalog = json.dumps(tools, ensure_ascii=False)
     msgs: list[dict] = []
     for m in row.get("conversations", []):
@@ -208,11 +219,14 @@ def main():
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--n", type=int, default=0, help="print N rendered rows")
     ap.add_argument("--catalogue-size", type=int, default=0,
-                    help="Pad each catalogue with distractor tools up to this "
-                         "many and SHUFFLE it. 0 = leave as-is (the source "
+                    help="MAX catalogue size; the actual size is drawn per "
+                         "row from [--catalogue-min, this] and the catalogue is "
+                         "SHUFFLED. 0 = leave as-is (the source "
                          "lists the called tool first in 98.4%% of multi-tool "
                          "rows, so position leaks the answer and 'call tool #1' "
                          "scores 99.2%% right-tool).")
+    ap.add_argument("--catalogue-min", type=int, default=2,
+                    help="Lower bound for the per-row catalogue size.")
     ap.add_argument("--clean-only", action="store_true",
                     help="render only rows the gate passed, read from "
                          "gate_verdicts.jsonl. Without it EVERY translated row "
@@ -246,7 +260,8 @@ def main():
               flush=True)
     rendered, drops = [], Counter()
     for i, r in enumerate(rows):
-        m = to_messages(r, pool, i, args.catalogue_size)
+        m = to_messages(r, pool, i, args.catalogue_size,
+                        args.catalogue_min)
         if m is None:
             drops["unrenderable"] += 1
             continue

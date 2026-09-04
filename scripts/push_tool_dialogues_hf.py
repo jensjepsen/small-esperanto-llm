@@ -186,6 +186,8 @@ def main():
                          "called tool is listed FIRST in 98.4%% of multi-tool "
                          "rows -- 'call tool #1' then scores 99.2%% right-tool "
                          "and selection is neither taught nor measured.")
+    ap.add_argument("--catalogue-min", type=int, default=2,
+                    help="Lower bound for the per-row catalogue size.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -234,7 +236,8 @@ def main():
             split = "eval_seen_tools"
         else:
             split = "train"
-        msgs = to_messages(da, pool, _i, args.catalogue_size)
+        msgs = to_messages(da, pool, _i, args.catalogue_size,
+                           args.catalogue_min)
         if msgs is None:
             continue
         data[split].append({
