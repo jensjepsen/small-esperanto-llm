@@ -24,7 +24,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import random
 import re
 import sys
 from collections import Counter
@@ -87,9 +89,79 @@ def strip_think(text: str) -> str:
     return LEAD_TAG.sub("", out).strip()   # tag can sit inside the think block
 
 
-def to_messages(row) -> list[dict] | None:
+# ── catalogue realism ───────────────────────────────────────────────────────
+#
+# The source corpus lists the tool that gets called FIRST in 98.4% of
+# multi-tool rows, and 69.7% of rows offer only one tool at all. So "call the
+# first catalogued tool" scores 99.2% right-tool on the eval, beating the
+# trained model's 84-93%: the ordering leaks the answer and there is almost
+# never a choice to make.
+#
+# The model learns exactly that. Given a hand-built catalogue of four novel
+# tools it called the FIRST one for every question -- dice-rolling for a query
+# about coffee -- slot-filling whatever numbers appeared in the prompt. It also
+# explains why eval_unseen scored ABOVE eval_seen across five measurements:
+# unseen has more single-tool catalogues (74.0% vs 71.4%), i.e. it is easier,
+# not better generalised.
+#
+# Two fixes, both render-time and free:
+#   SHUFFLE   the catalogue per row, so position carries no signal
+#   DISTRACT  pad it with unrelated tools, so selection is a real task
+#
+# Distractors are drawn ONLY from non-held-out tools. Injecting a held-out
+# spec into a training catalogue would let the model read it during training,
+# and eval_unseen_tools would stop meaning "never seen" -- the split's whole
+# claim. The held-out rule is duplicated from push_tool_dialogues_hf.bucket()
+# rather than imported, because the renderer runs before the split exists.
+HELDOUT_PCT = 6
+
+
+def _bucket(s: str, mod: int = 100) -> int:
+    return int(hashlib.md5(s.encode()).hexdigest(), 16) % mod
+
+
+def is_heldout_tool(name: str) -> bool:
+    return _bucket(name or "") < HELDOUT_PCT
+
+
+def build_tool_pool(rows) -> list[dict]:
+    """Distinct non-held-out tool specs, for use as distractors."""
+    pool, seen = [], set()
+    for r in rows:
+        for t in r.get("tools", []) or []:
+            f = t.get("function") if isinstance(t, dict) else None
+            if not f:
+                continue
+            n = f.get("name")
+            if not n or n in seen or is_heldout_tool(n):
+                continue
+            seen.add(n)
+            pool.append(f)
+    return pool
+
+
+def make_catalogue(tools, pool, idx, target, rng_seed=0):
+    """Shuffled catalogue of `tools` padded with distractors up to `target`.
+
+    Deterministic in `idx` so a re-render reproduces the corpus exactly.
+    """
+    names = {t.get("name") for t in tools}
+    rng = random.Random(rng_seed * 1_000_003 + idx)
+    out = list(tools)
+    if pool and target > len(out):
+        # sample without replacement, skipping anything already offered
+        cand = [f for f in pool if f.get("name") not in names]
+        rng.shuffle(cand)
+        out.extend(cand[:target - len(out)])
+    rng.shuffle(out)
+    return out
+
+
+def to_messages(row, pool=None, idx=0, target=0) -> list[dict] | None:
     tools = [t.get("function") for t in row.get("tools", [])
              if isinstance(t, dict) and t.get("function")]
+    if target:
+        tools = make_catalogue(tools, pool or [], idx, target)
     catalog = json.dumps(tools, ensure_ascii=False)
     msgs: list[dict] = []
     for m in row.get("conversations", []):
@@ -135,6 +207,12 @@ def main():
                     default=Path("scratch/toolmind_da_v2"))
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--n", type=int, default=0, help="print N rendered rows")
+    ap.add_argument("--catalogue-size", type=int, default=0,
+                    help="Pad each catalogue with distractor tools up to this "
+                         "many and SHUFFLE it. 0 = leave as-is (the source "
+                         "lists the called tool first in 98.4%% of multi-tool "
+                         "rows, so position leaks the answer and 'call tool #1' "
+                         "scores 99.2%% right-tool).")
     ap.add_argument("--clean-only", action="store_true",
                     help="render only rows the gate passed, read from "
                          "gate_verdicts.jsonl. Without it EVERY translated row "
@@ -161,9 +239,14 @@ def main():
     rows = [r["da"] for r in recs]
     print(f"loaded {len(rows):,} translated rows", flush=True)
 
+    pool = build_tool_pool(rows) if args.catalogue_size else []
+    if args.catalogue_size:
+        print(f"distractor pool: {len(pool):,} distinct non-held-out tools; "
+              f"padding catalogues to {args.catalogue_size} and shuffling",
+              flush=True)
     rendered, drops = [], Counter()
-    for r in rows:
-        m = to_messages(r)
+    for i, r in enumerate(rows):
+        m = to_messages(r, pool, i, args.catalogue_size)
         if m is None:
             drops["unrenderable"] += 1
             continue
