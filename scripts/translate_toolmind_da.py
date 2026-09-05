@@ -231,6 +231,96 @@ def _symbolize(row, idx):
     return row, {"tools": tmap, "keys": kmap}
 
 
+# ── canonical spec schema ───────────────────────────────────────────────────
+#
+# The source carries EIGHT distinct spec shapes. Beyond the intended
+# name/description/parameters(/returns), it has: `response` instead of returns
+# (1,409), `arguments` instead of parameters (417), a `required` list at the
+# top level instead of inside parameters (1,200), and a {"type":"function",
+# "function":{...}} wrapper. Types are spelled dict/str/float as often as
+# object/string/number.
+#
+# That mattered because extraction was a WHITELIST of known paths, so the
+# dialects were never walked -- their descriptions were never translated and
+# the still-english gate never saw them, which is how "Name of the city to get
+# the date and time for." reached the published corpus. Distractor padding then
+# amplified rare dialects 16x, since the pool weights tools by distinct NAME
+# rather than by frequency.
+#
+# Preserve-don't-touch was the right rule for TRANSLATION -- splice by path so
+# structure cannot drift. It was never the right rule for the CATALOGUE, which
+# we already synthesise: we add returns, shuffle, and pad with other rows'
+# tools. Carrying source dialects through that is inheritance, not fidelity.
+#
+# So: project every tool onto one shape at ingest, before anything is extracted
+# or translated, and let the generic walker below cover whatever remains.
+_TYPE_ALIASES = {"dict": "object", "str": "string", "float": "number",
+                 "int": "integer", "bool": "boolean", "list": "array"}
+
+
+def _canon_types(node):
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            if k == "type" and isinstance(v, str):
+                out[k] = _TYPE_ALIASES.get(v.lower(), v)
+            else:
+                out[k] = _canon_types(v)
+        return out
+    if isinstance(node, list):
+        return [_canon_types(v) for v in node]
+    return node
+
+
+def canonical_spec(fn):
+    """One tool spec, one shape. Unknown keys are dropped, not carried."""
+    if not isinstance(fn, dict):
+        return None
+    if "function" in fn and isinstance(fn["function"], dict):
+        fn = fn["function"]                      # unwrap {"type":"function",...}
+    name = fn.get("name")
+    if not name:
+        return None
+    params = fn.get("parameters")
+    if not isinstance(params, dict):
+        # the `arguments` dialect: a bare property map, no envelope
+        args = fn.get("arguments")
+        params = ({"type": "object", "properties": args}
+                  if isinstance(args, dict) else {"type": "object",
+                                                  "properties": {}})
+    params = dict(params)
+    params.setdefault("type", "object")
+    if not isinstance(params.get("properties"), dict):
+        params["properties"] = {}
+    # a `required` list sitting at the top level belongs inside parameters
+    if isinstance(fn.get("required"), list) and "required" not in params:
+        params["required"] = fn["required"]
+    out = {"name": name,
+           "description": fn.get("description") or "",
+           "parameters": _canon_types(params)}
+    # `response` is DROPPED, not normalised: where both exist they describe the
+    # same fields twice, in two languages -- trading_login carries returns
+    # {"status": "Status for login"} and response {"status": "Login status
+    # message."}. Our returns block is derived from the payloads the tool
+    # actually produced, so it is the better of the two; the 17 tools with only
+    # `response` are never called in the corpus, so their outputs are never
+    # shown to the model anyway.
+    if isinstance(fn.get("returns"), dict):
+        out["returns"] = _canon_types(fn["returns"])
+    return out
+
+
+def canonicalise_row(row):
+    tools = []
+    for t in row.get("tools", []) or []:
+        c = canonical_spec(t.get("function") if isinstance(t, dict)
+                           and t.get("function") else t)
+        if c:
+            tools.append({"type": "function", "function": c})
+    row["tools"] = tools
+    return row
+
+
 def is_language_tool_row(row) -> bool:
     if row.get("_language_tool"):
         return True          # marked pre-symbolization, name no longer matches
@@ -430,6 +520,31 @@ def _pinned_values(row) -> set:
     return _pinned_names(row)
 
 
+def _all_descriptions(node, prefix):
+    """(path, text) for EVERY description anywhere under `node`.
+
+    Replaces an enumerated whitelist of known paths. The whitelist existed only
+    because segments are spliced back by exact path -- but a walker emits exact
+    paths too, so the restriction bought nothing and cost coverage: `response`,
+    `arguments` and oneOf dialects were never extracted, so their text was
+    never translated and the still-english gate never saw it.
+
+    `returns` is EXCLUDED: we generate that block ourselves, in Danish, from
+    the tool_result payloads. Translating our own output would be circular.
+    """
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "returns":
+                continue
+            if k == "description" and isinstance(v, str) and v.strip():
+                yield prefix + (k,), v
+            else:
+                yield from _all_descriptions(v, prefix + (k,))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from _all_descriptions(v, prefix + (i,))
+
+
 def _nested_desc_segments(node, base, depth=0):
     """Descriptions inside a parameter that is itself an object or array.
 
@@ -472,27 +587,12 @@ def segments(row):
     segs = []
     for i, t in enumerate(row.get("tools", [])):
         f = t.get("function") or {}
-        if f.get("description"):
-            segs.append((("tools", i, "function", "description"),
-                         "tool_desc", f["description"]))
-        props = ((f.get("parameters") or {}).get("properties")) or {}
-        if isinstance(props, dict):
-            for k, v in props.items():
-                if not isinstance(v, dict):
-                    continue
-                if v.get("description"):
-                    segs.append((("tools", i, "function", "parameters",
-                                  "properties", k, "description"),
-                                 "param_desc", v["description"]))
-                # RECURSE. A parameter can itself be an object, and its inner
-                # properties carry their own descriptions -- which were never
-                # extracted, so they stayed English through every version:
-                # 4,302 of 4,820 nested descriptions (89.3%) across 7.6% of
-                # rows still read "The length of the shape" inside an otherwise
-                # Danish spec. Inert noise for a Danish-only model.
-                base = ("tools", i, "function", "parameters", "properties", k)
-                segs.extend(_nested_desc_segments(v, base))
-                # enum entries are VALUES: see value_segments()
+        # WALK EVERYTHING under the tool, not an enumerated set of paths.
+        for path, txt in _all_descriptions(f, ("tools", i, "function")):
+            kind = "tool_desc" if path[-2:] == ("function", "description") \
+                else "param_desc"
+            segs.append((path, kind, txt))
+        # enum entries are VALUES, handled by value_segments()
     for j, m in enumerate(row.get("conversations", [])):
         role, content = m.get("role"), m.get("content") or ""
         if role == "user" and content.strip():
@@ -1730,6 +1830,12 @@ async def main():
                 break
             rows.append(json.loads(line))
     sym_maps = {}
+    # CANONICALISE FIRST. Every downstream stage -- language-tool filter,
+    # symbolization, extraction, translation, gate -- then sees one spec shape
+    # instead of eight, and the generic walker covers whatever text it holds.
+    rows = [canonicalise_row(r) for r in rows]
+    print(f"canonicalised {len(rows):,} rows to one spec shape", flush=True)
+
     if args.symbolize:
         # Mark language-tool rows BEFORE renaming. is_language_tool_row matches
         # on the tool NAME, so symbolizing to t1/t2 makes it match nothing and
