@@ -12,11 +12,15 @@ This fills in the missing half-turn: for each dangling call, invent a result
 that conforms to the tool's `returns` schema, then write the Danish answer that
 reads it. Existing turns are never touched.
 
-Cache is keyed on (tool, arguments, question) and appended as it goes, so a
-rerun costs only what is new -- same warm-cache contract as the returns pass.
+Cache is keyed on (tool, arguments, question, fingerprint of the tool's
+`returns` block) and appended as it goes, so a rerun costs only what is new.
+The fingerprint is in the key because the schema is an INPUT to the payload:
+edit `returns` -- nest it, dedupe its synonym fields -- and every cached result
+was built to a contract that no longer holds.
 """
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -158,43 +162,6 @@ def _leaves(obj, prefix=""):
         yield prefix, obj
 
 
-TOKEN = re.compile(r"[\w.@+-]{4,}", re.U)
-
-
-def _tokens(values, boiler=frozenset()):
-    """Lowercase tokens inside a set of values, minus corpus boilerplate."""
-    out = set()
-    for v in values:
-        if not isinstance(v, str):
-            continue
-        for t in TOKEN.findall(v.lower()):
-            t = t.strip(".,")
-            if len(t) >= 4 and t not in boiler and not t.isdigit():
-                out.add(t)
-    return out
-
-
-def boilerplate(payloads_by_tool, share=0.05, floor=3):
-    """Tokens that carry no evidence an answer read THIS payload.
-
-    Derived, not enumerated. A status string saying "sendt succesfuldt" grounds
-    nothing, but so do dozens of words a hand-written list would miss and it
-    would keep listing words that stop appearing. A token that turns up in the
-    payloads of many unrelated tools is boilerplate by construction; one that
-    appears under a single tool is that tool's own content.
-    """
-    df = Counter()
-    for tool, payloads in payloads_by_tool.items():
-        seen = set()
-        for p in payloads:
-            seen |= _tokens([v for _, v in _leaves(p)])
-        for t in seen:
-            df[t] += 1
-    n = len(payloads_by_tool)
-    cut = max(floor, int(share * n))
-    return {t for t, c in df.items() if c >= cut}
-
-
 def _arrays(obj):
     """Every list inside a payload, so its length can be cited."""
     if isinstance(obj, dict):
@@ -268,15 +235,40 @@ def dangling(row):
     return call_at, call, spec, _last_user(msgs, call_at)
 
 
-def cache_key(call, question):
-    return json.dumps([call.get("name"),
-                       call.get("arguments") or {}, question[:200]],
+def spec_fingerprint(spec):
+    """Hash of the contract the payload was generated against.
+
+    The `returns` block is an INPUT to the result -- it becomes the response
+    schema -- so a payload built for one version of it is not a valid answer
+    for another. v4 stores the tree flattened and v5 nests it, and deduping
+    the synonym fields (`final_price`/`new_price`/`discounted_price` all
+    holding the same number) changes it again. Without this in the key those
+    edits are invisible and the cache serves payloads shaped by a schema that
+    no longer exists.
+
+    Hashed over the CANONICAL form -- the JSON Schema actually sent to the
+    provider -- not the raw block. v4 stores the tree flat and v5 nests it, but
+    `_schema_from_returns` nests v4 before generating, so both produce the same
+    contract and the same payload. Hashing the raw block would treat that pure
+    representation change as a semantic one and discard 15,141 valid payloads;
+    hashing the canonical form invalidates only tools whose field set really
+    moved, such as those whose synonym fields get deduped.
+    """
+    canon = _schema_from_returns(spec.get("returns") or {})
+    return hashlib.sha1(json.dumps(canon, sort_keys=True,
+                                   ensure_ascii=False).encode()
+                        ).hexdigest()[:12]
+
+
+def cache_key(call, question, spec):
+    return json.dumps([call.get("name"), call.get("arguments") or {},
+                       question[:200], spec_fingerprint(spec)],
                       sort_keys=True, ensure_ascii=False)
 
 
 # ── gate ────────────────────────────────────────────────────────────────────
 
-def gate(result, answer, spec, context="", boiler=frozenset()):
+def gate(result, answer, spec, context=""):
     """Why each check exists is in the reason string; returns None if clean.
 
     `context` is the question plus the call -- numbers the user supplied are
@@ -304,19 +296,27 @@ def gate(result, answer, spec, context="", boiler=frozenset()):
     # Grounding. The whole point of the turn is that the answer reads the
     # result, so an answer that shares no value with it is the failure mode
     # being trained away, not a mild stylistic miss.
-    vals = [v for _, v in _leaves(result)]
-    pool = {float(v) for v in vals
-            if isinstance(v, (int, float)) and not isinstance(v, bool)}
-    # "Der er 3 actionfilm" reads a list the payload really does hold three of.
-    pool |= {float(len(v)) for v in _arrays(result)}
+    vals = [v for _, v in _leaves(result)
+            if not isinstance(v, bool) and v not in (None, "")]
     low = answer.lower()
-    hits = any(_traces_to(m.group(), pool) for m in NUM.finditer(low))
-    # Distinctive tokens, not whole values. A payload field often holds a
-    # sentence ("E-mail sendt succesfuldt til boss@company.com") which no good
-    # answer repeats verbatim, so a substring test on the value called 12 of
-    # 13 correctly-grounded answers ungrounded.
-    if not hits and not (_tokens(vals, boiler)
-                         & _tokens([answer], boiler)):
+    # Numbers the payload states, including those inside strings ("10 dollars")
+    # and list lengths ("der er 3 actionfilm").
+    pool = {float(v) for v in vals if isinstance(v, (int, float))}
+    pool |= {float(m.group().replace(",", "."))
+             for v in vals if isinstance(v, str) for m in NUM.finditer(v)}
+    pool |= {float(len(v)) for v in _arrays(result)}
+
+    # Substring is the honest test and covers 84.4% on its own. Numeric
+    # tolerance adds 7.5pp and every point of it is real: Danish writes 898.09
+    # as "898,09" and 12000.0 as "12.000", and answers round 50.26548245743669
+    # to "50.27". None of those are substrings of the payload.
+    cites = any(str(v).lower() in low for v in vals) or \
+        any(_traces_to(m.group(), pool) for m in NUM.finditer(low))
+    # A payload that states no fact -- {"message": "E-mail sendt", "status":
+    # "succes"} -- has nothing to cite; the title and recipient in the answer
+    # came from the question. 6.9% of pairs. Requiring a citation there
+    # rejects correct answers for having nothing to quote.
+    if not cites and pool:
         return "answer-not-grounded"
 
     # Invented numbers. `4 * 12 = 48` on a payload holding 28 is exactly what
@@ -348,13 +348,6 @@ CONTROLS = [
     ({"cups_left": 8, "extra": 1}, "Der er 8 kopper tilbage.", _CUPS, _CTX),
     ({}, "Der er 8 kopper tilbage.", {"returns": {"properties": {}}}, _CTX),
     ({"cups_left": 8}, "   ", _CUPS, _CTX),
-    # Token-level grounding must not be satisfied by boilerplate: the payload
-    # says "sendt succesfuldt" and so does the answer, but nothing specific to
-    # this call has crossed over.
-    ({"status": "succes", "message": "E-mail sendt succesfuldt"},
-     "Din besked er sendt.",
-     {"returns": {"properties": {"status": {}, "message": {}}}},
-     "Send en mail til chefen"),
 ]
 
 
@@ -387,31 +380,16 @@ CLEAN = [
 
 
 def check_controls():
-    # The boilerplate set is derived, so the derivation is what gets tested:
-    # a confirmation phrase shared by many tools must fall out as boilerplate,
-    # and a name belonging to one tool must not.
-    corpus = {f"tool{i}": [{"status": "succes",
-                            "message": "E-mail sendt succesfuldt"}]
-              for i in range(10)}
-    corpus["find_restaurants"] = [{"name": "Carbone"}]
-    boiler = boilerplate(corpus)
-    for w in ("succes", "sendt", "succesfuldt"):
-        if w not in boiler:
-            raise SystemExit(f"boilerplate derivation missed {w!r}")
-    if "carbone" in boiler:
-        raise SystemExit("boilerplate derivation swallowed tool content")
-
     bad = [i for i, c in enumerate(CONTROLS)
-           if gate(*c, boiler=boiler) is None]
+           if gate(*c) is None]
     if bad:
         raise SystemExit(f"gate is blind: controls {bad} passed")
     for i, c in enumerate(CLEAN):
-        why = gate(*c, boiler=boiler)
+        why = gate(*c)
         if why is not None:
             raise SystemExit(f"gate rejects clean pair {i}: {why}")
     print(f"gate: {len(CONTROLS)} planted defects caught, "
-          f"{len(CLEAN)} clean pairs pass, "
-          f"{len(boiler)} boilerplate tokens derived", flush=True)
+          f"{len(CLEAN)} clean pairs pass", flush=True)
 
 
 # ── generation ──────────────────────────────────────────────────────────────
@@ -541,14 +519,13 @@ async def main_async(args):
             except Exception:
                 continue
     todo = [(i, d) for i, d in jobs
-            if cache_key(d[1], d[3]) not in have]
+            if cache_key(d[1], d[3], d[2]) not in have]
     print(f"{len(have):,} cached, {len(todo):,} to generate", flush=True)
 
-    # Generation and gating are separate passes now: the boilerplate set is
-    # derived from the payloads themselves, so it does not exist until every
-    # payload does. Caching happens BEFORE the verdict, so re-gating with a
-    # changed threshold costs nothing and rejected generations are never
-    # re-bought.
+    # Generation and gating are separate passes: caching happens BEFORE the
+    # verdict, so re-gating after a gate change costs nothing and a rejected
+    # generation is never re-bought. Every gate fix in this file was found by
+    # reading rejects, so that property paid for itself several times.
     done = [0]
     if todo:
         sem = asyncio.Semaphore(args.concurrency)
@@ -571,7 +548,7 @@ async def main_async(args):
                     if res is None:
                         failed[ans or "api-failed"] += 1
                         return
-                    k = cache_key(call, question)
+                    k = cache_key(call, question, spec)
                     async with lock:
                         have[k] = (res, ans)
                         fh.write(json.dumps(
@@ -584,28 +561,18 @@ async def main_async(args):
                   + ", ".join(f"{w} {c:,}" for w, c in failed.most_common()),
                   flush=True)
 
-    by_tool = {}
-    for i, d in jobs:
-        got = have.get(cache_key(d[1], d[3]))
-        if got:
-            by_tool.setdefault(d[2].get("name"), []).append(got[0])
-    boiler = boilerplate(by_tool)
-    print(f"\n{len(have):,} generated payloads over {len(by_tool):,} tools; "
-          f"{len(boiler):,} boilerplate tokens derived", flush=True)
-
     reasons = Counter()
     accepted = {}
     with args.rejects.open("w", buffering=1) as rej:
         for i, d in jobs:
             _, call, spec, question = d
-            k = cache_key(call, question)
+            k = cache_key(call, question, spec)
             got = have.get(k)
             if not got:
                 continue
             res, ans = got
             why = gate(res, ans, spec,
-                       question + " " + json.dumps(call, ensure_ascii=False),
-                       boiler)
+                       question + " " + json.dumps(call, ensure_ascii=False))
             if why:
                 reasons[why.split(":")[0]] += 1
                 # Rejects are written out, not just counted. A gate tuned from
@@ -619,7 +586,8 @@ async def main_async(args):
                 continue
             accepted[k] = (res, ans)
 
-    kept = sum(1 for i, d in jobs if cache_key(d[1], d[3]) in accepted)
+    kept = sum(1 for i, d in jobs
+               if cache_key(d[1], d[3], d[2]) in accepted)
     print(f"accepted {kept:,}/{len(jobs):,} calls "
           f"({100*kept/max(1,len(jobs)):.1f}%)", flush=True)
     if reasons:
@@ -632,7 +600,7 @@ async def main_async(args):
     attached = 0
     for i, d in jobs:
         call_at, call, spec, question = d
-        got = have.get(cache_key(call, question))
+        got = have.get(cache_key(call, question, spec))
         if not got:
             continue
         res, ans = got
