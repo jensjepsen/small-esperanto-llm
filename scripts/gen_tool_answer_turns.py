@@ -521,6 +521,15 @@ async def main_async(args):
     todo = [(i, d) for i, d in jobs
             if cache_key(d[1], d[3], d[2]) not in have]
     print(f"{len(have):,} cached, {len(todo):,} to generate", flush=True)
+    if args.dry_run:
+        # What a run would COST, before it costs it. The fingerprint means a
+        # spec edit shows up here as a jump in `to generate`, which is the
+        # signal worth seeing before launching.
+        free = sum(1 for _, d in todo
+                   if _schema_from_returns(d[2].get("returns") or {}) is None)
+        print(f"dry-run: {len(todo)-free:,} would hit the API, "
+              f"{free:,} skipped as no-returns-spec", flush=True)
+        return
 
     # Generation and gating are separate passes: caching happens BEFORE the
     # verdict, so re-gating after a gate change costs nothing and a rejected
@@ -642,6 +651,8 @@ def main():
     ap.add_argument("--n", type=int, default=0, help="0 = all")
     ap.add_argument("--concurrency", type=int, default=16)
     ap.add_argument("--show", type=int, default=3)
+    ap.add_argument("--dry-run", action="store_true",
+                    help="report how many calls would hit the API, then exit")
     ap.add_argument("--allow-unspeced", action="store_true",
                     help="also answer calls whose tool declares no returns; "
                          "their payloads are unconstrained and pad with "

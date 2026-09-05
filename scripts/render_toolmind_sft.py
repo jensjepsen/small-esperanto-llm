@@ -186,7 +186,8 @@ def dedupe_names(tools):
     return out
 
 
-def to_messages(row, pool=None, idx=0, target=0, minimum=2) -> list[dict] | None:
+def to_messages(row, pool=None, idx=0, target=0, minimum=2,
+                reasoning=True) -> list[dict] | None:
     tools = [t.get("function") for t in row.get("tools", [])
              if isinstance(t, dict) and t.get("function")]
     # `returns` is already on the tools: the generator writes it, because
@@ -216,6 +217,15 @@ def to_messages(row, pool=None, idx=0, target=0, minimum=2) -> list[dict] | None
             # an <|assistant|> marker. Emitting a bare <|tool_call|> straight
             # after <|user|> -- which 1,797 of 7,834 calls did, 22.9% -- trains
             # a context that never occurs at inference.
+            # The reasoning that precedes a call is 72-79% of this corpus's
+            # trained tokens against ~11% for grounded answers, and both sit in
+            # the <|assistant|> slot -- so after a <|tool_result|> the model
+            # chooses between two registers on lopsided odds and picks the
+            # narrating one. Dropping it leaves the slot meaning exactly one
+            # thing: answer the user. The turn itself still opens (see above);
+            # only its prose goes. Answers, which have no calls, are untouched.
+            if calls and not reasoning:
+                body = ""
             if body or calls:
                 msgs.append({"role": "assistant", "content": body})
             for tc in calls:
@@ -255,6 +265,11 @@ def main():
                     help="render only rows the gate passed, read from "
                          "gate_verdicts.jsonl. Without it EVERY translated row "
                          "is rendered, failures included.")
+    ap.add_argument("--no-reasoning", action="store_true",
+                    help="drop the reasoning prose that precedes a tool call, "
+                         "leaving the assistant slot to mean one thing: answer "
+                         "the user. The assistant turn still opens so the "
+                         "inference context is unchanged.")
     ap.add_argument("--tokenizer",
                     default="jensjepsen/danish-lm-400m-sft-v34-mid")
     ap.add_argument("--subfolder", default="step-30240-agg-0.264")
@@ -288,14 +303,16 @@ def main():
     rendered, drops = [], Counter()
     for i, r in enumerate(rows):
         m = to_messages(r, pool, i, args.catalogue_size,
-                        args.catalogue_min)
+                        args.catalogue_min,
+                        reasoning=not args.no_reasoning)
         if m is None:
             drops["unrenderable"] += 1
             continue
         rendered.append({"messages": m})
         if False:
             ms = to_messages(r, pool, i, args.catalogue_size,
-                             args.catalogue_min, rmap, symbolic=True)
+                             args.catalogue_min, rmap, symbolic=True,
+                             reasoning=not args.no_reasoning)
             if ms is None:
                 drops["unrenderable-symbolic"] += 1
             else:
