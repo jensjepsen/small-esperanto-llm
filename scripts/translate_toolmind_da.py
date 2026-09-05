@@ -42,6 +42,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import re
 import sys
 from collections import Counter
@@ -71,7 +72,168 @@ IDENT_STRICT = re.compile(r"^(?=.*[_.\d]|.*[a-z][A-Z])[A-Za-z][\w.]{3,}$")
 LANGUAGE_TOOL = re.compile(r"translat|language|lang_", re.I)
 
 
+# ── symbolized twins ────────────────────────────────────────────────────────
+#
+# Half the corpus is rendered with parameter/result keys replaced by inert
+# symbols, so that scoring well REQUIRES reading the Danish descriptions rather
+# than recalling that `price` means price. English keys are already inert to a
+# Danish-only model -- `cups_left` tokenises to ['c','ups','_','le','ft'] -- but
+# they are inert CONSISTENTLY, so they can be memorised per tool.
+#
+# Symbolizing happens HERE, on the English source, BEFORE translation. Doing it
+# after translation was tried and fails: 93.2% of rows name a parameter key in
+# their reasoning ("...der tager et company_name ... {"company_name": "Apple"}"),
+# so a Danish-side rename leaves the prose contradicting the call AND handing
+# the model the mapping it was supposed to have to look up. Renaming first
+# means the translator sees a coherent row and writes coherent Danish about the
+# symbol.
+#
+# It also moves the ambiguity into English, where it is tractable: bare `time`
+# in Danish prose means "hour" (58 rows) and must not be touched, whereas in the
+# English source the same token is unambiguously the identifier in context.
+SYM_CTX = "(?:parameter|field|argument|key|value|property)"
+
+
+def _sym_prose(text, kmap_all):
+    """Rewrite identifier mentions in English reasoning.
+
+    Only in contexts where the token is unambiguously the identifier: inside a
+    JSON fragment, quoted, adjacent to a schema word, or shaped like an
+    identifier (contains `_`). A bare common word is left alone.
+    """
+    if not text:
+        return text
+    for orig, sym in sorted(kmap_all.items(), key=lambda kv: -len(kv[0])):
+        e = re.escape(orig)
+        text = re.sub(rf'(["\'])({e})(["\'])', rf'\1{sym}\3', text)
+        text = re.sub(rf'(?<![\w])({e})(\s*:)', rf'{sym}\2', text)
+        text = re.sub(rf'(?<![\w])({e})(\s+{SYM_CTX})', rf'{sym}\2', text,
+                      flags=re.I)
+        text = re.sub(rf'({SYM_CTX}\s+)({e})(?![\w])', rf'\1{sym}', text,
+                      flags=re.I)
+        if "_" in orig:                      # identifier-shaped: safe bare
+            text = re.sub(rf'(?<![\w]){e}(?![\w])', sym, text)
+    return text
+
+
+def source_key_map(row, idx):
+    """The (tool -> {real key: symbol}) map symbolize_source() would use.
+
+    Exposed because the RENDERER needs it: result-field keys carry no
+    description, so unlike parameters they cannot be matched back through
+    text. The function is deterministic in (row, idx), so recomputing here
+    reproduces exactly what generation did.
+    """
+    return _symbolize(row, idx)[1]
+
+
+def symbolize_source(row, idx):
+    return _symbolize(row, idx)[0]
+
+
+def _symbolize(row, idx):
+    """Return an English row with parameter/result keys replaced by symbols.
+
+    Consistent within the row across spec, call, result and prose; permuted per
+    row so no symbol becomes a stable second name for a key.
+    """
+    row = json.loads(json.dumps(row))
+    keys = {}
+    for t in row.get("tools", []) or []:
+        f = t.get("function") or {}
+        keys.setdefault(f.get("name"), set()).update(
+            ((f.get("parameters") or {}).get("properties") or {}))
+    last = None
+    for m in row.get("conversations", []):
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            last = fn.get("name") or last
+            a = fn.get("arguments")
+            if isinstance(a, str):
+                try: a = json.loads(a)
+                except Exception: a = None
+            if isinstance(a, dict):
+                keys.setdefault(last, set()).update(a)
+        if m.get("role") == "tool" and last:
+            try: obj = json.loads(m.get("content") or "")
+            except Exception: continue
+            def collect(o):
+                if isinstance(o, dict):
+                    keys[last].update(o)
+                    for v in o.values(): collect(v)
+                elif isinstance(o, list):
+                    for v in o: collect(v)
+            keys.setdefault(last, set())
+            collect(obj)
+    # TOOL NAMES ARE LEFT REAL, deliberately.
+    #
+    # Symbolizing them was tried and cost far more than it bought. It silently
+    # defeated the language-tool filter, which matches on the NAME (467 rows
+    # whose premise translation destroys sailed through). It collapsed the
+    # distractor pool from 873 tools to 12, because every row reuses t1..tn, so
+    # every catalogue drew the same twelve specs -- 3x prompt bloat and 7.2% of
+    # rows truncated past their model turn, training nothing. And it made the
+    # corpus's own returns map meaningless, since `t1.p1` denotes something
+    # different in every row, which then needed a reverse map plus a join back
+    # to pristine originals to undo.
+    #
+    # What it bought was small: names stay memorisable. But selection is
+    # already tested by the shuffled 2-8 catalogue, and the point of the
+    # symbolized half is the KEYS -- whether the model reads "Aktuel
+    # aktiekurs" or recalls that `price` means price.
+    tmap = {}
+    kmap = {}
+    for tool, ks in keys.items():
+        ks = sorted(x for x in ks if isinstance(x, str))
+        syms = [f"p{i+1}" for i in range(len(ks))]
+        random.Random(f"{idx}:{tool}").shuffle(syms)
+        kmap[tool] = dict(zip(ks, syms))
+    flat = {k: v for m in kmap.values() for k, v in m.items()}
+    flat.update(tmap)          # names are identifiers too, safe to rewrite bare
+
+    def ren(o, m):
+        if isinstance(o, dict):
+            return {m.get(k, k): ren(v, m) for k, v in o.items()}
+        if isinstance(o, list):
+            return [ren(v, m) for v in o]
+        return o
+
+    for t in row.get("tools", []) or []:
+        f = t.get("function") or {}
+        m = kmap.get(f.get("name"), {})
+        if f.get("name") in tmap:
+            f["name"] = tmap[f["name"]]
+        props = (f.get("parameters") or {}).get("properties")
+        if isinstance(props, dict):
+            f["parameters"]["properties"] = {m.get(k, k): v for k, v in props.items()}
+            req = (f.get("parameters") or {}).get("required")
+            if isinstance(req, list):
+                f["parameters"]["required"] = [m.get(k, k) for k in req]
+    last = None
+    for msg in row.get("conversations", []):
+        for tc in (msg.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            last = fn.get("name") or last
+            m = kmap.get(last, {})
+            a = fn.get("arguments")
+            if isinstance(a, dict):
+                fn["arguments"] = {m.get(k, k): v for k, v in a.items()}
+            if fn.get("name") in tmap:
+                fn["name"] = tmap[fn["name"]]
+        if msg.get("role") == "tool" and last:
+            try: obj = json.loads(msg.get("content") or "")
+            except Exception: pass
+            else:
+                msg["content"] = json.dumps(ren(obj, kmap.get(last, {})),
+                                            ensure_ascii=False)
+        if msg.get("role") in ("assistant", "user") and msg.get("content"):
+            msg["content"] = _sym_prose(msg["content"], flat)
+    return row, {"tools": tmap, "keys": kmap}
+
+
 def is_language_tool_row(row) -> bool:
+    if row.get("_language_tool"):
+        return True          # marked pre-symbolization, name no longer matches
     return any(LANGUAGE_TOOL.search(((t.get("function") or {}).get("name") or ""))
                for t in row.get("tools", []))
 # The model echoes the "[kind]" hint back, and TRANSLATES it: [svar] 1,408,
@@ -268,6 +430,35 @@ def _pinned_values(row) -> set:
     return _pinned_names(row)
 
 
+def _nested_desc_segments(node, base, depth=0):
+    """Descriptions inside a parameter that is itself an object or array.
+
+    Walks `properties` and `items` to any depth. Kept separate from the
+    top-level loop so the path stays exact -- these are spliced back by
+    address, never by search.
+    """
+    out = []
+    if depth > 4 or not isinstance(node, dict):
+        return out
+    props = node.get("properties")
+    if isinstance(props, dict):
+        for k, v in props.items():
+            if not isinstance(v, dict):
+                continue
+            if v.get("description"):
+                out.append((base + ("properties", k, "description"),
+                            "param_desc", v["description"]))
+            out.extend(_nested_desc_segments(
+                v, base + ("properties", k), depth + 1))
+    items = node.get("items")
+    if isinstance(items, dict):
+        if items.get("description"):
+            out.append((base + ("items", "description"),
+                        "param_desc", items["description"]))
+        out.extend(_nested_desc_segments(items, base + ("items",), depth + 1))
+    return out
+
+
 def segments(row):
     """[(path, kind, text)] — path is a splice address into the row.
 
@@ -293,6 +484,14 @@ def segments(row):
                     segs.append((("tools", i, "function", "parameters",
                                   "properties", k, "description"),
                                  "param_desc", v["description"]))
+                # RECURSE. A parameter can itself be an object, and its inner
+                # properties carry their own descriptions -- which were never
+                # extracted, so they stayed English through every version:
+                # 4,302 of 4,820 nested descriptions (89.3%) across 7.6% of
+                # rows still read "The length of the shape" inside an otherwise
+                # Danish spec. Inert noise for a Danish-only model.
+                base = ("tools", i, "function", "parameters", "properties", k)
+                segs.extend(_nested_desc_segments(v, base))
                 # enum entries are VALUES: see value_segments()
     for j, m in enumerate(row.get("conversations", [])):
         role, content = m.get("role"), m.get("content") or ""
@@ -556,7 +755,25 @@ def skeleton(row, blanks=None):
     return json.dumps(rec(row), ensure_ascii=False, sort_keys=True)
 
 
+def _strip_generated(row):
+    """A copy without `returns`, which the annotate pass ADDS deliberately.
+
+    The skeleton check compares structure against the English original, and
+    `returns` exists in neither the source nor the translation -- it is
+    generated metadata. Gating an annotated corpus without stripping it failed
+    18,100 of 19,442 rows as structure-changed, which is the check working
+    correctly on a difference we introduced on purpose.
+    """
+    row = json.loads(json.dumps(row))
+    for t in row.get("tools", []) or []:
+        f = t.get("function") if isinstance(t, dict) and t.get("function") else t
+        if isinstance(f, dict):
+            f.pop("returns", None)
+    return row
+
+
 def gate(orig, new, value_map=None, spec_map=None):
+    new = _strip_generated(new)
     """Mechanical checks. Returns a list of failure reasons (empty = pass).
 
     `value_map` upgrades the value check from "did it change" to "is it the
@@ -893,6 +1110,74 @@ async def build_spec_map(session, rows, cache_path, batch=40, concurrency=24):
     return have
 
 
+# ── returns schema ──────────────────────────────────────────────────────────
+#
+# Tool specs describe their INPUTS and say nothing about what they return:
+# 0 of 86,304 specs carry a returns/response/output key. So an answer turn
+# gets `name`, a Danish `description`, a Danish description per input
+# parameter -- and then a raw JSON blob whose keys are English.
+#
+# For a Danish-only model those keys are inert. `cups_left` tokenises to
+# ['c','ups','_','le','ft'] and `dog_years` to ['d','og','_','ye','ars'] --
+# fragments with no meaning in its space, one of which ('og') is Danish for
+# "and". It cannot infer that cups_left is the remaining coffee any more than
+# it could from `xk_92`.
+#
+# That is why grounding is near-gold on SEEN tools and guesswork on unseen
+# ones: the pairing was memorised, never read. Probed on an unfamiliar
+# get_coffee_status it answered with `last_service` instead of `cups_left`,
+# and on calculate_dog_years it never reported dog_years at all.
+#
+# Inputs already have the fix -- a Danish description per field, which is why
+# argument binding works at all. This gives results the same channel. The
+# field names and types are read off the tool_result payloads already in the
+# corpus; only the descriptions are generated, once per (tool, field), not per
+# row.
+RETURNS_MAX_FIELDS = 6
+RETURN_SEP = "\x00"
+
+
+def _return_key(tool, path):
+    return f"{tool or ''}{RETURN_SEP}{path}"
+
+
+def _walk_leaves(obj, prefix=""):
+    """(path, json-type) per leaf. Lists descend into their first element so a
+    list of records yields `events[].name` rather than an opaque `events`."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _walk_leaves(v, f"{prefix}.{k}" if prefix else str(k))
+    elif isinstance(obj, list):
+        if obj:
+            yield from _walk_leaves(obj[0], f"{prefix}[]")
+    else:
+        t = ("boolean" if isinstance(obj, bool) else
+             "number" if isinstance(obj, (int, float)) else
+             "null" if obj is None else "string")
+        yield prefix, t
+
+
+def return_fields(row):
+    """[(key, tool, path, type, example)] for every field this row's tools
+    actually returned. Attributed to the tool whose call preceded the result."""
+    out, last = [], None
+    for m in row.get("conversations", []):
+        for tc in (m.get("tool_calls") or []):
+            last = (tc.get("function") or {}).get("name") or last
+        if m.get("role") != "tool" or not last:
+            continue
+        try:
+            obj = json.loads(m.get("content") or "")
+        except Exception:
+            continue
+        for path, t in _walk_leaves(obj):
+            if not path:
+                continue
+            out.append((_return_key(last, path), last, path, t,
+                        (m.get("content") or "")[:120]))
+    return out
+
+
 VALUE_SYS = """Du oversætter VÆRDIER fra kald til et værktøjs-API til dansk.
 
 Du får en nummereret liste. Hver linje har formen `felt: værdi`. Oversæt KUN
@@ -1105,6 +1390,228 @@ def gate_all(pairs, vmap, smap, workers=4):
         return out
 
 
+RETURNS_SYS = """Du skriver korte danske feltbeskrivelser til et værktøjs-API.
+
+Du får en nummereret liste. Hver linje beskriver ét felt, som et værktøj
+returnerer: værktøjets navn, feltets sti, feltets type og et eksempel på
+værktøjets svar.
+
+Skriv én kort dansk beskrivelse per linje -- hvad feltet indeholder, set fra
+brugerens synspunkt. Svar med præcis lige så mange linjer i samme rækkefølge.
+
+- Skriv som en feltbeskrivelse, ikke som en sætning: "Antal kopper kaffe
+  tilbage", ikke "Dette felt indeholder antallet af kopper kaffe tilbage".
+- Feltnavnet er på engelsk og skal IKKE oversættes eller gentages i svaret.
+- Brug værktøjets navn og eksemplet til at forstå, hvad feltet betyder.
+- Er feltet en statuskode eller teknisk metadata, så skriv det ("Statuskode
+  for kaldet").
+- Svar KUN med beskrivelserne, én per linje, uden numre."""
+
+
+async def translate_returns(session, keys, meta, tries=3):
+    """Danish description per (tool, result-field). `meta` maps key -> (tool,
+    path, type, example)."""
+    shown = []
+    for k in keys:
+        tool, path, typ, ex = meta[k]
+        shown.append(f"værktøj={tool} felt={path} type={typ} svar={ex[:70]}")
+    # Explicit ceiling. None of these passes set one, so they ran on the
+    # provider default -- and one batch failed every attempt because its
+    # search_book examples carry large payloads, so the reply was cut short,
+    # the length check rejected the chunk, and all 40 entries were lost. The
+    # split-retry below is the backstop; this removes the cause. 40 short
+    # Danish descriptions need well under 2k tokens, so 4k is generous.
+    body = {"model": MODEL, "temperature": 0.2, "max_tokens": 4000,
+            "messages": [{"role": "system", "content": RETURNS_SYS},
+                         {"role": "user", "content": "\n".join(
+                             f"{i+1}. {x}" for i, x in enumerate(shown))}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "beskrivelser", "strict": True, "schema": {
+                    "type": "object",
+                    "properties": {"linjer": {"type": "array",
+                                              "items": {"type": "string"}}},
+                    "required": ["linjer"], "additionalProperties": False}}}}
+    for a in range(tries):
+        try:
+            async with session.post(URL, json=body) as r:
+                if r.status != 200:
+                    if a == tries - 1:
+                        print(f"  returns HTTP {r.status}: "
+                              f"{(await r.text())[:120]}", flush=True)
+                    await asyncio.sleep(1.5 * (a + 1))
+                    continue
+                d = await r.json()
+                out = json.loads(
+                    d["choices"][0]["message"]["content"])["linjer"]
+                out = [_TAG.sub("", x, count=1).strip() for x in out]
+                if len(out) == len(keys):
+                    return out
+        except Exception:
+            await asyncio.sleep(1.5 * (a + 1))
+    return None
+
+
+def _load_returns_map(cache_path):
+    have = {}
+    if cache_path.exists():
+        for line in cache_path.open():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+                have[r["k"]] = r["da"]
+            except Exception:
+                continue
+    return have
+
+
+async def build_returns_map(session, rows, cache_path, batch=40,
+                            concurrency=24):
+    """(tool, result-field) -> danish description. Resumable.
+
+    Same shape as build_spec_map/build_value_map, so pointing --out at an
+    existing corpus reuses every earlier pass and pays only for this one.
+    """
+    have = _load_returns_map(cache_path)
+    meta = {}
+    for r in rows:
+        for key, tool, path, typ, ex in return_fields(r):
+            meta.setdefault(key, (tool, path, typ, ex))
+    want = sorted(meta)
+    todo = [k for k in want if k not in have]
+    print(f"return fields: {len(want):,} distinct (tool,field), "
+          f"{len(have):,} cached, {len(todo):,} to describe", flush=True)
+    if not todo:
+        return have
+    chunks = [todo[i:i + batch] for i in range(0, len(todo), batch)]
+    sem = asyncio.Semaphore(concurrency)
+    lock = asyncio.Lock()
+    n = [0]
+    with cache_path.open("a", buffering=1) as fh:
+        async def run_chunk(chunk):
+            """Translate a chunk, halving it on failure.
+
+            One batch failed on every attempt and took all 40 of its entries
+            with it -- a contiguous alphabetical run from save_contact.message
+            to search_book.publication_year, i.e. exactly one slice. The
+            search_book examples carry large JSON payloads, so the batch
+            tripped a length limit and the all-or-nothing length check
+            discarded the lot. Splitting isolates the offender instead of
+            losing its neighbours.
+            """
+            async with sem:
+                got = await translate_returns(session, chunk, meta)
+            if got:
+                return [(k, da) for k, da in zip(chunk, got)]
+            if len(chunk) == 1:
+                print(f"  returns: giving up on {chunk[0]!r}", flush=True)
+                return []
+            mid = len(chunk) // 2
+            left = await run_chunk(chunk[:mid])
+            right = await run_chunk(chunk[mid:])
+            return left + right
+
+        async def one(chunk):
+            pairs_out = await run_chunk(chunk)
+            n[0] += 1
+            if n[0] % 20 == 0:
+                print(f"  returns {n[0]}/{len(chunks)} batches", flush=True)
+            if not pairs_out:
+                return
+            async with lock:
+                for k, da in pairs_out:
+                    have[k] = da
+                    fh.write(json.dumps({"k": k, "da": da},
+                                        ensure_ascii=False) + "\n")
+        await asyncio.gather(*[one(c) for c in chunks])
+    print(f"returns map: {len(have):,} entries", flush=True)
+    return have
+
+
+def attach_returns_to_row(row, rmap, symmap=None):
+    """Write the `returns` block into the row's own tools, in the row's symbols.
+
+    Done HERE rather than in the renderer because this is the only place that
+    holds the returns map and the row's symbol map at once. Reconstructing it
+    downstream needed three joins -- row by idx, tool by description, field by
+    recomputing the symbolizer -- and each failure was silent: the documented
+    keys simply came out disjoint from the payload.
+
+    Row-present paths win the dedupe. The corpus spells one concept many ways
+    (data.company / data.company_name), but sorted order put `current_price`
+    ahead of `data.price` for the same description, dropping the very field the
+    row returns.
+    """
+    kmap = (symmap or {}).get("keys") or {}
+    tmap = (symmap or {}).get("tools") or {}
+    rev_t = {v: k for k, v in tmap.items()}
+
+    present, last = set(), None
+    for m in row.get("conversations", []):
+        for tc in (m.get("tool_calls") or []):
+            last = (tc.get("function") or {}).get("name") or last
+        if m.get("role") == "tool" and last:
+            try:
+                obj = json.loads(m.get("content") or "")
+            except Exception:
+                continue
+            for pth, _t in _walk_leaves(obj):
+                if pth:
+                    present.add((last, pth))
+
+    for t in row.get("tools", []) or []:
+        f = t.get("function") if isinstance(t, dict) and t.get("function") else t
+        if not isinstance(f, dict):
+            continue
+        shown = f.get("name")
+        real = rev_t.get(shown, shown)          # symbolized rows map back
+        fields = {k.split(RETURN_SEP, 1)[1]: v for k, v in rmap.items()
+                  if k.startswith(f"{real}{RETURN_SEP}")}
+        if not fields:
+            continue
+        exact = dict(kmap.get(real) or {})
+        used, nxt = set(exact.values()), 1
+        if exact or tmap:                        # symbolized row
+            for path in sorted(fields):
+                for part in path.split("."):
+                    bare = part[:-2] if part.endswith("[]") else part
+                    if bare in exact:
+                        continue
+                    while f"p{nxt}" in used:
+                        nxt += 1
+                    exact[bare] = f"p{nxt}"
+                    used.add(f"p{nxt}")
+
+        def ren(path):
+            out = []
+            for part in path.split("."):
+                bare = part[:-2] if part.endswith("[]") else part
+                new = exact.get(bare, bare)
+                out.append(new + "[]" if part.endswith("[]") else new)
+            return ".".join(out)
+
+        here = {q for tn, q in present if tn == shown}
+        ordered = sorted(fields.items(),
+                         key=lambda kv: (ren(kv[0]) not in here, kv[0]))
+        # CAP the block. Documenting every corpus-wide field for all 8
+        # catalogue tools pushed the median symbolized prompt to 4,170 tokens
+        # and 7.5% of rows past the 8,048 limit -- and because the model turn
+        # sits at the END, truncation removed it entirely and the row trained
+        # nothing. Row-present paths are ordered first, so the cap drops the
+        # fields this row never returns rather than the ones it does.
+        seen, props = set(), {}
+        for path, desc in ordered:
+            if len(props) >= RETURNS_MAX_FIELDS:
+                break
+            if desc in seen:
+                continue
+            seen.add(desc)
+            props[ren(path)] = {"description": desc}
+        f["returns"] = {"type": "object", "properties": props}
+    return row
+
+
 def build_request(row, segs, value_map=None, spec_map=None):
     pinned = sorted(x for x in _pinned_values(row) if x)
     lines = "\n".join(f"{i+1}. [{k}] {t}" for i, (_p, k, t) in enumerate(segs))
@@ -1119,7 +1626,16 @@ def build_request(row, segs, value_map=None, spec_map=None):
 
 
 async def translate(session, row, segs, tries=3, value_map=None, spec_map=None):
+    # Ceiling sized from the INPUT. Without one the request ran on the provider
+    # default and the longest rows came back truncated, failed the
+    # segment-count check, and were abandoned after three tries -- 137 rows
+    # whose median length is 7,015 chars against a corpus median of 842. They
+    # failed identically at concurrency 96, 48 and 8, which is what ruled out
+    # rate limiting and pointed at length. Danish runs longer than English, so
+    # allow ~1.6 chars out per char in plus headroom for the JSON envelope.
+    _chars = sum(len(t) for _p, _k, t in segs)
     body = {"model": MODEL, "temperature": 0.3,
+            "max_tokens": max(4000, min(32000, int(_chars * 1.6 / 2.5) + 1500)),
             "messages": [{"role": "system", "content": SYS},
                          {"role": "user", "content": build_request(
                              row, segs, value_map, spec_map)}],
@@ -1162,6 +1678,23 @@ async def main():
     ap.add_argument("--n", type=int, default=25)
     ap.add_argument("--out", type=Path, default=Path("scratch/toolmind_da"))
     ap.add_argument("--concurrency", type=int, default=8)
+    ap.add_argument("--returns-from", type=Path, default=None,
+                    help="Read returns_map.jsonl from ANOTHER corpus. A "
+                         "symbolized corpus's own map is keyed by per-row "
+                         "symbols and is meaningless across rows; the real-key "
+                         "corpus's map is the authority, resolved through the "
+                         "stored symbol map.")
+    ap.add_argument("--annotate", action="store_true",
+                    help="Local pass, no API: store the symbol map on each row "
+                         "and bake the `returns` block into its tools, so the "
+                         "renderer needs no mapping logic at all.")
+    ap.add_argument("--symbolize", action="store_true",
+                    help="Replace parameter/result KEYS with inert symbols in "
+                         "the ENGLISH source before translating, so the "
+                         "reasoning is written about the symbol. Doing this "
+                         "after translation fails: 93.2%% of rows name a "
+                         "parameter key in their prose, which both contradicts "
+                         "the call and hands the model the mapping.")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the segments that WOULD be sent, no API calls")
     ap.add_argument("--gate-only", action="store_true",
@@ -1196,6 +1729,30 @@ async def main():
             if i >= args.n:
                 break
             rows.append(json.loads(line))
+    sym_maps = {}
+    if args.symbolize:
+        # Mark language-tool rows BEFORE renaming. is_language_tool_row matches
+        # on the tool NAME, so symbolizing to t1/t2 makes it match nothing and
+        # the 467 rows whose premise translation destroys sail through -- a
+        # user saying "translate this English sentence" becomes Danish while
+        # the call still carries source_language="English". The flag survives
+        # the rename; the filter reads it below.
+        for r in rows:
+            if is_language_tool_row(r):
+                r["_language_tool"] = True
+        # Load-time transform, so the symbolized corpus is an independent build
+        # with its own caches rather than a second code path through main().
+        # Descriptions are untouched, so spec_map can be copied in from the
+        # real-key build and warms straight through; only the conversations,
+        # values and return paths are new.
+        out_rows = []
+        for i, r in enumerate(rows):
+            new, m = _symbolize(r, i)
+            sym_maps[i] = m          # PERSISTED below: never recompute it
+            out_rows.append(new)
+        rows = out_rows
+        print(f"SYMBOLIZED {len(rows):,} source rows before translation",
+              flush=True)
     if args.only_enums:
         keep = []
         with open(path) as f:
@@ -1293,6 +1850,45 @@ async def main():
             print(f"retry-failed: dropped {drop:,} failing rows, "
                   f"{len(keep):,} kept", flush=True)
 
+    if args.annotate:
+        rmap = _load_returns_map(
+            (args.returns_from or args.out) / "returns_map.jsonl")
+        # PRISTINE originals. A symbolized corpus stored its post-transform
+        # input as `orig`, so recomputing the map from it symbolizes twice
+        # ({"t1": "t2"}). The real-key corpus holds the untouched English rows
+        # under the same idx, and is the only sound basis for the map.
+        pristine = {}
+        if args.returns_from:
+            for line in (args.returns_from / "translated.jsonl").open():
+                if line.strip():
+                    rec0 = json.loads(line)
+                    pristine[rec0["idx"]] = rec0["orig"]
+            print(f"pristine originals: {len(pristine):,}", flush=True)
+        pairs = [json.loads(l) for l in cache.open() if l.strip()]
+        print(f"annotate: {len(pairs):,} rows, {len(rmap):,} return descriptions",
+              flush=True)
+        n_map = n_ret = 0
+        for rec in pairs:
+            if args.symbolize:
+                base = pristine.get(rec["idx"])
+                if base is None:
+                    continue          # cannot map it soundly: leave untouched
+                rec["symmap"] = _symbolize(base, rec["idx"])[1]
+                n_map += 1
+            before = json.dumps(rec["da"].get("tools"), ensure_ascii=False)
+            rec["da"] = attach_returns_to_row(rec["da"], rmap,
+                                              rec.get("symmap"))
+            if json.dumps(rec["da"].get("tools"), ensure_ascii=False) != before:
+                n_ret += 1
+        tmp = cache.with_suffix(".annot")
+        with tmp.open("w") as f:
+            for rec in sorted(pairs, key=lambda x: x["idx"]):
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        tmp.replace(cache)
+        print(f"annotate: stored {n_map:,} symbol maps, attached returns to "
+              f"{n_ret:,} rows -> {cache}", flush=True)
+        return
+
     if args.respec:
         import aiohttp
         pairs = list(done.values())
@@ -1304,6 +1900,8 @@ async def main():
                 s, [p["orig"] for p in pairs], args.out / "spec_map.jsonl")
             value_map = await build_value_map(
                 s, [p["orig"] for p in pairs], args.out / "value_map.jsonl")
+            await build_returns_map(
+                s, [p["orig"] for p in pairs], args.out / "returns_map.jsonl")
         # This is also the cheap upgrade path for an ALREADY translated corpus:
         # conversations are left alone and only catalogue text and values are
         # rewritten from the global tables, so v1 -> v2 costs one value pass
@@ -1379,6 +1977,12 @@ async def main():
                 # re-acquires exactly the defect this pass removes.
                 value_map = await build_value_map(
                     s, [r for _i, r in todo], args.out / "value_map.jsonl")
+                # Third global pass: what each tool RETURNS. Independent of the
+                # other two -- it describes result fields rather than
+                # translating anything -- so an existing corpus warms straight
+                # through and pays only for this.
+                await build_returns_map(
+                    s, rows, args.out / "returns_map.jsonl")
 
                 async def one(i, r):
                     # One malformed row must not abort the job. asyncio.gather
@@ -1396,8 +2000,15 @@ async def main():
                             print(f"  {n_done[0]}/{len(todo)}", flush=True)
                         if tr is None:
                             return None
-                        rec = {"idx": i, "orig": r,
-                               "da": splice(r, segs, tr, spec_map, value_map)}
+                        da = splice(r, segs, tr, spec_map, value_map)
+                        rec = {"idx": i, "orig": r, "da": da}
+                        if sym_maps:
+                            # The map is DATA, not something to reconstruct.
+                            # Recomputing it downstream made correctness depend
+                            # on _symbolize being unchanged since the row was
+                            # written -- which nearly broke when tool-name
+                            # symbolization landed mid-build.
+                            rec["symmap"] = sym_maps.get(i)
                     except Exception as e:
                         errs[type(e).__name__] += 1
                         return None

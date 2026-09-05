@@ -49,6 +49,7 @@ THINK = re.compile(r"</?\s*(?:think|thought|t\u00e6nk\w*|tanke\w*)\s*>", re.I)
 # translator never caught: [svar] 1,408, [taenk] 1,219, plus variants. Strip a
 # leading bracket tag; real assistant text does not open with one.
 LEAD_TAG = re.compile(r"^\s*\[[^\]\n]{1,14}\]\s*")
+RETURN_SEP = "\x00"
 CATALOG_LABEL = "Værktøjer"
 
 
@@ -167,12 +168,35 @@ def make_catalogue(tools, pool, idx, target, rng_seed=0, minimum=2):
     return out
 
 
+def dedupe_names(tools):
+    """Distractors in a symbolized row carry other rows' t-symbols, so a
+    catalogue can end up with two `t1`. Rename collisions to fresh symbols."""
+    seen, out = set(), []
+    for t in tools:
+        n = t.get("name")
+        if n in seen:
+            t = dict(t)
+            i = 1
+            while f"t{i}" in seen:
+                i += 1
+            t["name"] = f"t{i}"
+            n = t["name"]
+        seen.add(n)
+        out.append(t)
+    return out
+
+
 def to_messages(row, pool=None, idx=0, target=0, minimum=2) -> list[dict] | None:
     tools = [t.get("function") for t in row.get("tools", [])
              if isinstance(t, dict) and t.get("function")]
+    # `returns` is already on the tools: the generator writes it, because
+    # only the generator holds the returns map and the row's symbol map at the
+    # same time. Reconstructing it here needed three joins and failed silently
+    # every time one missed.
     if target:
         tools = make_catalogue(tools, pool or [], idx, target,
                                minimum=minimum)
+        tools = dedupe_names(tools)
     catalog = json.dumps(tools, ensure_ascii=False)
     msgs: list[dict] = []
     for m in row.get("conversations", []):
@@ -253,6 +277,9 @@ def main():
     rows = [r["da"] for r in recs]
     print(f"loaded {len(rows):,} translated rows", flush=True)
 
+    withret = sum(1 for r in rows for t in (r.get("tools") or [])
+                  if (t.get("function") or t).get("returns"))
+    print(f"specs carrying a returns block: {withret:,}", flush=True)
     pool = build_tool_pool(rows) if args.catalogue_size else []
     if args.catalogue_size:
         print(f"distractor pool: {len(pool):,} distinct non-held-out tools; "
@@ -266,6 +293,13 @@ def main():
             drops["unrenderable"] += 1
             continue
         rendered.append({"messages": m})
+        if False:
+            ms = to_messages(r, pool, i, args.catalogue_size,
+                             args.catalogue_min, rmap, symbolic=True)
+            if ms is None:
+                drops["unrenderable-symbolic"] += 1
+            else:
+                rendered.append({"messages": ms})
     print(f"rendered {len(rendered):,}  dropped {dict(drops) or 0}", flush=True)
 
     # VERIFY AGAINST THE TRAINER, not against an idea of it. Every row must

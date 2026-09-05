@@ -212,6 +212,8 @@ def main():
     print(f"tools: {len(names):,} distinct, {len(heldout):,} held out",
           flush=True)
 
+    # `returns` arrives baked into the rows by the generator -- the renderer
+    # and this script only assemble catalogues now.
     pool = build_tool_pool([r["da"] for r in clean]) if args.catalogue_size else []
     if args.catalogue_size:
         print(f"distractor pool: {len(pool):,} non-held-out tools; catalogues "
