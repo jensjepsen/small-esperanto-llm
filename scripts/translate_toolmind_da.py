@@ -1629,6 +1629,49 @@ async def build_returns_map(session, rows, cache_path, batch=40,
     return have
 
 
+def _nest_paths(flat):
+    """{"data.price": {...}, "news[]": {...}} -> a proper JSON-Schema tree.
+
+    The flat form was an artefact of deriving descriptions by walking payload
+    PATHS, and it leaked into the spec: 30.3% of returns blocks used dotted
+    keys and 28.7% used `field[]`, neither of which appears in the payload the
+    model is shown -- the result nests. Meanwhile `parameters`, sitting in the
+    same spec, models nesting properly. That made the model learn an ad-hoc
+    path syntax to connect spec to result.
+
+    Rebuild the tree instead, so every key in the block is a key that literally
+    occurs in the payload, and the two halves of the spec describe structure
+    the same way.
+    """
+    root = {}
+    for path, meta in flat.items():
+        parts = path.split(".")
+        node = root
+        for i, part in enumerate(parts):
+            is_arr = part.endswith("[]")
+            key = part[:-2] if is_arr else part
+            last = i == len(parts) - 1
+            slot = node.setdefault(key, {})
+            if last:
+                if is_arr:
+                    # a list of scalars: describe the ITEMS
+                    slot.setdefault("type", "array")
+                    slot["items"] = dict(meta)
+                else:
+                    slot.update(meta)
+            else:
+                if is_arr:
+                    slot.setdefault("type", "array")
+                    items = slot.setdefault("items", {"type": "object",
+                                                      "properties": {}})
+                    items.setdefault("type", "object")
+                    node = items.setdefault("properties", {})
+                else:
+                    slot.setdefault("type", "object")
+                    node = slot.setdefault("properties", {})
+    return root
+
+
 def attach_returns_to_row(row, rmap, symmap=None):
     """Write the `returns` block into the row's own tools, in the row's symbols.
 
@@ -1708,7 +1751,7 @@ def attach_returns_to_row(row, rmap, symmap=None):
                 continue
             seen.add(desc)
             props[ren(path)] = {"description": desc}
-        f["returns"] = {"type": "object", "properties": props}
+        f["returns"] = {"type": "object", "properties": _nest_paths(props)}
     return row
 
 
