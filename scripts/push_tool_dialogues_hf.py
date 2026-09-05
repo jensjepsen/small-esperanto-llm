@@ -188,12 +188,18 @@ def main():
                          "and selection is neither taught nor measured.")
     ap.add_argument("--catalogue-min", type=int, default=2,
                     help="Lower bound for the per-row catalogue size.")
+    ap.add_argument("--no-reasoning", action="store_true",
+                    help="drop the reasoning prose before each tool call")
+    ap.add_argument("--answers", type=Path, default=None,
+                    help="answer cache from gen_tool_answer_turns.py; splices "
+                         "result+answer onto dangling terminal calls")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from render_toolmind_sft import to_messages, build_tool_pool
+    from gen_tool_answer_turns import cache_key, dangling  # noqa: E402
+    from render_toolmind_sft import to_messages, build_tool_pool  # noqa: E402
 
     recs = [json.loads(l) for l in (args.src / "translated.jsonl").open()
             if l.strip()]
@@ -214,6 +220,14 @@ def main():
 
     # `returns` arrives baked into the rows by the generator -- the renderer
     # and this script only assemble catalogues now.
+    answers, n_answered = {}, 0
+    if args.answers:
+        for line in args.answers.open():
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            answers[rec["k"]] = (rec["resultat"], rec["svar"])
+        print(f"answer cache: {len(answers):,} generated turns", flush=True)
     pool = build_tool_pool([r["da"] for r in clean]) if args.catalogue_size else []
     if args.catalogue_size:
         print(f"distractor pool: {len(pool):,} non-held-out tools; catalogues "
@@ -239,9 +253,27 @@ def main():
         else:
             split = "train"
         msgs = to_messages(da, pool, _i, args.catalogue_size,
-                           args.catalogue_min)
+                           args.catalogue_min,
+                           reasoning=not args.no_reasoning)
         if msgs is None:
             continue
+        if answers:
+            # Splice the generated result + answer onto the row's dangling
+            # terminal call. Rendered here rather than read from a pre-made
+            # file because the catalogue is built in THIS loop -- the answer
+            # is keyed on the call and the tool's returns contract, both of
+            # which the row already carries, so the two stay in step.
+            d = dangling({"messages": msgs})
+            if d:
+                at, call, spec, q = d
+                got = answers.get(cache_key(call, q, spec))
+                if got:
+                    res, ans = got
+                    msgs[at + 1:at + 1] = [
+                        {"role": "tool_result",
+                         "content": json.dumps(res, ensure_ascii=False)},
+                        {"role": "assistant", "content": ans}]
+                    n_answered += 1
         data[split].append({
             "tools": da.get("tools", []),
             "conversations": da.get("conversations", []),
@@ -254,6 +286,9 @@ def main():
     counts = {s: len(v) for s, v in data.items()}
     print("splits:", counts, f"(dropped {dropped:,} catalogue-only rows)",
           flush=True)
+    if args.answers:
+        print(f"attached a generated answer turn to {n_answered:,} rows",
+              flush=True)
 
     # eval_seen must test tools the model HAS trained on. A rare tool whose
     # only rows landed in the eval sample would otherwise sit here untrained,
