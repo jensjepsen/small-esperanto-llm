@@ -373,6 +373,13 @@ dansk og svar med præcis lige så mange linjer i samme rækkefølge.
 ABSOLUTTE KRAV:
 - Oversæt ALDRIG de navne, der står under "BEVAR UÆNDRET". De skal stå
   ordret på engelsk i din oversættelse, også midt i en dansk sætning.
+- MEN skriv dem KUN de steder, hvor de allerede står i den engelske tekst.
+  Står der almindelig engelsk prosa -- "an annual interest rate of 5%", "my
+  user id", "the product with code X123" -- skal den oversættes til
+  almindeligt dansk: "en årlig rentesats på 5%", "mit bruger-id", "produktet
+  med koden X123". ERSTAT ALDRIG en almindelig ordforbindelse med
+  parameternavnet. "en årlig interest_rate" og "mit user_id" er FORKERT --
+  ingen bruger taler sådan.
 - Tal, datoer, koder, valutaer, URL'er og filstier skrives uændret.
 - Indhold som brugeren selv har valgt -- en titel, en note, en besked -- SKAL
   oversættes til dansk. "Team Meeting Agenda" bliver til "Dagsorden til
@@ -490,16 +497,32 @@ def _char_dependent_values(row) -> set:
 
 
 def _pinned_names(row) -> set:
-    """Tool names, parameter keys, and character-dependent values. Never
-    translated, anywhere -- and listed under BEVAR UAENDRET so the prose keeps
-    them too, which is what stops the user turn asking about 'racerbil'."""
+    """Tool names, MACHINE-SHAPED parameter keys, and character-dependent
+    values. Never translated, anywhere -- and listed under BEVAR UAENDRET so
+    the prose keeps them too, which is what stops the user turn asking about
+    'racerbil'.
+
+    Ordinary-word parameter keys are deliberately NOT pinned. Pinning every
+    key told the model to write `title`, `location`, `year` and `subject`
+    verbatim inside Danish sentences -- 244 of 898 pinned tokens were ordinary
+    English words -- and the gate never enforced them anyway: dnt-token-lost
+    filters to IDENT_STRICT precisely because "many parameter names are also
+    ordinary English words". Instructing on 898 while enforcing on 654 is the
+    mismatch that produced both injection failures.
+
+    The trade is measured and one-sided. Pinning ordinary words prevented ~28
+    prose mentions of `title` being Danishised -- which the gate does not check
+    -- while causing 115 rows to carry an English noun in Danish prose. The
+    identifier-shaped keys, which the gate does check, stay pinned.
+    """
     out = set(_char_dependent_values(row))
     for t in row.get("tools", []):
         f = t.get("function") or {}
-        out.add(f.get("name"))
+        out.add(f.get("name"))          # tool names always: often not IDENT-shaped
         props = ((f.get("parameters") or {}).get("properties")) or {}
         if isinstance(props, dict):
-            out.update(props)
+            out.update(k for k in props
+                       if isinstance(k, str) and IDENT_STRICT.match(k))
     return {x for x in out if isinstance(x, str)}
 
 
@@ -1039,6 +1062,33 @@ def gate(orig, new, value_map=None, spec_map=None):
                 lost += 1
     if lost:
         bad.append(f"dnt-token-lost({lost})")
+
+    # THE REVERSE OF dnt-token-lost, and the forward check is structurally
+    # blind to it: a translation that ADDS an identifier loses nothing.
+    #
+    # "BEVAR UÆNDRET ... også midt i en dansk sætning" was read as an
+    # obligation to INSERT the name. The source says "an annual interest rate
+    # of 5%" and the translation says "en årlig interest_rate på 5%"; "my user
+    # id is 12345" becomes "mit user_id er 12345". Measured on v6: 371 rows
+    # (4.27% of those with an underscored key) inject an identifier into a USER
+    # turn, 107 into an assistant turn, over 114 distinct keys -- and only 1 of
+    # 163 sampled had the identifier in the English at all.
+    #
+    # Worse than the failure it mirrors. A user who says "interest_rate" hands
+    # the model the schema mapping in the prompt, so it never has to read the
+    # description -- which also makes symbolizing the keys pointless while this
+    # is uncorrected.
+    injected = 0
+    for (_p, kind, txt), (_p2, _k2, new_txt) in zip(o_segs, n_segs):
+        if kind not in ("think", "response", "user", "tool_desc", "param_desc"):
+            continue
+        for tok in pin_o:
+            if not IDENT_STRICT.match(tok):
+                continue
+            if tok not in txt and tok in new_txt:
+                injected += 1
+    if injected:
+        bad.append(f"identifier-injected({injected})")
 
     # CONTRACT COHERENCE. Enum values may be translated, but the spec and every
     # invocation must move together: a call carrying "cirkel" is valid only if
@@ -2397,6 +2447,25 @@ async def main():
         ctrl["identifier translated in prose"] = dnt_bad
         ctrl_base["identifier translated in prose"] = dnt_ok
 
+        # ... and the mirror image, which the check above cannot catch: the
+        # English says ordinary prose and the Danish substitutes the parameter
+        # name for it. SYNTHETIC for the same reason as the DNT control -- a
+        # sampled row need not contain the pattern, and a control that
+        # corrupts nothing passes silently.
+        inj_ok = {"tools": [{"function": {
+            "name": "calculate_loan", "description": "Beregn lån",
+            "parameters": {"properties": {
+                "interest_rate": {"type": "number"}}}}}],
+            "conversations": [
+                {"role": "user",
+                 "content": "Jeg lånte 50000 til en årlig rentesats på 5%."},
+                {"role": "assistant", "content": "Jeg beregner det."}]}
+        inj_bad = json.loads(json.dumps(inj_ok))
+        inj_bad["conversations"][0]["content"] = (
+            "Jeg lånte 50000 til en årlig interest_rate på 5%.")
+        ctrl["identifier injected into prose"] = inj_bad
+        ctrl_base["identifier injected into prose"] = inj_ok
+
         # SYNTHETIC, not sampled: enum-constrained arguments are rare (3.3% of
         # values), so a control drawn from the batch silently disappears on
         # most samples and the enum gate would look tested when it was not.
@@ -2475,7 +2544,7 @@ async def main():
         # That happened twice: the sampled value-chain control found no
         # matching row on a rerun, and an edit deleted the prose-echo control
         # outright. Both were caught only by diffing against an earlier run.
-        EXPECTED_CONTROLS = 8
+        EXPECTED_CONTROLS = 9
         if len(ctrl) != EXPECTED_CONTROLS:
             missing = EXPECTED_CONTROLS - len(ctrl)
             print(f"\n*** {missing} PLANTED CONTROL(S) MISSING: built "

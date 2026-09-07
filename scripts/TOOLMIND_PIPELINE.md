@@ -67,7 +67,7 @@ checks are all green in the failure modes below.
 
 | After | Check | Expect |
 |---|---|---|
-| 1 | `GATE: n/m clean` in the log | ~99%, and all 8 planted controls FAIL |
+| 1 | `GATE: n/m clean` in the log | ~96%, and all 9 planted controls FAIL |
 | 2,3 | `scripts/build_returns_groups.py` | declared-vs-present F1 ~97% (v5: 62%) |
 | 4 | `trainer check over 400 rows` | CLEAN |
 | 4 | `pedagogy filters:` line in the log | ~665 dropped; rendered corpus has 0 rows without a `tool_call` |
@@ -126,6 +126,28 @@ English original AND the Danish, because `orig` matches 735 rows and `da` only
 593. Measured on v6's data: 665 dropped, **zero** outside the batch except the
 8 body no-call rows, and the collateral defects fall with it — reasoning-as-answer
 394 → 25, LaTeX residue 300 → 24.
+
+**A do-not-translate list is not a do-insert list.** `BEVAR UÆNDRET ... også
+midt i en dansk sætning` was read as an obligation to INSERT the pinned name:
+the source says "an annual interest rate of 5%" and the translation says "en
+årlig interest_rate på 5%"; "my user id is 12345" becomes "mit user_id er
+12345". Only 1 of 163 sampled had the identifier in the English at all.
+
+Measured on v6: 634 rows inject an identifier, across 114 distinct keys. This
+is worse than the failure it mirrors -- a user who says `interest_rate` hands
+the model the schema mapping in the prompt, so it never has to read the
+description, which also makes symbolizing keys pointless while it is
+uncorrected. The forward check (`dnt-token-lost`) is structurally blind to it:
+a translation that ADDS an identifier loses nothing.
+
+Fixed in three places: the prompt now says to keep pinned names only where
+they already occur; `identifier-injected` is a gate check with its own planted
+control; and `_pinned_names()` no longer pins ordinary-word parameter keys.
+That last one closed an instruction/enforcement mismatch -- 244 of 898 pinned
+tokens were ordinary English words (`title`, `location`, `year`, `subject`)
+that the gate never enforced, because `dnt-token-lost` filters to
+`IDENT_STRICT`. The list is now 687 tokens, of which the 33 non-identifiers
+are tool names and character-dependent values (`racecar`, `Hello, World!`).
 
 **Catalogue position carries no signal.** The source lists the called tool
 first in 98.4% of multi-tool rows, so "call tool #1" scored 99.2% right-tool —
