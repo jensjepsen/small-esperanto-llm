@@ -156,36 +156,51 @@ def check_controls():
           f"{len(CLEAN)} clean proposals pass", flush=True)
 
 
+def signature(fn) -> str:
+    """A function's identity: name plus its parameter property names.
+
+    Keyed on the SIGNATURE, not the name. 379 of 875 names carry more than one
+    parameter schema -- `search_movies` carries 63 -- so proposing one contract
+    per name means proposing it for 63 unrelated functions at once. That is the
+    same identity bug that gave `search_quotes` an AAPL stock ticker.
+    """
+    props = ((fn.get("parameters") or {}).get("properties") or {})
+    return f"{fn.get('name')}({','.join(sorted(props))})"
+
+
 def missing_tools(path: Path):
-    """Called tools carrying no returns block, with their Danish specs."""
-    have, want = {}, {}
+    """Called SIGNATURES carrying no returns block, with their Danish specs."""
+    have, want = set(), {}
     called = Counter()
     for line in path.open():
         if not line.strip():
             continue
         da = (json.loads(line).get("da") or {})
+        specs = {}
         for t in da.get("tools", []) or []:
             fn = t.get("function") if isinstance(t, dict) else None
             if not fn or not fn.get("name"):
                 continue
+            specs[fn["name"]] = fn
+            sig = signature(fn)
             if fn.get("returns"):
-                have[fn["name"]] = True
+                have.add(sig)
             else:
-                want.setdefault(fn["name"], fn)
+                want.setdefault(sig, fn)
         for m in da.get("conversations", []) or []:
             for tc in (m.get("tool_calls") or []):
                 n = (tc.get("function") or {}).get("name")
-                if n:
-                    called[n] += 1
-    return [(n, f, called[n]) for n, f in want.items()
-            if n not in have and called[n]], called
+                if n and n in specs:
+                    called[signature(specs[n])] += 1
+    return [(sig, f, called[sig]) for sig, f in want.items()
+            if sig not in have and called[sig]], called
 
 
 async def propose(session, chunk, tries=3):
     shown = []
-    for name, fn, _ in chunk:
+    for _sig, fn, _ in chunk:
         props = ((fn.get("parameters") or {}).get("properties") or {})
-        shown.append({"navn": name,
+        shown.append({"navn": fn.get("name"),
                       "beskrivelse": fn.get("description"),
                       "parametre": list(props)})
     body = {"model": MODEL, "temperature": 0.3, "max_tokens": 4000,
@@ -203,7 +218,13 @@ async def propose(session, chunk, tries=3):
                 d = await r.json()
                 out = json.loads(
                     d["choices"][0]["message"]["content"])["vaerktoejer"]
-                return {x["navn"]: x["felter"] for x in out}
+                # POSITIONAL. Matching on the returned `navn` broke the moment
+                # chunks became signatures: the model echoes the tool name, not
+                # the signature string, so every lookup missed and the whole
+                # batch came back as no-proposal.
+                if len(out) == len(chunk):
+                    return {sig: x.get("felter") or []
+                            for (sig, _fn, _n), x in zip(chunk, out)}
         except Exception:
             await asyncio.sleep(1.5 * (a + 1))
     return {}
@@ -225,7 +246,7 @@ async def main_async(args):
     if args.out.exists():
         for line in args.out.open():
             rec = json.loads(line)
-            have.setdefault(rec["tool"], []).append(rec)
+            have.setdefault(rec.get("signature") or rec["tool"], []).append(rec)
     todo = [t for t in tools if t[0] not in have]
     print(f"{len(have):,} cached, {len(todo):,} to propose", flush=True)
     if args.dry_run:
@@ -240,9 +261,27 @@ async def main_async(args):
             timeout=aiohttp.ClientTimeout(total=300)) as s:
         sem = asyncio.Semaphore(args.concurrency)
 
+        async def propose_split(chunk):
+            """Halve on a count mismatch instead of losing the batch.
+
+            A reply with the wrong number of items -- truncation, or the model
+            collapsing `get_news(category)` and `get_news(category,country)`
+            into one because they share a name -- used to discard all twelve
+            entries as no-proposal. Splitting isolates the offender.
+            """
+            got = await propose(s, chunk)
+            if got:
+                return got
+            if len(chunk) == 1:
+                return {}
+            mid = len(chunk) // 2
+            left = await propose_split(chunk[:mid])
+            right = await propose_split(chunk[mid:])
+            return {**left, **right}
+
         async def run(chunk):
             async with sem:
-                got = await propose(s, chunk)
+                got = await propose_split(chunk)
             out = []
             for name, fn, n in chunk:
                 fields = got.get(name)
@@ -261,8 +300,9 @@ async def main_async(args):
             kept.extend(res)
 
     with args.out.open("a", buffering=1) as fh:
-        for name, _fn, n, fields in kept:
-            fh.write(json.dumps({"tool": name, "calls": n, "felter": fields},
+        for sig, fn, n, fields in kept:
+            fh.write(json.dumps({"tool": fn.get("name"), "signature": sig,
+                                 "calls": n, "felter": fields},
                                 ensure_ascii=False) + "\n")
     print(f"\nproposed for {len(kept):,}/{len(todo):,} tools", flush=True)
     if reasons:

@@ -321,7 +321,11 @@ def main():
                      "n_turns": len(da.get("conversations", [])),
                      "tool_names": tn,
                      "tool_signatures": tool_signatures(da),
-                     "called_signatures": called_signatures(da)},
+                     "called_signatures": called_signatures(da),
+                     # which payload fields each generated answer was written
+                     # to cite; the eval scores precision against these rather
+                     # than re-deriving them from the reference text
+                     "answer_relevance": r.get("answer_relevance") or []},
         })
     counts = {s: len(v) for s, v in data.items()}
     print("splits:", counts, f"(dropped {dropped:,} catalogue-only rows)",

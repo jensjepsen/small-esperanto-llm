@@ -678,7 +678,7 @@ async def main_async(args):
                      "resultat": res, "svar": ans, "q": question[:200]},
                     ensure_ascii=False) + "\n")
                 continue
-            accepted[k] = (res, ans)
+            accepted[k] = (res, ans, rel)
 
     kept = sum(1 for i, d in jobs
                if cache_key(d[1], d[3], d[2]) in accepted)
@@ -697,12 +697,20 @@ async def main_async(args):
         got = have.get(cache_key(call, question, spec))
         if not got:
             continue
-        res, ans = got
+        res, ans = got[0], got[1]
+        rel = got[2] if len(got) > 2 else []
         msgs = rows[i]["messages"]
         msgs[call_at + 1:call_at + 1] = [
             {"role": "tool_result",
              "content": json.dumps(res, ensure_ascii=False)},
             {"role": "assistant", "content": ans}]
+        # Carry the relevance label onto the ROW. Without it the eval must
+        # recover "which fields did the question ask for" by string-matching
+        # the reference reply against payload values -- a proxy that misses a
+        # paraphrased field and over-matches a value two fields share. Free
+        # here and exact; deriving it later is neither.
+        rows[i].setdefault("answer_relevance", []).append(
+            {"at": call_at + 2, "fields": rel})
         attached += 1
     print(f"attached to {attached:,} rows", flush=True)
 

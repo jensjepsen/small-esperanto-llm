@@ -1630,10 +1630,23 @@ def majority_return_keys(rows, share=0.90):
             for k in keys:
                 seen[k] += 1
     keep = set()
+    by_group = _dd(list)
     for k, n in seen.items():
         tool, sig, _ = k.split(RETURN_SEP, 2)
+        by_group[(tool, sig)].append((n, k))
         if n / max(1, total[(tool, sig)]) >= share:
             keep.add(k)
+    # NEVER let a signature we have observed end up with nothing. A group whose
+    # fields are all below the threshold used to lose its whole contract, and
+    # the missing-returns pass then INVENTED one from the description -- 2,005
+    # observed payloads were scored against a guess and read F1 25.4% where
+    # observation-derived contracts read 97.4%. Falling back to the group's
+    # most frequent fields keeps real evidence in preference to a proposal.
+    for grp, items in by_group.items():
+        if any(k in keep for _n, k in items):
+            continue
+        best = max(n for n, _k in items)
+        keep.update(k for n, k in items if n == best)
     return keep, seen, total
 
 

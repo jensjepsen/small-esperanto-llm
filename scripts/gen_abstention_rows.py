@@ -129,6 +129,12 @@ def gate_a(answer, removed_value, payload, question, field=""):
         return "contains-a-call"
     if not DECLINE.search(a):
         return "does-not-decline"
+    # Schema identifiers are not Danish prose. "Jeg kan ikke oprette en opgave,
+    # da jeg ikke har et task_id" names the field instead of the thing, which
+    # is the same register slip as talking about the tool call.
+    for key in [field] + list(payload):
+        if key and len(key) > 3 and re.search(rf"\b{re.escape(key)}\b", a, re.I):
+            return f"names-a-schema-field:{key}"
     # The value was deleted from the payload, so any appearance is invented.
     if removed_value is not None and _cited(a, removed_value) \
             and str(removed_value) not in question:
@@ -335,10 +341,15 @@ def load_local(path, limit, seed=0):
     return out
 
 
-def load_source(repo, split, limit):
-    """Rows that already carry a call, its result, and a catalogue."""
-    from datasets import load_dataset
-    ds = load_dataset(repo, "sft", split=split)
+def _from_rows(ds, limit, seed=0):
+    """(catalogue, question, call, payload) from rendered SFT rows.
+
+    Type B needs a catalogue with distractors in it, and that only exists after
+    rendering -- raw glaive rows mostly offer a single tool, which is why the
+    local-corpus path rejected 60 of 60 as catalogue-too-small.
+    """
+    ds = list(ds)
+    random.Random(seed).shuffle(ds)
     out = []
     for r in ds:
         ms = r["messages"]
@@ -366,11 +377,22 @@ def load_source(repo, split, limit):
     return out
 
 
+def load_source(repo, split, limit, seed=0):
+    from datasets import load_dataset
+    return _from_rows(load_dataset(repo, "sft", split=split), limit, seed)
+
+
+def load_rendered(path, limit, seed=0):
+    return _from_rows((json.loads(l) for l in Path(path).open() if l.strip()),
+                      limit, seed)
+
+
 async def main_async(args):
     import aiohttp
     check_controls()
-    src = (load_local(args.local, args.n * 4, args.seed) if args.local
-           else load_source(args.repo, args.split, args.n * 2))
+    src = (load_rendered(args.rows, args.n * 6, args.seed) if args.rows
+           else load_local(args.local, args.n * 4, args.seed) if args.local
+           else load_source(args.repo, args.split, args.n * 2, args.seed))
     print(f"{len(src):,} source rows", flush=True)
     rng = random.Random(args.seed)
     rows, reasons = [], Counter()
@@ -416,23 +438,6 @@ async def main_async(args):
                     reasons[f"a:{why}"] += 1
                     continue
                 op, w0 = opening(ans), opening(ans, 1)
-                if seen_open_a[op] >= max(2, int(0.10 * max(8, args.n))):
-                    reasons["a:opening-over-represented"] += 1
-                    continue
-                if seen_first_a[w0] >= max(3, int(0.40 * max(8, args.n))):
-                    reasons["a:first-word-over-represented"] += 1
-                    continue
-                # Numbers vary between otherwise identical rows ("500 USD"
-                # vs "1000 USD"), so keying on the question text let near
-                # duplicates through. The shape is the tool and the field.
-                sig = (call.get("name"), field,
-                       re.sub(r"\d+", "#", q.strip().lower())[:80])
-                if sig in seen_rows:
-                    reasons["a:duplicate-row"] += 1
-                    continue
-                seen_rows.add(sig)
-                seen_open_a[op] += 1
-                seen_first_a[w0] += 1
                 rows.append({"kind": "absent-field", "removed": field,
                              "messages": [
                     {"role": "user",
@@ -479,17 +484,6 @@ async def main_async(args):
                 # accepted so far rather than from an enumeration of phrases we
                 # happen to dislike.
                 op, w0 = opening(ans), opening(ans, 1)
-                cap = max(2, int(0.10 * max(8, args.n)))
-                if seen_open[op] >= cap:
-                    reasons["b:opening-over-represented"] += 1
-                    continue
-                # Also cap the first WORD. Trigram variety hid the fact that 23
-                # of 31 answers began "Jeg" -- varied phrasing, one voice.
-                if seen_first[w0] >= max(3, int(0.40 * max(8, args.n))):
-                    reasons["b:first-word-over-represented"] += 1
-                    continue
-                seen_open[op] += 1
-                seen_first[w0] += 1
                 rows.append({"kind": "no-capable-tool", "messages": [
                     {"role": "user",
                      "content": f"{CATALOG_LABEL}:\n"
@@ -506,6 +500,38 @@ async def main_async(args):
         await asyncio.gather(
             *[make_a_batch(b) for b in abatches],
             *[make_b_batch(b) for b in batches])
+
+    # SUBSAMPLE rather than reject inline. An inline cap proportional to rows
+    # already accepted cannot bootstrap -- it refuses everything until it has
+    # something to be a fraction of -- and a cap proportional to the TARGET
+    # stops binding at scale (200 on 1,040 rows let three openings take 58%).
+    # Generating first and selecting after wastes no paid generation and gives
+    # an exact distribution.
+    def enforce(rs, share=0.10):
+        """Cap each opening at a depth D, chosen so no opening exceeds `share`.
+
+        Neither obvious cap works: a fraction of the INPUT overshoots (0.10 of
+        1,580 candidates is 17% of the 940 that survive) and a fraction of
+        accepted-so-far cannot bootstrap. Round-robin alone is not enough
+        either -- take a prefix of it and the later cycles contain only the
+        big groups. Solving for the depth is exact: keep at most D from every
+        group, with D the largest value whose result still satisfies the share.
+        """
+        groups = {}
+        for r in rs:
+            groups.setdefault(opening(r["messages"][-1]["content"]), []).append(r)
+        sizes = sorted((len(v) for v in groups.values()), reverse=True)
+        best = 1
+        for d in range(1, max(sizes) + 1):
+            total = sum(min(n, d) for n in sizes)
+            if min(sizes[0], d) / max(1, total) <= share:
+                best = d
+        return [r for v in groups.values() for r in v[:best]]
+
+    before = len(rows)
+    rows = [r for k in {x["kind"] for x in rows}
+            for r in enforce([x for x in rows if x["kind"] == k])]
+    print(f"opening cap: {before:,} -> {len(rows):,} rows", flush=True)
 
     kinds = Counter(r["kind"] for r in rows)
     print(f"\nkept {len(rows):,}  ({dict(kinds)})", flush=True)
@@ -539,6 +565,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="jensjepsen/danish-tool-dialogues-v5")
     ap.add_argument("--split", default="train")
+    ap.add_argument("--rows", type=Path, default=None,
+                    help="a rendered sft jsonl: catalogues carry distractors, "
+                         "which type B needs")
     ap.add_argument("--local", type=Path, default=None,
                     help="a translated.jsonl: use OBSERVED payloads instead of "
                          "the published (partly generated) ones")
