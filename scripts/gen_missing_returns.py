@@ -304,6 +304,44 @@ async def main_async(args):
             fh.write(json.dumps({"tool": fn.get("name"), "signature": sig,
                                  "calls": n, "felter": fields},
                                 ensure_ascii=False) + "\n")
+    if args.merge_into:
+        # MERGING IS PART OF THE PASS, not a shell step. Proposals must never
+        # shadow observation-derived contracts: a signature whose fields fell
+        # below the majority threshold still has real evidence behind it, and
+        # replacing that with a guess scored 2,005 observed payloads at F1 25.4%
+        # where observation-derived contracts score 97.4%.
+        from translate_toolmind_da import _return_key, RETURN_SEP
+        have, recs = set(), []
+        if args.merge_into.exists():
+            for line in args.merge_into.open():
+                if line.strip():
+                    r = json.loads(line)
+                    have.add(r["k"])
+                    recs.append(r)
+        # observed = signatures with at least one OBSERVATION-derived key.
+        # Presence alone would include proposals merged on an earlier run.
+        observed = {tuple(r["k"].split(RETURN_SEP)[:2]) for r in recs
+                    if r.get("src", "observed") == "observed"}
+        added = skipped = 0
+        with args.merge_into.open("a", buffering=1) as fh:
+            for sig, fn, _n, fields in kept:
+                name = sig.split("(")[0]
+                params = sig[len(name) + 1:-1]
+                if (name, params) in observed:
+                    skipped += 1        # we have real evidence for this one
+                    continue
+                for f in fields:
+                    k = _return_key(name, f["felt"], params)
+                    if k in have:
+                        continue
+                    have.add(k)
+                    added += 1
+                    fh.write(json.dumps({"k": k, "da": f["beskrivelse"],
+                                         "src": "proposed"},
+                                        ensure_ascii=False) + "\n")
+        print(f"merged into {args.merge_into}: +{added:,} keys, "
+              f"{skipped:,} signatures skipped as already observed", flush=True)
+
     print(f"\nproposed for {len(kept):,}/{len(todo):,} tools", flush=True)
     if reasons:
         print("rejected:")
@@ -329,6 +367,9 @@ def main():
     ap.add_argument("--batch", type=int, default=12)
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--show", type=int, default=12)
+    ap.add_argument("--merge-into", type=Path, default=None,
+                    help="returns_map.jsonl to append accepted proposals to, "
+                         "skipping signatures that already have observed keys")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     asyncio.run(main_async(args))

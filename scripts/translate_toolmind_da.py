@@ -1466,7 +1466,12 @@ async def build_value_map(session, rows, cache_path, batch=40, concurrency=24):
             async with lock:
                 for k, da in zip(chunk, got):
                     have[k] = da
-                    fh.write(json.dumps({"k": k, "da": da},
+                    # PROVENANCE. Without it, "has this signature been
+                    # observed?" degrades to "is this key present?", which is
+                    # true of proposals too the moment they are merged -- so the
+                    # rule that keeps guesses from shadowing evidence cannot be
+                    # checked, only assumed.
+                    fh.write(json.dumps({"k": k, "da": da, "src": "observed"},
                                         ensure_ascii=False) + "\n")
         await asyncio.gather(*[one(c) for c in chunks])
     print(f"value map: {len(have):,} entries", flush=True)
@@ -1724,7 +1729,12 @@ async def build_returns_map(session, rows, cache_path, batch=40,
             async with lock:
                 for k, da in pairs_out:
                     have[k] = da
-                    fh.write(json.dumps({"k": k, "da": da},
+                    # PROVENANCE. Without it, "has this signature been
+                    # observed?" degrades to "is this key present?", which is
+                    # true of proposals too the moment they are merged -- so the
+                    # rule that keeps guesses from shadowing evidence cannot be
+                    # checked, only assumed.
+                    fh.write(json.dumps({"k": k, "da": da, "src": "observed"},
                                         ensure_ascii=False) + "\n")
         await asyncio.gather(*[one(c) for c in chunks])
     print(f"returns map: {len(have):,} entries", flush=True)
