@@ -76,13 +76,39 @@ LANGUAGE_TOOL = re.compile(r"translat|language|lang_", re.I)
 DROP_REASONING = [False]
 
 
+# A <think> block inside an ANSWER turn. segments() classifies a turn as
+# "think" when it PRECEDES A CALL, which is not the same thing as "is
+# reasoning": a final answer that opens with <think> is classed "response" and
+# was translated in full. 522 such blocks survive drop_reasoning, 2.9M
+# characters -- ~9% of the corpus's translatable text -- bought and then thrown
+# away, because the renderer strips reasoning at the other end.
+THINK_BLOCK = re.compile(
+    r"<\s*(?:think|thought|t\u00e6nk\w*|tanke\w*)\s*>"
+    r".*?"
+    r"<\s*/\s*(?:think|thought|t\u00e6nk\w*|tanke\w*)\s*>",
+    re.I | re.S)
+
+
 def drop_reasoning(row):
-    """Blank assistant prose that precedes a tool call, in place."""
+    """Blank assistant prose that precedes a tool call, in place, and remove
+    <think> blocks from answer turns.
+
+    Only CLOSED blocks are removed. One row in 19,501 opens a block and never
+    closes it, and stripping to end-of-string there would delete the answer
+    with it.
+    """
     n = 0
     for m in row.get("conversations", []) or []:
-        if m.get("role") == "assistant" and m.get("tool_calls") \
-                and (m.get("content") or "").strip():
+        if m.get("role") != "assistant":
+            continue
+        body = m.get("content") or ""
+        if m.get("tool_calls") and body.strip():
             m["content"] = ""
+            n += 1
+            continue
+        stripped = THINK_BLOCK.sub("", body)
+        if stripped != body:
+            m["content"] = stripped.strip()
             n += 1
     return n
 
@@ -371,15 +397,15 @@ Du får en nummereret liste af tekststykker. Oversæt HVER linje til naturligt
 dansk og svar med præcis lige så mange linjer i samme rækkefølge.
 
 ABSOLUTTE KRAV:
-- Oversæt ALDRIG de navne, der står under "BEVAR UÆNDRET". De skal stå
-  ordret på engelsk i din oversættelse, også midt i en dansk sætning.
-- MEN skriv dem KUN de steder, hvor de allerede står i den engelske tekst.
-  Står der almindelig engelsk prosa -- "an annual interest rate of 5%", "my
-  user id", "the product with code X123" -- skal den oversættes til
-  almindeligt dansk: "en årlig rentesats på 5%", "mit bruger-id", "produktet
-  med koden X123". ERSTAT ALDRIG en almindelig ordforbindelse med
-  parameternavnet. "en årlig interest_rate" og "mit user_id" er FORKERT --
-  ingen bruger taler sådan.
+- STÅR et af navnene under "BEVAR UÆNDRET" i den engelske tekst, skal det stå
+  ordret på engelsk i din oversættelse -- også midt i en dansk sætning.
+  Oversæt dem aldrig.
+- STÅR det der IKKE, må du heller aldrig skrive det. Almindelig engelsk prosa
+  -- "an annual interest rate of 5%", "my user id", "the product with code
+  X123" -- bliver til almindeligt dansk: "en årlig rentesats på 5%", "mit
+  bruger-id", "produktet med koden X123". Skriv ALDRIG parameternavnet i
+  stedet for ordene: "en årlig interest_rate" og "mit user_id" er FORKERT,
+  for ingen bruger taler sådan.
 - Tal, datoer, koder, valutaer, URL'er og filstier skrives uændret.
 - Indhold som brugeren selv har valgt -- en titel, en note, en besked -- SKAL
   oversættes til dansk. "Team Meeting Agenda" bliver til "Dagsorden til
@@ -1051,44 +1077,88 @@ def gate(orig, new, value_map=None, spec_map=None):
     # translations, and an unrestricted check flagged 7/10 rows on exactly
     # those. Requiring an underscore, dot, digit or internal capital keeps the
     # check on tokens that can never be prose.
+    # NARROWED TO CHARACTER-DEPENDENT VALUES. This used to enforce parameter
+    # identifiers too, which now contradicts identifier-in-danish: that rule
+    # wants them GONE from Danish, and this one called their disappearance a
+    # failure. Measured after unpinning, it rose 24 -> 35, i.e. it was
+    # penalising the behaviour we had just asked for.
+    #
+    # What remains is the real case: "racecar" must survive as "racecar" or the
+    # palindrome tool's answer contradicts the question, and a password must
+    # come back verbatim. No IDENT_STRICT filter here -- these are values, and
+    # `racecar` carries no underscore or digit to qualify.
+    _cdv = {x for x in _char_dependent_values(orig)
+            if isinstance(x, str)}
     lost = 0
     for (_p, kind, txt), (_p2, _k2, new_txt) in zip(o_segs, n_segs):
-        if kind not in ("think", "response", "user", "tool_desc", "param_desc"):
+        if kind not in ("response", "user", "tool_desc", "param_desc"):
             continue
-        for tok in pin_o:
-            if not IDENT_STRICT.match(tok):
-                continue
-            if tok in txt and tok not in new_txt:
+        for tok in _cdv:
+            if len(tok) > 2 and tok in txt and tok not in new_txt:
                 lost += 1
     if lost:
         bad.append(f"dnt-token-lost({lost})")
 
-    # THE REVERSE OF dnt-token-lost, and the forward check is structurally
-    # blind to it: a translation that ADDS an identifier loses nothing.
+    # NO PARAMETER IDENTIFIER MAY APPEAR IN DANISH TEXT -- whether the source
+    # had it or not. A user who says "interest_rate" hands the model the schema
+    # mapping in the prompt, so it never has to read the description, and no
+    # Danish speaker talks that way. Provenance does not change either fact, so
+    # the check does not ask about it.
     #
+    # This began as `identifier-injected`, the mirror of dnt-token-lost:
     # "BEVAR UÆNDRET ... også midt i en dansk sætning" was read as an
-    # obligation to INSERT the name. The source says "an annual interest rate
-    # of 5%" and the translation says "en årlig interest_rate på 5%"; "my user
-    # id is 12345" becomes "mit user_id er 12345". Measured on v6: 371 rows
-    # (4.27% of those with an underscored key) inject an identifier into a USER
-    # turn, 107 into an assistant turn, over 114 distinct keys -- and only 1 of
-    # 163 sampled had the identifier in the English at all.
+    # obligation to INSERT the name, so "an annual interest rate of 5%" became
+    # "en årlig interest_rate på 5%" and "my user id is 12345" became "mit
+    # user_id er 12345". Rewording the instruction cut that from 634 rows to
+    # 393, but 389 of the 393 were rows that had just been re-translated -- the
+    # model kept resolving the conflict in favour of "these must appear
+    # verbatim". The instruction cannot be argued with; the identifier is
+    # simply no longer pinned (see build_request), and this check no longer
+    # tolerates it in either direction.
     #
-    # Worse than the failure it mirrors. A user who says "interest_rate" hands
-    # the model the schema mapping in the prompt, so it never has to read the
-    # description -- which also makes symbolizing the keys pointless while this
-    # is uncorrected.
-    injected = 0
-    for (_p, kind, txt), (_p2, _k2, new_txt) in zip(o_segs, n_segs):
-        if kind not in ("think", "response", "user", "tool_desc", "param_desc"):
+    # Measured on v6: 1,126 rows (5.78%) -- 389 injected, 736 where glaive's
+    # English wrote the identifier itself and we faithfully carried it over.
+    # Those 736 are the deliberate part: the corpus is meant to teach natural
+    # Danish tool use, not to be a faithful translation of unnatural English.
+    #
+    # Scoped to the row's OWN tool and parameter names, not to every
+    # identifier-shaped token: values like `john_doe123`, `sales_data` and
+    # `image_link` are legitimate and a wider rule flags 232 rows of them.
+    # dnt-token-lost stays as a tripwire but should now read near zero -- its
+    # `firma_navn` failure was a <think>-block artifact and we no longer
+    # translate reasoning.
+    # PARAMETER KEYS ONLY. Scoping this to _pinned_values() was too wide and
+    # the measured breakdown says so: of 703 rows flagged that way, 188 were
+    # character-dependent VALUES (`password123` appears 143 times -- a
+    # generated password that MUST survive verbatim or the reply contradicts
+    # the tool result) and 506 were tool NAMES. Tool names turned out to sit in
+    # the model's own answer, not in prompts -- 982 mentions in `response`
+    # against 2 in `user`, and that one user row is from the deflection
+    # tail-block the pedagogy filter already drops. Ugly Danish, but nothing
+    # leaks, so it is not this check's business.
+    #
+    # The actual defect is 52 rows once those two populations are excluded.
+    param_keys = set()
+    for t in (orig.get("tools") or []):
+        f = t.get("function") or {}
+        param_keys.update(((f.get("parameters") or {}).get("properties")) or {})
+    param_keys = {k for k in param_keys if isinstance(k, str)
+                  and IDENT_STRICT.match(k) and k not in _cdv}
+
+    # Text inside a <think> block is invisible to training -- the renderer
+    # removes it -- so rejecting a row for it discards a usable conversation
+    # over content the model never sees. Measured: 93 of the 96 remaining
+    # mentions were inside think blocks.
+    in_da = 0
+    for (_p, kind, _txt), (_p2, _k2, new_txt) in zip(o_segs, n_segs):
+        if kind not in ("response", "user", "tool_desc", "param_desc"):
             continue
-        for tok in pin_o:
-            if not IDENT_STRICT.match(tok):
-                continue
-            if tok not in txt and tok in new_txt:
-                injected += 1
-    if injected:
-        bad.append(f"identifier-injected({injected})")
+        visible = THINK_BLOCK.sub("", new_txt or "")
+        for tok in param_keys:
+            if tok in visible:
+                in_da += 1
+    if in_da:
+        bad.append(f"identifier-in-danish({in_da})")
 
     # CONTRACT COHERENCE. Enum values may be translated, but the spec and every
     # invocation must move together: a call carrying "cirkel" is valid only if
@@ -1927,7 +1997,24 @@ def attach_returns_to_row(row, rmap, symmap=None):
 
 
 def build_request(row, segs, value_map=None, spec_map=None):
-    pinned = sorted(x for x in _pinned_values(row) if x)
+    # PIN ONLY CHARACTER-DEPENDENT VALUES, never parameter identifiers.
+    #
+    # The list's whole job is prose: `segments()` and `value_segments()`
+    # already withhold pinned values from translation structurally, so the
+    # instruction only ever mattered for a token appearing INSIDE a prose
+    # segment. Identifiers should not appear there at all -- and listing them
+    # under "these must appear verbatim, also mid-sentence" is what made the
+    # model write "en årlig interest_rate" where the source said "an annual
+    # interest rate". Two attempts to reword the instruction failed (634 -> 393
+    # rows, with 389 of the 393 freshly re-translated), so the temptation is
+    # removed instead of argued with.
+    #
+    # Character-dependent values stay: the user asks whether "racecar" is a
+    # palindrome, and if that becomes "racerbil" the call and the answer
+    # disagree about what was asked. Their literal characters are the task.
+    # ~33 tokens rather than 687.
+    text = "\n".join(t for _p, _k, t in segs)
+    pinned = sorted(x for x in _char_dependent_values(row) if x and x in text)
     lines = "\n".join(f"{i+1}. [{k}] {t}" for i, (_p, k, t) in enumerate(segs))
     gloss = _glossary(row, value_map, spec_map)
     head = f"BEVAR UÆNDRET (skriv disse ordret på engelsk):\n{', '.join(pinned)}\n\n"
@@ -2017,6 +2104,10 @@ async def main():
                     help="keep only rows whose calls use an enum-constrained "
                          "argument -- 3.3% of values, so they need selecting "
                          "for on purpose or the enum path never gets smoked")
+    ap.add_argument("--retry-preprocess", action="store_true",
+                    help="evict cached rows whose SOURCE would be preprocessed\n"
+                         "differently now (e.g. drop_reasoning learned to strip\n"
+                         "<think> blocks from answer turns) and re-translate them.")
     ap.add_argument("--retry-failed", action="store_true",
                     help="gate the cache, DROP the rows that fail, then run "
                          "normally so they are re-translated. Failures are "
@@ -2164,13 +2255,68 @@ async def main():
                     done[p["idx"]] = p
         print(f"resume: {len(done):,} rows already in {cache}", flush=True)
 
+    if args.retry_preprocess and args.drop_reasoning and done:
+        # A cached translation was produced under whatever preprocessing was in
+        # force when it was made. When that changes the cache silently keeps
+        # text the pipeline would no longer send -- here, 522 answer turns
+        # carrying a <think> block, 2.9M characters, bought and then discarded
+        # by the renderer. Evicting them re-translates under the current rules,
+        # which is cheaper the second time because the block is gone before the
+        # request is built.
+        #
+        # Detected by re-running the preprocessor on the cached source and
+        # asking whether it changes anything, so this flag stays correct as
+        # drop_reasoning grows rather than encoding what it does today.
+        stale = [i for i, p_ in done.items()
+                 if drop_reasoning(json.loads(json.dumps(p_["orig"])))]
+        if stale:
+            for i in stale:
+                done.pop(i, None)
+            with cache.open("w") as f:
+                for i in sorted(done):
+                    f.write(json.dumps(done[i], ensure_ascii=False) + "\n")
+            print(f"retry-preprocess: evicted {len(stale):,} rows whose source "
+                  f"preprocessing has changed since they were cached; "
+                  f"{len(done):,} kept", flush=True)
+
     if args.retry_failed and done:
-        keep, drop = {}, 0
+        # Verdicts are PERSISTED for exactly this, and this flag used to ignore
+        # them: it re-derived every verdict with a serial `gate()` loop, ~10
+        # minutes of single-threaded langdetect over the corpus. A measured
+        # repair run spent 20 minutes gating around 2 minutes of actual
+        # re-translation while gate_verdicts.jsonl sat unread on disk.
+        #
+        # Reuse them when they are at least as new as the cache -- if the cache
+        # has moved since, they describe rows that no longer exist. Falling
+        # back, gate in PARALLEL, which the main path has always done.
+        vp = args.out / "gate_verdicts.jsonl"
+        verdicts, ungated = {}, 0
+        if vp.exists() and vp.stat().st_mtime >= cache.stat().st_mtime:
+            for line in vp.open():
+                if line.strip():
+                    v = json.loads(line)
+                    verdicts[v["idx"]] = v["bad"]
+            print(f"retry-failed: reusing {len(verdicts):,} persisted verdicts "
+                  f"from {vp.name}", flush=True)
+        else:
+            if vp.exists():
+                print("retry-failed: verdicts are older than the cache, "
+                      "re-gating in parallel", flush=True)
+            items = sorted(done.values(), key=lambda p: p["idx"])
+            verdicts = dict(gate_all(items, None, None, workers=4))
+        keep = {}
         for i, p in done.items():
-            if gate(p["orig"], p["da"]):
-                drop += 1
-            else:
-                keep[i] = p
+            v = verdicts.get(i)
+            if v is None:
+                ungated += 1            # never judged: retry rather than trust
+                continue
+            if v:
+                continue                # failed: retry
+            keep[i] = p
+        drop = len(done) - len(keep)
+        if ungated:
+            print(f"retry-failed: {ungated:,} rows carried no verdict and are "
+                  f"being retried too", flush=True)
         if drop:
             with cache.open("w") as f:
                 for i in sorted(keep):
@@ -2434,16 +2580,23 @@ async def main():
         # identifier inside a conversation segment, the control corrupted
         # nothing and PASSED, which is exactly what happened on the 19,347-row
         # run -- the dnt-token-lost count was real but unverifiable.
+        # A CHARACTER-DEPENDENT VALUE, since the check no longer covers
+        # parameter identifiers. "racecar" translated to "racerbil" makes the
+        # palindrome tool's answer contradict the question it was asked.
         dnt_ok = {"tools": [{"function": {
-            "name": "get_stock_price", "description": "Hent aktiekurs",
-            "parameters": {"properties": {"company_name": {"type": "string"}}}}}],
+            "name": "check_palindrome",
+            "description": "Tjek om en tekst er et palindrom",
+            "parameters": {"properties": {"text": {"type": "string"}}}}}],
             "conversations": [
-                {"role": "user", "content": "Hvad er kursen?"},
+                {"role": "user", "content": "Er racecar et palindrom?"},
+                {"role": "assistant", "content": "",
+                 "tool_calls": [{"function": {"name": "check_palindrome",
+                                              "arguments": {"text": "racecar"}}}]},
                 {"role": "assistant",
-                 "content": "Jeg bruger parameteren company_name til opslaget."}]}
+                 "content": "Ja, racecar er et palindrom."}]}
         dnt_bad = json.loads(json.dumps(dnt_ok))
-        dnt_bad["conversations"][1]["content"] = (
-            "Jeg bruger parameteren firma_navn til opslaget.")
+        dnt_bad["conversations"][2]["content"] = (
+            "Ja, racerbil er et palindrom.")
         ctrl["identifier translated in prose"] = dnt_bad
         ctrl_base["identifier translated in prose"] = dnt_ok
 
@@ -2465,6 +2618,21 @@ async def main():
             "Jeg lånte 50000 til en årlig interest_rate på 5%.")
         ctrl["identifier injected into prose"] = inj_bad
         ctrl_base["identifier injected into prose"] = inj_ok
+
+        # The other half of the same rule, and the one a provenance-aware
+        # check would MISS: the English wrote the identifier itself, so
+        # carrying it into Danish is a faithful translation -- of a sentence no
+        # Danish speaker would utter. 736 of the 1,126 flagged rows are this
+        # case, so a control that only covers injection would leave the
+        # majority of the rule unverified.
+        pres_base = json.loads(json.dumps(inj_ok))
+        pres_base["conversations"][0]["content"] = (
+            "I borrowed 50000 at an annual interest_rate of 5%.")
+        pres_bad = json.loads(json.dumps(inj_ok))
+        pres_bad["conversations"][0]["content"] = (
+            "Jeg lånte 50000 til en årlig interest_rate på 5%.")
+        ctrl["identifier preserved from english prose"] = pres_bad
+        ctrl_base["identifier preserved from english prose"] = pres_base
 
         # SYNTHETIC, not sampled: enum-constrained arguments are rare (3.3% of
         # values), so a control drawn from the batch silently disappears on
@@ -2544,7 +2712,7 @@ async def main():
         # That happened twice: the sampled value-chain control found no
         # matching row on a rerun, and an edit deleted the prose-echo control
         # outright. Both were caught only by diffing against an earlier run.
-        EXPECTED_CONTROLS = 9
+        EXPECTED_CONTROLS = 10
         if len(ctrl) != EXPECTED_CONTROLS:
             missing = EXPECTED_CONTROLS - len(ctrl)
             print(f"\n*** {missing} PLANTED CONTROL(S) MISSING: built "

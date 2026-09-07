@@ -237,13 +237,17 @@ def main():
                          "card, which de-registers any config it does not know "
                          "about -- a separate push of `abstention` silently "
                          "disappeared the next time the main configs went up.")
+    ap.add_argument("--keep-defective", action="store_true",
+                    help="skip the pedagogy filters; reproduces v6 and "
+                         "earlier, which shipped without them.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from gen_tool_answer_turns import cache_key, dangling  # noqa: E402
-    from render_toolmind_sft import to_messages, build_tool_pool  # noqa: E402
+    from render_toolmind_sft import (to_messages, build_tool_pool,  # noqa: E402
+                                     pedagogy_reject)
 
     recs = [json.loads(l) for l in (args.src / "translated.jsonl").open()
             if l.strip()]
@@ -256,6 +260,25 @@ def main():
     fails = Counter(b.split("(")[0] for r in rejected
                     for b in verdicts.get(r["idx"], []))
     print(f"clean {len(clean):,}  rejected {len(rejected):,}", flush=True)
+
+    # THIS SCRIPT RE-RENDERS; it does not consume stage 4's output. So the
+    # pedagogy filters have to run here too, or the corpus that ships differs
+    # from the corpus that was inspected -- the filters would apply to
+    # sft.jsonl and to nothing that reaches the Hub. Imported from the
+    # renderer rather than restated, so the two cannot drift.
+    pool_recs = list(clean)             # pool built BEFORE filtering
+    if not args.keep_defective:
+        before, why = len(clean), Counter()
+        kept = []
+        for r in clean:
+            reason = pedagogy_reject(r)
+            if reason:
+                why[reason] += 1
+            else:
+                kept.append(r)
+        clean = kept
+        print(f"pedagogy filters: {len(clean):,} of {before:,} kept, "
+              f"dropped {dict(why)}", flush=True)
 
     names = sorted({n for r in clean for n in tool_names(r["da"]) if n})
     heldout = {n for n in names if bucket(n) < args.heldout_pct}
@@ -272,7 +295,8 @@ def main():
             rec = json.loads(line)
             answers[rec["k"]] = (rec["resultat"], rec["svar"])
         print(f"answer cache: {len(answers):,} generated turns", flush=True)
-    pool = build_tool_pool([r["da"] for r in clean]) if args.catalogue_size else []
+    pool = (build_tool_pool([r["da"] for r in pool_recs])
+            if args.catalogue_size else [])
     if args.catalogue_size:
         print(f"distractor pool: {len(pool):,} non-held-out tools; catalogues "
               f"shuffled and padded to {args.catalogue_size}", flush=True)
@@ -296,7 +320,9 @@ def main():
             split = "eval_seen_tools"
         else:
             split = "train"
-        msgs = to_messages(da, pool, _i, args.catalogue_size,
+        # r["idx"], not _i: the seed must be the row's source identity,
+        # or filtering redraws every surviving row's catalogue.
+        msgs = to_messages(da, pool, r["idx"], args.catalogue_size,
                            args.catalogue_min,
                            reasoning=not args.no_reasoning)
         if msgs is None:

@@ -67,7 +67,7 @@ checks are all green in the failure modes below.
 
 | After | Check | Expect |
 |---|---|---|
-| 1 | `GATE: n/m clean` in the log | ~96%, and all 9 planted controls FAIL |
+| 1 | `GATE: n/m clean` in the log | ~99%, and all 10 planted controls FAIL |
 | 2,3 | `scripts/build_returns_groups.py` | declared-vs-present F1 ~97% (v5: 62%) |
 | 4 | `trainer check over 400 rows` | CLEAN |
 | 4 | `pedagogy filters:` line in the log | ~665 dropped; rendered corpus has 0 rows without a `tool_call` |
@@ -140,14 +140,43 @@ description, which also makes symbolizing keys pointless while it is
 uncorrected. The forward check (`dnt-token-lost`) is structurally blind to it:
 a translation that ADDS an identifier loses nothing.
 
-Fixed in three places: the prompt now says to keep pinned names only where
-they already occur; `identifier-injected` is a gate check with its own planted
-control; and `_pinned_names()` no longer pins ordinary-word parameter keys.
-That last one closed an instruction/enforcement mismatch -- 244 of 898 pinned
-tokens were ordinary English words (`title`, `location`, `year`, `subject`)
-that the gate never enforced, because `dnt-token-lost` filters to
-`IDENT_STRICT`. The list is now 687 tokens, of which the 33 non-identifiers
-are tool names and character-dependent values (`racecar`, `Hello, World!`).
+Fixed by removing the temptation rather than rewording the instruction.
+Rewording it twice took injections from 634 rows to 393 -- and 389 of those 393
+had just been re-translated, because the model kept resolving the conflict in
+favour of "these must appear verbatim". Not pinning the identifier at all took
+it to **0**. `build_request` now pins character-dependent values only (~33
+tokens, was 687): those genuinely belong in prose and must survive verbatim, or
+the palindrome tool's answer contradicts the question it was asked.
+
+`identifier-in-danish` flags a parameter key in Danish text whether or not the
+English had it, with two planted controls (injected and preserved) because 736
+of the 1,126 originally flagged rows were faithful translations of unnatural
+English. It is scoped to parameter KEYS: scoping it to every pinned token
+flagged 703 rows of which only 52 were real -- 188 were character-dependent
+values (`password123` 143 times, a generated password that must survive) and
+506 were tool names sitting in the model's own answer (982 mentions in
+`response` against 2 in `user`, so nothing leaks into a prompt).
+
+`dnt-token-lost` is narrowed to character-dependent values. Enforcing it on
+identifiers contradicted the rule above -- it called their disappearance a
+failure, and rose 24 -> 35 once they stopped being pinned, i.e. it penalised
+the behaviour we had just asked for.
+
+**A `<think>` block in an ANSWER turn was being translated and shipped.**
+`segments()` classifies a turn as "think" when it PRECEDES A CALL, which is not
+the same as "is reasoning": a final answer opening with `<think>` was classed
+`response`, translated in full, and reached training with only its tags peeled
+off. 522 such blocks, 2.9M characters -- ~9% of the corpus's translatable text
+-- bought and then discarded. `drop_reasoning()` now removes closed blocks
+(closed only: one row in 19,501 never closes its tag, and cutting to
+end-of-string there deletes the answer). Verified: 0 of the 522 answer turns
+are emptied by the strip.
+
+`--retry-preprocess` evicts cached rows whose SOURCE would be preprocessed
+differently now, detected by re-running the preprocessor and asking whether it
+changes anything -- so it stays correct as `drop_reasoning` grows. The fix
+belongs at translation, not in the renderer: patching it downstream would leave
+us paying for text we then delete.
 
 **Catalogue position carries no signal.** The source lists the called tool
 first in 98.4% of multi-tool rows, so "call tool #1" scored 99.2% right-tool —
