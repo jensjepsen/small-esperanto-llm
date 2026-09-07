@@ -48,3 +48,15 @@ uv run python scripts/generate_atomic_qa.py  --n 30000
 ```
 
 Format and shot-count variety come from the generators, not the source data — regenerating with the same source but a higher `--n` mostly produces new combinations.
+
+## Danish tool dialogues (`danish-tool-dialogues-vN`)
+
+Built from `Nanbeige/ToolMind` by a seven-stage pipeline. Run order, acceptance
+checks per stage, cost breakdown and the failure modes that shaped the design
+are in [`scripts/TOOLMIND_PIPELINE.md`](scripts/TOOLMIND_PIPELINE.md).
+
+Two things about it are load-bearing and easy to undo by accident: a tool NAME
+is not a function (379 of 875 names cover several parameter schemas, so
+everything keys on `(name, signature)`), and answers are gated on precision
+rather than only on grounding (requiring "cites some payload value" makes
+reciting the whole payload optimal, which is what 43% of v5's answers did).
