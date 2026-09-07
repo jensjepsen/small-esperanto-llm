@@ -180,10 +180,11 @@ drawn per row.
   `danish-tool-dialogues-v6` still carries all 665 rows — 593 of them in
   `sft:train` at indices 17004..17666, plus 22/722 in `eval_seen_tools` and
   13/779 in `eval_unseen_tools`. `abstention` is clean. v40 trains on them.
-- Filtering shifts positional indices, and `make_catalogue` seeds its RNG on
-  the row's position, so a filtered rebuild reshuffles every catalogue rather
-  than only removing rows. Seeding on the stable `idx` instead would make the
-  filters order-independent; not changed here to avoid churn mid-run.
+- v6 and earlier were rendered with `make_catalogue` seeded on the row's
+  POSITION, so their catalogues cannot be reproduced by the current code. A
+  v7 rebuild redraws every catalogue once, on the stable source `idx`. That is
+  a one-time break, and it is the last one: after it, dropping rows leaves
+  every survivor byte-identical (verified at 100.000% over 14,535 rows).
 - 25 rows still ship a reasoning trace as the answer and 24 carry LaTeX
   residue (`\text{` → TAB + `ext{`, `\boxed` → BS + `oxed`), a 0.13% body-rate
   background the batch filters do not reach.

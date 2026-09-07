@@ -126,7 +126,12 @@ def is_heldout_tool(name: str) -> bool:
 
 
 def build_tool_pool(rows) -> list[dict]:
-    """Distinct non-held-out tool specs, for use as distractors."""
+    """Distinct non-held-out tool specs, for use as distractors.
+
+    Returned sorted by name. The caller's row ORDER must not reach the RNG:
+    `make_catalogue` shuffles this list, so an order that depends on which
+    rows were rendered makes every catalogue depend on it too.
+    """
     pool, seen = [], set()
     for r in rows:
         for t in r.get("tools", []) or []:
@@ -138,7 +143,7 @@ def build_tool_pool(rows) -> list[dict]:
                 continue
             seen.add(n)
             pool.append(f)
-    return pool
+    return sorted(pool, key=lambda f: f.get("name") or "")
 
 
 def make_catalogue(tools, pool, idx, target, rng_seed=0, minimum=2):
@@ -154,7 +159,15 @@ def make_catalogue(tools, pool, idx, target, rng_seed=0, minimum=2):
     The floor is the number of genuine tools: padding never removes a real
     option, and rows whose source catalogue is already larger keep it.
 
-    Deterministic in `idx` so a re-render reproduces the corpus exactly.
+    Deterministic in `idx`, which MUST be the row's stable source identity,
+    not its position in the list being rendered. Position was the first
+    version, and it made every catalogue depend on which OTHER rows survived:
+    adding the pedagogy filters redrew 98.5% of the surviving rows' catalogues
+    and changed 3,749 of their widths, because dropping 665 rows shifts every
+    later row's seed. That makes a filtered rebuild un-A/B-able against its
+    predecessor -- any metric move mixes "665 rows removed" with "18,500
+    catalogues redrawn". Keyed on source identity, a filter removes rows and
+    leaves every survivor byte-identical.
     """
     names = {t.get("name") for t in tools}
     rng = random.Random(rng_seed * 1_000_003 + idx)
@@ -345,6 +358,14 @@ def main():
         recs = [r for r in recs if not verdicts.get(r.get("idx"), ["unknown"])]
         print(f"clean-only: {len(recs):,} of {before:,} rows passed the gate",
               flush=True)
+    # The distractor pool is built BEFORE the pedagogy filters, from every
+    # gate-passed row. A pool that shrinks when rows are dropped would undo the
+    # stable-idx seeding: `make_catalogue` shuffles the pool, so losing two
+    # specs to filtering (`get_email_count`, `search_documents`) would change
+    # the draw for all 18,606 survivors. A distractor is never called, so
+    # keeping a spec whose only dialogue was rejected costs nothing.
+    pool_recs = list(recs)
+
     if not args.keep_defective:
         before, why = len(recs), Counter()
         kept = []
@@ -359,19 +380,22 @@ def main():
               f"dropped {dict(why)}", flush=True)
 
     rows = [r["da"] for r in recs]
+    # The row's line number in the source file, NOT its position here.
+    src_idx = [r.get("idx", i) for i, r in enumerate(recs)]
     print(f"loaded {len(rows):,} translated rows", flush=True)
 
     withret = sum(1 for r in rows for t in (r.get("tools") or [])
                   if (t.get("function") or t).get("returns"))
     print(f"specs carrying a returns block: {withret:,}", flush=True)
-    pool = build_tool_pool(rows) if args.catalogue_size else []
+    pool = (build_tool_pool([r["da"] for r in pool_recs])
+            if args.catalogue_size else [])
     if args.catalogue_size:
         print(f"distractor pool: {len(pool):,} distinct non-held-out tools; "
               f"padding catalogues to {args.catalogue_size} and shuffling",
               flush=True)
     rendered, drops = [], Counter()
     for i, r in enumerate(rows):
-        m = to_messages(r, pool, i, args.catalogue_size,
+        m = to_messages(r, pool, src_idx[i], args.catalogue_size,
                         args.catalogue_min,
                         reasoning=not args.no_reasoning)
         if m is None:
