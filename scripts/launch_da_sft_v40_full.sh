@@ -72,13 +72,17 @@
 #   avg-top3: tool_seen 91.0 | tool_unseen 80.6 | tool_answer 72.3*
 #   *old metric, old split
 #
-# EVAL BATCH 96, not 32. The Pro 6000 has 96GB against the H100's 80, and the
-# eval is generation-bound. Worth knowing when reading the tables: batch size
-# shifts generation slightly through padding and attention-mask numerics, so
-# v40's downstream numbers are not exactly comparable to v39's at batch 32.
-# The tool metrics are the ones this run is about, and they change yardstick
-# anyway (v6 split, F1 rather than recall), so nothing is lost that was not
-# already lost -- but the non-tool evals gain a small asterisk.
+# EVAL BATCH 64, twice v39's 32. Chosen for an 80GB H100 where v39 peaked at
+# 78/80GB during training: 96 was sized for a 96GB card and would likely OOM
+# every eval here, and an 8h run that yields no downstream metrics is worse
+# than a slow one. 64 leaves headroom but is unproven on this card -- if the
+# first eval OOMs, resume from the checkpoint with 32 rather than restarting,
+# since checkpoints save on the same cadence as evals.
+#
+# Batch size shifts generation slightly through padding and attention-mask
+# numerics, so v40's non-tool downstream numbers carry a small asterisk against
+# v39's at batch 32. The tool metrics change yardstick anyway (v6 split, F1
+# rather than recall), so nothing is lost there that was not already lost.
 #
 # FLASH-ATTENTION IS REQUIRED (flatten-packing refuses without it):
 #     WORKLOAD=sft bash scripts/setup_vastai.sh large
@@ -145,7 +149,7 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
   --save-total-limit 3 --top-k-downstream 3 \
   --downstream-evals gsm8k citgen sciq ifeval icl extraction tool_seen tool_unseen \
                      tool_answer tool_refusal \
-  --downstream-n 0 --downstream-batch-size 96 \
+  --downstream-n 0 --downstream-batch-size 64 \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_sft_v40_full_mix23_tooldialogues_v6_abstention \
   --wandb-tags sft da v40 full-resft mix23 tool-dialogues-v6 signature-contracts \
