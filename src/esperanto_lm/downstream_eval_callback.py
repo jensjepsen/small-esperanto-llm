@@ -30,6 +30,7 @@ it survives HF Trainer's save_total_limit rotation.
 from __future__ import annotations
 
 import json
+import random
 from collections import Counter
 import os
 import re
@@ -144,7 +145,9 @@ class DownstreamEvalCallback(TrainerCallback):
     # mid-run. 200 rows keeps the trajectory readable; the published number
     # should come from a full-split run afterwards, not from this.
     PER_EVAL_CAP = {"icl": 1000, "extraction": 200,
-                    "tool_seen": 250, "tool_unseen": 250}
+                    "tool_seen": 250, "tool_unseen": 250,
+                    # both halves together; the shuffle keeps them mixed
+                    "tool_refusal": 300}
 
     def _maybe_subsample(self, ds, step: int, name: str | None = None):
         # Effective n = tightest of the global --downstream-n and this eval's
@@ -896,6 +899,86 @@ class DownstreamEvalCallback(TrainerCallback):
             "eval_downstream_tool_answer_echoed": mean(echoed),
         })
         return mean(scores)
+
+    def _load_tool_refusal(self, step: int = 0):
+        """Two-sided: prompts that SHOULD be refused, and prompts that must not.
+
+        A one-sided abstention score is trivially maxed by refusing everything,
+        which is a worse model than one that never refuses -- so the negative
+        half is the point. Positives come from the abstention config (no tool in
+        the catalogue can serve the request); negatives are ordinary tool_seen
+        prompts, where a correct call exists.
+        """
+        items = []
+        try:
+            ds = load_dataset(self.TOOL_REPO, "abstention", split="train")
+            for r in ds:
+                ms = r["messages"]
+                if r.get("kind") != "no-capable-tool" or len(ms) < 2:
+                    continue
+                items.append((f"{USER}{ms[0]['content']}{END}{ASST}", True))
+        except Exception as e:                      # config may not exist yet
+            print(f"  [downstream] tool_refusal: no abstention config ({e})",
+                  flush=True)
+        for q, _gold in self._tool_items("eval_seen_tools", step,
+                                         "tool_refusal_neg"):
+            items.append((f"{q} {ASST}" if q.startswith(USER)
+                          else f"{USER}{q}{END}{ASST}", False))
+        # Same cap and step-rotated seed as _maybe_subsample, done by hand
+        # because this eval assembles a list from two sources rather than
+        # subsetting one Dataset.
+        limits = [x for x in (self.n or None,
+                              self.PER_EVAL_CAP.get("tool_refusal")) if x]
+        if limits and min(limits) < len(items):
+            rng = random.Random(self.seed + step)
+            rng.shuffle(items)
+            items = items[:min(limits)]
+        return items
+
+    # Danish markers that a reply declines rather than acts. Deliberately
+    # broad: a false positive here reads as over-refusal, which is the failure
+    # this metric exists to catch, so the metric errs toward reporting it.
+    _DECLINE = re.compile(
+        r"\b(kan (jeg )?ikke|har ikke|ingen af|ikke i stand|ikke mulighed|"
+        r"desværre|beklager|fremgår ikke|findes ikke|mangler)\b", re.I)
+
+    def _score_tool_refusal(self, model) -> float:
+        """Balanced accuracy over should-refuse and must-not-refuse prompts.
+
+        Reported alongside the two rates, because they move independently and
+        the aggregate hides which way a change went: 694 abstention rows in the
+        mix teach refusal, and nothing else in the suite would notice refusal
+        spreading onto answerable questions -- tool_seen would just show
+        emitted-a-call falling, without saying why.
+        """
+        items = self._get("tool_refusal")
+        if not items:
+            return 0.0
+        outs = self._generate(model, [p for p, _ in items], self.TOOL_MAX_NEW,
+                              skip_special=False)
+        pos_hit = pos_n = neg_bad = neg_n = 0
+        for out, should_refuse in zip(outs, [g for _, g in items]):
+            called = bool(self._CALL_RE.search(out)
+                          or self._CALL_FALLBACK.search(out))
+            refused = (not called) and bool(self._DECLINE.search(out))
+            if should_refuse:
+                pos_n += 1
+                pos_hit += refused
+            else:
+                neg_n += 1
+                neg_bad += refused          # refused a question it could serve
+        pos = pos_hit / pos_n if pos_n else 0.0
+        neg = 1.0 - (neg_bad / neg_n if neg_n else 0.0)
+        bal = (pos + neg) / 2
+        print(f"  [downstream] tool_refusal: refused-when-it-should "
+              f"{100*pos:.1f}% (n={pos_n})  wrongly-refused "
+              f"{100*(1-neg):.1f}% (n={neg_n})  balanced {100*bal:.1f}%",
+              flush=True)
+        self._extra_metrics.update({
+            "eval_downstream_tool_refusal_correct": pos,
+            "eval_downstream_tool_refusal_false": 1 - neg,
+        })
+        return bal
 
     def _score_tool_seen(self, model) -> float:
         return self._tool_score(model, "tool_seen")
