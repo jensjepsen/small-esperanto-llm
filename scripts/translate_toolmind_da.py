@@ -71,6 +71,21 @@ IDENT_STRICT = re.compile(r"^(?=.*[_.\d]|.*[a-z][A-Z])[A-Za-z][\w.]{3,}$")
 # language. 467 of 19,919 rows (2.3%); they are dropped, not repaired.
 LANGUAGE_TOOL = re.compile(r"translat|language|lang_", re.I)
 
+# Set from --drop-reasoning. A module-level flag rather than a threaded
+# argument because segments() is called from eight places.
+DROP_REASONING = [False]
+
+
+def drop_reasoning(row):
+    """Blank assistant prose that precedes a tool call, in place."""
+    n = 0
+    for m in row.get("conversations", []) or []:
+        if m.get("role") == "assistant" and m.get("tool_calls") \
+                and (m.get("content") or "").strip():
+            m["content"] = ""
+            n += 1
+    return n
+
 
 # ── symbolized twins ────────────────────────────────────────────────────────
 #
@@ -599,6 +614,13 @@ def segments(row):
             segs.append((("conversations", j, "content"), "user", content))
         elif role == "assistant" and content.strip():
             kind = "think" if m.get("tool_calls") else "response"
+            # The reasoning that precedes a call is 64.8% of the translatable
+            # text (20.1M of 31.0M chars) and the renderer drops it anyway
+            # under --no-reasoning, so translating it is money spent on output
+            # that never reaches the model. Skipped at the segment level, and
+            # blanked in the row by drop_reasoning() so no English survives.
+            if kind == "think" and DROP_REASONING[0]:
+                continue
             segs.append((("conversations", j, "content"), kind, content))
         elif role == "tool" and content.strip():
             # tool results are JSON strings: only natural-language leaves move
@@ -1237,8 +1259,22 @@ RETURNS_MAX_FIELDS = 6
 RETURN_SEP = "\x00"
 
 
-def _return_key(tool, path):
-    return f"{tool or ''}{RETURN_SEP}{path}"
+def _signature(spec) -> str:
+    """A function's identity: its parameter property names, sorted.
+
+    Tool NAMES are not identities in this corpus -- 379 of 875 carry more than
+    one parameter schema and `search_movies` carries 63, because glaive invented
+    each dialogue independently. Keying the returns map on the name alone
+    unioned the return fields of every function sharing a label, which gave
+    `search_quotes` an AAPL stock ticker and left only 52.3% of each declared
+    contract actually present in the payload it described.
+    """
+    props = ((spec.get("parameters") or {}).get("properties") or {})
+    return ",".join(sorted(props))
+
+
+def _return_key(tool, path, sig=""):
+    return f"{tool or ''}{RETURN_SEP}{sig}{RETURN_SEP}{path}"
 
 
 def _walk_leaves(obj, prefix=""):
@@ -1259,7 +1295,13 @@ def _walk_leaves(obj, prefix=""):
 
 def return_fields(row):
     """[(key, tool, path, type, example)] for every field this row's tools
-    actually returned. Attributed to the tool whose call preceded the result."""
+    actually returned. Attributed to the SIGNATURE whose call preceded the
+    result, not merely to the name -- see _signature."""
+    specs = {}
+    for t in row.get("tools", []) or []:
+        f = t.get("function") if isinstance(t, dict) and t.get("function") else t
+        if isinstance(f, dict) and f.get("name"):
+            specs[f["name"]] = f
     out, last = [], None
     for m in row.get("conversations", []):
         for tc in (m.get("tool_calls") or []):
@@ -1273,7 +1315,8 @@ def return_fields(row):
         for path, t in _walk_leaves(obj):
             if not path:
                 continue
-            out.append((_return_key(last, path), last, path, t,
+            sig = _signature(specs.get(last) or {})
+            out.append((_return_key(last, path, sig), last, path, t,
                         (m.get("content") or "")[:120]))
     return out
 
@@ -1566,6 +1609,34 @@ def _load_returns_map(cache_path):
     return have
 
 
+def majority_return_keys(rows, share=0.90):
+    """Keys present in >= `share` of their own signature's payloads.
+
+    Even within one signature, glaive names a concept several ways across rows
+    -- final_price / new_price / discounted_price all holding the same number --
+    and accumulating every one of them is how calculate_discount ended up
+    declaring six fields for a payload that carries one or two. Counting per
+    payload and keeping the consistent ones cut declared fields 4.7 -> 1.4 while
+    RAISING recall to 96.7%, so the dropped fields were noise, not detail.
+    """
+    from collections import Counter as _C, defaultdict as _dd
+    seen, total = _C(), _C()
+    for r in rows:
+        per_payload = _dd(set)
+        for key, tool, path, typ, ex in return_fields(r):
+            per_payload[(tool, key.split(RETURN_SEP)[1], ex)].add(key)
+        for (tool, sig, _ex), keys in per_payload.items():
+            total[(tool, sig)] += 1
+            for k in keys:
+                seen[k] += 1
+    keep = set()
+    for k, n in seen.items():
+        tool, sig, _ = k.split(RETURN_SEP, 2)
+        if n / max(1, total[(tool, sig)]) >= share:
+            keep.add(k)
+    return keep, seen, total
+
+
 async def build_returns_map(session, rows, cache_path, batch=40,
                             concurrency=24):
     """(tool, result-field) -> danish description. Resumable.
@@ -1578,6 +1649,11 @@ async def build_returns_map(session, rows, cache_path, batch=40,
     for r in rows:
         for key, tool, path, typ, ex in return_fields(r):
             meta.setdefault(key, (tool, path, typ, ex))
+    keep, _seen, _total = majority_return_keys(rows)
+    dropped = len(meta) - len(set(meta) & keep)
+    meta = {k: v for k, v in meta.items() if k in keep}
+    print(f"returns: dropped {dropped:,} inconsistent (tool,signature,field) "
+          f"keys, kept {len(meta):,}", flush=True)
     want = sorted(meta)
     todo = [k for k in want if k not in have]
     print(f"return fields: {len(want):,} distinct (tool,field), "
@@ -1709,8 +1785,17 @@ def attach_returns_to_row(row, rmap, symmap=None):
             continue
         shown = f.get("name")
         real = rev_t.get(shown, shown)          # symbolized rows map back
-        fields = {k.split(RETURN_SEP, 1)[1]: v for k, v in rmap.items()
-                  if k.startswith(f"{real}{RETURN_SEP}")}
+        sig = _signature(f)
+        prefix = f"{real}{RETURN_SEP}{sig}{RETURN_SEP}"
+        fields = {k[len(prefix):]: v for k, v in rmap.items()
+                  if k.startswith(prefix)}
+        # Clear any block already on the spec BEFORE deciding. Re-annotating a
+        # corpus that was annotated under the old name-keyed scheme otherwise
+        # leaves the stale union in place wherever the new map has no entry for
+        # this signature -- and a stale contract is exactly what this pass
+        # exists to remove. 76% of the residual fiction after the first v6
+        # annotate was v5 blocks surviving this way.
+        f.pop("returns", None)
         if not fields:
             continue
         exact = dict(kmap.get(real) or {})
@@ -1852,6 +1937,9 @@ async def main():
                          "mostly recoverable -- a single skipped description "
                          "or an argument left English -- so retrying beats "
                          "discarding the conversation.")
+    ap.add_argument("--drop-reasoning", action="store_true",
+                    help="strip reasoning before translating: 64.8%% of the "
+                         "translatable text, and the renderer discards it")
     ap.add_argument("--respec", action="store_true",
                     help="rebuild the global catalogue map and re-splice tool/"
                          "parameter descriptions into an EXISTING cache, "
@@ -1878,6 +1966,12 @@ async def main():
     # instead of eight, and the generic walker covers whatever text it holds.
     rows = [canonicalise_row(r) for r in rows]
     print(f"canonicalised {len(rows):,} rows to one spec shape", flush=True)
+
+    DROP_REASONING[0] = args.drop_reasoning
+    if args.drop_reasoning:
+        n = sum(drop_reasoning(r) for r in rows)
+        print(f"dropped reasoning from {n:,} assistant turns before "
+              f"translation (64.8%% of translatable text)", flush=True)
 
     if args.symbolize:
         # Mark language-tool rows BEFORE renaming. is_language_tool_row matches

@@ -44,6 +44,44 @@ def bucket(s: str, mod: int = 100) -> int:
     return int(hashlib.md5(s.encode()).hexdigest(), 16) % mod
 
 
+def signature(fn) -> str:
+    """A function's identity: its parameter property names, sorted.
+
+    Names are not identities in this corpus -- 379 of 875 carry more than one
+    parameter schema and `search_movies` carries 63, because glaive invented
+    each dialogue independently. The held-out split still hashes the NAME,
+    which is the stronger guarantee (the model provably never saw the string),
+    but `eval_seen_tools` has to be checked on the signature: otherwise a row
+    can present a variant of `search_movies` the model never trained on while
+    counting as a seen tool.
+    """
+    props = ((fn.get("parameters") or {}).get("properties") or {})
+    return f"{fn.get('name')}({','.join(sorted(props))})"
+
+
+def tool_signatures(row) -> list[str]:
+    """Signatures in the CATALOGUE."""
+    return [signature(t.get("function") or {})
+            for t in row.get("tools", []) if isinstance(t, dict)
+            and (t.get("function") or {}).get("name")]
+
+
+def called_signatures(row) -> list[str]:
+    """Signatures actually INVOKED, matched to the catalogue by name."""
+    specs = {}
+    for t in row.get("tools", []) or []:
+        f = t.get("function") if isinstance(t, dict) else None
+        if f and f.get("name"):
+            specs[f["name"]] = f
+    out = []
+    for m in row.get("conversations", []):
+        for tc in (m.get("tool_calls") or []):
+            n = (tc.get("function") or {}).get("name")
+            if n and n in specs:
+                out.append(signature(specs[n]))
+    return out
+
+
 def tool_names(row) -> list[str]:
     """Names in the CATALOGUE."""
     return [((t.get("function") or {}).get("name") or "")
@@ -281,7 +319,9 @@ def main():
             "en": r["orig"],
             "meta": {"idx": r["idx"], "n_tools": len(tn),
                      "n_turns": len(da.get("conversations", [])),
-                     "tool_names": tn},
+                     "tool_names": tn,
+                     "tool_signatures": tool_signatures(da),
+                     "called_signatures": called_signatures(da)},
         })
     counts = {s: len(v) for s, v in data.items()}
     print("splits:", counts, f"(dropped {dropped:,} catalogue-only rows)",
@@ -293,10 +333,15 @@ def main():
     # eval_seen must test tools the model HAS trained on. A rare tool whose
     # only rows landed in the eval sample would otherwise sit here untrained,
     # quietly making this bucket a second unseen-tool test.
-    train_names = {n for r in data["train"] for n in r["meta"]["tool_names"]}
+    # Checked on SIGNATURES, not names. A row whose catalogue says
+    # `search_movies` may be using a variant with different parameters that the
+    # model never trained on -- that is an unseen function wearing a seen
+    # label, and scoring it as a seen tool understates the split's difficulty.
+    train_sigs = {x for r in data["train"]
+                  for x in r["meta"]["tool_signatures"]}
     keep, moved = [], 0
     for r in data["eval_seen_tools"]:
-        if all(n in train_names for n in r["meta"]["tool_names"]):
+        if all(x in train_sigs for x in r["meta"]["tool_signatures"]):
             keep.append(r)
         else:
             data["train"].append(r)

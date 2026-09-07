@@ -66,18 +66,27 @@ Lav to ting:
    udeladte. Værdierne skal passe til kaldets argumenter og være konkrete
    (rigtige tal, rigtige navne), ikke pladsholdere som "abc" eller 0.
 
-2. "svar": assistentens svar til brugeren, på dansk, 1-3 sætninger.
+2. "relevante_felter": navnene på de felter i "resultat", som brugerens
+   spørgsmål faktisk beder om. Som regel ét felt, sjældent mere end to. De
+   øvrige felter er baggrund og hører IKKE i svaret.
+
+3. "svar": assistentens svar til brugeren, på dansk, 1-2 sætninger.
 
 Krav til "svar":
-- Det skal BRUGE tallene og navnene fra "resultat". Skriv dem ud.
+- Det skal indeholde værdierne fra "relevante_felter" -- og KUN dem.
+- Nævn ikke de andre felters værdier. Et svar der remser hele resultatet op,
+  er et dårligt svar, også selvom alt i det er sandt.
 - Det skal svare på brugerens spørgsmål, ikke beskrive hvad du har gjort.
 - Skriv ALDRIG om værktøjer, kald, funktioner, parametre eller JSON.
 - Ingen engelske ord eller sætninger.
 - Regn ikke videre på tallene og find ikke på tal, der ikke står i "resultat".
 
-Eksempel på et godt svar: "Der er 8 kopper kaffe tilbage på 4. etage, og
-maskinen virker fint."
-Eksempel på et dårligt svar: "Jeg har kaldt værktøjet og fået resultatet."
+Spørgsmål: "Er der kaffe tilbage på 4. etage?"
+resultat  {"cups_left": 8, "days_since_service": 12, "working": true}
+  relevante_felter  ["cups_left"]
+  godt svar   "Der er 8 kopper kaffe tilbage på 4. etage."
+  dårligt svar "Der er 8 kopper tilbage, maskinen virker, og den blev
+                serviceret for 12 dage siden."   <- remser resultatet op
 """
 
 
@@ -148,6 +157,15 @@ def _coerce(obj):
         f = float(obj)
         return int(f) if f.is_integer() and "." not in obj else f
     return obj
+
+
+def _cited(answer, v):
+    """Is this payload value present in the answer, Danish formatting allowed?"""
+    low = answer.lower()
+    if isinstance(v, (int, float)):
+        return any(_traces_to(m.group(), {float(v)}) for m in NUM.finditer(low))
+    s = str(v).strip()
+    return len(s) > 2 and s.lower() in low
 
 
 def _leaves(obj, prefix=""):
@@ -268,7 +286,7 @@ def cache_key(call, question, spec):
 
 # ── gate ────────────────────────────────────────────────────────────────────
 
-def gate(result, answer, spec, context=""):
+def gate(result, answer, spec, context="", relevant=None):
     """Why each check exists is in the reason string; returns None if clean.
 
     `context` is the question plus the call -- numbers the user supplied are
@@ -318,6 +336,35 @@ def gate(result, answer, spec, context=""):
     # rejects correct answers for having nothing to quote.
     if not cites and pool:
         return "answer-not-grounded"
+
+    # PRECISION. Grounding alone made reciting the payload optimal -- 43% of
+    # v5's answers cite every field, and the eval scored that as success. The
+    # generator now declares which fields the question asks for, so an answer
+    # that drags in the others is rejected even though every value in it is
+    # genuinely from the payload.
+    if relevant:
+        rel = [k for k in relevant if k in result]
+        if not rel:
+            return "relevant-fields-not-in-payload"
+        if len(rel) > 3:
+            return "too-many-relevant-fields"
+        want = {k: result[k] for k in rel}
+        extra = {k: v for k, v in result.items() if k not in rel}
+        # every relevant value must survive into the answer
+        for v in [x for _, x in _leaves(want)]:
+            if isinstance(v, bool) or v in (None, ""):
+                continue
+            if not _cited(answer, v):
+                return f"answer-misses-relevant:{str(v)[:24]}"
+        # and no irrelevant one may
+        for k, v in extra.items():
+            for x in [y for _, y in _leaves({k: v})]:
+                if isinstance(x, bool) or x in (None, ""):
+                    continue
+                if str(x).strip() and str(x) in str(context):
+                    continue            # the user said it; repeating is fine
+                if _cited(answer, x):
+                    return f"answer-cites-irrelevant:{k}"
 
     # Invented numbers. `4 * 12 = 48` on a payload holding 28 is exactly what
     # the probe caught the model doing; an answer that does it here would
@@ -379,7 +426,37 @@ CLEAN = [
 ]
 
 
+# The precision check needs its own controls: a gate whose new term never
+# fires is indistinguishable from one that was never added.
+_COFFEE = {"returns": {"properties": {"cups_left": {}, "days_since_service": {},
+                                      "working": {}}}}
+_PAY = {"cups_left": 8, "days_since_service": 12, "working": True}
+PRECISION_CONTROLS = [
+    (_PAY, "Der er 8 kopper tilbage, og den blev serviceret for 12 dage siden.",
+     _COFFEE, "Er der kaffe tilbage?", ["cups_left"],
+     "answer-cites-irrelevant"),
+    # cites a payload value, but not the one asked for -- has to reach the
+    # relevance check rather than being caught by the grounding check
+    (_PAY, "Maskinen blev serviceret for 12 dage siden.", _COFFEE,
+     "Er der kaffe tilbage?", ["cups_left"], "answer-misses-relevant"),
+    (_PAY, "Der er 8 kopper tilbage.", _COFFEE, "Er der kaffe tilbage?",
+     ["temperature"], "relevant-fields-not-in-payload"),
+]
+PRECISION_CLEAN = [
+    (_PAY, "Der er 8 kopper kaffe tilbage.", _COFFEE,
+     "Er der kaffe tilbage?", ["cups_left"]),
+]
+
+
 def check_controls():
+    for res, ans, sp, ctx, rel, want in PRECISION_CONTROLS:
+        got = gate(res, ans, sp, ctx, relevant=rel)
+        if got is None or not got.startswith(want):
+            raise SystemExit(f"precision control {want!r} -> {got!r}")
+    for res, ans, sp, ctx, rel in PRECISION_CLEAN:
+        got = gate(res, ans, sp, ctx, relevant=rel)
+        if got is not None:
+            raise SystemExit(f"precision gate rejects a clean pair: {got}")
     bad = [i for i, c in enumerate(CONTROLS)
            if gate(*c) is None]
     if bad:
@@ -388,8 +465,9 @@ def check_controls():
         why = gate(*c)
         if why is not None:
             raise SystemExit(f"gate rejects clean pair {i}: {why}")
-    print(f"gate: {len(CONTROLS)} planted defects caught, "
-          f"{len(CLEAN)} clean pairs pass", flush=True)
+    print(f"gate: {len(CONTROLS) + len(PRECISION_CONTROLS)} planted defects "
+          f"caught, {len(CLEAN) + len(PRECISION_CLEAN)} clean pairs pass",
+          flush=True)
 
 
 # ── generation ──────────────────────────────────────────────────────────────
@@ -450,7 +528,7 @@ async def one_answer(session, call, spec, question, tries=3):
     # unless explicitly asked for.
     if rs is None:
         if not ALLOW_UNSPECED[0]:
-            return None, "no-returns-spec"
+            return None, "no-returns-spec", []
         payload = {"type": "string"}
     else:
         payload = rs
@@ -461,15 +539,18 @@ async def one_answer(session, call, spec, question, tries=3):
                 "name": "svar", "strict": True, "schema": {
                     "type": "object",
                     "properties": {"resultat": payload,
+                                   "relevante_felter": {
+                                       "type": "array",
+                                       "items": {"type": "string"}},
                                    "svar": {"type": "string"}},
-                    "required": ["resultat", "svar"],
+                    "required": ["resultat", "relevante_felter", "svar"],
                     "additionalProperties": False}}}}
     for a in range(tries):
         try:
             async with session.post(URL, json=body) as r:
                 if r.status != 200:
                     if a == tries - 1:
-                        return None, f"http-{r.status}"
+                        return None, f"http-{r.status}", []
                     await asyncio.sleep(1.5 * (a + 1))
                     continue
                 d = await r.json()
@@ -477,10 +558,10 @@ async def one_answer(session, call, spec, question, tries=3):
                 res = out["resultat"]
                 if isinstance(res, str):
                     res = json.loads(res)
-                return _coerce(res), out["svar"]
+                return _coerce(res), out["svar"], out.get("relevante_felter") or []
         except Exception:
             await asyncio.sleep(1.5 * (a + 1))
-    return None, "exhausted"
+    return None, "exhausted", []
 
 
 ALLOW_UNSPECED = [False]
@@ -515,7 +596,8 @@ async def main_async(args):
         for line in args.cache.open():
             try:
                 rec = json.loads(line)
-                have[rec["k"]] = (rec["resultat"], rec["svar"])
+                have[rec["k"]] = (rec["resultat"], rec["svar"],
+                                  rec.get("relevante_felter") or [])
             except Exception:
                 continue
     todo = [(i, d) for i, d in jobs
@@ -548,7 +630,8 @@ async def main_async(args):
                 async def run(i, d):
                     _, call, spec, question = d
                     async with sem:
-                        res, ans = await one_answer(s, call, spec, question)
+                        res, ans, rel = await one_answer(
+                            s, call, spec, question)
                     done[0] += 1
                     if done[0] % 100 == 0:
                         print(f"  generated {done[0]:,}/{len(todo):,}"
@@ -559,10 +642,11 @@ async def main_async(args):
                         return
                     k = cache_key(call, question, spec)
                     async with lock:
-                        have[k] = (res, ans)
+                        have[k] = (res, ans, rel)
                         fh.write(json.dumps(
                             {"k": k, "tool": spec.get("name"),
-                             "resultat": res, "svar": ans},
+                             "resultat": res, "svar": ans,
+                             "relevante_felter": rel},
                             ensure_ascii=False) + "\n")
                 await asyncio.gather(*[run(i, d) for i, d in todo])
         if failed:
@@ -579,9 +663,10 @@ async def main_async(args):
             got = have.get(k)
             if not got:
                 continue
-            res, ans = got
+            res, ans, rel = got
             why = gate(res, ans, spec,
-                       question + " " + json.dumps(call, ensure_ascii=False))
+                       question + " " + json.dumps(call, ensure_ascii=False),
+                       relevant=rel)
             if why:
                 reasons[why.split(":")[0]] += 1
                 # Rejects are written out, not just counted. A gate tuned from

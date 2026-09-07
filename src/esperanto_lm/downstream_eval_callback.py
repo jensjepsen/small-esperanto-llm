@@ -836,17 +836,19 @@ class DownstreamEvalCallback(TrainerCallback):
         Reported alongside: the share of answers that are Danish, because
         replying in English is a silent failure a grounding score cannot see.
 
-        CALIBRATED, so the number means something:
-            gold reply (ceiling)          83.8%
-            reply from a different row     3.4%
-            fluent Danish, no facts        0.0%
-        Read a model score against 83.8, not 100. The ceiling is short of
-        perfect because some result fields never belong in a good answer -- a
-        `status` key, or a value the reply paraphrases rather than quotes --
-        and 68% of gold replies score exactly 1.0. The 80pp separation from
-        both floors is what makes it a measurement rather than a vibe: an
-        uncalibrated grounding score cannot distinguish "answered from the
-        tool" from "wrote plausible Danish".
+        SCORED AS F1 against the fields the gold reply cites. Recall alone --
+        the previous definition, hit/len(all payload values) -- made reciting
+        the payload the optimum, and ranked a padded model answer (47.8%) above
+        the reference reply (26.1%) on a row where the reference was correct and
+        the padding was noise. The ceiling of 83.8% was that metric announcing
+        the problem: good answers lose points for the fields they rightly omit.
+
+        Under F1 the gold reply scores 100% by construction, which is the point
+        -- relevance is DEFINED by the reference. Floors stay near zero: a reply
+        lifted from another row cites the wrong fields and so loses on both
+        precision and recall. The limitation is that a model answer better than
+        gold -- citing a field gold should have mentioned -- is penalised; at
+        this model's level that is not the binding constraint.
         """
         items = self._get("tool_answer")
         if not items:
@@ -855,7 +857,7 @@ class DownstreamEvalCallback(TrainerCallback):
                    for q, _ in items]
         outs = self._generate(model, prompts, self.max_new_gsm)
         scores, danish, nonempty, echoed = [], [], [], []
-        for out, (_, (result, _gold)) in zip(outs, items):
+        for out, (_, (result, gold)) in zip(outs, items):
             vals = self._result_values(result)
             nonempty.append(1.0 if out.strip() else 0.0)
             if not vals:
@@ -872,8 +874,15 @@ class DownstreamEvalCallback(TrainerCallback):
                 danish.append(0.0 if self._looks_english(out) else 1.0)
                 continue
             echoed.append(0.0)
-            hit = sum(1 for v in vals if self._mentions(out, v))
-            scores.append(hit / len(vals))
+            # F1 against the fields the GOLD reply cites, not recall over the
+            # whole payload. Recall alone rewards reciting every field: on one
+            # eval row the reference reply scored 26.1% and a padded model
+            # answer 47.8%, because the padded one named four more ingredients.
+            # Precision is the term that was missing, and 43% of the v5 training
+            # answers cite every field precisely because nothing penalised it.
+            gold_vals = {v for v in vals if self._mentions(gold, v)}
+            pred_vals = {v for v in vals if self._mentions(out, v)}
+            scores.append(self._pair_f1(pred_vals, gold_vals))
             danish.append(0.0 if self._looks_english(out) else 1.0)
         mean = lambda v: sum(v) / len(v) if v else 0.0  # noqa: E731
         print(f"  [downstream] tool_answer: grounded {100*mean(scores):.1f}%  "
