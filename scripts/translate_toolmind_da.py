@@ -2175,7 +2175,7 @@ async def main():
         # conversations are left alone and only catalogue text and values are
         # rewritten from the global tables, so v1 -> v2 costs one value pass
         # (2,483 strings) instead of a full retranslation (24,459 segments).
-        fixed = fixed_v = 0
+        fixed = fixed_v = fixed_p = 0
         for p in pairs:
             new = json.loads(json.dumps(p["da"]))
             for path, kind, en in spec_segments(p["orig"]):
@@ -2201,6 +2201,24 @@ async def main():
                 if cur != da:
                     _set(new, path, da)
                     fixed_v += 1
+            # PROSE FOLLOWS THE VALUE. Rewriting the call alone leaves the
+            # reply quoting the pre-translation form -- "Jeg fandt en laptop"
+            # against a call that now sends "bærbar computer" -- which is
+            # exactly what stale-prose-echo exists to catch, and it caught 72
+            # rows the moment the lexicon changed under an already-translated
+            # corpus. Only assistant turns: the user's own words are theirs.
+            for _path, key, en in value_segments(p["orig"]):
+                da = value_map.get(key)
+                en = (en or "").strip()
+                if not da or not en or da.strip().lower() == en.lower():
+                    continue
+                for m in new.get("conversations", []) or []:
+                    if m.get("role") != "assistant":
+                        continue
+                    c = m.get("content")
+                    if isinstance(c, str) and re.search(_quoted(en), c, re.I):
+                        m["content"] = re.sub(_quoted(en), da, c, flags=re.I)
+                        fixed_p += 1
             p["da"] = new
         tmp = cache.with_suffix(".respec")
         with tmp.open("w") as f:
@@ -2208,7 +2226,8 @@ async def main():
                 f.write(json.dumps(p, ensure_ascii=False) + "\n")
         tmp.replace(cache)
         print(f"respec: {fixed:,} description fields + {fixed_v:,} values "
-              f"rewritten across {len(pairs):,} rows -> {cache}", flush=True)
+              f"+ {fixed_p:,} prose echoes rewritten across {len(pairs):,} "
+              f"rows -> {cache}", flush=True)
 
     if args.gate_only or args.respec:
         pairs = list(done.values()) or [json.loads(l) for l in cache.open()]

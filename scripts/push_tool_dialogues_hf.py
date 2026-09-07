@@ -231,6 +231,12 @@ def main():
     ap.add_argument("--answers", type=Path, default=None,
                     help="answer cache from gen_tool_answer_turns.py; splices "
                          "result+answer onto dangling terminal calls")
+    ap.add_argument("--abstention", type=Path, default=None,
+                    help="jsonl of abstention rows, pushed as their own config. "
+                         "Pushed HERE because this script rewrites the dataset "
+                         "card, which de-registers any config it does not know "
+                         "about -- a separate push of `abstention` silently "
+                         "disappeared the next time the main configs went up.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -415,6 +421,18 @@ def main():
         path_or_fileobj=card(counts, len(rejected), stats, fails).encode(),
         path_in_repo="README.md", repo_id=args.repo, repo_type="dataset",
         commit_message="dataset card")
+    if args.abstention:
+        # AFTER the card upload, not before. push_to_hub adds its config to the
+        # dataset card's YAML; uploading our own README afterwards replaces that
+        # card and de-registers the config, which is how `abstention` vanished
+        # twice while the push log said it had been pushed.
+        extra = [json.loads(l) for l in args.abstention.open() if l.strip()]
+        Dataset.from_list([{"messages": r["messages"], "kind": r["kind"]}
+                           for r in extra]).push_to_hub(
+            args.repo, config_name="abstention", split="train",
+            commit_message="abstention rows")
+        print(f"  pushed abstention ({len(extra):,})", flush=True)
+
     print(f"-> https://huggingface.co/datasets/{args.repo}")
 
 
