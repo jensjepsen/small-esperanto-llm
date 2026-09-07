@@ -72,6 +72,14 @@
 #   avg-top3: tool_seen 91.0 | tool_unseen 80.6 | tool_answer 72.3*
 #   *old metric, old split
 #
+# EVAL BATCH 96, not 32. The Pro 6000 has 96GB against the H100's 80, and the
+# eval is generation-bound. Worth knowing when reading the tables: batch size
+# shifts generation slightly through padding and attention-mask numerics, so
+# v40's downstream numbers are not exactly comparable to v39's at batch 32.
+# The tool metrics are the ones this run is about, and they change yardstick
+# anyway (v6 split, F1 rather than recall), so nothing is lost that was not
+# already lost -- but the non-tool evals gain a small asterisk.
+#
 # FLASH-ATTENTION IS REQUIRED (flatten-packing refuses without it):
 #     WORKLOAD=sft bash scripts/setup_vastai.sh large
 # START THE CHECKPOINT WATCHER BEFORE TRAINING, not after:
@@ -137,7 +145,7 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
   --save-total-limit 3 --top-k-downstream 3 \
   --downstream-evals gsm8k citgen sciq ifeval icl extraction tool_seen tool_unseen \
                      tool_answer tool_refusal \
-  --downstream-n 0 --downstream-batch-size 32 \
+  --downstream-n 0 --downstream-batch-size 96 \
   --wandb-project danish-lm-sft \
   --wandb-run-name da_sft_v40_full_mix23_tooldialogues_v6_abstention \
   --wandb-tags sft da v40 full-resft mix23 tool-dialogues-v6 signature-contracts \
