@@ -146,8 +146,12 @@ class DownstreamEvalCallback(TrainerCallback):
     # should come from a full-split run afterwards, not from this.
     PER_EVAL_CAP = {"icl": 1000, "extraction": 200,
                     "tool_seen": 250, "tool_unseen": 250,
-                    # both halves together; the shuffle keeps them mixed
-                    "tool_refusal": 300}
+                    # PER BUCKET for tool_refusal, not over the pooled list.
+                    # absent-field is 128 rows against 545 no-capable-tool and
+                    # ~700 answerable, so a pooled cap of 300 left it ~28 items
+                    # -- unreadable, and it is the half the probes show
+                    # failing. Negatives get their own limit in the loader.
+                    "tool_refusal_bucket": 150}
 
     def _maybe_subsample(self, ds, step: int, name: str | None = None):
         # Effective n = tightest of the global --downstream-n and this eval's
@@ -924,33 +928,53 @@ class DownstreamEvalCallback(TrainerCallback):
         from pathlib import Path as _P
         _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
         from train_sft_packed import format_conversation
-        items = []
+        rng = random.Random(self.seed + step)
+        no_tool, absent, neg = [], [], []
         try:
             ds = load_dataset(self.TOOL_REPO, "abstention", split="train")
             for r in ds:
                 ms = r["messages"]
-                if r.get("kind") != "no-capable-tool" or len(ms) < 2:
-                    continue
-                # ms[:1] -- the dialogue up to the model's turn, same cut
-                # _tool_items makes. <|assistant|> is supplied by every
-                # inference path, so it is appended rather than generated.
-                items.append((format_conversation(ms[:1]) + f" {ASST}", True))
+                kind = r.get("kind")
+                if kind == "no-capable-tool" and len(ms) >= 2:
+                    # ms[:1] -- the dialogue up to the model's turn, same cut
+                    # _tool_items makes. <|assistant|> is supplied by every
+                    # inference path, so it is appended rather than generated.
+                    no_tool.append(
+                        (format_conversation(ms[:1]) + f" {ASST}", "no-tool"))
+                elif kind == "absent-field":
+                    # Prompted THROUGH the tool result, like _answer_items.
+                    # The tool fits and must be called; what is missing is the
+                    # field the question asked for, so the behaviour under test
+                    # is call -> read -> decline on that field. Prompting this
+                    # row with its user turn alone would score the model wrong
+                    # for correctly emitting a call.
+                    res_at = next((i for i, m in enumerate(ms)
+                                   if m["role"] == "tool_result"), None)
+                    if res_at is None or res_at + 1 >= len(ms):
+                        continue
+                    if ms[res_at + 1]["role"] != "assistant":
+                        continue
+                    absent.append((format_conversation(ms[:res_at + 1])
+                                   + f" {ASST}", "absent-field"))
         except Exception as e:                      # config may not exist yet
             print(f"  [downstream] tool_refusal: no abstention config ({e})",
                   flush=True)
         for q, _gold in self._tool_items("eval_seen_tools", step,
                                          "tool_refusal_neg"):
-            items.append((f"{q} {ASST}" if q.startswith(USER)
-                          else f"{USER}{q}{END}{ASST}", False))
-        # Same cap and step-rotated seed as _maybe_subsample, done by hand
-        # because this eval assembles a list from two sources rather than
-        # subsetting one Dataset.
-        limits = [x for x in (self.n or None,
-                              self.PER_EVAL_CAP.get("tool_refusal")) if x]
-        if limits and min(limits) < len(items):
-            rng = random.Random(self.seed + step)
-            rng.shuffle(items)
-            items = items[:min(limits)]
+            neg.append((f"{q} {ASST}" if q.startswith(USER)
+                        else f"{USER}{q}{END}{ASST}", "answerable"))
+
+        # PER BUCKET, not one shuffled pool. absent-field is 128 rows against
+        # 545 no-capable-tool and ~700 answerable, so a shuffle-then-cap at 300
+        # leaves it ~28 items -- too few to read, and it is the half the probes
+        # show failing at 0/3. Capping each bucket keeps all three legible.
+        def take(xs, k):
+            xs = list(xs)
+            rng.shuffle(xs)
+            return xs[:k] if k and k < len(xs) else xs
+        cap = self.PER_EVAL_CAP.get("tool_refusal_bucket", 150)
+        items = take(no_tool, cap) + take(absent, cap) + take(neg, 200)
+        rng.shuffle(items)
         return items
 
     # Danish markers that a reply declines rather than acts. Deliberately
@@ -963,38 +987,54 @@ class DownstreamEvalCallback(TrainerCallback):
     def _score_tool_refusal(self, model) -> float:
         """Balanced accuracy over should-refuse and must-not-refuse prompts.
 
-        Reported alongside the two rates, because they move independently and
-        the aggregate hides which way a change went: 694 abstention rows in the
-        mix teach refusal, and nothing else in the suite would notice refusal
-        spreading onto answerable questions -- tool_seen would just show
-        emitted-a-call falling, without saying why.
+        Three buckets, reported separately because they move independently and
+        measure different behaviours:
+
+          no-tool       nothing in the catalogue can serve the request; decline
+                        WITHOUT calling. One turn.
+          absent-field  the tool fits and must be called, but the result lacks
+                        the field asked for; call, read, then decline on that
+                        field. Two steps, and the harder of the two -- it was
+                        trained (128 rows) but never scored until now, while
+                        probes showed it at 0/3 across four checkpoints.
+          answerable    a correct call exists and refusing is the failure. A
+                        one-sided abstention score is trivially maxed by
+                        refusing everything, so this half is the point.
+
+        The headline pools the two positive buckets against the negative one,
+        because "does it abstain when it should" is one question asked two ways.
         """
         items = self._get("tool_refusal")
         if not items:
             return 0.0
         outs = self._generate(model, [p for p, _ in items], self.TOOL_MAX_NEW,
                               skip_special=False)
-        pos_hit = pos_n = neg_bad = neg_n = 0
-        for out, should_refuse in zip(outs, [g for _, g in items]):
+        hit = {"no-tool": 0, "absent-field": 0, "answerable": 0}
+        tot = {"no-tool": 0, "absent-field": 0, "answerable": 0}
+        for out, kind in zip(outs, [g for _, g in items]):
             called = bool(self._CALL_RE.search(out)
                           or self._CALL_FALLBACK.search(out))
             refused = (not called) and bool(self._DECLINE.search(out))
-            if should_refuse:
-                pos_n += 1
-                pos_hit += refused
-            else:
-                neg_n += 1
-                neg_bad += refused          # refused a question it could serve
-        pos = pos_hit / pos_n if pos_n else 0.0
-        neg = 1.0 - (neg_bad / neg_n if neg_n else 0.0)
+            tot[kind] += 1
+            hit[kind] += refused          # for `answerable` this counts errors
+        nt_n, af_n, ng_n = tot["no-tool"], tot["absent-field"], tot["answerable"]
+        pos_n = nt_n + af_n
+        pos = (hit["no-tool"] + hit["absent-field"]) / pos_n if pos_n else 0.0
+        neg = 1.0 - (hit["answerable"] / ng_n if ng_n else 0.0)
         bal = (pos + neg) / 2
-        print(f"  [downstream] tool_refusal: refused-when-it-should "
-              f"{100*pos:.1f}% (n={pos_n})  wrongly-refused "
-              f"{100*(1-neg):.1f}% (n={neg_n})  balanced {100*bal:.1f}%",
-              flush=True)
+        r = lambda k, n: 100 * hit[k] / n if n else 0.0
+        print(f"  [downstream] tool_refusal: no-tool {r('no-tool', nt_n):.1f}% "
+              f"(n={nt_n})  absent-field {r('absent-field', af_n):.1f}% "
+              f"(n={af_n})  wrongly-refused {r('answerable', ng_n):.1f}% "
+              f"(n={ng_n})  balanced {100*bal:.1f}%", flush=True)
         self._extra_metrics.update({
             "eval_downstream_tool_refusal_correct": pos,
-            "eval_downstream_tool_refusal_false": 1 - neg,
+            "eval_downstream_tool_refusal_no_tool":
+                hit["no-tool"] / nt_n if nt_n else 0.0,
+            "eval_downstream_tool_refusal_absent_field":
+                hit["absent-field"] / af_n if af_n else 0.0,
+            "eval_downstream_tool_refusal_false":
+                hit["answerable"] / ng_n if ng_n else 0.0,
         })
         return bal
 
