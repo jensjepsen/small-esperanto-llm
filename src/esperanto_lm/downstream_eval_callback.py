@@ -908,7 +908,22 @@ class DownstreamEvalCallback(TrainerCallback):
         half is the point. Positives come from the abstention config (no tool in
         the catalogue can serve the request); negatives are ordinary tool_seen
         prompts, where a correct call exists.
+
+        BOTH halves render through format_conversation. They did not: the
+        positive half was built by hand as `{USER}{content}{END}{ASST}`, which
+        deviates from the corpus twice -- format_conversation joins turns with
+        a space, and it emits <|end|> only after MODEL turns, so an <|end|>
+        following user content appears nowhere in training. The negative half
+        went through the renderer, so the two rates this metric averages were
+        measured under different prompt distributions and the discrepancy
+        landed entirely on the refusal side. Every other eval here hand-builds
+        the same shape, but uniformly, so their bias is constant across
+        checkpoints; this one mixed both inside a single number.
         """
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
+        from train_sft_packed import format_conversation
         items = []
         try:
             ds = load_dataset(self.TOOL_REPO, "abstention", split="train")
@@ -916,7 +931,10 @@ class DownstreamEvalCallback(TrainerCallback):
                 ms = r["messages"]
                 if r.get("kind") != "no-capable-tool" or len(ms) < 2:
                     continue
-                items.append((f"{USER}{ms[0]['content']}{END}{ASST}", True))
+                # ms[:1] -- the dialogue up to the model's turn, same cut
+                # _tool_items makes. <|assistant|> is supplied by every
+                # inference path, so it is appended rather than generated.
+                items.append((format_conversation(ms[:1]) + f" {ASST}", True))
         except Exception as e:                      # config may not exist yet
             print(f"  [downstream] tool_refusal: no abstention config ({e})",
                   flush=True)

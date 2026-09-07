@@ -21,6 +21,9 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from train_sft_packed import format_conversation  # noqa: E402
+
 CALL = re.compile(r"<\|tool_call\|>(.*?)(?:<\|/tool_call\|>|$)", re.S)
 
 
@@ -104,6 +107,45 @@ QUESTIONS = [
 ]
 
 
+# --- prompt construction ------------------------------------------------
+# Built by the TRAINER'S OWN renderer, never by hand. The first version of
+# this probe hand-wrote `<|user|>{q}<|end|><|assistant|>`, which differs from
+# training in two ways: format_conversation joins turns with a space, and it
+# emits <|end|> only after MODEL turns -- so an <|end|> after the user turn
+# occurs nowhere in the corpus. The downstream eval renders through
+# format_conversation and appends " <|assistant|>"; anything else measures
+# the probe rather than the model.
+SENTINEL = "\x00"
+
+
+def user_msg(q):
+    cat = json.dumps(CATALOG, ensure_ascii=False)
+    return {"role": "user", "content": f"Værktøjer:\n{cat}\n\n{q}"}
+
+
+def free_prompt(msgs):
+    """`<|assistant|>` is supplied by every inference path, so the probe
+    supplies it too -- identical to `f"{q} {ASST}"` in the eval."""
+    return format_conversation(msgs) + " <|assistant|>"
+
+
+def forced_prompt(msgs):
+    """Prefill straight into the call. Rendered rather than concatenated: an
+    empty assistant turn before a call yields TWO spaces
+    (`<|assistant|>  <|tool_call|>`), one from the empty content and one from
+    the join, which is what the corpus contains and is not guessable."""
+    return format_conversation(
+        msgs + [{"role": "assistant", "content": ""},
+                {"role": "tool_call", "content": SENTINEL}]).split(SENTINEL)[0]
+
+
+def answer_prompt(msgs, reasoning, call, result):
+    return free_prompt(msgs + [
+        {"role": "assistant", "content": reasoning},
+        {"role": "tool_call", "content": call},
+        {"role": "tool_result", "content": result}])
+
+
 def main():
     ckpt = sys.argv[1] if len(sys.argv) > 1 else "/mnt/data2/ckpts/v38_33993"
     print(f"ckpt: {ckpt}\n", flush=True)
@@ -124,14 +166,13 @@ def main():
         return tok.decode(o[0][e["input_ids"].shape[1]:],
                           skip_special_tokens=False).strip()
 
-    cat = json.dumps(CATALOG, ensure_ascii=False)
     for q in QUESTIONS:
-        base = f"<|user|>Værktøjer:\n{cat}\n\n{q}<|end|><|assistant|>"
+        msgs = [user_msg(q)]
         print("=" * 78)
         print(f"USER: {q}")
         for label, prompt, prefixed in (
-                ("free  ", base, False),
-                ("forced", base + "<|tool_call|>", True)):
+                ("free  ", free_prompt(msgs), False),
+                ("forced", forced_prompt(msgs), True)):
             print("-" * 78)
             out = gen(prompt)
             text = ("<|tool_call|>" + out) if prefixed else out
@@ -170,9 +211,9 @@ def main():
             res = json.dumps(result, ensure_ascii=False)
             print(f"[{label}] TOOL: {res}")
             # feed the real result back; the model must answer from it
-            p2 = (prompt + text.split("<|/tool_call|>")[0]
-                  + "<|/tool_call|><|end|><|tool_result|>" + res
-                  + "<|/tool_result|><|assistant|>")
+            reasoning = "" if prefixed else text.split("<|tool_call|>")[0].strip()
+            p2 = answer_prompt(msgs, reasoning,
+                               json.dumps(call, ensure_ascii=False), res)
             print(f"[{label}] ANSWER: {gen(p2, 200)}")
         print()
 
