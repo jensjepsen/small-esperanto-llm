@@ -28,7 +28,8 @@ uv run python scripts/gen_missing_returns.py --src $OUT \
 # 3. attach the contracts to each row's own tools
 uv run python scripts/translate_toolmind_da.py --out $OUT --n 25000 --annotate
 
-# 4. render to the trainer's chat format
+# 4. render to the trainer's chat format. The pedagogy filters run here by
+#    default (--keep-defective reproduces v6 and earlier, which lacked them).
 uv run python scripts/render_toolmind_sft.py --in $OUT --clean-only \
     --catalogue-size 6 --catalogue-min 2 --no-reasoning --out $OUT/sft.jsonl
 
@@ -69,6 +70,7 @@ checks are all green in the failure modes below.
 | 1 | `GATE: n/m clean` in the log | ~99%, and all 8 planted controls FAIL |
 | 2,3 | `scripts/build_returns_groups.py` | declared-vs-present F1 ~97% (v5: 62%) |
 | 4 | `trainer check over 400 rows` | CLEAN |
+| 4 | `pedagogy filters:` line in the log | ~665 dropped; rendered corpus has 0 rows without a `tool_call` |
 | 5 | accept rate in the log | ~67%; `answer-cites-irrelevant` should be non-zero at scale |
 | 6 | opening distribution printed by the script | no opening above ~10% |
 | 7 | `get_dataset_config_names(repo)` | includes `abstention` |
@@ -97,6 +99,33 @@ answers cited every field, and the eval — recall over all payload values —
 ranked a padded model answer above the reference reply (47.8% vs 26.1%). The
 generator now declares `relevante_felter`, the gate rejects answers that miss
 them or drag in others, and `tool_answer` is F1 against the fields gold cites.
+
+**A faithful translation of a bad conversation is still bad.** The gate checks
+translation fidelity and format validity; nothing asked whether a row teaches
+the behaviour we want, so two populations passed every check while teaching the
+opposite. Both come from ONE upstream batch — rows 19258..20016 of
+`glaive-function-calling-v2-query.jsonl`, the last 759 of 20,017 — and order
+survives translation, so it stayed contiguous all the way to sft rows
+17004..17666 in v6.
+
+| | body (0–19257) | tail (19258–end) |
+|---|---|---|
+| first assistant turn is prose, no call | 8.78% | 96.05% |
+| row never calls a tool at all | 0.04% (8 rows) | 72.20% (548 rows) |
+
+`no-tool-call` answers a tool-shaped question in prose. `deflection-retry` is
+worse: the assistant declines a task its catalogue covers, a canned user turn
+says more functions are available, and it then calls correctly — v6 row 17283
+refuses `check_flight_status` and invents referral URLs first. Those rows
+CONTAIN a call, so a no-call rule misses all 186 of them, and the trained
+target is a competent-sounding refusal.
+
+Matched on the canned turn, not on structure: structure would also catch
+"clarify, then call", which is 1,684 legitimate body rows. Checked in the
+English original AND the Danish, because `orig` matches 735 rows and `da` only
+593. Measured on v6's data: 665 dropped, **zero** outside the batch except the
+8 body no-call rows, and the collateral defects fall with it — reasoning-as-answer
+394 → 25, LaTeX residue 300 → 24.
 
 **Catalogue position carries no signal.** The source lists the called tool
 first in 98.4% of multi-tool rows, so "call tool #1" scored 99.2% right-tool —
@@ -147,3 +176,14 @@ drawn per row.
   distribution discards more than half the generated candidates.
 - No "should have called" counter-metric yet, so refusal spreading to
   answerable questions would not be detected.
+- The pedagogy filters landed AFTER v6 was built and pushed, so
+  `danish-tool-dialogues-v6` still carries all 665 rows — 593 of them in
+  `sft:train` at indices 17004..17666, plus 22/722 in `eval_seen_tools` and
+  13/779 in `eval_unseen_tools`. `abstention` is clean. v40 trains on them.
+- Filtering shifts positional indices, and `make_catalogue` seeds its RNG on
+  the row's position, so a filtered rebuild reshuffles every catalogue rather
+  than only removing rows. Seeding on the stable `idx` instead would make the
+  filters order-independent; not changed here to avoid churn mid-run.
+- 25 rows still ship a reasoning trace as the answer and 24 carry LaTeX
+  residue (`\text{` → TAB + `ext{`, `\boxed` → BS + `oxed`), a 0.13% body-rate
+  background the batch filters do not reach.

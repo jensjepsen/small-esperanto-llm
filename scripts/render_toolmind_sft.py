@@ -186,6 +186,58 @@ def dedupe_names(tools):
     return out
 
 
+# ── pedagogy filters ────────────────────────────────────────────────────────
+# The gate checks that a row is a faithful translation of a well-formed
+# conversation. It does not ask whether the row teaches the behaviour we want,
+# and two populations pass it while teaching the opposite.
+#
+# Both live in ONE upstream batch: rows 19258..20016 of
+# glaive-function-calling-v2-query.jsonl, the last 759 of 20,017. Measured
+# against the other 19,258:
+#
+#                             body      tail
+#   first assistant is prose  8.78%    96.05%
+#   row never calls anything  0.04%    72.20%
+#
+# Order survives translation and rendering, so the batch stays contiguous --
+# it landed at sft rows 17004..17666 in v6, where it supplied 98.2% of the
+# no-call rows and 92.6% of the rows that ship a reasoning trace as the answer.
+#
+#   no-tool-call      the row answers a tool-shaped question in prose. 548 of
+#                     the tail vs 8 of the body, so the rule costs almost
+#                     nothing outside the batch.
+#
+#   deflection-retry  the assistant DECLINES a task its catalogue covers, a
+#                     canned user turn says more functions are available, and
+#                     the model then calls correctly (sft row 17283 refuses
+#                     check_flight_status and invents referral URLs first).
+#                     These CONTAIN a call, so the no-call rule misses all 186
+#                     of them, and the trained target is a competent-sounding
+#                     refusal -- the worst thing in the batch to imitate.
+#
+# Matched on the canned turn rather than on structure. Structure would also
+# catch "clarify, then call", which is 1,684 legitimate body rows: prose-first
+# is normal, prose-first-after-a-refusal is not. The marker is checked in the
+# English original AND the Danish, so a translation variant cannot slip past --
+# `orig` matched 735 rows, `da` only 593.
+NUDGE = re.compile(
+    r"updated some more functions|more functions you can choose|"
+    r"what about now|opdateret nogle flere funktioner|"
+    r"flere funktioner,? du kan vælge", re.I)
+
+
+def pedagogy_reject(rec: dict) -> str | None:
+    """Why this record must not be trained on, or None to keep it."""
+    both = [rec.get("orig") or {}, rec.get("da") or {}]
+    if NUDGE.search(json.dumps(both, ensure_ascii=False)):
+        return "deflection-retry"
+    for conv in both:
+        for m in conv.get("conversations") or []:
+            if m.get("tool_calls"):
+                return None
+    return "no-tool-call"
+
+
 def to_messages(row, pool=None, idx=0, target=0, minimum=2,
                 reasoning=True) -> list[dict] | None:
     tools = [t.get("function") for t in row.get("tools", [])
@@ -270,6 +322,10 @@ def main():
                          "leaving the assistant slot to mean one thing: answer "
                          "the user. The assistant turn still opens so the "
                          "inference context is unchanged.")
+    ap.add_argument("--keep-defective", action="store_true",
+                    help="skip the pedagogy filters (no-tool-call and "
+                         "deflection-retry). v6 and earlier were built without "
+                         "them; pass this to reproduce those corpora.")
     ap.add_argument("--tokenizer",
                     default="jensjepsen/danish-lm-400m-sft-v34-mid")
     ap.add_argument("--subfolder", default="step-30240-agg-0.264")
@@ -289,6 +345,19 @@ def main():
         recs = [r for r in recs if not verdicts.get(r.get("idx"), ["unknown"])]
         print(f"clean-only: {len(recs):,} of {before:,} rows passed the gate",
               flush=True)
+    if not args.keep_defective:
+        before, why = len(recs), Counter()
+        kept = []
+        for r in recs:
+            reason = pedagogy_reject(r)
+            if reason:
+                why[reason] += 1
+            else:
+                kept.append(r)
+        recs = kept
+        print(f"pedagogy filters: {len(recs):,} of {before:,} kept, "
+              f"dropped {dict(why)}", flush=True)
+
     rows = [r["da"] for r in recs]
     print(f"loaded {len(rows):,} translated rows", flush=True)
 
