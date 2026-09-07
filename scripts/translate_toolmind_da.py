@@ -717,11 +717,24 @@ def value_segments(row):
             fn = tc.get("function") or {}
             args = fn.get("arguments") or {}
             if isinstance(args, dict):
-                for k, v in args.items():
-                    if isinstance(v, str) and _translatable_value(v, pinned):
-                        segs.append((("conversations", j, "tool_calls", t_i,
-                                      "function", "arguments", k),
-                                     _value_key(fn.get("name"), k, v), v))
+                # WALK the arguments, do not iterate their top level. A
+                # scalar-only check skipped every list- and object-valued
+                # argument whole: 6,460 values across 212 slots -- 1,766 of
+                # them search_recipes.ingredients -- never reached the lexicon,
+                # so they were neither translated nor pinned and passed through
+                # in English while the dialogue around them was Danish. The
+                # result payloads have always been walked this way, and
+                # _all_descriptions fixed the same blind spot for descriptions;
+                # arguments were the site left behind.
+                for path, v in _walk(args):
+                    if not isinstance(v, str) or not _translatable_value(v, pinned):
+                        continue
+                    # the lexicon key names the SLOT, so a list element is
+                    # keyed by its argument rather than by its index
+                    slot = ".".join(str(x) for x in path if not isinstance(x, int))
+                    segs.append((("conversations", j, "tool_calls", t_i,
+                                  "function", "arguments") + path,
+                                 _value_key(fn.get("name"), slot, v), v))
     return segs
 
 
