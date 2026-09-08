@@ -25,6 +25,27 @@ uv run python scripts/gen_missing_returns.py --src $OUT \
     --batch 8 --concurrency 24 \
     --out $OUT/proposed_returns.jsonl --merge-into $OUT/returns_map.jsonl
 
+# 2.5 DISTRACTOR return fields. Extends the contract so the payload poses a
+#     CHOICE. Measured on v8: 87.9% of answer turns carry exactly one number,
+#     10.6% carry several the gold cites in full, and only 1.2% pose a real
+#     choice -- so "emit the number you just saw" is a perfect policy on 98.5%
+#     of the data, and the answer-turn values cost CE 0.020 against 0.197 for
+#     the Danish around them. They are copied, not selected.
+#
+#     BEFORE --annotate, because the catalogue must DECLARE what the payload
+#     will carry; a payload key the catalogue never declared is the
+#     inconsistency the gates exist to catch.
+uv run python scripts/gen_return_distractors.py --src $OUT \
+    --out $OUT/proposed_distractors.jsonl --merge-into $OUT/returns_map.jsonl
+
+# 2.6 value banks for distractor fields whose shape cannot be generated
+#     (`author`, `meal_breakdown`). Everything with inferable form -- ints,
+#     decimals, dates, timestamps, id-codes, number+unit, closed token sets --
+#     is generated per row instead and needs no bank.
+uv run python scripts/gen_distractor_value_banks.py \
+    --map $OUT/proposed_distractors.jsonl \
+    --out $OUT/distractor_banks.jsonl --per-field 200
+
 # 3. attach the contracts to each row's own tools
 uv run python scripts/translate_toolmind_da.py --out $OUT --n 25000 --annotate
 
@@ -36,17 +57,42 @@ uv run python scripts/render_toolmind_sft.py --in $OUT --clean-only \
 # 5. answer the dangling terminal calls (97% of rows end at one)
 uv run python scripts/gen_tool_answer_turns.py --rows $OUT/sft.jsonl \
     --out $OUT/sft_answered.jsonl --cache scratch/tool_answers_v6/answers.jsonl \
-    --rejects scratch/tool_answers_v6/rejects.jsonl --concurrency 24
+    --rejects scratch/tool_answers_v6/rejects.jsonl --concurrency 24 \
+    --distractors $OUT/proposed_distractors.jsonl
+
+# 5.6 put the declared distractors INTO the payloads, with a per-row value.
+#     After the answers, never before -- and note this is the opposite
+#     ordering from stage 2.5, for a reason. The CONTRACT must precede the
+#     renderer so the catalogue declares the field. The VALUE must follow the
+#     answer, because a distractor is only a distractor if the gold answer
+#     does not cite it, and an answer written against a payload that already
+#     held the field could cite it. Passing --distractors to stage 5 keeps its
+#     cache keys on the pre-distractor contract, so nothing is re-bought.
+#
+#     Covers EVERY tool_result, not just the ones stage 5 spliced: a third
+#     come straight from the source and would otherwise carry a catalogue
+#     declaring fields their payload lacks.
+uv run python scripts/inject_distractors.py \
+    --rows $OUT/sft_answered.jsonl --map $OUT/proposed_distractors.jsonl \
+    --banks $OUT/distractor_banks.jsonl --out $OUT/sft_dist.jsonl
 
 # 6. abstention rows: result lacks the asked-for field / no capable tool
-uv run python scripts/gen_abstention_rows.py --rows $OUT/sft_answered.jsonl \
+#    Consumes the INJECTED file: an abstention row built from the
+#    pre-injection one carries a catalogue declaring distractors its payload
+#    does not have, which is the very inconsistency stage 5.6 exists to close.
+uv run python scripts/gen_abstention_rows.py --rows $OUT/sft_dist.jsonl \
     --n 2500 --concurrency 24 --out scratch/abstention/final.jsonl
 
 # 7. symbolized twins. AFTER the answers, never before: the answer cache keys
 #    on (call, question, returns-fingerprint), so renaming argument keys
 #    upstream misses every cached answer and re-buys them.
+#    Consumes the INJECTED file, so twins carry the distractors too. NOTE the
+#    renaming covers `returns` as well as `parameters` -- a parameters-only
+#    pass leaked the real names through the returns block in 9,412 rows -- so
+#    a distractor appears in a twin under its SYMBOL, never its English name.
+#    Any check that looks it up by name in a twin silently finds nothing.
 uv run python scripts/symbolize_twins.py \
-    --in $OUT/sft_answered.jsonl --out $OUT/sft_twins.jsonl
+    --in $OUT/sft_dist.jsonl --out $OUT/sft_twins.jsonl
 
 # 8. push. It CONSUMES stage 5/7 via --rendered rather than re-rendering, and
 #    only routes: a twin of an eval row goes to eval_seen_sym /
@@ -84,7 +130,15 @@ checks are all green in the failure modes below.
 | 4 | `pedagogy filters:` line in the log | ~665 dropped; rendered corpus has 0 rows without a `tool_call` |
 | 5 | accept rate in the log | ~67%; `answer-cites-irrelevant` should be non-zero at scale |
 | 6 | opening distribution printed by the script | no opening above ~10% |
+| 2.5 | `read N rows from 3 split(s)` in the log | train AND both eval splits. Reading train alone leaves held-out tools with NO distractors — 169/169 of `eval_unseen_tools` in the first v9 build |
+| 2.5 | `ok=` in the log | ~88% of signatures get a distractor; `FINAL-no-distractor` is the residue, mostly array/free-text-only tools |
+| 2.6 | `mean bank size` | >=100 values/field; a narrow bank is a constant by another name |
+| 5 | `stripping distractor fields for N signatures` | present, and `to generate` must NOT jump — if it does, the strip is not matching and answers are being re-bought |
+| 5.6 | `injected` vs `free-no-bank` in the log | `free-no-bank` ~0 once 2.6 has run; `collision-exhausted` <1% |
+| 5.6 | payload width, before vs after | single-key payloads 77% -> ~40%; >=2 numeric 2.7% -> ~26% |
+| 5.6 | `scripts/audit_distractors.py` | 0 answers citing a distractor — the property the whole stage buys |
 | 7 | `N rows in -> 2N out` in the log | every row twinned; `unsymbolizable` ~0 |
+| 7 | distractor keys in twins | SYMBOLIZED under the `r` namespace, and the twin payload keys must match its `returns` keys |
 | 8 | `consuming stage 4/5: … + N symbolized twins` | the push is NOT re-rendering |
 | 8 | `get_dataset_config_names(repo)` | includes `abstention` |
 | 8 | `held-out tools appearing in TRAIN` | 0, and both leakage lines report N/N |

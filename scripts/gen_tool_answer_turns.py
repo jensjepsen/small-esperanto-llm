@@ -644,11 +644,57 @@ async def main_async(args):
     print(f"{len(rows):,} rows from "
           f"{args.rows or args.repo + ':' + args.split}", flush=True)
 
+    # DISTRACTOR FIELDS ARE INVISIBLE TO THIS STAGE, ON PURPOSE.
+    #
+    # `gen_return_distractors` extends the `returns` contract upstream, so by
+    # the time a row arrives here its catalogue declares fields that exist to
+    # be NOT cited. Two things would go wrong if this stage saw them.
+    #
+    # The fingerprint is in the cache key because the schema is an input to
+    # the payload -- but that rule is about a field set that MOVES (v4 flat vs
+    # v5 nested, synonyms deduped), where a cached payload is no longer valid.
+    # A pure ADDITION is not that: the cached result still satisfies every
+    # field it was built for. Letting the addition change the fingerprint would
+    # re-buy ~15k answers to no purpose.
+    #
+    # And a payload generated here WITH the distractor declared would be a
+    # payload the answer was written against -- so the answer might cite it,
+    # which is precisely the property being bought. The value belongs in the
+    # payload only after the answer is fixed; `inject_distractors.py` puts it
+    # there, and covers source-supplied results too, which never reach this
+    # splice at all.
+    strip = {}
+    if args.distractors:
+        for line in args.distractors.open():
+            if line.strip():
+                rec = json.loads(line)
+                strip[rec["sig"]] = {f["felt"] for f in rec["fields"]}
+        print(f"stripping distractor fields for {len(strip):,} signatures "
+              f"(cache keys stay on the pre-distractor contract)", flush=True)
+
+    def _sig(fn):
+        props = ((fn.get("parameters") or {}).get("properties") or {})
+        return f"{fn.get('name')}({','.join(sorted(props))})"
+
+    def _strip(spec):
+        names = strip.get(_sig(spec))
+        if not names:
+            return spec
+        rets = (spec.get("returns") or {}).get("properties") or {}
+        if not (names & set(rets)):
+            return spec
+        out = json.loads(json.dumps(spec))
+        props = out["returns"]["properties"]
+        for n in names:
+            props.pop(n, None)
+        return out
+
     jobs = []
     for i, r in enumerate(rows):
         d = dangling(r)
         if d:
-            jobs.append((i, d))
+            call_at, call, spec, question = d
+            jobs.append((i, (call_at, call, _strip(spec), question)))
     print(f"{len(jobs):,} dangling terminal calls "
           f"({100*len(jobs)/max(1,len(rows)):.1f}% of rows)", flush=True)
 
@@ -797,6 +843,10 @@ def main():
     ap.add_argument("--split", default="train")
     ap.add_argument("--rows", type=Path, default=None,
                     help="local jsonl instead of the hub")
+    ap.add_argument("--distractors", type=Path, default=None,
+                    help="distractor map; their fields are stripped from the "
+                         "spec so cache keys stay on the pre-distractor "
+                         "contract and payloads stay free of them")
     ap.add_argument("--out", type=Path,
                     default=Path("scratch/tool_answers/answered.jsonl"))
     ap.add_argument("--cache", type=Path,
