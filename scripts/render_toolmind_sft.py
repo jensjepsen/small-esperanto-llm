@@ -90,6 +90,173 @@ def strip_think(text: str) -> str:
     return LEAD_TAG.sub("", out).strip()   # tag can sit inside the think block
 
 
+# ── symbolized twins ────────────────────────────────────────────────────────
+#
+# Replace parameter KEY names with per-row random symbols, so scoring well
+# requires reading the Danish description instead of recalling that `location`
+# means location. Measured on v41 step-30224: the same five eval_unseen rows
+# score argF1 1.000 with real key names and 0.600 with symbols -- so roughly
+# 40 points of `tool_unseen` is name recall rather than schema comprehension.
+#
+# Random per row, not p1..pN. A small recurring alphabet gets well-trained
+# embeddings and can act as generic slot markers; a symbol derived from
+# (source idx, real key) appears essentially once in the corpus, so no prior
+# can attach to it. md5, not hash(): PYTHONHASHSEED would make renders
+# irreproducible.
+#
+# Applied AFTER the answer stage, on rendered messages. gen_tool_answer_turns
+# keys its cache on (call, question, returns-fingerprint), so renaming argument
+# keys upstream would miss every cached answer and re-buy ~$5.50 of them.
+#
+# PARAMETERS ONLY. `returns` keys are what the answer turn cites and what the
+# answer cache fingerprints; every argument error the probes have surfaced
+# (`size` for `sides`, `people: "8"`, `floor: "kaffe"`) is a parameter problem.
+SYM_ALPHA = "abcdefghijklmnopqrstuvwxyz"
+
+
+def param_symbol(idx: int, key: str, kind: str = "p", n: int = 4) -> str:
+    """A symbol for `key`, unique to this row and this NAMESPACE.
+
+    Parameters and return fields are disjoint namespaces: a tool taking a
+    `location` argument and returning a `location` field are describing two
+    different things, and giving them one symbol would assert an identity the
+    schema never claims. Hashing the namespace in keeps them apart -- and it
+    is also what stops the returns block leaking the parameter's real name,
+    which a parameters-only pass did in 9,412 of 18,704 rows.
+    """
+    h = hashlib.md5(f"{idx}:{kind}:{key}".encode()).hexdigest()
+    return SYM_ALPHA[int(h[:2], 16) % 26] + h[2:2 + n]
+
+
+def _rename_keys(node, kmap):
+    """Rename dict keys anywhere. For PAYLOADS, where every key is a field."""
+    if isinstance(node, dict):
+        return {kmap.get(k, k): _rename_keys(v, kmap) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_rename_keys(v, kmap) for v in node]
+    return node
+
+
+def _schema_field_names(props, out):
+    """Field names declared by a JSON-Schema `properties` block.
+
+    Descends only through `properties` and `items`. Walking every dict key
+    instead collects the schema's own vocabulary -- `description`, `type` --
+    and symbolizing THOSE corrupts the schema rather than the field names.
+    """
+    if not isinstance(props, dict):
+        return
+    for name, sub in props.items():
+        if name not in out:
+            out.append(name)
+        if isinstance(sub, dict):
+            _schema_field_names(sub.get("properties") or {}, out)
+            items = sub.get("items")
+            if isinstance(items, dict):
+                _schema_field_names(items.get("properties") or {}, out)
+
+
+def _rename_schema(props, kmap):
+    """Rename declared field names, leaving schema keywords alone."""
+    if not isinstance(props, dict):
+        return props
+    out = {}
+    for name, sub in props.items():
+        if isinstance(sub, dict):
+            sub = dict(sub)
+            if "properties" in sub:
+                sub["properties"] = _rename_schema(sub["properties"], kmap)
+            if isinstance(sub.get("items"), dict) and "properties" in sub["items"]:
+                sub["items"] = dict(sub["items"])
+                sub["items"]["properties"] = _rename_schema(
+                    sub["items"]["properties"], kmap)
+        out[kmap.get(name, name)] = sub
+    return out
+
+
+def _mapping(idx, keys, kind):
+    kmap = {}
+    for k in keys:
+        sym, n = param_symbol(idx, k, kind), 4
+        while sym in kmap.values():
+            n += 1
+            sym = param_symbol(idx, k, kind, n)
+        kmap[k] = sym
+    return kmap
+
+
+def symbolize_params(messages, idx, relevance=None):
+    """Rename parameter AND return-field names to per-row symbols.
+
+    Two independent mappings. Descriptions, tool names, values, questions and
+    answer prose are untouched -- the descriptions are the only remaining route
+    from the question to the right slot, which is the point.
+
+    `relevance` is meta.answer_relevance: the payload FIELDS each generated
+    answer was written to cite. tool_answer scores precision against them, so
+    they are remapped too or the twin's answer metric silently breaks.
+    Returns (messages, relevance) or None if the row cannot be symbolized.
+    """
+    out = json.loads(json.dumps(messages))
+    head = out[0].get("content") or ""
+    if f"{CATALOG_LABEL}:\n" not in head:
+        return None
+    rest = head.split(f"{CATALOG_LABEL}:\n", 1)[1]
+    try:
+        tools, end = json.JSONDecoder().raw_decode(rest)
+    except Exception:
+        return None
+    tail = rest[end:]
+
+    pkeys, rkeys = [], []
+    for t in tools:
+        for k in ((t.get("parameters") or {}).get("properties") or {}):
+            if k not in pkeys:
+                pkeys.append(k)
+        _schema_field_names((t.get("returns") or {}).get("properties") or {}, rkeys)
+    if not pkeys and not rkeys:
+        return None
+    pmap, rmap = _mapping(idx, pkeys, "p"), _mapping(idx, rkeys, "r")
+
+    for t in tools:
+        params = t.get("parameters") or {}
+        props = params.get("properties") or {}
+        if props:
+            params["properties"] = {pmap.get(k, k): v for k, v in props.items()}
+        req = params.get("required")
+        if isinstance(req, list):
+            params["required"] = [pmap.get(x, x) for x in req]
+        rets = t.get("returns") or {}
+        if rets.get("properties"):
+            rets["properties"] = _rename_schema(rets["properties"], rmap)
+    out[0]["content"] = (f"{CATALOG_LABEL}:\n"
+                         + json.dumps(tools, ensure_ascii=False) + tail)
+
+    for m in out:
+        if m.get("role") == "tool_call":
+            try:
+                call = json.loads(m["content"])
+            except Exception:
+                return None
+            args = call.get("arguments")
+            if isinstance(args, dict):
+                call["arguments"] = {pmap.get(k, k): v for k, v in args.items()}
+            m["content"] = json.dumps(call, ensure_ascii=False)
+        elif m.get("role") == "tool_result":
+            try:
+                payload = json.loads(m["content"])
+            except Exception:
+                continue                  # non-JSON result: nothing to rename
+            m["content"] = json.dumps(_rename_keys(payload, rmap),
+                                      ensure_ascii=False)
+
+    rel = None
+    if relevance:
+        rel = [{**e, "fields": [rmap.get(f, f) for f in (e.get("fields") or [])]}
+               for e in relevance]
+    return out, rel
+
+
 # ── catalogue realism ───────────────────────────────────────────────────────
 #
 # The source corpus lists the tool that gets called FIRST in 98.4% of

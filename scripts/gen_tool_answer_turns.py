@@ -286,6 +286,9 @@ def cache_key(call, question, spec):
 
 # ── gate ────────────────────────────────────────────────────────────────────
 
+LIST_ENUM = re.compile(r"(?m)^\s*\d+[.)](?=\s)")
+
+
 def gate(result, answer, spec, context="", relevant=None):
     """Why each check exists is in the reason string; returns None if clean.
 
@@ -298,7 +301,14 @@ def gate(result, answer, spec, context="", relevant=None):
     if not isinstance(answer, str) or not answer.strip():
         return "answer-empty"
     answer = answer.strip()
-    if len(answer.split()) > 70:
+    # The cap exists to stop the model padding, but some tools legitimately
+    # return long text: a lyrics or article tool cannot answer in 70 words
+    # without truncating the thing it was asked for. Raise the cap when the
+    # payload itself is long -- 137 v7 rows were rejected for reciting the
+    # lyrics they were asked to fetch.
+    longest = max((len(str(v).split()) for _p, v in _leaves(result)), default=0)
+    cap = 70 if longest <= 40 else min(400, 70 + longest)
+    if len(answer.split()) > cap:
         return "answer-too-long"
     if META.search(answer):
         return "answer-is-meta"
@@ -374,7 +384,14 @@ def gate(result, answer, spec, context="", relevant=None):
     # allow -- which is what the clean-pair control caught.
     allowed = _nums(json.dumps(result, ensure_ascii=False) + " " + context)
     allowed |= pool
-    for m in NUM.finditer(answer):
+    # A digit opening a line and followed by "." or ")" is a LIST ENUMERATOR,
+    # not a quantity. The gate returns the first unexplained number it finds,
+    # so every answer that formats a payload list as "1. … 2. …" tripped on
+    # the 1 -- 654 rows in v7, 23% of all invents-number flags and the single
+    # largest reason in the corpus. Blanked before scanning rather than
+    # skipped in the loop, so a real number later in the line is still caught.
+    scan = LIST_ENUM.sub(lambda m: " " * len(m.group()), answer)
+    for m in NUM.finditer(scan):
         if not _traces_to(m.group(), allowed):
             return f"answer-invents-number:{m.group()}"
     return None
