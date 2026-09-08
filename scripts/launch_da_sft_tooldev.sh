@@ -79,9 +79,25 @@
 #   tool_refusal no_action  answerable prompts the model neither calls for nor
 #                           declines. The deflection metric.
 #
-#   gsm8k / ifeval    the maths-cap test. If gsm8k holds and ifeval does not
-#                     fall, the block is overweighted in the main mix and the
-#                     cap should move there permanently.
+#   gsm8k / ifeval    the maths-cap test. ANSWERED, and the answer is NO for
+#                     gsm8k: 10k is past the cliff. Controlled probe, same 30
+#                     rows, k=12, matched at 17% of each run --
+#
+#                       tooldev @2832 (maths@10k)  greedy  0.0%  per-sample 1.4%
+#                       v41     @7556 (full maths) greedy 23.3%  per-sample 14.2%
+#
+#                     "17% is early" is ruled out by the matched fraction. So
+#                     DO NOT promote this cap to the main mix. 60k each is the
+#                     untested middle: still a third off the corpus, 6x more
+#                     maths than this.
+#
+#                     IFEval DID survive: 36.8 / 35.0 here against v41's
+#                     36.8 / 36.9 at matched steps -- so the IF benefit the
+#                     July word-problem ablation found is about exposure, not
+#                     volume.
+#
+#                     For SCREENING this is fine: gsm8k is irrelevant when the
+#                     question is about tool data.
 #
 # NOT COMPARABLE TO v41 OR v40. Different mix, different density, fewer steps.
 # Compare tool-dev runs to each other only. A change that helps at 4.67% tool
