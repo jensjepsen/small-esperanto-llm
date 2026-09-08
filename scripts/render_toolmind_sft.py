@@ -401,7 +401,10 @@ def main():
         if m is None:
             drops["unrenderable"] += 1
             continue
-        rendered.append({"messages": m})
+        # idx, not the position: it is the row's stable source identity,
+        # and it is what lets the PUSH consume this file instead of
+        # re-rendering. Everything downstream joins on it.
+        rendered.append({"idx": src_idx[i], "messages": m})
         if False:
             ms = to_messages(r, pool, i, args.catalogue_size,
                              args.catalogue_min, rmap, symbolic=True,

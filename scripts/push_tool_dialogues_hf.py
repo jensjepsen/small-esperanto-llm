@@ -237,6 +237,19 @@ def main():
                          "card, which de-registers any config it does not know "
                          "about -- a separate push of `abstention` silently "
                          "disappeared the next time the main configs went up.")
+    ap.add_argument("--rendered", type=Path, default=None,
+                    help="CONSUME stage 4/5 output (sft_answered.jsonl) "
+                         "instead of re-rendering. This script used to "
+                         "re-render from translated.jsonl, so every stage-4 "
+                         "behaviour had to be threaded through twice -- which "
+                         "is how the pedagogy filters came to apply to "
+                         "sft.jsonl and to nothing that reached the Hub. "
+                         "Joined on `idx`, which the renderer now emits.")
+    ap.add_argument("--digest", action="store_true",
+                    help="print a per-split SHA of the assembled messages. "
+                         "Two invocations that differ only in --rendered MUST "
+                         "print the same digests; that is the equivalence "
+                         "check for consuming stage 4 rather than redoing it.")
     ap.add_argument("--keep-defective", action="store_true",
                     help="skip the pedagogy filters; reproduces v6 and "
                          "earlier, which shipped without them.")
@@ -300,6 +313,22 @@ def main():
     if args.catalogue_size:
         print(f"distractor pool: {len(pool):,} non-held-out tools; catalogues "
               f"shuffled and padded to {args.catalogue_size}", flush=True)
+    pre = {}
+    if args.rendered:
+        for line in args.rendered.open():
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            if "idx" in rec:
+                pre[rec["idx"]] = rec["messages"]
+        print(f"consuming stage 4/5: {len(pre):,} rendered rows from "
+              f"{args.rendered.name}", flush=True)
+        missing = [r["idx"] for r in clean if r["idx"] not in pre]
+        if missing:
+            print(f"  {len(missing):,} gate-clean rows absent from the "
+                  f"rendered file (dropped downstream); skipping them",
+                  flush=True)
+
     data = {s: [] for s in SPLITS}
     dropped = 0
     for _i, r in enumerate(clean):
@@ -322,12 +351,19 @@ def main():
             split = "train"
         # r["idx"], not _i: the seed must be the row's source identity,
         # or filtering redraws every surviving row's catalogue.
-        msgs = to_messages(da, pool, r["idx"], args.catalogue_size,
-                           args.catalogue_min,
-                           reasoning=not args.no_reasoning)
-        if msgs is None:
-            continue
-        if answers:
+        if args.rendered:
+            msgs = pre.get(r["idx"])
+            if msgs is None:
+                continue            # filtered out downstream; not ours to keep
+        else:
+            msgs = to_messages(da, pool, r["idx"], args.catalogue_size,
+                               args.catalogue_min,
+                               reasoning=not args.no_reasoning)
+            if msgs is None:
+                continue
+        if answers and not args.rendered:
+            # Stage 5 already spliced these when --rendered is used;
+            # re-splicing would duplicate the answer turn.
             # Splice the generated result + answer onto the row's dangling
             # terminal call. Rendered here rather than read from a pre-made
             # file because the catalogue is built in THIS loop -- the answer
@@ -404,6 +440,21 @@ def main():
     print(f"eval_seen tools also in train: "
           f"{len(seen_tools & train_tools)}/{len(seen_tools)}")
     assert not leak, f"held-out tools leaked into train: {sorted(leak)[:5]}"
+
+    if args.digest:
+        import hashlib as _h
+        print("--- per-split message digests ---", flush=True)
+        for sp in SPLITS:
+            blob = json.dumps([row["messages"] for row in data[sp]],
+                              ensure_ascii=False, sort_keys=True)
+            ans = sum(1 for row in data[sp]
+                      for i, m in enumerate(row["messages"])
+                      if m["role"] == "tool_result"
+                      and i + 1 < len(row["messages"])
+                      and row["messages"][i + 1]["role"] == "assistant")
+            print(f"  {sp:<20} {len(data[sp]):6,} rows  {ans:6,} answer turns  "
+                  f"sha256={_h.sha256(blob.encode()).hexdigest()[:16]}",
+                  flush=True)
 
     if args.dry_run:
         print("\ndry run")
