@@ -43,6 +43,20 @@
 # citgen, sciq, icl and extraction are dropped -- icl at 1,000 rows and
 # extraction at 200 long multi-shot prompts are most of the sweep cost.
 #
+# BATCH 16 x GA 8, NOT 128 x 1 -- effective batch is the same 128.
+#
+# With --flatten-packing, --batch-size counts SAMPLES, not tokens:
+# DataCollatorWithFlattening concatenates variable-length conversations with no
+# padding, so tokens-per-step is set by the length distribution of the mix.
+# Capping maths removed almost all the CHEAP rows -- algebra averages 51
+# tokens, arith-chain 43, metamath 275 -- leaving the sources that now dominate
+# at ~1,000+ (extraction 1,372, tool-dialogues 1,134, rc-v1 1,012). Mean
+# tokens-per-sample rose roughly an order of magnitude, and 128 samples at
+# 8048 max_length OOMed at step 17 of 16,995 on an 80GB H100.
+#
+# This is the trap in any config that reshapes the mix: the same batch size is
+# a different amount of memory. Hold TOKENS constant, not samples.
+#
 # READ FIRST, in this order:
 #
 #   tool_unseen_sym   symbolized twin of eval_unseen. `tool_unseen` withholds
@@ -89,6 +103,9 @@ export WANDB_PROJECT=danish-lm-sft
 export WANDB_API_KEY=$(grep -m1 password ~/.netrc | awk '{print $2}')
 export ESPLLM_NUM_PROC=8
 export ESPLLM_LIGER=0          # mutually exclusive with torch.compile
+# 8.85 GiB sat reserved-but-unallocated when this OOMed; the allocator's own
+# advice for that pattern.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export ESPLLM_TOOL_EVAL_REPO=${TOOL_REPO:-jensjepsen/danish-tool-dialogues-v8}
 
 TOOL_DATA=${TOOL_REPO:-jensjepsen/danish-tool-dialogues-v8}
@@ -137,7 +154,7 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
     danish-rc-v1=60000 \
     danish-wiki-closedqa-stem-v1=60000 \
     danish-extraction-v1=60000 \
-  --epochs 3 --batch-size 128 --gradient-accumulation 1 \
+  --epochs 3 --batch-size 16 --gradient-accumulation 8 \
   --optim adamw_bnb_8bit \
   --learning-rate 3e-5 --lr-scheduler constant_with_warmup --warmup-steps 500 \
   --max-length 8048 \
