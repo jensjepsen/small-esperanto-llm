@@ -708,8 +708,15 @@ class DownstreamEvalCallback(TrainerCallback):
         # have been emitting calls.
         outs = self._generate(model, prompts, self.TOOL_MAX_NEW,
                               skip_special=False)
-        scores, parsed, named = [], [], []
+        scores, parsed, named, marked = [], [], [], []
         for out, (_, gold) in zip(outs, items):
+            # The MARKER alone, before parsing. call_rate counts calls that
+            # parse, so a malformed call and total silence produce the same
+            # number -- and they are different failures: v40 emitted
+            # `{"name":…,"arguments":{…},"time":…}` at one checkpoint (marker
+            # present, structure wrong) and no marker at all at the next.
+            # Their difference is the malformed-call rate.
+            marked.append(1.0 if self._CALL_RE.search(out) else 0.0)
             m = self._CALL_RE.search(out) or self._CALL_FALLBACK.search(out)
             if not m:
                 scores.append(0.0), parsed.append(0.0), named.append(0.0)
@@ -738,11 +745,13 @@ class DownstreamEvalCallback(TrainerCallback):
                   for k, v in pa.items()}
             scores.append(self._pair_f1(pp, gp))
         mean = lambda v: sum(v) / len(v) if v else 0.0  # noqa: E731
-        print(f"  [downstream] {name}: emitted-a-call {100*mean(parsed):.1f}%  "
+        print(f"  [downstream] {name}: emitted-a-marker {100*mean(marked):.1f}%"
+              f"  emitted-a-call {100*mean(parsed):.1f}%  "
               f"right-tool {100*mean(named):.1f}%  argF1 {100*mean(scores):.1f}%",
               flush=True)
         self._extra_metrics.update({
             f"eval_downstream_{name}_call_rate": mean(parsed),
+            f"eval_downstream_{name}_marker_rate": mean(marked),
             f"eval_downstream_{name}_tool_acc": mean(named),
             # Explicit alias for the headline. The bare `eval_downstream_{name}`
             # key IS the argF1, but nothing about the name says so, and the two
@@ -1011,12 +1020,23 @@ class DownstreamEvalCallback(TrainerCallback):
                               skip_special=False)
         hit = {"no-tool": 0, "absent-field": 0, "answerable": 0}
         tot = {"no-tool": 0, "absent-field": 0, "answerable": 0}
+        noact = 0
         for out, kind in zip(outs, [g for _, g in items]):
             called = bool(self._CALL_RE.search(out)
                           or self._CALL_FALLBACK.search(out))
             refused = (not called) and bool(self._DECLINE.search(out))
             tot[kind] += 1
             hit[kind] += refused          # for `answerable` this counts errors
+            # Neither called nor declined: the model promised to act and did
+            # not ("Selvfølgelig, lad mig kaste terningerne for dig."). This
+            # is invisible to both halves of the metric -- it earns no credit
+            # on the positives and costs nothing on the negatives -- which is
+            # how wrongly-refused stayed at 0.0% through an 8pp fall in
+            # emission. It is also the exact signature of the deflection rows
+            # v7 removes, so it is the number that tests whether removing them
+            # helped.
+            if kind == "answerable" and not called and not refused:
+                noact += 1
         nt_n, af_n, ng_n = tot["no-tool"], tot["absent-field"], tot["answerable"]
         pos_n = nt_n + af_n
         pos = (hit["no-tool"] + hit["absent-field"]) / pos_n if pos_n else 0.0
@@ -1026,7 +1046,8 @@ class DownstreamEvalCallback(TrainerCallback):
         print(f"  [downstream] tool_refusal: no-tool {r('no-tool', nt_n):.1f}% "
               f"(n={nt_n})  absent-field {r('absent-field', af_n):.1f}% "
               f"(n={af_n})  wrongly-refused {r('answerable', ng_n):.1f}% "
-              f"(n={ng_n})  balanced {100*bal:.1f}%", flush=True)
+              f"(n={ng_n})  no-action {100*noact/ng_n if ng_n else 0.0:.1f}%"
+              f"  balanced {100*bal:.1f}%", flush=True)
         self._extra_metrics.update({
             "eval_downstream_tool_refusal_correct": pos,
             "eval_downstream_tool_refusal_no_tool":
@@ -1035,6 +1056,8 @@ class DownstreamEvalCallback(TrainerCallback):
                 hit["absent-field"] / af_n if af_n else 0.0,
             "eval_downstream_tool_refusal_false":
                 hit["answerable"] / ng_n if ng_n else 0.0,
+            "eval_downstream_tool_refusal_no_action":
+                noact / ng_n if ng_n else 0.0,
         })
         return bal
 
