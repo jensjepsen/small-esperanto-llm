@@ -89,14 +89,23 @@ def _matches_text(pred: str, gold: str) -> bool:
 
 # ── the callback ────────────────────────────────────────────────────────────
 
-class DownstreamEvalCallback(TrainerCallback):
-    """Runs downstream generation evals on every `on_evaluate` step and
-    injects the accuracy metrics into the eval-metrics dict so HF Trainer
-    logs them (and wandb picks them up)."""
+class DownstreamEvaluator:
+    """Loads the eval sets, generates, and scores. Knows nothing about Trainer.
+
+    Split out of the callback so the same code can score a checkpoint OFFLINE
+    -- re-scoring an old run under a corrected metric, or A/B-ing a scorer
+    change without a 3-hour training run. It is also where a vLLM generation
+    backend would land: everything funnels through _generate(), so swapping it
+    changes no scorer.
+
+    The split is at the only real seam: Trainer coupling was confined to
+    on_evaluate/on_save and the top-k checkpoint bookkeeping, and NOTHING in
+    the loaders or scorers touched trainer state.
+    """
 
     def __init__(self, tokenizer, evals=("gsm8k", "sciq", "citgen"),
                  n_per_eval=None, batch_size=32, max_new_gsm=300,
-                 max_new_short=48, seed=42, top_k=0, output_dir=None):
+                 max_new_short=48, seed=42):
         """n_per_eval: None or 0 = use full test set (default, no sampling bias).
         Non-zero = randomly subsample with a rotating seed per eval step so
         bias averages out across the trajectory rather than being pinned to
@@ -118,11 +127,6 @@ class DownstreamEvalCallback(TrainerCallback):
         self.seed = seed
         self._cache = {}  # eval_name → list of (prompt, gold) tuples
         self._end_id = tokenizer.convert_tokens_to_ids(END)
-        self.top_k = top_k
-        self.output_dir = output_dir
-        self.top: list[tuple[float, int]] = []  # (agg_score, step), desc by score
-        self._preserve_pending: tuple[int, float] | None = None
-        self._demote_pending: list[int] = []
         # Diagnostic sub-metrics a scorer wants logged but which must NOT enter
         # the top-k aggregate: adding a breakdown should never silently
         # reweight checkpoint selection toward whichever eval reports the most
@@ -1250,6 +1254,61 @@ class DownstreamEvalCallback(TrainerCallback):
     def _score_textman_rewrite(self, model) -> float:
         return self._score_chrf(model, "textman_rewrite", max_new=512)
 
+
+    def run(self, model):
+        """Score every configured eval. Returns (metrics, extra_metrics)."""
+        self._extra_metrics = {}
+        out = {}
+        for name in self.evals:
+            score = getattr(self, f"_score_{name}")(model)
+            out[f"eval_downstream_{name}"] = score
+            print(f"  [downstream] {name}: {100*score:.1f}%", flush=True)
+        return out, self._extra_metrics
+
+
+class DownstreamEvalCallback(TrainerCallback):
+    """Thin TrainerCallback over DownstreamEvaluator.
+
+    Owns only what Trainer needs: the on_evaluate/on_save hooks and the top-K
+    checkpoint bookkeeping. All scoring lives in the evaluator.
+    """
+
+    def __init__(self, tokenizer, evals=("gsm8k", "sciq", "citgen"),
+                 n_per_eval=None, batch_size=32, max_new_gsm=300,
+                 max_new_short=48, seed=42, top_k=0, output_dir=None):
+        self.ev = DownstreamEvaluator(
+            tokenizer, evals=evals, n_per_eval=n_per_eval,
+            batch_size=batch_size, max_new_gsm=max_new_gsm,
+            max_new_short=max_new_short, seed=seed)
+        self.evals = self.ev.evals
+        self.tokenizer = tokenizer
+        self.top_k = top_k
+        self.output_dir = output_dir
+        self.top: list[tuple[float, int]] = []  # (agg_score, step), desc
+        self._preserve_pending: tuple[int, float] | None = None
+        self._demote_pending: list[int] = []
+
+    # The scorers write to the EVALUATOR's dict. Without this, a caller that
+    # invokes cb._score_x(model) directly and then reads cb._extra_metrics
+    # gets an empty dict -- silently, with the headline score still correct.
+    # The three-way equivalence check caught exactly that.
+    @property
+    def _extra_metrics(self):
+        return self.ev._extra_metrics
+
+    @_extra_metrics.setter
+    def _extra_metrics(self, value):
+        self.ev._extra_metrics = value
+
+    # Delegate the scorer surface so existing callers and tests that reach for
+    # cb._score_x / cb._load_x / cb._get keep working unchanged.
+    def __getattr__(self, name):
+        if name.startswith(("_score_", "_load_", "_tool_", "_answer_")) or \
+                name in ("_get", "_generate", "_cache", "_maybe_subsample",
+                         "PER_EVAL_CAP", "TOOL_REPO"):
+            return getattr(self.__dict__["ev"], name)
+        raise AttributeError(name)
+
     # ── HF Trainer hook ────────────────────────────────────────────────────
 
     def on_evaluate(self, args, state, control, model=None, metrics=None,
@@ -1258,15 +1317,9 @@ class DownstreamEvalCallback(TrainerCallback):
             return control
         model.eval()
         t0 = time.time()
-        downstream_metrics = {}
-        self._extra_metrics = {}
-        for name in self.evals:
-            score = getattr(self, f"_score_{name}")(model)
-            key = f"eval_downstream_{name}"
-            downstream_metrics[key] = score
-            if metrics is not None:
-                metrics[key] = score  # for HF logging on same-step
-            print(f"  [downstream] {name}: {100*score:.1f}%", flush=True)
+        downstream_metrics, _ = self.ev.run(model)
+        if metrics is not None:
+            metrics.update(downstream_metrics)
         # Meta-metric: if both arc splits ran, log their mean.
         if ("arc_easy" in self.evals) and ("arc_challenge" in self.evals):
             arc_mean = (downstream_metrics["eval_downstream_arc_easy"]
