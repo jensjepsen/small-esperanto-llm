@@ -43,7 +43,7 @@
 # citgen, sciq, icl and extraction are dropped -- icl at 1,000 rows and
 # extraction at 200 long multi-shot prompts are most of the sweep cost.
 #
-# BATCH 16 x GA 8, NOT 128 x 1 -- effective batch is the same 128.
+# BATCH 32 x GA 4 -- effective batch 128, the same as v41.
 #
 # With --flatten-packing, --batch-size counts SAMPLES, not tokens:
 # DataCollatorWithFlattening concatenates variable-length conversations with no
@@ -56,6 +56,12 @@
 #
 # This is the trap in any config that reshapes the mix: the same batch size is
 # a different amount of memory. Hold TOKENS constant, not samples.
+#
+# 16 was an over-correction. Measured at batch 16: 19.7 GB of 80 used, 86% GPU
+# util, 1.3 it/s, ETA 3h39m -- so ~0.98 GB of activations per sample once the
+# ~4 GB of weights and optimizer state are subtracted. That puts batch 32 at
+# ~35 GB and batch 128 at ~125 GB, which is why 128 OOMed. 32 halves the
+# per-step launch overhead of 16 while still using under half the card.
 #
 # READ FIRST, in this order:
 #
@@ -154,7 +160,7 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
     danish-rc-v1=60000 \
     danish-wiki-closedqa-stem-v1=60000 \
     danish-extraction-v1=60000 \
-  --epochs 3 --batch-size 16 --gradient-accumulation 8 \
+  --epochs 3 --batch-size 32 --gradient-accumulation 4 \
   --optim adamw_bnb_8bit \
   --learning-rate 3e-5 --lr-scheduler constant_with_warmup --warmup-steps 500 \
   --max-length 8048 \
