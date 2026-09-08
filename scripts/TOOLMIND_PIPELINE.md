@@ -42,11 +42,22 @@ uv run python scripts/gen_tool_answer_turns.py --rows $OUT/sft.jsonl \
 uv run python scripts/gen_abstention_rows.py --rows $OUT/sft_answered.jsonl \
     --n 2500 --concurrency 24 --out scratch/abstention/final.jsonl
 
-# 7. push. --abstention goes through THIS script, see "Gotchas".
+# 7. symbolized twins. AFTER the answers, never before: the answer cache keys
+#    on (call, question, returns-fingerprint), so renaming argument keys
+#    upstream misses every cached answer and re-buys them.
+uv run python scripts/symbolize_twins.py \
+    --in $OUT/sft_answered.jsonl --out $OUT/sft_twins.jsonl
+
+# 8. push. It CONSUMES stage 5/7 via --rendered rather than re-rendering, and
+#    only routes: a twin of an eval row goes to eval_seen_sym /
+#    eval_unseen_sym, a twin of a train row joins train. Drop --rendered and it
+#    falls back to re-rendering, which is how the pedagogy filters once applied
+#    to sft.jsonl and to nothing that reached the Hub.
+#    --abstention goes through THIS script, see "Gotchas".
 uv run python scripts/push_tool_dialogues_hf.py --src $OUT \
     --repo jensjepsen/danish-tool-dialogues-vN \
     --catalogue-size 6 --catalogue-min 2 --no-reasoning \
-    --answers scratch/tool_answers_v6/answers.jsonl \
+    --rendered $OUT/sft_twins.jsonl \
     --abstention scratch/abstention/final.jsonl
 ```
 
@@ -67,13 +78,16 @@ checks are all green in the failure modes below.
 
 | After | Check | Expect |
 |---|---|---|
-| 1 | `GATE: n/m clean` in the log | ~99%, and all 10 planted controls FAIL |
+| 1 | `GATE: n/m clean` in the log | ~99%, and all 11 planted controls FAIL |
 | 2,3 | `scripts/build_returns_groups.py` | declared-vs-present F1 ~97% (v5: 62%) |
 | 4 | `trainer check over 400 rows` | CLEAN |
 | 4 | `pedagogy filters:` line in the log | ~665 dropped; rendered corpus has 0 rows without a `tool_call` |
 | 5 | accept rate in the log | ~67%; `answer-cites-irrelevant` should be non-zero at scale |
 | 6 | opening distribution printed by the script | no opening above ~10% |
-| 7 | `get_dataset_config_names(repo)` | includes `abstention` |
+| 7 | `N rows in -> 2N out` in the log | every row twinned; `unsymbolizable` ~0 |
+| 8 | `consuming stage 4/5: … + N symbolized twins` | the push is NOT re-rendering |
+| 8 | `get_dataset_config_names(repo)` | includes `abstention` |
+| 8 | `held-out tools appearing in TRAIN` | 0, and both leakage lines report N/N |
 
 ## Why the corpus is shaped this way
 
@@ -182,6 +196,52 @@ us paying for text we then delete.
 first in 98.4% of multi-tool rows, so "call tool #1" scored 99.2% right-tool —
 better than the trained model. Catalogues are shuffled and padded to a size
 drawn per row.
+
+**The gate answers two different questions.** Eleven of its checks compare the
+TRANSLATION to its SOURCE — did we change a key, lose a token, leave a segment
+in English. Those cannot see a row that was already broken in English, which is
+how the deflection batch, `result-extra-fields` and the injected identifiers all
+got through. `call-args-undeclared` and `required-undeclared` are the first
+checks that read the row alone and ask whether it is internally valid:
+`convert_currency` declares `(amount, from_currency, to_currency)` and is called
+with `(amount, source_currency, target_currency)`, because glaive invented every
+dialogue independently. 61 rows in v7.
+
+They run AFTER translation, not as a source skip, because `--annotate`,
+`--respec` and the symbolizer all rewrite rows afterwards and could reintroduce
+the defect; a gate re-runs after each of them. That also means the symbolizer's
+output is self-consistency-checked for free.
+
+**Gate artifacts fixed, and why they mattered.** Rejections were computed and
+then bypassed until the push started consuming stage 5, so a false rejection
+used to cost nothing and now costs a training row. Four were found by
+inspecting what was actually being rejected in v7:
+
+| artifact | rows | fix |
+|---|---:|---|
+| list enumerators (`1.` of a numbered list) read as invented numbers | 654 | blank enumerators before the number scan |
+| 70-word cap applied to tools that RETURN long text (lyrics) | 161 | cap scales with the longest payload value |
+| delimited fields (`"A,B,C"`) and trailing punctuation | 29 | split on delimiters, allow a 6-word prefix |
+| digits scraped out of base64/IDs/URLs, defeating the "nothing to cite" exemption | 100 | `_opaque()` keeps them out of the numeric pool |
+
+4,841 → 3,903 failures, planted controls unaffected. What remains is largely
+real: ~2,250 fabricated quantities, ~1,200 payloads violating their own
+contract. A residue is structurally unscoreable — 224 rows where the answer
+TRANSLATES an English payload into Danish, which no substring test can validate.
+
+**Symbolized twins.** Parameter and return-field names become per-row md5
+symbols in DISJOINT namespaces: a `location` argument and a `location` return
+field are different things and must not share a symbol, and namespacing is also
+what stops the returns block leaking the parameter's real name (9,412 of 18,704
+rows under a parameters-only pass). Schema walkers descend only through
+`properties`/`items` — walking every dict key symbolizes the schema's own
+vocabulary (`description`, `type`) and corrupts it.
+
+The point is measurement: `tool_unseen` withholds the tool NAME but keeps the
+parameter vocabulary, so it scores name substitution. Same five rows on v41
+step-30224, only the key strings changed — argF1 **1.000** with real names,
+**0.600** symbolized. The gap between `tool_unseen` and `tool_unseen_sym` is the
+description-reading signal.
 
 ## Gotchas
 
