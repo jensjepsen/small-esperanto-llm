@@ -159,6 +159,24 @@ def _coerce(obj):
     return obj
 
 
+def _opaque(s: str) -> bool:
+    """A machine token with no quotable content: base64, id, hash, URL.
+
+    Whitespace is the discriminator -- real prose has some. A long unbroken
+    run of letters+digits, or anything URL-shaped, carries no fact a Danish
+    answer could cite.
+    """
+    s = s.strip()
+    if not s or " " in s:
+        return False
+    if s.lower().startswith(("http://", "https://", "www.", "data:")):
+        return True
+    if len(s) > 40:
+        return True
+    return (len(s) >= 8 and any(c.isdigit() for c in s)
+            and any(c.isalpha() for c in s))
+
+
 def _cited(answer, v):
     """Is this payload value present in the answer, Danish formatting allowed?"""
     low = answer.lower()
@@ -330,8 +348,14 @@ def gate(result, answer, spec, context="", relevant=None):
     # Numbers the payload states, including those inside strings ("10 dollars")
     # and list lengths ("der er 3 actionfilm").
     pool = {float(v) for v in vals if isinstance(v, (int, float))}
+    # OPAQUE strings contribute no citable numbers. A base64 image, an event id
+    # (`evt_12345`), an IMDb id (`tt0111161`) or a URL all contain digits, and
+    # scraping them into the pool means a payload with nothing quotable still
+    # looks like it states facts -- so the "payload states no fact" exemption
+    # below never fires and a correct answer is rejected. 176 rows in v7.
     pool |= {float(m.group().replace(",", "."))
-             for v in vals if isinstance(v, str) for m in NUM.finditer(v)}
+             for v in vals if isinstance(v, str) and not _opaque(v)
+             for m in NUM.finditer(v)}
     pool |= {float(len(v)) for v in _arrays(result)}
 
     # Substring is the honest test and covers 84.4% on its own. Numeric
