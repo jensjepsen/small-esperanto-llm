@@ -38,6 +38,13 @@ from huggingface_hub import HfApi
 
 REPO = "jensjepsen/danish-tool-dialogues-v1"
 SPLITS = ["train", "eval_seen_tools", "eval_unseen_tools"]
+# A symbolized twin of an EVAL row goes to its own split, so `tool_unseen` and
+# `tool_unseen_sym` measure the same conversations with and without recallable
+# parameter names -- their difference IS the description-reading signal. A twin
+# of a TRAIN row just joins train. Twins are produced by stage 6
+# (symbolize_twins.py) and arrive flagged; this script only routes them.
+SYM_OF = {"eval_seen_tools": "eval_seen_sym",
+          "eval_unseen_tools": "eval_unseen_sym"}
 
 
 def bucket(s: str, mod: int = 100) -> int:
@@ -108,8 +115,8 @@ def _cfg(cfg, base, splits):
     return "\n".join(lines)
 
 
-def card(counts, n_rejected, tool_stats, fails):
-    rows = "\n".join(f"| `{s}` | {counts[s]:,} |" for s in SPLITS)
+def card(counts, n_rejected, tool_stats, fails, splits=SPLITS):
+    rows = "\n".join(f"| `{s}` | {counts[s]:,} |" for s in splits)
     fl = "\n".join(f"| `{k}` | {v:,} |" for k, v in fails.most_common())
     return f"""---
 language:
@@ -123,9 +130,9 @@ tags:
 - tool-use
 - multi-turn
 configs:
-{_cfg("default", "data", SPLITS)}
-{_cfg("sft", "sft", SPLITS)}
-{_cfg("en", "en", SPLITS)}
+{_cfg("default", "data", splits)}
+{_cfg("sft", "sft", splits)}
+{_cfg("en", "en", splits)}
 - config_name: rejected
   data_files:
   - split: train
@@ -313,23 +320,29 @@ def main():
     if args.catalogue_size:
         print(f"distractor pool: {len(pool):,} non-held-out tools; catalogues "
               f"shuffled and padded to {args.catalogue_size}", flush=True)
-    pre = {}
+    pre, twins = {}, {}
     if args.rendered:
         for line in args.rendered.open():
             if not line.strip():
                 continue
             rec = json.loads(line)
-            if "idx" in rec:
+            if "idx" not in rec:
+                continue
+            if rec.get("sym"):
+                twins[rec["idx"]] = rec["messages"]
+            else:
                 pre[rec["idx"]] = rec["messages"]
-        print(f"consuming stage 4/5: {len(pre):,} rendered rows from "
-              f"{args.rendered.name}", flush=True)
+        print(f"consuming stage 4/5: {len(pre):,} rendered rows"
+              + (f" + {len(twins):,} symbolized twins" if twins else "")
+              + f" from {args.rendered.name}", flush=True)
         missing = [r["idx"] for r in clean if r["idx"] not in pre]
         if missing:
             print(f"  {len(missing):,} gate-clean rows absent from the "
                   f"rendered file (dropped downstream); skipping them",
                   flush=True)
 
-    data = {s: [] for s in SPLITS}
+    all_splits = SPLITS + (list(SYM_OF.values()) if True else [])
+    data = {s: [] for s in all_splits}
     dropped = 0
     for _i, r in enumerate(clean):
         da = r["da"]
@@ -380,6 +393,21 @@ def main():
                          "content": json.dumps(res, ensure_ascii=False)},
                         {"role": "assistant", "content": ans}]
                     n_answered += 1
+        tw = twins.get(r["idx"])
+        if tw is not None:
+            data[SYM_OF.get(split, split)].append({
+                "tools": da.get("tools", []),
+                "conversations": da.get("conversations", []),
+                "messages": tw,
+                "en": r["orig"],
+                "meta": {"idx": r["idx"], "n_tools": len(tn),
+                         "n_turns": len(da.get("conversations", [])),
+                         "tool_names": tn,
+                         "tool_signatures": tool_signatures(da),
+                         "called_signatures": called_signatures(da),
+                         "symbolized": True,
+                         "answer_relevance": []},
+            })
         data[split].append({
             "tools": da.get("tools", []),
             "conversations": da.get("conversations", []),
@@ -480,8 +508,9 @@ def main():
         "en": lambda R: [{"en": J(x["en"]), "idx": x["meta"]["idx"]}
                          for x in R],
     }
+    live = [sp for sp in all_splits if data[sp]]
     for cfg, fn in views.items():
-        for sp in SPLITS:
+        for sp in live:
             Dataset.from_list(fn(data[sp])).push_to_hub(
                 args.repo, config_name=cfg, split=sp,
                 commit_message=f"{cfg}/{sp} ({counts[sp]} rows)")
@@ -495,7 +524,8 @@ def main():
 
     stats = {"n_tools": len(names), "n_heldout": len(heldout)}
     api.upload_file(
-        path_or_fileobj=card(counts, len(rejected), stats, fails).encode(),
+        path_or_fileobj=card(counts, len(rejected), stats, fails,
+                             live).encode(),
         path_in_repo="README.md", repo_id=args.repo, repo_type="dataset",
         commit_message="dataset card")
     if args.abstention:

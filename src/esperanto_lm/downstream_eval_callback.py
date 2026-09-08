@@ -146,6 +146,7 @@ class DownstreamEvalCallback(TrainerCallback):
     # should come from a full-split run afterwards, not from this.
     PER_EVAL_CAP = {"icl": 1000, "extraction": 200,
                     "tool_seen": 250, "tool_unseen": 250,
+                    "tool_seen_sym": 250, "tool_unseen_sym": 250,
                     # PER BUCKET for tool_refusal, not over the pooled list.
                     # absent-field is 128 rows against 545 no-capable-tool and
                     # ~700 answerable, so a pooled cap of 300 left it ~28 items
@@ -391,6 +392,32 @@ class DownstreamEvalCallback(TrainerCallback):
 
     def _load_tool_unseen(self, step: int = 0):
         return self._tool_items("eval_unseen_tools", step, "tool_unseen")
+
+    # SYMBOLIZED TWINS. Same conversations, parameter names replaced by per-row
+    # random symbols, so the Danish description is the only route from question
+    # to slot. The GAP against the unsymbolized split is the measurement:
+    # `tool_unseen` withholds the tool NAME but keeps the parameter vocabulary
+    # (`location`, `cuisine`, `song_title` appear on hundreds of other tools),
+    # so it scores name substitution. On v41 step-30224 the same five rows read
+    # argF1 1.000 with real names and 0.600 with symbols -- ~40 points of
+    # `tool_unseen` is recall, and `tool_unseen_sym` is what is left when that
+    # is removed.
+    #
+    # Missing splits return [] rather than raising, so a corpus built without
+    # twins still runs: _get caches the empty list and the scorer reports 0.0.
+    def _load_tool_seen_sym(self, step: int = 0):
+        try:
+            return self._tool_items("eval_seen_sym", step, "tool_seen_sym")
+        except Exception as e:
+            print(f"  [downstream] tool_seen_sym: no split ({e})", flush=True)
+            return []
+
+    def _load_tool_unseen_sym(self, step: int = 0):
+        try:
+            return self._tool_items("eval_unseen_sym", step, "tool_unseen_sym")
+        except Exception as e:
+            print(f"  [downstream] tool_unseen_sym: no split ({e})", flush=True)
+            return []
 
     def _answer_items(self, split: str, step: int = 0, name: str = "tool_answer"):
         """Prompt = dialogue THROUGH the tool result; gold = the reply to it.
@@ -1066,6 +1093,12 @@ class DownstreamEvalCallback(TrainerCallback):
 
     def _score_tool_unseen(self, model) -> float:
         return self._tool_score(model, "tool_unseen")
+
+    def _score_tool_seen_sym(self, model) -> float:
+        return self._tool_score(model, "tool_seen_sym")
+
+    def _score_tool_unseen_sym(self, model) -> float:
+        return self._tool_score(model, "tool_unseen_sym")
 
     def _score_extraction(self, model) -> float:
         """Field-level pair-F1 on the parsed answer, per-task parser.
