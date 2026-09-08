@@ -63,6 +63,25 @@
 # ~35 GB and batch 128 at ~125 GB, which is why 128 OOMed. 32 halves the
 # per-step launch overhead of 16 while still using under half the card.
 #
+# GA 2, NOT 4 -- effective batch 64, and the point is OPTIMIZER STEPS.
+#
+# At ga 4 this config runs 16,995 steps against v41's 45,342: 2.7x fewer
+# updates, because it is a 2.7x smaller corpus at the same effective batch.
+# Halving ga doubles the steps to ~34,000 for almost nothing -- total
+# forward/backward work is identical, only the optimizer updates double, and
+# for 400M params under 8-bit Adam that is a few percent of wall clock.
+#
+# This also fixes a confound in the maths-cap control below. That probe matched
+# TRAINING FRACTION (17% of each run), which meant v41 @7556 had 2.7x more
+# optimizer steps as well as 22x more maths rows -- so the gsm8k gap it
+# measured is not attributable to the cap alone. The nearest matched-STEP pair,
+# v41 @3778 (8.9%) vs tooldev @2832 (2.7%), still favours v41 but by much less.
+#
+# UNTESTED: --learning-rate 3e-5 was set for effective batch 128. At 64 it does
+# more per sample than it was tuned for. Linear scaling says halve it, but that
+# cancels the extra updates, so it is left alone deliberately -- if the next
+# run is unstable early, that is the first thing to change.
+#
 # READ FIRST, in this order:
 #
 #   tool_unseen_sym   symbolized twin of eval_unseen. `tool_unseen` withholds
@@ -176,7 +195,7 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
     danish-rc-v1=60000 \
     danish-wiki-closedqa-stem-v1=60000 \
     danish-extraction-v1=60000 \
-  --epochs 3 --batch-size 32 --gradient-accumulation 4 \
+  --epochs 3 --batch-size 32 --gradient-accumulation 2 \
   --optim adamw_bnb_8bit \
   --learning-rate 3e-5 --lr-scheduler constant_with_warmup --warmup-steps 500 \
   --max-length 8048 \
