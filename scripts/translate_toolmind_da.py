@@ -1160,6 +1160,60 @@ def gate(orig, new, value_map=None, spec_map=None):
     if in_da:
         bad.append(f"identifier-in-danish({in_da})")
 
+    # SELF-CONSISTENCY. Every other check in this gate compares the
+    # TRANSLATION to its SOURCE. None asks whether the row is internally
+    # valid, so a faithful translation of a row that contradicts itself passes
+    # clean -- the same blind spot that let the deflection batch and
+    # result-extra-fields through.
+    #
+    # glaive invented each dialogue independently, so a catalogue entry and the
+    # call that uses it can disagree about what the parameters are called:
+    # convert_currency declares (amount, from_currency, to_currency) and is
+    # called with (amount, source_currency, target_currency). We fixed exactly
+    # this for RETURN fields via signature keying in v6 and never checked the
+    # argument side. 51 calls and 10 specs in v7.
+    #
+    # Small, but every one is a worked example of "the argument name need not
+    # match the schema" -- which is the failure the fun probes keep producing
+    # (`size` for `sides`, `people` receiving "hund").
+    #
+    # Checked on the TRANSLATED row, not skipped at source, because --annotate,
+    # --respec and the symbolizer all rewrite rows after translation and could
+    # reintroduce it; a gate re-runs after each of them.
+    n_specs = {}
+    for t in (new.get("tools") or []):
+        f = (t.get("function") if isinstance(t, dict) else None) or {}
+        if isinstance(f, dict) and f.get("name"):
+            n_specs[f["name"]] = f
+    req_bad = []
+    for f in n_specs.values():
+        params = f.get("parameters") or {}
+        props = set(params.get("properties") or {})
+        req = params.get("required")
+        if isinstance(req, list):
+            req_bad += [x for x in req
+                        if isinstance(x, str) and x not in props]
+    if req_bad:
+        bad.append(f"required-undeclared:{sorted(set(req_bad))[:3]}")
+    arg_bad = []
+    for m in (new.get("conversations") or []):
+        for tc in (m.get("tool_calls") or []):
+            fn = tc.get("function") or {}
+            sp = n_specs.get(fn.get("name"))
+            if not sp:
+                continue
+            props = set(((sp.get("parameters") or {}).get("properties")) or {})
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    continue
+            if isinstance(args, dict):
+                arg_bad += [k for k in args if k not in props]
+    if arg_bad:
+        bad.append(f"call-args-undeclared:{sorted(set(arg_bad))[:3]}")
+
     # CONTRACT COHERENCE. Enum values may be translated, but the spec and every
     # invocation must move together: a call carrying "cirkel" is valid only if
     # that parameter's enum list also says "cirkel". This is the check that
@@ -2634,6 +2688,28 @@ async def main():
         ctrl["identifier preserved from english prose"] = pres_bad
         ctrl_base["identifier preserved from english prose"] = pres_base
 
+        # A call passing an argument its own schema never declares. SYNTHETIC:
+        # the defect is rare enough (51 of 19,501) that sampling the batch's
+        # first row would usually corrupt nothing and pass silently.
+        sc_ok = {"tools": [{"function": {
+            "name": "convert_currency", "description": "Konverter valuta",
+            "parameters": {"properties": {
+                "amount": {"type": "number"},
+                "from_currency": {"type": "string"},
+                "to_currency": {"type": "string"}}}}}],
+            "conversations": [
+                {"role": "user", "content": "Konverter 500 USD til euro."},
+                {"role": "assistant", "content": "",
+                 "tool_calls": [{"function": {
+                     "name": "convert_currency",
+                     "arguments": {"amount": 500, "from_currency": "USD",
+                                   "to_currency": "EUR"}}}]}]}
+        sc_bad = json.loads(json.dumps(sc_ok))
+        sc_bad["conversations"][1]["tool_calls"][0]["function"]["arguments"] = {
+            "amount": 500, "source_currency": "USD", "target_currency": "EUR"}
+        ctrl["call argument not declared by the schema"] = sc_bad
+        ctrl_base["call argument not declared by the schema"] = sc_ok
+
         # SYNTHETIC, not sampled: enum-constrained arguments are rare (3.3% of
         # values), so a control drawn from the batch silently disappears on
         # most samples and the enum gate would look tested when it was not.
@@ -2712,7 +2788,7 @@ async def main():
         # That happened twice: the sampled value-chain control found no
         # matching row on a rerun, and an edit deleted the prose-echo control
         # outright. Both were caught only by diffing against an earlier run.
-        EXPECTED_CONTROLS = 10
+        EXPECTED_CONTROLS = 11
         if len(ctrl) != EXPECTED_CONTROLS:
             missing = EXPECTED_CONTROLS - len(ctrl)
             print(f"\n*** {missing} PLANTED CONTROL(S) MISSING: built "
