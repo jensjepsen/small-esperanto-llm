@@ -338,7 +338,28 @@ def gate(result, answer, spec, context="", relevant=None):
     # tolerance adds 7.5pp and every point of it is real: Danish writes 898.09
     # as "898,09" and 12000.0 as "12.000", and answers round 50.26548245743669
     # to "50.27". None of those are substrings of the payload.
-    cites = any(str(v).lower() in low for v in vals) or \
+    # DELIMITED FIELDS AND LONG STRINGS. Whole-value substring is too literal
+    # for two payload shapes the corpus actually contains:
+    #   "The Shawshank Redemption,The Godfather,The Dark Knight" -- an answer
+    #   that reads it naturally ("…, The Godfather og The Dark Knight") shares
+    #   no substring with the comma-joined original;
+    #   "Begivenheden 'Project Meeting' er oprettet succesfuldt." -- quoted
+    #   almost verbatim, but the trailing period breaks the match.
+    # Both were scored ungrounded. ~420 of v7's 514 answer-not-grounded rows
+    # are this, not a missing citation.
+    def _cands(v):
+        yield str(v)
+        if isinstance(v, str):
+            for part in re.split(r"[,;|\n]+", v):        # delimited fields
+                part = part.strip()
+                if len(part) > 2:
+                    yield part
+            words = v.split()
+            if len(words) > 6:                           # long prose: prefix
+                yield " ".join(words[:6])
+
+    cites = any(c.lower() in low
+                for v in vals for c in _cands(v) if len(c.strip()) > 2) or \
         any(_traces_to(m.group(), pool) for m in NUM.finditer(low))
     # A payload that states no fact -- {"message": "E-mail sendt", "status":
     # "succes"} -- has nothing to cite; the title and recipient in the answer
