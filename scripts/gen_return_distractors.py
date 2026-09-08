@@ -118,7 +118,10 @@ Regler:
 - Det må IKKE være en omskrivning af et felt, værktøjet allerede returnerer.
 - Det må IKKE bare gentage en parameter, værktøjet fik ind.
 - Mindst ét felt skal have samme type som et eksisterende returfelt, så de kan
-  forveksles. Returnerer værktøjet et tal, så giv mindst ét tal mere.
+  forveksles.
+- Returnerer værktøjet ET TAL, SKAL mindst ét af dine felter også være et tal
+  (number eller integer). Et rent tekstfelt hjælper ikke: så er der stadig kun
+  ét tal i svaret, og så kan man bare tage det.
 - Feltnavne er engelske og i snake_case. Beskrivelser er på dansk.
 - Skriv beskrivelsen som en feltbeskrivelse: "Etagen maskinen står på", ikke
   "Dette felt indeholder etagen".
@@ -213,6 +216,15 @@ def gate(fields, existing, params):
         et = {t for t in existing.values() if t}
         ft = {f.get("type") for f in fields}
         num = {"number", "integer"}
+        # A NUMERIC TOOL NEEDS A NUMERIC DISTRACTOR. Plain type-overlap is
+        # satisfied by string<->string, so `{price: number, currency: string}`
+        # passed on an all-string proposal -- and the payload kept exactly one
+        # number, leaving "grab the only number" a winning policy. Measured on
+        # v9: only 26.7% of answer turns pose a NUMERIC choice against 72.8%
+        # posing a choice of any kind, and 14.2% of the still-single-number
+        # payloads are tools whose distractors are all non-numeric.
+        if (et & num) and not (ft & num):
+            return f"no-numeric-distractor:{sorted(ft)}/{sorted(et)}"
         if et and not (ft & et) and not (ft & num and et & num):
             return f"no-type-overlap:{sorted(ft)}/{sorted(et)}"
     for f in fields:
@@ -264,7 +276,10 @@ CONTROLS = [
      "instrumentation-not-domain"),
     ([F("response_time_ms")], {"area": "integer"}, ["shape"],
      "instrumentation-not-domain"),
-    ([F("note", "string")], {"count": "integer"}, ["x"], "no-type-overlap"),
+    ([F("note", "string")], {"count": "integer"}, ["x"], "no-numeric-distractor"),
+    ([F("note", "string"), F("tag", "string")], {"pris": "number",
+     "valuta": "string"}, ["x"], "no-numeric-distractor"),
+    ([F("count", "integer")], {"navn": "string"}, ["x"], "no-type-overlap"),
     ([F("a", "integer", "En ting", [])], {"z": "integer"}, ["x"],
      "empty-examples"),
     ([F("a", "integer", "En ting", ["7", "7", "7", "7"])], {"z": "integer"},
