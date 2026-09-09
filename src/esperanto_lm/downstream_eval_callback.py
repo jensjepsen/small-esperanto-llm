@@ -1300,14 +1300,26 @@ class DownstreamEvalCallback(TrainerCallback):
     def _extra_metrics(self, value):
         self.ev._extra_metrics = value
 
-    # Delegate the scorer surface so existing callers and tests that reach for
-    # cb._score_x / cb._load_x / cb._get keep working unchanged.
+    # BLANKET delegation to the evaluator, deliberately not an allowlist.
+    #
+    # The allowlist version named the scorer surface explicitly and raised
+    # AttributeError for everything else -- which is how `self.n` and
+    # `self.bs`, both still referenced in on_evaluate, killed a 3.5h run 40
+    # minutes in and AFTER a clean eval. Splitting a class leaves references
+    # behind; an allowlist turns each survivor into a crash at the first
+    # eval, an hour from launch, which is the most expensive place to find it.
+    #
+    # Anything the callback does not define itself belongs to the evaluator by
+    # construction, so ask it. Dunders are excluded so copy/pickle protocol
+    # probes do not get forwarded, and `ev` is read from __dict__ to avoid
+    # recursing before __init__ has set it.
     def __getattr__(self, name):
-        if name.startswith(("_score_", "_load_", "_tool_", "_answer_")) or \
-                name in ("_get", "_generate", "_cache", "_maybe_subsample",
-                         "PER_EVAL_CAP", "TOOL_REPO"):
-            return getattr(self.__dict__["ev"], name)
-        raise AttributeError(name)
+        if name.startswith("__"):
+            raise AttributeError(name)
+        ev = self.__dict__.get("ev")
+        if ev is None:
+            raise AttributeError(name)
+        return getattr(ev, name)
 
     # ── HF Trainer hook ────────────────────────────────────────────────────
 
