@@ -49,6 +49,21 @@ from collections import Counter
 from pathlib import Path
 
 REPO = "Nanbeige/ToolMind"
+# Default source. ToolMind ships EIGHT files and this is the smallest; the
+# others differ enormously in what they teach. Measured over 6,000 rows each:
+#
+#   file             sigs   names  catalogue  turns  paramdesc  results
+#   ToolACE        10,378   9,843     3.6      3.0     8.6w      26%
+#   BUTTONInstruct  9,198   9,197     3.2      5.3       -       71%
+#   xlam-60k        2,706   2,706     2.4      2.0       -        0%
+#   When2Call       2,500   2,500     2.3      2.0     7.0w       0%
+#   glaive          1,467     458     1.3      3.9     5.3w      19%
+#   APIGen-MT          26      26    15.2     14.1    13.9w      82%
+#   tau-train          16      16    16.0     16.3    15.2w      81%
+#
+# glaive is last on nearly every axis, and its 1,467 signatures come from only
+# 458 NAMES -- 3.2 schemas per name, which is the collision that gave
+# `search_quotes` an AAPL ticker. Override with --source-file.
 FILE = "open_datasets/glaive-function-calling-v2-query.jsonl"
 MODEL = "google/gemini-2.5-flash-lite"
 URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -2131,6 +2146,8 @@ async def translate(session, row, segs, tries=3, value_map=None, spec_map=None):
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=25)
+    ap.add_argument("--source-file", default=FILE,
+                    help="which ToolMind file to ingest; see the table at FILE")
     ap.add_argument("--out", type=Path, default=Path("scratch/toolmind_da"))
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--returns-from", type=Path, default=None,
@@ -2184,7 +2201,8 @@ async def main():
     cache = args.out / "translated.jsonl"
 
     from huggingface_hub import hf_hub_download
-    path = hf_hub_download(REPO, FILE, repo_type="dataset")
+    path = hf_hub_download(REPO, getattr(args, "source_file", None) or FILE,
+                           repo_type="dataset")
     rows = []
     with open(path) as f:
         for i, line in enumerate(f):
