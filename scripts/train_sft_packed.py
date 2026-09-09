@@ -420,12 +420,22 @@ def main():
     # hardcoded copy silently rejects any eval added to the callback -- adding
     # ifeval/icl failed at argparse with the callback already supporting them.
     def _available_evals():
+        # Scan WHEREVER the loaders live, not one named class. Splitting
+        # DownstreamEvaluator out of the callback (58b439d) moved every
+        # `_load_*` off DownstreamEvalCallback, so this returned [] and
+        # argparse rejected every eval name -- `invalid choice: 'gsm8k'
+        # (choose from )`. A registry that silently empties is worse than no
+        # registry, so an empty scan now falls through to unrestricted.
         try:
-            from esperanto_lm.downstream_eval_callback import (
-                DownstreamEvalCallback as _C)
-            return sorted(n[len("_load_"):] for n in dir(_C)
+            from esperanto_lm import downstream_eval_callback as _m
+            names = set()
+            for _cls in vars(_m).values():
+                if not isinstance(_cls, type):
+                    continue
+                names |= {n[len("_load_"):] for n in dir(_cls)
                           if n.startswith("_load_")
-                          and hasattr(_C, f"_score_{n[len('_load_'):]}"))
+                          and hasattr(_cls, f"_score_{n[len('_load_'):]}")}
+            return sorted(names) or None
         except Exception:
             return None          # fall back to unrestricted rather than block
 
