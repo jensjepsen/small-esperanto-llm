@@ -2147,7 +2147,8 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=25)
     ap.add_argument("--source-file", default=FILE,
-                    help="which ToolMind file to ingest; see the table at FILE")
+                    help="ToolMind file to ingest, OR a local jsonl path; "
+                         "see the table at FILE")
     ap.add_argument("--out", type=Path, default=Path("scratch/toolmind_da"))
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--returns-from", type=Path, default=None,
@@ -2201,8 +2202,16 @@ async def main():
     cache = args.out / "translated.jsonl"
 
     from huggingface_hub import hf_hub_download
-    path = hf_hub_download(REPO, getattr(args, "source_file", None) or FILE,
-                           repo_type="dataset")
+    src = getattr(args, "source_file", None) or FILE
+    # A LOCAL path is taken as-is. Sources outside ToolMind -- e.g. the
+    # original Team-ACE/ToolACE parsed by scripts/parse_toolace_original.py,
+    # whose assistant turns are NOT model-regenerated -- arrive as a jsonl on
+    # disk rather than a file inside the repo.
+    if Path(src).exists():
+        path = src
+        print(f"source: local {src}", flush=True)
+    else:
+        path = hf_hub_download(REPO, src, repo_type="dataset")
     rows = []
     with open(path) as f:
         for i, line in enumerate(f):
@@ -2267,7 +2276,7 @@ async def main():
                 if len(keep) >= args.n:
                     break
         rows = keep
-    print(f"loaded {len(rows)} rows from {FILE}", flush=True)
+    print(f"loaded {len(rows)} rows from {src}", flush=True)
 
     if args.dry_run:
         for r in rows[:args.show or 2]:

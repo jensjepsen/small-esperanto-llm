@@ -342,6 +342,84 @@ def signature(fn) -> str:
     return f"{fn.get('name')}({','.join(sorted(props))})"
 
 
+def collect_tools_from_src(src: Path):
+    """Distinct called signatures from a PIPELINE DIR, same shape as `collect_tools`.
+
+    `--src` was accepted and then ignored: every run read `--corpus`, whose
+    default is the published v8. That was invisible while the pipeline only
+    ever built successors of v8 -- the tool vocabularies matched, so the
+    distractors landed anyway -- and it broke the moment a new source corpus
+    came through. On a 200-row ToolACE smoke it proposed distractors for
+    `search_movie(title)` while the corpus held `GetCompetitions`, and stage
+    5.6 could then inject into 1 of 156 rows.
+
+    Reads `translated.jsonl`, and takes `returns` from `returns_map.jsonl`
+    when the spec has none of its own -- this stage runs BEFORE `--annotate`,
+    so the rows are not yet carrying their contracts.
+    """
+    from collections import Counter
+    src = Path(src)
+    rmap = {}
+    rpath = src / "returns_map.jsonl"
+    if rpath.exists():
+        for line in rpath.open():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            name, params, field = r["k"].split("\x00")
+            rmap.setdefault(f"{name}({params})", {})[field] = r.get("da") or ""
+    rows = [json.loads(l) for l in (src / "translated.jsonl").open() if l.strip()]
+    print(f"  read {len(rows):,} rows from {src}/translated.jsonl "
+          f"({len(rmap):,} signatures in returns_map)", flush=True)
+
+    specs, called, single, obs = {}, Counter(), Counter(), {}
+    for row in rows:
+        da = row.get("da") or {}
+        by_name = {}
+        for t in da.get("tools") or []:
+            fn = t.get("function") if isinstance(t, dict) and "function" in t else t
+            if isinstance(fn, dict) and fn.get("name"):
+                by_name[fn["name"]] = fn
+        msgs = da.get("conversations") or []
+        for i, m in enumerate(msgs):
+            for call in (m.get("tool_calls") or []):
+                fn = by_name.get((call.get("function") or {}).get("name"))
+                if not fn:
+                    continue
+                sig = signature(fn)
+                specs[sig] = fn
+                called[sig] += 1
+                nxt = msgs[i + 1] if i + 1 < len(msgs) else None
+                if not nxt or nxt.get("role") != "tool":
+                    continue
+                try:
+                    p = json.loads(nxt.get("content") or "")
+                except Exception:
+                    continue
+                if not isinstance(p, dict):
+                    continue
+                if len(p) <= 1:
+                    single[sig] += 1
+                for k, v in p.items():
+                    if isinstance(v, bool) or v is None:
+                        continue
+                    t = ("integer" if isinstance(v, int) else
+                         "number" if isinstance(v, float) else
+                         "string" if isinstance(v, str) else None)
+                    if t:
+                        obs.setdefault(sig, {}).setdefault(k, t)
+
+    for sig, fn in specs.items():
+        fn["_obs"] = obs.get(sig, {})
+        if not ((fn.get("returns") or {}).get("properties")):
+            declared = rmap.get(sig) or {}
+            if declared:
+                fn["returns"] = {"type": "object", "properties": {
+                    k: {"description": v} for k, v in declared.items()}}
+    return [(sig, specs[sig], called[sig], single[sig])
+            for sig in sorted(specs, key=lambda s: -called[s])]
+
+
 def collect_tools(corpus: str, split: str = "train"):
     """Distinct called signatures across EVERY split named in `split`.
 
@@ -517,7 +595,8 @@ def hint_for(reason, fn, existing):
 async def main_async(args):
     import aiohttp
     check_controls()
-    tools = collect_tools(args.corpus, args.split)
+    tools = (collect_tools_from_src(args.src) if args.src
+             else collect_tools(args.corpus, args.split))
     # A tool with no observed returns has nothing to distract FROM: the
     # proposal becomes its whole contract, so `sort_numbers` was handed
     # `sorted_numbers` as a "distractor" -- the answer field itself. Those

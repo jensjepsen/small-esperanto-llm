@@ -177,17 +177,163 @@ def _opaque(s: str) -> bool:
             and any(c.isalpha() for c in s))
 
 
+DA_MONTHS = ["januar", "februar", "marts", "april", "maj", "juni", "juli",
+             "august", "september", "oktober", "november", "december"]
+ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+# Danish spells a leading 1 as an article: "1 moden banan" -> "en moden banan".
+DA_ONE = re.compile(r"^1(?=\s)")
+
+
+def _date_forms(s):
+    """Danish renderings of an ISO date.
+
+    A tool returns `2024-03-15`; a Danish answer writes "den 15. marts". The
+    ISO string is never a substring of a correctly worded answer, so the
+    relevance check read every date field as uncited.
+    """
+    m = ISO_DATE.match(str(s).strip())
+    if not m:
+        return []
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not 1 <= mo <= 12:
+        return []
+    mon = DA_MONTHS[mo - 1]
+    return [f"{d}. {mon} {y}", f"{d}. {mon}", f"{d}/{mo} {y}", f"{d}/{mo}-{y}",
+            f"{d}/{mo}", f"{d:02d}-{mo:02d}-{y}", f"{d:02d}/{mo:02d}/{y}"]
+
+
 def _cited(answer, v):
-    """Is this payload value present in the answer, Danish formatting allowed?"""
+    """Is this payload value present in the answer, Danish formatting allowed?
+
+    Whole-value substring is the honest test for a scalar, but three payload
+    shapes defeat it even when the answer is perfect: ISO dates get written
+    out in Danish, delimited fields get read with a real connective ("A, B og
+    C"), and long prose gets quoted by its opening. The grounding check above
+    already tolerates the last two via `_cands`; the relevance check called
+    this and so rejected 22 of 26 ToolACE answers that cite everything asked.
+    """
     low = answer.lower()
     if isinstance(v, (int, float)):
         return any(_traces_to(m.group(), {float(v)}) for m in NUM.finditer(low))
     s = str(v).strip()
-    return len(s) > 2 and s.lower() in low
+    if len(s) <= 2:
+        return False
+    if s.lower() in low:
+        return True
+    if any(f.lower() in low for f in _date_forms(s)):
+        return True
+    if DA_ONE.match(s):
+        rest = s[1:].strip().lower()
+        if rest and any(f"{a} {rest}" in low for a in ("en", "et", "én")):
+            return True
+    # A delimited field is cited when every part of it is -- the answer is free
+    # to rejoin them with "og" instead of a comma.
+    parts = [p.strip() for p in re.split(r"[,;|\n]+", s)]
+    parts = [p for p in parts if len(p) > 2]
+    if len(parts) > 1 and all(_cited(answer, p) for p in parts):
+        return True
+    words = s.split()
+    return len(words) > 6 and " ".join(words[:6]).lower() in low
+
+
+def _json_in_string(v):
+    """A payload field holding serialised JSON, parsed.
+
+    ToolACE returns `{"jobs": "[{\\"by\\": \\"mats\\", ...}]"` -- a list of
+    records delivered as one string. Left as a string it is a single leaf that
+    no answer can quote whole.
+    """
+    if isinstance(v, str) and v.strip()[:1] in "[{":
+        try:
+            p = json.loads(v)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(p, (dict, list)):
+            return p
+    return None
+
+
+def _citable(obj):
+    """Leaves of `obj` an answer could quote."""
+    return [x for _, x in _leaves(obj)
+            if not isinstance(x, bool) and x not in (None, "")
+            and not (isinstance(x, str) and _opaque(x))]
+
+
+def _quorum(n):
+    """How many of `n` parts an answer must quote: a strict majority, cap 3.
+
+    A plain majority is wrong at both ends. At n=2 it rounds to 1, which let
+    "Ja, jeg fandt to opskrifter" through on a two-record payload -- the thin
+    answer this check exists to reject. At n=50 it would demand 26 records be
+    named, when quoting three plainly demonstrates the field was read.
+    """
+    return min(3, n // 2 + 1)
+
+
+def _cited_beyond(answer, x, ctx):
+    """Cited, and not merely an echo of the question.
+
+    Records match on ANY of their fields, which is weak when the field is a
+    tag the user already said: "to italienske opskrifter" matched two recipes
+    on `italiensk` alone and passed an answer that names neither. A value the
+    question already contains is no evidence the payload was read. Applied to
+    containers only -- a scalar that happens to appear in the question is
+    still the thing being asked for.
+    """
+    if not _cited(answer, x):
+        return False
+    s = str(x).strip().lower()
+    return bool(s) and s not in ctx.lower()
+
+
+def _element_cited(answer, el, ctx=""):
+    """One element of a list field: a record counts if any of its fields is quoted."""
+    if isinstance(el, (dict, list)):
+        return any(_cited_beyond(answer, x, ctx) for x in _citable(el))
+    return _cited_beyond(answer, el, ctx)
+
+
+def _relevant_cited(answer, v, ctx=""):
+    """Did the answer use this relevant field?
+
+    A scalar must survive intact; a CONTAINER may not. A tool returning 50
+    jobs is answered by naming a few, and a schedule of three dates by listing
+    the dates and not the wrapper -- demanding every leaf marks those
+    summaries as ungrounded. So a list needs a majority of its ELEMENTS
+    represented (one quoted field per record is how records get cited) and an
+    object a majority of its leaves. Scalars keep the old all-or-nothing rule,
+    which is what the planted `answer-misses-relevant` control tests.
+    """
+    inner = _json_in_string(v)
+    if inner is not None:
+        v = inner
+    if isinstance(v, list):
+        els = [e for e in v if e not in (None, "")]
+        if not els:
+            return True
+        hit = sum(1 for e in els if _element_cited(answer, e, ctx))
+        return hit >= _quorum(len(els))
+    if isinstance(v, dict):
+        leaves = _citable(v)
+        if not leaves:
+            return True
+        return sum(1 for x in leaves
+                   if _cited_beyond(answer, x, ctx)) >= _quorum(len(leaves))
+    return _cited(answer, v)
 
 
 def _leaves(obj, prefix=""):
-    """Scalar leaves of a result payload, as (path, value)."""
+    """Scalar leaves of a result payload, as (path, value).
+
+    A field holding serialised JSON is expanded rather than yielded whole:
+    ToolACE delivers lists of records as one string, and treating that as a
+    single leaf hid every value inside it from the grounding check as well as
+    the relevance check.
+    """
+    inner = _json_in_string(obj)
+    if inner is not None:
+        obj = inner
     if isinstance(obj, dict):
         for k, v in obj.items():
             yield from _leaves(v, f"{prefix}.{k}" if prefix else k)
@@ -403,13 +549,15 @@ def gate(result, answer, spec, context="", relevant=None):
             return "relevant-fields-not-in-payload"
         if len(rel) > 3:
             return "too-many-relevant-fields"
-        want = {k: result[k] for k in rel}
         extra = {k: v for k, v in result.items() if k not in rel}
-        # every relevant value must survive into the answer
-        for v in [x for _, x in _leaves(want)]:
+        # every relevant FIELD must survive into the answer -- per field, not
+        # per flattened leaf, so `_relevant_cited` can tell a scalar (all of it
+        # must appear) from a container (a summary of it may).
+        for k in rel:
+            v = result[k]
             if isinstance(v, bool) or v in (None, ""):
                 continue
-            if not _cited(answer, v):
+            if not _relevant_cited(answer, v, str(context)):
                 return f"answer-misses-relevant:{str(v)[:24]}"
         # and no irrelevant one may
         for k, v in extra.items():
@@ -493,6 +641,16 @@ CLEAN = [
 _COFFEE = {"returns": {"properties": {"cups_left": {}, "days_since_service": {},
                                       "working": {}}}}
 _PAY = {"cups_left": 8, "days_since_service": 12, "working": True}
+_SCHED = {"schedule": [{"date": "2024-03-15"}, {"date": "2024-03-16"},
+                       {"date": "2024-03-17"}], "sport": "NFL"}
+_SCHED_SPEC = {"returns": {"properties": {"schedule[]": {},
+                                          "schedule[].date": {},
+                                          "sport": {}}}}
+_RECIPES = {"recipes": [{"navn": "Kylling i tomatsauce", "køkken": "italiensk"},
+                        {"navn": "Kylling cacciatore", "køkken": "italiensk"}]}
+_RECIPES_SPEC = {"returns": {"properties": {"recipes[]": {},
+                                            "recipes[].navn": {},
+                                            "recipes[].køkken": {}}}}
 PRECISION_CONTROLS = [
     (_PAY, "Der er 8 kopper tilbage, og den blev serviceret for 12 dage siden.",
      _COFFEE, "Er der kaffe tilbage?", ["cups_left"],
@@ -503,10 +661,38 @@ PRECISION_CONTROLS = [
      "Er der kaffe tilbage?", ["cups_left"], "answer-misses-relevant"),
     (_PAY, "Der er 8 kopper tilbage.", _COFFEE, "Er der kaffe tilbage?",
      ["temperature"], "relevant-fields-not-in-payload"),
+    # CONTAINER COVERAGE. A list field is satisfied by a summary, so the rule
+    # is a majority of elements -- these two prove that still refuses an
+    # answer that names none of them, and one that names a third.
+    (_SCHED, "Programmet gælder NFL.", _SCHED_SPEC,
+     "Hvornår spilles kampene?", ["schedule"], "answer-misses-relevant"),
+    (_SCHED, "Første kamp er den 15. marts.", _SCHED_SPEC,
+     "Hvornår spilles kampene?", ["schedule"], "answer-misses-relevant"),
+    # names neither recipe -- every term it uses ("italienske", "kylling")
+    # came from the question, so nothing shows the payload was read
+    (_RECIPES, "Ja, jeg har fundet to italienske opskrifter med kylling.",
+     _RECIPES_SPEC, "Find italienske opskrifter med kylling", ["recipes"],
+     "answer-misses-relevant"),
 ]
 PRECISION_CLEAN = [
     (_PAY, "Der er 8 kopper kaffe tilbage.", _COFFEE,
      "Er der kaffe tilbage?", ["cups_left"]),
+    # ISO dates written out in Danish -- no substring survives the rendering
+    (_SCHED, "Kampene spilles den 15. marts, 16. marts og 17. marts.",
+     _SCHED_SPEC, "Hvornår spilles kampene?", ["schedule"]),
+    # a comma-delimited field rejoined with a real connective, and the Danish
+    # article for a leading 1
+    ({"ingredienser": "1 moden banan, 1 spsk peanutbutter, 1/4 tsk kanel"},
+     "Brug en moden banan, 1 spsk peanutbutter og 1/4 tsk kanel.",
+     {"returns": {"properties": {"ingredienser": {}}}},
+     "Hvad skal jeg bruge?", ["ingredienser"]),
+    # a list of records delivered as a serialised JSON string, answered by
+    # naming each record once
+    ({"jobs": '[{"by": "mats", "id": 39423844, "text": "Senior Backend Engineer"},'
+              ' {"by": "ana", "id": 39423845, "text": "Frontend Developer"}]'},
+     "De seneste opslag er Senior Backend Engineer og Frontend Developer.",
+     {"returns": {"properties": {"jobs": {}}}},
+     "Vis mig de seneste jobopslag", ["jobs"]),
 ]
 
 

@@ -168,8 +168,31 @@ def signature(fn) -> str:
     return f"{fn.get('name')}({','.join(sorted(props))})"
 
 
-def missing_tools(path: Path):
-    """Called SIGNATURES carrying no returns block, with their Danish specs."""
+def missing_tools(path: Path, include_uncalled: bool = True):
+    """EVERY catalogue signature carrying no returns block, with its Danish spec.
+
+    Includes catalogue PADDING by default, though a contract is normally
+    derived from an observed payload and a tool nothing calls has none.
+    Skipping them makes the `returns` block itself identify the tool to call.
+
+    How badly depends on how much of the tool vocabulary is reused. Glaive
+    reuses names heavily, so nearly every padding tool is called in some other
+    row and picks up a contract there -- on v9 the called tool is the only one
+    in its catalogue carrying `returns` in 1.7% of train rows. ToolACE has a
+    long tail called nowhere, 382 of 652 signatures, and there the called tool
+    was the ONLY one with a block in 66.7% of rows: "pick the tool formatted
+    with returns" solved two thirds of the corpus without reading a name or a
+    description. Covering padding put that at 1.3%, in line with v9.
+
+    Proposing for padding does not introduce a subtler version of the same
+    tell. Invented contracts run thinner than observed ones (mean 1.69 return
+    fields against 2.46), but the called tool holds the most fields in its
+    catalogue in 21.2% of rows -- 10.9% counting ties as losses -- against
+    ~16.7% for a blind guess among six.
+
+    `--called-only` restores the old behaviour for a corpus whose vocabulary
+    is reused enough not to need this, where it is just spend.
+    """
     have, want = set(), {}
     called = Counter()
     for line in path.open():
@@ -193,7 +216,7 @@ def missing_tools(path: Path):
                 if n and n in specs:
                     called[signature(specs[n])] += 1
     return [(sig, f, called[sig]) for sig, f in want.items()
-            if sig not in have and called[sig]], called
+            if sig not in have and (include_uncalled or called[sig])], called
 
 
 async def propose(session, chunk, tries=3):
@@ -233,10 +256,13 @@ async def propose(session, chunk, tries=3):
 async def main_async(args):
     import aiohttp
     check_controls()
-    tools, called = missing_tools(args.src / "translated.jsonl")
+    tools, called = missing_tools(args.src / "translated.jsonl",
+                                  not args.called_only)
     tools.sort(key=lambda x: -x[2])
-    print(f"{len(tools):,} called tools carry no returns block "
-          f"({sum(t[2] for t in tools):,} calls)", flush=True)
+    scope = "called" if args.called_only else "catalogue"
+    print(f"{len(tools):,} {scope} tools carry no returns block "
+          f"({sum(t[2] for t in tools):,} calls, "
+          f"{sum(1 for t in tools if not t[2]):,} never called)", flush=True)
     if args.n:
         tools = tools[:args.n]
         print(f"smoke: the {len(tools)} most-called of them", flush=True)
@@ -367,6 +393,11 @@ def main():
     ap.add_argument("--batch", type=int, default=12)
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--show", type=int, default=12)
+    ap.add_argument("--called-only", action="store_true",
+                    help="skip catalogue PADDING that nothing calls. Cheaper, "
+                         "but then carrying a `returns` block identifies the "
+                         "tool to call -- 66.7% of ToolACE rows were solvable "
+                         "on that cue alone")
     ap.add_argument("--merge-into", type=Path, default=None,
                     help="returns_map.jsonl to append accepted proposals to, "
                          "skipping signatures that already have observed keys")

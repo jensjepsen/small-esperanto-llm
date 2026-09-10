@@ -21,6 +21,15 @@ uv run python scripts/translate_toolmind_da.py --out $OUT \
 #    --merge-into is part of this stage, not a shell step: it appends the
 #    proposals to the returns map and SKIPS any signature that already has
 #    observation-derived keys.
+#
+#    COVERS CATALOGUE PADDING, not just called tools. A contract normally
+#    comes from an observed payload and padding produces none, so leaving it
+#    out makes the `returns` block itself the answer: on ToolACE the called
+#    tool was the ONLY one in its catalogue carrying one in 66.7% of rows.
+#    Proposing for padding put that at 1.3%, matching v9's 1.7% -- v9 never
+#    had the problem because glaive reuses tool names enough that padding
+#    gets called somewhere else and picks up a contract there.
+#    --called-only skips them when the vocabulary is reused enough.
 uv run python scripts/gen_missing_returns.py --src $OUT \
     --batch 8 --concurrency 24 \
     --out $OUT/proposed_returns.jsonl --merge-into $OUT/returns_map.jsonl
