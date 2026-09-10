@@ -499,14 +499,68 @@ async def main_async(args):
 
     import time as _t
     _t0 = _t.monotonic()
+
+    # RESUME. Rows were held in memory and written once at the end, so a crash
+    # at minute 13 of a 14-minute build lost all of it and a rerun started
+    # over. Everything is now appended as it completes and keyed by
+    # (scenario, k) so a rerun skips what exists.
+    done_keys, done_scen, resumed_tools = set(), set(), {}
+    tfile = args.out / "tools.jsonl"
+    rfile = args.out / "translated.jsonl"
+    lfile = args.out / "roles.jsonl"
+    if args.resume and tfile.exists():
+        for line in tfile.open():
+            if line.strip():
+                t = json.loads(line)
+                if t.get("_scenario"):
+                    resumed_tools[t["_scenario"]] = t
+    if args.resume and rfile.exists():
+        for line in rfile.open():
+            if line.strip():
+                r = json.loads(line)
+                if r.get("_key"):
+                    done_keys.add(r["_key"])
+                    done_scen.add(str(r["_key"]).split("#")[0])
+    # EVERY prior row is carried forward. Loading only the unjudged ones made
+    # the final rewrite emit just the new work and delete 39 of 40 finished
+    # rows -- a resume that destroys the corpus is worse than none.
+    resumed_rows = []
+    if args.resume and rfile.exists():
+        for line in rfile.open():
+            if line.strip():
+                resumed_rows.append(json.loads(line))
+    if done_keys or resumed_tools:
+        print(f"resume: {len(done_keys)} rows and {len(resumed_tools)} tools "
+              f"already on disk", flush=True)
+    args.out.mkdir(parents=True, exist_ok=True)
+    mode = "a" if args.resume else "w"
+    fh_t = tfile.open(mode)
+    fh_r = rfile.open(mode)
+    fh_l = lfile.open(mode)
+
+    def _emit(row, af, comp):
+        """Append one accepted row, flushed, so a crash keeps what is done."""
+        row["idx"] = _emit.n
+        _emit.n += 1
+        fh_r.write(json.dumps(row, ensure_ascii=False) + "\n")
+        fh_l.write(json.dumps({"idx": row["idx"], "answer_field": af,
+                               "competitor_field": comp},
+                              ensure_ascii=False) + "\n")
+        fh_r.flush()
+        fh_l.flush()
+    _emit.n = len(done_keys)
+
     async with aiohttp.ClientSession(
             headers={"Authorization": f"Bearer {_key()}"}) as session:
         want = max(args.n // args.dialogues_per_tool, 1)
         tools, seen_names = [], set()
-        rows, missing = [], []
+        rows, missing = list(resumed_rows), []
         specs, tools_by_name = [], {}
 
         async def one_tool(sc):
+            if sc["id"] in resumed_tools:
+                stats["tool:resumed"] += 1
+                return resumed_tools[sc["id"]]
             async with sem:
                 tpl = sample_template(rng)
                 hint, why, t = None, None, None
@@ -550,10 +604,16 @@ async def main_async(args):
                     conf = [t["answer_field"], t["competitor_field"]]
                 t["_confusable"] = conf
                 t["_hash"] = template_hash(tpl)
+                t["_scenario"] = sc["id"]
                 stats["tool:ok"] += 1
+                fh_t.write(json.dumps(t, ensure_ascii=False) + "\n")
+                fh_t.flush()
                 return t
 
-        async def one_dialogue(idx, tool):
+        async def one_dialogue(idx, tool, key=None):
+            if key and key in done_keys:
+                stats["dlg:resumed"] += 1
+                return None
             async with sem:
                 conf = tool.get("_confusable") or [tool["answer_field"],
                                                    tool["competitor_field"]]
@@ -617,6 +677,7 @@ async def main_async(args):
                                               for k, v in texts.items()}})
                     return None
                 row["_plan"] = plan
+                row["_key"] = key
                 row["_answer_field"] = af
                 row["_competitor_field"] = comp
                 why = gate_dialogue(row, tool, plan)
@@ -625,6 +686,7 @@ async def main_async(args):
                     return None
                 stats["dlg:ok"] += 1
                 stats[f"plan:{plan}"] += 1
+                _emit(row, af, comp)
                 return row
 
         # PIPELINED. Tool invention finished at ~9s of a 13.4s run with every
@@ -635,6 +697,20 @@ async def main_async(args):
         claimed = []
 
         async def tool_then_dialogues(sc):
+            # The cap must count what is ALREADY on disk. `claimed` starts
+            # empty on resume, so a finished run claimed a fresh `want` tools
+            # on top of the existing corpus and grew 40 rows into 78.
+            if len(done_keys) + len(claimed) * args.dialogues_per_tool \
+                    >= args.n:
+                return []
+            # A scenario whose dialogues are all on disk needs no tool call at
+            # all. Without this, resuming a FINISHED run still re-invented
+            # tools for every candidate scenario and appended them to
+            # tools.jsonl -- paid work with nothing to show.
+            keys = {f"{sc['id']}#{k}" for k in range(args.dialogues_per_tool)}
+            if keys and keys <= done_keys:
+                stats["scenario:complete"] += 1
+                return []
             t = await one_tool(sc)
             if not t or t["name"] in seen_names or len(claimed) >= want:
                 return []
@@ -643,7 +719,8 @@ async def main_async(args):
             tools.append(t)
             base = (len(claimed) - 1) * args.dialogues_per_tool
             out = await asyncio.gather(*[
-                one_dialogue(base + k, t) for k in range(args.dialogues_per_tool)])
+                one_dialogue(base + k, t, f"{sc['id']}#{k}")
+                for k in range(args.dialogues_per_tool)])
             return [r for r in out if r]
 
         got = await asyncio.gather(*[tool_then_dialogues(x) for x in pool])
@@ -678,7 +755,10 @@ async def main_async(args):
             async with _aio.ClientSession(
                     headers={"Authorization": f"Bearer {_key()}"}) as sess:
                 await check_judge(sess)
-                flat = [(r, it) for r in rows for it in judge_items(r)]
+                todo = [r for r in rows if not r.get("_judged")]
+                print(f"  judging {len(todo)} of {len(rows)} rows "
+                      f"({len(rows) - len(todo)} already judged)", flush=True)
+                flat = [(r, it) for r in todo for it in judge_items(r)]
                 verdict = {}
                 B = args.judge_batch
                 chunks = [flat[i:i + B] for i in range(0, len(flat), B)]
@@ -755,24 +835,30 @@ async def main_async(args):
             return verdict, tok2
 
         verdict, tok2 = await _judging()
-        keep = [r for r in rows if not verdict.get(id(r))]
+        keep = [r for r in rows if not verdict.get(id(r))]   # judged ones have none
         stats["judge:rejected"] = len(rows) - len(keep)
         stats["judge:kept"] = len(keep)
         tok["jin"] += tok2["in"]
         tok["jout"] += tok2["out"]
         rows = keep
 
-    (args.out / "missing_text.jsonl").write_text("\n".join(
-        json.dumps(x, ensure_ascii=False) for x in missing) + "\n")
-    out = args.out / "translated.jsonl"
-    with out.open("w") as f, (args.out / "roles.jsonl").open("w") as g:
+    for _fh in (fh_t, fh_r, fh_l):
+        _fh.close()
+    # One consistent file at the end. The append above is the crash guard; the
+    # rewrite drops whatever the judge rejected and marks the rest judged, so
+    # a later --resume does not re-judge them.
+    with rfile.open("w") as f, lfile.open("w") as g:
         for i, r in enumerate(rows):
             r["idx"] = i
+            r["_judged"] = True
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             g.write(json.dumps({"idx": i,
                                 "answer_field": r.get("_answer_field"),
                                 "competitor_field": r.get("_competitor_field")},
                                ensure_ascii=False) + "\n")
+    (args.out / "missing_text.jsonl").write_text("\n".join(
+        json.dumps(x, ensure_ascii=False) for x in missing) + "\n")
+    out = rfile
     print()
     for k, v in sorted(stats.items()):
         print(f"   {v:>5}  {k}")
@@ -794,6 +880,10 @@ def main():
     ap.add_argument("--dialogues-per-tool", type=int, default=4)
     ap.add_argument("--concurrency", type=int, default=12)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--resume", action="store_true",
+                    help="continue an interrupted run: reuse the tools and "
+                         "rows already in --out and generate only what is "
+                         "missing")
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--judge-batch", type=int, default=10)
     asyncio.run(main_async(ap.parse_args()))
