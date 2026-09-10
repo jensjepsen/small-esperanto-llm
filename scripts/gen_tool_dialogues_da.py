@@ -630,6 +630,29 @@ def gate_dialogue(row, tool, plan=None):
                   "mislykket"):
             if not FAIL_WORDS.search(m["content"]):
                 return "answer-ignores-failed-status"
+    # DOCUMENTATION ECHO. A user turn that restates the answer field's own
+    # description makes field selection a string match, which defeats the
+    # same-type competitor: "Den aktuelle grundvandsstand målt i meter under
+    # terræn" appeared as both the schema text and the entire utterance in
+    # 21.1% of rows.
+    af_spec = None
+    for t in row["da"]["tools"]:
+        fn = t.get("function") or {}
+        props = ((fn.get("returns") or {}).get("properties") or {})
+        if tool.get("answer_field") in props:
+            af_spec = props[tool["answer_field"]].get("description")
+            break
+    if af_spec:
+        dw = {w.lower() for w in WORD.findall(af_spec)} - SCAFFOLD
+        for m in msgs:
+            if m["role"] != "user":
+                continue
+            qw = {w.lower() for w in
+                  WORD.findall(strip_catalogue(m.get("content")))} - SCAFFOLD
+            if not dw or not qw:
+                continue
+            if len(dw & qw) >= max(2, int(0.8 * len(dw))) and len(qw - dw) <= 2:
+                return "question-echoes-field-description"
     # PARROTING. The answers prompt is given the call arguments so it will not
     # contradict them -- that cut contradictions 21.3% -> 11.9%. The cost is
     # that the model can answer WITH an argument: asked about `dmx_address:
@@ -1036,6 +1059,14 @@ DIALOGUE_CONTROLS.append((
 # The four gates promoted from the review script. Each shipped into the
 # corpus before it was a gate: 4 degenerate openings, 1 role-swapped question,
 # 1 JSON fragment, 2 consecutive-turn rows.
+# The user asking in the schema's own words -- `cups_left` is documented as
+# "Antal kopper tilbage", so a turn that IS that phrase makes the choice a
+# string match.
+DIALOGUE_CONTROLS.append((
+    _dlg([("user", "Antal kopper tilbage"), ("assistant", "", _CALL),
+          ("assistant", "Der er 8 kopper tilbage.")]),
+    "question-echoes-field-description"))
+
 DIALOGUE_CONTROLS.append((
     {"idx": 0, "da": {"tools": [to_spec(_OK_TOOL)], "conversations": [
         {"role": "user", "content": "Er der kaffe tilbage i maskinen?"},
@@ -1204,25 +1235,52 @@ def check_controls():
 
 # ── generation ─────────────────────────────────────────────────────────────
 
+class FatalAPIError(RuntimeError):
+    """The account cannot make calls -- retrying and continuing only wastes."""
+
+
+# Non-200s worth giving up on immediately rather than retrying 3x per call.
+FATAL_STATUS = {401, 402, 403}
+
+
 async def _ask(session, sys_prompt, user_payload, schema, name, tries=3,
                temp=0.7, max_tokens=3000):
+    """Structured call. Raises FatalAPIError on auth/quota; None on soft fail.
+
+    This used to swallow every status and exception alike and return None, so
+    an exhausted key looked exactly like a model returning unparseable JSON: a
+    1000-row build reported "1000 dlg:no-output", kept going, and spent the
+    remaining credit inventing tools whose dialogues could never be written.
+    """
     body = {"model": MODEL, "temperature": temp, "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": sys_prompt},
                          {"role": "user", "content": user_payload}],
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": name, "strict": True, "schema": schema}}}
+    last = None
     for a in range(tries):
         try:
             async with session.post(URL, json=body) as r:
+                if r.status in FATAL_STATUS:
+                    raise FatalAPIError(
+                        f"HTTP {r.status}: {(await r.text())[:300]}")
                 if r.status != 200:
+                    last = f"HTTP {r.status}"
                     await asyncio.sleep(1.5 * (a + 1))
                     continue
                 d = await r.json()
                 return (json.loads(d["choices"][0]["message"]["content"]),
                         d.get("usage") or {})
-        except Exception:
+        except FatalAPIError:
+            raise
+        except Exception as e:
+            last = f"{type(e).__name__}: {e}"[:120]
             await asyncio.sleep(1.5 * (a + 1))
+    _ask.last_error = last
     return None, {}
+
+
+_ask.last_error = None
 
 
 async def invent_tool(session, scenario, tpl):
@@ -1276,6 +1334,9 @@ HINTS = {
     "call-with-all-null-arguments":
         "Kald ikke værktøjet med tomme argumenter. Spørg brugeren om de "
         "oplysninger, kaldet kræver.",
+    "question-echoes-field-description":
+        "Brugerens replik må ikke gentage feltets beskrivelse. Spørg med "
+        "brugerens egne, dagligdags ord.",
     "answer-ignores-failed-status":
         "Siger resultatet, at kaldet fejlede, skal svaret sige det ligeud -- "
         "ikke rapportere et tal, som om alt gik godt.",

@@ -29,9 +29,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gen_tool_dialogues_da import (  # noqa: E402
-    _ask, _hash, _key, _unquote, _numeric_span, _weighted, check_judge,
-    gate_dialogue, gate_tool, judge, payload_for, sample_template,
-    render_template, strip_catalogue, template_hash, to_spec, PLAN_WEIGHTS)
+    FatalAPIError, _answer_nums, _ask, _hash, _key, _mentions, _shares_content,
+    _traces_to,
+    _unquote, _numeric_span, _weighted, check_judge, gate_dialogue, gate_tool,
+    judge, payload_for, sample_template, render_template, strip_catalogue,
+    template_hash, to_spec, LIST_ENUM, NUM, PLAN_WEIGHTS)
 
 # Parameters need EXAMPLES so arguments can be sampled procedurally. The
 # existing schema only describes them, which is enough for a model writing a
@@ -55,6 +57,19 @@ Værktøjet skal have en `returns`-kontrakt, og kontrakten SKAL stille et VALG:
   feltet indeholder.
 - Drift-felter (status, request_id) tæller ikke som konkurrent.
 
+Har værktøjet en parameter, der VÆLGER hvilken oplysning der returneres --
+fx `data_category` med valgmulighederne "stemmeoptælling" og
+"beredskabsplan" -- så udfyld `selectors`: for hver valgmulighed skal du
+angive, hvilket returfelt den peger på. Værdierne er på dansk og felterne på
+engelsk, så sammenhængen kan ikke gættes ud fra navnene -- den skal skrives.
+Har værktøjet ingen sådan parameter, så lad `selectors` være tom.
+
+`required` er KUN sandt for en parameter, kaldet er meningsløst uden -- det,
+der udpeger HVEM eller HVAD der spørges om. Filtre, grænser, tidsstempler,
+perioder, tærskler og antalsbegrænsninger er ALTID `required: false`: brugeren
+nævner dem sjældent, og et kald, der sender dem alligevel, opfinder en værdi,
+ingen har bedt om.
+
 Giv 2-3 realistiske og FORSKELLIGE eksempelværdier for HVER parameter og HVERT
 returfelt. Eksemplerne bruges direkte som data, så de skal være rigtige
 værdier -- ikke beskrivelser af værdier."""
@@ -63,7 +78,7 @@ TOOL_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["name", "description", "parameters", "returns",
                  "answer_field", "competitor_field", "confusable_fields",
-                 "user_goal"],
+                 "selectors", "user_goal"],
     "properties": {
         "name": {"type": "string"},
         "description": {"type": "string"},
@@ -87,7 +102,13 @@ TOOL_SCHEMA = {
         "answer_field": {"type": "string"},
         "competitor_field": {"type": "string"},
         "confusable_fields": {"type": "array",
-                              "items": {"type": "string"}}}}
+                              "items": {"type": "string"}},
+        "selectors": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["parameter", "option", "selects_field"],
+            "properties": {"parameter": {"type": "string"},
+                           "option": {"type": "string"},
+                           "selects_field": {"type": "string"}}}}}}
 
 DRESS_SYS = """Du skriver replikkerne i en dansk samtale, hvis FORLØB allerede
 ligger fast.
@@ -98,21 +119,38 @@ ombytte beats.
 
 - `bruger_beder_om`: skriv brugerens replik. Den skal naturligt føre til
   præcis de argumenter, der står -- nævn værdierne, men som almindeligt sprog,
-  ikke som felter. Feltet beskriver, HVAD brugeren vil vide; gengiv det
-  ALDRIG ordret, og skriv aldrig et parameternavn eller en feltbeskrivelse i
-  replikken. Spørgsmålet skal handle om netop det, `svar_felt` indeholder --
-  ikke om noget andet i resultatet.
+  ikke som felter. `bruger_beder_om` er et FELTNAVN på engelsk: det siger,
+  hvad brugeren vil vide, men ikke hvordan de siger det. Skriv replikken i
+  brugerens egne, almindelige ord -- aldrig feltnavnet, og aldrig
+  feltbeskrivelsen fra værktøjet. Spørgsmålet skal handle om netop det,
+  `svar_felt` indeholder -- ikke om noget andet i resultatet.
+  Det skal kunne besvares med præcis den værdi: spørg ikke "hvornår", hvis
+  feltet er et antal eller en prioritet, og ikke "hvor stor en andel", hvis
+  feltet tæller noget.
 - `assistent_spoerger_om`: skriv assistentens spørgsmål efter netop den
-  manglende oplysning.
+  manglende oplysning. Spørg kun om DEN -- ikke om noget, brugeren allerede
+  har sagt.
+- `bruger_oplyser`: brugeren svarer på det spørgsmål. Skriv KUN den værdi,
+  der står i `argumenter`, som et kort svar: "Det er 262." eller "2023".
+  Gentag ALDRIG spørgsmålet, og stil ikke et nyt -- den, der svarer, er ikke
+  den, der spurgte.
 - `assistent_svarer`: skriv assistentens svar. Brug feltet `svar_felt` fra
   `resultat`. Brug kun tal og tekst fra `resultat`, fra argumenterne eller
   fra det brugeren selv sagde. Skriv aldrig feltnavne i teksten; sig hvad
-  feltet betyder. Hele sætninger, ikke en rå gengivelse af værdien.
+  feltet betyder. Altid en hel sætning -- aldrig kun værdien.
+  Kald værdien det, den er: et antal er et antal, ikke en procent eller en
+  rate. Har feltet ingen enhed, så find ikke på en.
+  Svar på DET, DER BLEV SPURGT OM, og ikke mere: tilføj ikke oplysninger,
+  brugeren ikke bad om. Decimaltal skrives med KOMMA på dansk: 3,43 --
+  ikke 3.43.
 - `assistent_afslaar`: skriv et kort, ligefremt afslag.
 
 Siger `resultat`, at kaldet fejlede (fx `status: "fejl"`), skal svaret sige
 det ligeud -- rapporter ALDRIG et tal fra et mislykket kald, som om alt gik
 godt.
+
+To replikker må aldrig være ens. Brugeren og assistenten er to forskellige
+mennesker: assistenten gentager ikke brugerens sætning som sit svar.
 
 Alt er på DANSK. Kun værktøjs-, parameter- og feltnavne er engelske."""
 
@@ -153,7 +191,7 @@ def sample_arg(param, idx, salt=0):
     return raw
 
 
-def _selector_for(param, answer_field):
+def _selector_for(param, answer_field, tool=None):
     """A choice this parameter offers that SELECTS the answer field.
 
     Some parameters pick which aspect the tool reports. Sampling them
@@ -161,6 +199,11 @@ def _selector_for(param, answer_field):
     `measurement_type: "pump_efficiency"` answering a question about
     `bacteria_count_per_ml` -- the arguments contradicting the question.
     """
+    if tool:
+        dec = (tool.get("_selectors") or {}).get(
+            f"{param.get('name')}\u0000{answer_field}")
+        if dec is not None:
+            return dec
     opts = [str(o) for o in (param.get("enum") or [])] or \
            [_unquote(e) for e in (param.get("examples") or [])]
     if len(opts) < 2:
@@ -183,19 +226,83 @@ def _selector_for(param, answer_field):
     return best
 
 
+def governs_field(param, tool):
+    """Does this parameter CHOOSE which return field the tool reports?"""
+    declared = {k.split(chr(0))[0] for k in (tool.get("_selectors") or {})}
+    if declared:
+        return param.get("name") in declared
+    opts = (param.get("enum") or []) or (param.get("examples") or [])
+    return bool(SELECTOR_NAME.search(str(param.get("name") or ""))
+                and len(opts) > 1)
+
+
 def sample_args(tool, idx, salt=0, optional_p=0.5, answer_field=None):
-    """Required parameters always; optional ones sometimes. Never null."""
+    """Required parameters always; optional ones sometimes. Never null.
+
+    Returns None when the tool cannot be asked this row's question at all --
+    see the selector case below.
+    """
     out = {}
     af = answer_field or tool.get("answer_field")
     for p in tool.get("parameters") or []:
         if not p.get("required") and _hash("opt", p.get("name"), idx, salt) % 100 \
                 >= optional_p * 100:
             continue
-        sel = _selector_for(p, af) if af else None
+        sel = _selector_for(p, af, tool) if af else None
+        # A parameter that PICKS the reported field, none of whose options
+        # picks ours, cannot be filled by sampling: `health_metric:
+        # "population_size"` was sent for a question about `honey_yield_kg`,
+        # so the call itself asked for the wrong thing and the answer read it
+        # off a payload the call had not requested. Optional -> leave it out.
+        # Required -> the tool cannot express this question; drop the row and
+        # let a different answer field be tried.
+        if sel is None and af and governs_field(p, tool):
+            if p.get("required"):
+                return None
+            continue
         v = sel if sel is not None else sample_arg(p, idx, salt)
         if v is not None and v != "":
             out[p["name"]] = v
-    return out
+    return order_ranges(out)
+
+
+# A parameter that selects HOW to look something up -- by MMSI, by name, by
+# call sign -- names the same subject a different way. Varying it must not
+# change the data: the corpus had one vessel returning two different wrecks
+# because `query_type` was treated as a second subject.
+LOOKUP_PARAM = re.compile(
+    r"^(by_|lookup_|search_)|"
+    r"(query|search|lookup|identifier|id|match|ref)_?(type|by|method|mode|field|kind)$|"
+    r"^(method|mode|match_type|id_type|key_type)$", re.I)
+
+
+# Fallback for a tool that declared no selectors at all.
+SELECTOR_NAME = re.compile(r"(category|kategori|_type$|^type$|kind|aspect|"
+                           r"metric|report)", re.I)
+
+
+def is_lookup_param(name):
+    return bool(LOOKUP_PARAM.search(str(name or "")))
+
+
+def is_filter_param(name):
+    """A bound or a window: it narrows the query, it is not the subject."""
+    n = str(name or "")
+    return bool(BOUND_LO.search(n) or BOUND_HI.search(n)
+                or RANGE_LO.search(n) or RANGE_HI.search(n))
+
+
+def entity_args(args):
+    """The arguments that say WHICH thing, without the ones that filter it.
+
+    The payload is keyed on the arguments, so a filter in the key made the
+    entity itself change: recipe 188 scaled 5->3 returned flour, sugar and
+    eggs, and the same recipe scaled 6->3 returned rice and water. Keying
+    the record on the subject alone keeps a thing's data its own; only the
+    answer field is redrawn per query.
+    """
+    return {k: v for k, v in (args or {}).items()
+            if not is_lookup_param(k) and not is_filter_param(k)}
 
 
 def vary_one(tool, args, idx, salt, numeric_ok=True):
@@ -211,9 +318,25 @@ def vary_one(tool, args, idx, salt, numeric_ok=True):
     can vary -- a lone boolean flag is a display toggle, not a second subject.
     """
     af = tool.get("answer_field")
+    # A SELECTOR chooses WHICH field is meaningful, so varying it leaves the
+    # row's single answer field unable to express the question: asked for the
+    # material log AND the contingency plan, the answer gave both fields from
+    # both payloads -- the same pair twice. Vary a SUBJECT (the year, the
+    # vessel) so both calls mean the same thing about different things.
+    # Excluded for ANY declared field, not just this row's.
+    declared_sel = {k.split(chr(0))[0] for k in (tool.get("_selectors") or {})}
     cands = [p for p in (tool.get("parameters") or [])
              if p["name"] in args
-             and _selector_for(p, af) is None
+             and not is_lookup_param(p["name"])
+             # A BOUND is not a second subject. "for the 86 busiest junctions"
+             # and "for the 3 busiest" is one question asked twice, and the
+             # payloads answered it with two different traffic volumes --
+             # teaching that a page size changes the data. Same for
+             # `max_depth: 2` vs `11` and `limit: 86` vs `3`.
+             and not is_filter_param(p["name"])
+             and p["name"] not in declared_sel
+             and not (not declared_sel and SELECTOR_NAME.search(p["name"]))
+             and _selector_for(p, af, tool) is None
              and (p.get("type") or "string").lower() != "boolean"
              and len({str(_unquote(e)) for e in (p.get("examples") or [])
                       } | set(p.get("enum") or [])) > 1]
@@ -245,8 +368,274 @@ def vary_one(tool, args, idx, salt, numeric_ok=True):
         v = sample_arg(pick, idx, salt * 31 + bump)
         if v is not None and str(v) != str(args.get(pick["name"])):
             out[pick["name"]] = v
-            return out, pick
+            return order_ranges(out), pick
     return None, None
+
+
+# ── procedural: payload repair ─────────────────────────────────────────────
+#
+# The payload is synthesised from the field's own examples and knows nothing
+# about the call that asked for it. Reading 176 rows, that showed up three
+# ways, all of which teach the model to read a contradiction as fact:
+#
+#   "hvor mange bryllupper, hvor der er MINDST 129 begivenheder" -> 20
+#   `minimum_member_count: 44` -> `total_members: 62, active_members: 275`
+#   two parallel calls, one for 001001 and one for 12a345b, and the payload
+#   for 001001 carrying `cadastral_map_url: ".../12a345b.pdf"`
+
+# Parameter names follow the schema's own convention -- English snake_case,
+# by the tool contract -- so these read the NAME, not the domain.
+BOUND_LO = re.compile(r"(^|_)(min|minimum|least|lower|floor)(_|$)")
+BOUND_HI = re.compile(r"(^|_)(max|maximum|upper|limit|cap)(_|$)")
+TOTAL_TOKEN = re.compile(r"(^|_)(total|overall)(_|$)")
+
+
+def _subject_tokens(name):
+    return [t for t in re.split(r"_+", str(name).lower()) if len(t) >= 3]
+
+
+def token_weights(names):
+    """How much each token distinguishes one of these names from the others.
+
+    Replaces a hand-written stop-word list. `count`, `meters` and `average`
+    are not domain knowledge I should be encoding -- they are simply tokens
+    that recur across a tool's own field names, and a token shared by many
+    names cannot say WHICH name is meant. Used to CHOOSE between candidates
+    that all share something with a filter: `min_depth_meters` matches both
+    `depth_measurement_meters` and `berth_rental_rate_dkk_per_meter`, and
+    `meter` is worth a third of `depth` because three names carry it.
+    """
+    df = Counter()
+    for n in names:
+        for t in set(_subject_tokens(n)):
+            df[t] += 1
+    return {t: 1.0 / c for t, c in df.items()}
+
+
+def _subject_score(a, b, weights=None):
+    """How much two names talk about the same thing."""
+    w, score = weights or {}, 0.0
+    for x in _subject_tokens(a):
+        for y in _subject_tokens(b):
+            n = min(len(x), len(y), 5)
+            if n >= 4 and x[:n] == y[:n]:
+                score += min(w.get(x, 1.0), w.get(y, 1.0))
+                break
+    return score
+
+
+# Half a point: a token shared by no more than two of the tool's names.
+SUBJECT_FLOOR = 0.5
+
+
+def _same_subject(a, b, weights=None):
+    """`minimum_member_count` and `active_members` are about members."""
+    return _subject_score(a, b, weights) >= SUBJECT_FLOOR
+
+
+def _as_number(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return v
+
+
+def _nudge(v, target, up, field, idx, taken=()):
+    """Move a value onto the right side of a bound, without landing on it.
+
+    Never onto a value already in the payload: the whole contract is that
+    two same-type fields hold two different numbers.
+    """
+    step = max(1, int(abs(target) * 0.15)) if abs(target) >= 7 else 1
+    for bump in range(8):
+        off = (_hash(field, idx, bump) % step) + 1 + bump
+        out = target + off if up else target - off
+        if not up and target >= 0:
+            out = max(out, 0)
+        out = int(round(out)) if isinstance(v, int) else round(float(out), 2)
+        if str(out) not in {str(x) for x in taken}:
+            return out
+    return out
+
+
+def _bound_target(param, payload, answer_field, weights=None):
+    """WHICH field a filter constrains, or None when nothing says.
+
+    `minimum_member_count` beside `total_members`, `active_members` and
+    `board_members` is a floor under the choir, not under its board, so a
+    bound goes on the WHOLE: the total if there is one.
+
+    A bound whose subject matches NO field is left alone. It used to fall
+    back to the answer field on the theory that a filter must bound
+    something, and that theory produced `max_results: 86` capping rush-hour
+    traffic at 83 beside an average of 862, and `max_depth: 11` capping the
+    scraped records at 10. A page size is not a bound on the data.
+    """
+    cand = [f for f, v in payload.items()
+            if _as_number(v) is not None and _same_subject(param, f)]
+    if not cand:
+        return None
+    whole = [f for f in cand if TOTAL_TOKEN.search(f)]
+    cand = whole or cand
+    return max(cand, key=lambda f: _subject_score(param, f, weights))
+
+
+def respect_constraints(tool, payload, args, idx):
+    """Make the payload obey the filters the call actually sent."""
+    out = dict(payload)
+    af = tool.get("answer_field")
+    w = token_weights(list(out) + list(args or {}))
+    for k, v in (args or {}).items():
+        n = _as_number(v)
+        if n is None:
+            continue
+        lo, hi = bool(BOUND_LO.search(k)), bool(BOUND_HI.search(k))
+        f = _bound_target(k, out, af, w)
+        if f is None:
+            continue
+        cur = _as_number(out[f])
+        others = [x for g, x in out.items() if g != f]
+        if not (lo or hi):
+            # No EQUALITY clamp. Forcing a field to equal a same-subject
+            # argument fixed one row (`guest_count: 123` beside
+            # `guest_list_size: 51`) and broke four: the answer field became
+            # a copy of the argument, `temperature_celsius: 23.56` was
+            # written into `ambient_temperature_celsius`, and `room_count:
+            # 82` into `available_rooms` beside 86 occupied. Two names
+            # sharing a word are not the same quantity.
+            continue
+        elif lo and cur < n:
+            out[f] = _nudge(out[f], n, True, f, idx, others)
+        elif hi and cur > n:
+            out[f] = _nudge(out[f], n, False, f, idx, others)
+    # A part cannot exceed its whole: `total_members: 27` beside
+    # `active_members: 51`. The total already carries any bound, so it is the
+    # parts that move.
+    for t in [f for f in out if TOTAL_TOKEN.search(f)]:
+        tv = _as_number(out[t])
+        if tv is None:
+            continue
+        for f in list(out):
+            fv = _as_number(out[f])
+            if f == t or fv is None or not _same_subject(t, f) or fv <= tv:
+                continue
+            others = [x for g, x in out.items() if g != f]
+            out[f] = _nudge(out[f], tv, False, f, idx, others)
+    return out
+
+
+# Fields that NAME a thing rather than measure it. Two calls for two subjects
+# must not come back with the same one.
+IDENTIFYING = re.compile(r"(_id$|^id$|_ids$|identifier|url|uri|reference|"
+                         r"_ref$|confirmation|number|kode|code|serial|_no$)",
+                         re.I)
+
+
+def _rekey(value, own, other):
+    """Rewrite an identifier belonging to ANOTHER call's subject.
+
+    `.../maps/12a345b.pdf` in the payload for property 001001 is not a
+    coincidence: the field's examples embed the subject, and the payload is
+    drawn from the examples. Substituting the call's own subject back in
+    keeps the row usable instead of dropping it.
+    """
+    s = str(value)
+    for pname, ov in (other or {}).items():
+        ov = str(ov)
+        if len(ov) < 3 or ov.lower() not in s.lower():
+            continue
+        mine = str((own or {}).get(pname, "")).strip()
+        if not mine or mine.lower() == ov.lower():
+            return None                     # no replacement available
+        s = re.sub(re.escape(ov), mine, s, flags=re.I)
+    return s
+
+
+def echo_identifiers(tool, payload, args, answer_field):
+    """A returned identifier for the thing that was asked about IS that thing.
+
+    `plot_identifier: "A-123"` came back with `plot_number: "A-050"` -- the
+    tool answering about a different grave than the one requested. Never the
+    answer field: an answer that merely repeats an argument is copyable, and
+    only between two IDENTIFIERS -- `document_version: "2023-Q4"` was written
+    into `historical_documentation_ref`, replacing a document reference with
+    a quarter.
+    """
+    out = dict(payload)
+    for f, v in out.items():
+        if f == answer_field or not isinstance(v, str) \
+                or not IDENTIFYING.search(f):
+            continue
+        for k, av in (args or {}).items():
+            if not isinstance(av, str) or not av.strip() \
+                    or not IDENTIFYING.search(k):
+                continue
+            if _same_subject(k, f):
+                out[f] = av
+                break
+    return out
+
+
+RANGE_LO = re.compile(r"(^|_)(start|from|begin|first|earliest|efter)(_|$)")
+RANGE_HI = re.compile(r"(^|_)(end|until|last|latest|slut)(_|$)")
+
+
+def order_ranges(args):
+    """`start_year: 2024, end_year: 2022` is not a range, it is backwards."""
+    if not args:
+        return args
+    out = dict(args)
+    for a in [k for k in out if RANGE_LO.search(k)]:
+        for b in [k for k in out if RANGE_HI.search(k)]:
+            va, vb = _as_number(out[a]), _as_number(out[b])
+            if va is None or vb is None:
+                continue
+            if RANGE_LO.sub("_", a.lower()) != RANGE_HI.sub("_", b.lower()):
+                continue
+            if va > vb:
+                out[a], out[b] = out[b], out[a]
+    return out
+
+
+def key_payloads(tool, pays, arglist, idx, all_args=None):
+    """Payloads that belong to their own call, and to no other.
+
+    `all_args` is every call in the row. A multi-turn row asks about two
+    subjects in two separate beats, and scoping this to one beat let the
+    documentation reference for `hus_67890` come back as
+    `.../ejendom_12345_historik.pdf` -- the other turn's building.
+    """
+    out = []
+    pool = list(all_args or arglist)
+    for k, (p, a) in enumerate(zip(pays, arglist)):
+        others = [x for x in pool if x is not a]
+        merged = {kk: vv for o in others for kk, vv in o.items()}
+        q = dict(p)
+        for f, v in list(q.items()):
+            if not isinstance(v, str):
+                continue
+            fixed = _rekey(v, a, merged)
+            if fixed is None:
+                # Cannot be re-keyed: fall back to a value drawn for a
+                # different row, which is at least not another subject's.
+                alt = payload_for(tool, idx + 7919 * (k + 1), a).get(f)
+                q[f] = alt if alt is not None else v
+            else:
+                q[f] = fixed
+        # Two subjects, one berth number: `available_berth_id: "BERTH-E02"`
+        # came back for both boats in a parallel booking.
+        for f in [x for x in q if IDENTIFYING.search(x)]:
+            for bump in range(1, 8):
+                if all(str(q[f]) != str(prev.get(f)) for prev in out):
+                    break
+                alt = payload_for(tool, idx + 7919 * bump * (k + 2), a).get(f)
+                if alt is None:
+                    break
+                q[f] = _rekey(alt, a, merged) or alt
+        # Re-keying draws replacement values from other rows, which know
+        # nothing about this call's filters.
+        q = echo_identifiers(tool, q, a, tool.get("answer_field"))
+        out.append(respect_constraints(tool, q, a, idx))
+    return out
 
 
 # ── procedural: the beat sheet ─────────────────────────────────────────────
@@ -254,7 +643,23 @@ def vary_one(tool, args, idx, salt, numeric_ok=True):
 def can_vary(tool, idx, numeric_ok=True):
     """Can this tool support a second, different call at all?"""
     a = sample_args(tool, idx, 0)
+    if a is None:
+        return False
     return vary_one(tool, a, idx, 1, numeric_ok)[0] is not None
+
+
+def answerable(tool, field):
+    """Can a call actually ASK for this field?
+
+    False when a REQUIRED parameter selects which field comes back and none
+    of its options selects this one. Filtering the role rotation on this is
+    cheaper than sampling an impossible row and dropping it.
+    """
+    for p in tool.get("parameters") or []:
+        if p.get("required") and governs_field(p, tool) \
+                and _selector_for(p, field, tool) is None:
+            return False
+    return True
 
 
 def pick_plan(tool, idx, rng):
@@ -278,16 +683,31 @@ def pick_plan(tool, idx, rng):
 
 
 def _wants(tool):
-    """What the user is asking for, in the answer field's own words.
+    """What the user is asking for -- the FIELD NAME, not its description.
 
-    The role is chosen per row and the question was written from the
-    ARGUMENTS, so nothing tied them together: a row whose answer field was
-    `wreck_latitude` asked "find fartøjet" and answered with the wreck's
-    position, labelled as the vessel's. The question has to name what it wants.
+    The question still has to target the chosen answer field, or the role and
+    the question diverge (a row answering `wreck_latitude` asked "find
+    fartøjet" and reported the wreck's position as the vessel's). But handing
+    over the field's Danish description got it back verbatim as the user's
+    line in 21.1% of rows: "Den aktuelle grundvandsstand målt i meter under
+    terræn" was both the schema text and the whole utterance. A user who
+    phrases the request in the tool's own documentation makes field selection
+    a string match, which is the shortcut the competitor field exists to
+    prevent. Pass the identifier and let the model find its own words.
     """
-    by = {r["name"]: r for r in tool["returns"]}
-    spec = by.get(tool["answer_field"]) or {}
-    return (spec.get("description") or tool["answer_field"]).rstrip(".")
+    return tool["answer_field"]
+
+
+def varied_params(beats):
+    """Parameter names whose value differs between this row's calls."""
+    calls = [a for b in beats for a in (b.get("kald") or [])]
+    seen, out = {}, set()
+    for a in calls:
+        for k, v in a.items():
+            if k in seen and str(seen[k]) != str(v):
+                out.add(k)
+            seen.setdefault(k, v)
+    return out
 
 
 def beats_for(plan, tool, idx):
@@ -299,6 +719,8 @@ def beats_for(plan, tool, idx):
     """
     b = []
     a1 = sample_args(tool, idx, 0)
+    if a1 is None:
+        return None
     if plan == "refuse":
         b.append({"rolle": "bruger", "bruger_beder_om": "noget værktøjet "
                                                         "IKKE kan",
@@ -316,8 +738,8 @@ def beats_for(plan, tool, idx):
         if miss:
             b.append({"rolle": "assistent",
                       "assistent_spoerger_om": miss["description"]})
-            b.append({"rolle": "bruger", "bruger_beder_om": "kun den "
-                                                            "manglende oplysning",
+            b.append({"rolle": "bruger",
+                      "bruger_oplyser": miss["name"],
                       "args": {miss["name"]: a1.get(miss["name"])}})
         b.append({"rolle": "assistent", "kald": [a1]})
         b.append({"rolle": "assistent", "assistent_svarer": True})
@@ -365,6 +787,461 @@ def _called_name_row(row):
     return None
 
 
+# ── answer consistency ─────────────────────────────────────────────────────
+
+def _statusish(key):
+    """A drift field the answer may always mention -- and must, if it failed."""
+    k = str(key).lower()
+    return k.endswith(("status", "state", "tilstand"))
+
+
+def _visible(payload, answer_field):
+    """The fields the dressing model is allowed to see for this answer."""
+    return {k for k in payload if k == answer_field or _statusish(k)}
+
+
+# Dates, clock times and years render as digits that belong to no field.
+# Masking them before the unasked-field scan keeps "den 15. november 2023"
+# from colliding with an unrelated `funeral_logs: 15`.
+MONTHS = (r"januar|februar|marts|april|maj|juni|juli|august|september|"
+          r"oktober|november|december")
+DATEISH = re.compile(
+    r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?Z?)?"
+    r"|\d{1,2}:\d{2}(?::\d{2})?"
+    r"|\d{1,2}\.\s*(?:" + MONTHS + r")(?:\s+\d{4})?"
+    r"|(?<!\d)(?:19|20)\d{2}(?!\d)", re.I)
+
+
+# `\d+\.\d+` only, and only when the token IS the repr of a value this row
+# holds. Numeric equality is not enough: Danish writes twelve thousand as
+# `12.000`, which floats to 12.0, so an equality test would rewrite a
+# thousands separator into a decimal comma and change the number.
+DECIMAL = re.compile(r"(?<![\d.,-])\d+\.\d+(?![\d.,])")
+
+
+def _floats_in(obj, out):
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _floats_in(v, out)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _floats_in(v, out)
+    elif isinstance(obj, float) and not isinstance(obj, bool):
+        out.add(repr(obj))
+    return out
+
+
+def da_decimals(text, reprs):
+    """3.43 -> 3,43. The payload is JSON; the turn is Danish prose.
+
+    Roughly half of every read row wrote the period straight through, often
+    next to a sibling turn that had written the comma, so the target itself
+    was inconsistent about how a number looks.
+    """
+    return DECIMAL.sub(
+        lambda m: m.group().replace(".", ",") if m.group() in reprs
+        else m.group(), text)
+
+
+def _answer_blocks(msgs):
+    """(index of each answer turn, payloads it answers, calls it answers)."""
+    out, pays, calls, said = [], [], [], []
+    for i, m in enumerate(msgs):
+        if m["role"] == "user":
+            said.append(str(m.get("content") or ""))
+            pays, calls = [], []
+            continue
+        for c in (m.get("tool_calls") or []):
+            calls.append((c.get("function") or {}).get("arguments") or {})
+        if m["role"] == "tool":
+            try:
+                pays.append(json.loads(m["content"]))
+            except Exception:
+                pass
+        elif m["role"] == "assistant" and str(m.get("content") or "").strip() \
+                and pays:
+            out.append((i, pays, calls, " ".join(said)))
+            pays, calls = [], []
+    return out
+
+
+def gate_answers(row, tool):
+    """What the answer turn says, beyond being true.
+
+    The three classes reading found that no existing gate names: the answer
+    volunteers a field nobody asked about, the answer drops a unit its own
+    field name declares, and the decimal separator drifts between turns.
+    """
+    msgs = row["da"]["conversations"]
+    af = tool["answer_field"]
+    for i, pays, calls, said in _answer_blocks(msgs):
+        text = str(msgs[i]["content"])
+        scan = DATEISH.sub(lambda m: " " * len(m.group()), text)
+        mine = {str(p.get(af)) for p in pays}
+        from_call = {str(v) for c in calls for v in c.values()}
+        # A question that quotes the answer verbatim -- "Hvad er kravene til
+        # fotodokumentation af facader og interiør før renovering?" against a
+        # payload holding exactly that string -- can be answered by copying
+        # the question, which is the shortcut the competitor field exists to
+        # close.
+        av = pays[0].get(af) if pays else None
+        if isinstance(av, str) and av.strip():
+            # Verbatim at any length: "Kan du finde steriliserings-ID'et til
+            # ST929341?" answered "ST929341" is a copy of the question.
+            if len(av.strip()) >= 4 and av.strip().lower() in said.lower():
+                return f"question-leaks-answer:{af}"
+            if len(av.split()) >= 3 and _shares_content(said, av, need=3):
+                return f"question-leaks-answer:{af}"
+        for p in pays:
+            for k, v in p.items():
+                if k == af or _statusish(k) or isinstance(v, bool) \
+                        or v in (None, ""):
+                    continue
+                # A value the answer is entitled to say: the answer field's
+                # own value, an argument, or something the user said first.
+                if str(v) in mine or str(v) in from_call \
+                        or _mentions(said, v):
+                    continue
+                if _mentions(scan, v):
+                    return f"answer-cites-unasked-field:{k}"
+        # Whatever survived da_decimals is either drift the model introduced
+        # (`27.0` for a payload holding 27) or a Danish THOUSANDS separator,
+        # which is correct and groups in threes.
+        for m in DECIMAL.finditer(text):
+            if not re.fullmatch(r"\d{1,3}(?:\.\d{3})+", m.group()):
+                return f"answer-writes-english-decimal:{m.group()}"
+    return None
+
+
+# ── the call must match what was said ──────────────────────────────────────
+
+AASCII = str.maketrans({"æ": "ae", "ø": "oe", "å": "aa",
+                        "Æ": "ae", "Ø": "oe", "Å": "aa"})
+
+
+def _norm_tokens(s):
+    """Comparable tokens: ASCII-folded, and `01` and `1` the same number."""
+    out = []
+    for t in re.split(r"[^a-z0-9]+", str(s).lower().translate(AASCII)):
+        if not t:
+            continue
+        out.append(str(int(t)) if t.isdigit() else t)
+    return out
+
+
+def _token_hit(t, have):
+    """Danish inflects: the argument `hest` is spoken as "heste", and the
+    argument `hund` appears inside "hundeprøver"."""
+    if t in have:
+        return True
+    if t.isdigit() or len(t) < 3:
+        return False
+    return any(x.startswith(t) or t.startswith(x)
+               for x in have if len(x) >= 3)
+
+
+NOW_WORDS = re.compile(r"(lige nu|netop nu|\bnu\b|aktuel|i dag|for tiden|"
+                       r"nuv(æ|ae)rende|seneste|øjeblikket)", re.I)
+MONTH_WORD = re.compile(r"(januar|februar|marts|april|maj|juni|juli|august|"
+                        r"september|oktober|november|december)", re.I)
+CLOCK = re.compile(r"\b\d{1,2}[:.]\d{2}\b")
+
+
+def _epoch_said(v, text):
+    """Is this epoch argument something the user actually asked for?
+
+    None when the value is not an epoch at all. A "hvad er den nu"
+    question legitimately carries a timestamp nobody spoke; a bare
+    1678826425 beside a question with no time in it does not.
+    """
+    if isinstance(v, bool) or not isinstance(v, int):
+        return None
+    if not 1_000_000_000 <= v <= 2_000_000_000:
+        return None
+    if NOW_WORDS.search(text) or CLOCK.search(text):
+        return True
+    import datetime as _dt
+    d = _dt.datetime.utcfromtimestamp(v)
+    have = _answer_nums(text)
+    # The year is often left out -- "den 26. oktober klokken 11:30" is a
+    # perfectly specific request -- so a month and a day carry it alone.
+    if float(d.day) in have and MONTH_WORD.search(text):
+        return True
+    return float(d.year) in have
+
+
+def _leaves(v, out):
+    """The values inside a structured argument, without its schema keys.
+
+    `crawl_config: {"urls": ["example.com", "anothersite.org"],
+    "rotate_proxies": true}` is spoken as "data fra example.com og
+    anothersite.org, og du skal rotere proxyer". Matching the raw JSON as
+    text found none of it, so the argument was ruled unspoken and dropped --
+    leaving a call with no arguments under a question naming two sites.
+    """
+    if isinstance(v, dict):
+        for x in v.values():
+            _leaves(x, out)
+    elif isinstance(v, (list, tuple)):
+        for x in v:
+            _leaves(x, out)
+    elif not isinstance(v, bool) and v not in (None, ""):
+        out.append(v)
+    return out
+
+
+def _structured(value):
+    """A JSON object or array hiding in a string argument."""
+    if isinstance(value, (dict, list)):
+        return value
+    s = str(value).strip()
+    if not s.startswith(("{", "[")):
+        return None
+    try:
+        v = json.loads(s)
+    except Exception:
+        return None
+    return v if isinstance(v, (dict, list)) else None
+
+
+def _said_value(value, text):
+    """Did the user supply this value, in any wording?
+
+    Tokens, not substrings, and folded to ASCII: the argument
+    `adresse:Vejnavn 10, 1234 By` is the same information as "på Vejnavn 10
+    i 1234 By", and `Renseanlaeg_Aarhus_Nord` is the same as "Renseanlæg
+    Aarhus Nord".
+    """
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return _traces_to(str(value), _answer_nums(text))
+    inner = _structured(value)
+    if inner is not None:
+        leaves = _leaves(inner, [])
+        if not leaves:
+            return True
+        hit = sum(1 for x in leaves if _said_value(x, text))
+        return hit >= max(1, int(round(0.6 * len(leaves))))
+    toks = _norm_tokens(value)
+    if not toks:
+        return True
+    have = set(_norm_tokens(text))
+    hit = sum(1 for t in toks if _token_hit(t, have))
+    return hit >= max(1, int(round(0.6 * len(toks))))
+
+
+def _spoken_pool(msgs, upto, extra_args):
+    """Numbers the user is entitled to say by turn `upto`."""
+    pool = set()
+    for x in msgs[:upto]:
+        if x["role"] in ("tool", "user"):
+            pool |= _answer_nums(strip_catalogue(x.get("content") or ""))
+        for c in (x.get("tool_calls") or []):
+            extra_args.append((c.get("function") or {}).get("arguments") or {})
+    import datetime as _dt
+    for a in extra_args:
+        pool |= _answer_nums(json.dumps(a, ensure_ascii=False))
+        for v in a.values():
+            if isinstance(v, int) and not isinstance(v, bool) \
+                    and 1_000_000_000 <= v <= 2_000_000_000:
+                d = _dt.datetime.utcfromtimestamp(v)
+                pool |= {float(x) for x in (d.year, d.month, d.day,
+                                            d.hour, d.minute, d.second)}
+    return pool
+
+
+LOWER_PHRASE = re.compile(r"(eller lavere|h(ø|oe)jst|maksimal|maks\.|op til|"
+                          r"under|ikke over)", re.I)
+UPPER_PHRASE = re.compile(r"(eller h(ø|oe)jere|mindst|minimum|mere end|over|"
+                          r"fra og med)", re.I)
+
+
+def unspoken_arguments(row, tool):
+    """Arguments the conversation never supplies.
+
+    `customer_id: "cust_67890"` under "hvad er mit receptnummer?" is the
+    model being shown that an identifier may be produced from nothing. An
+    enum, a selector or a lookup key is exempt: those are CODE's choice of
+    which aspect to ask for, not a value the user hands over.
+    """
+    msgs = row["da"]["conversations"]
+    params = {p["name"]: p for p in (tool.get("parameters") or [])}
+    said, out = "", []
+    for m in msgs:
+        if m["role"] == "user":
+            said += " " + strip_catalogue(m.get("content") or "")
+            continue
+        for c in (m.get("tool_calls") or []):
+            for k, v in (((c.get("function") or {}).get("arguments")) or {}
+                         ).items():
+                p = params.get(k) or {}
+                if isinstance(v, bool) or p.get("enum") or is_lookup_param(k) \
+                        or governs_field(p, tool):
+                    continue
+                ep = _epoch_said(v, said)
+                ok = ep if ep is not None else _said_value(v, said)
+                if not ok:
+                    out.append((k, bool(p.get("required"))))
+    return out
+
+
+def drop_unspoken_optionals(row, tool, keep=()):
+    """Remove optional arguments nobody asked for, rather than rerolling.
+
+    These are filters CODE chose to include -- a `record_limit: 21` or a
+    `timestamp` -- so the cheap repair is to stop sending them. The payload
+    stays as it is: a result that happens to satisfy a filter that was never
+    applied is not a contradiction, and the answer text already quotes it.
+
+    `keep` is the axis a parallel or multi-turn row varies. Dropping it left
+    two byte-identical calls returning different payloads -- a row teaching
+    that the same call gives different answers. Anything held back here
+    falls through to the gate, which asks the dresser to say the value
+    instead.
+    """
+    drop = {k for k, req in unspoken_arguments(row, tool)
+            if not req and k not in set(keep)}
+    if not drop:
+        return row, drop
+    msgs = []
+    for m in row["da"]["conversations"]:
+        if m.get("tool_calls"):
+            m = {**m, "tool_calls": [
+                {**c, "function": {**c["function"], "arguments": {
+                    k: v for k, v in (c["function"].get("arguments") or {}
+                                      ).items() if k not in drop}}}
+                for c in m["tool_calls"]]}
+        msgs.append(m)
+    return {**row, "da": {**row["da"], "conversations": msgs}}, drop
+
+
+def gate_prose(row, tool):
+    """Schema identifiers in the conversation.
+
+    "Jeg vil gerne bede om sample_id for station 34", "inden for
+    passing_accuracy", and an assistant offering to choose between
+    'route_optimization' and 'fill_level_sensors'. The names are English
+    snake_case by contract, so any of them appearing in a Danish turn is the
+    schema leaking into the words -- and a question that names the field it
+    wants makes field selection a string match.
+    """
+    names = {str(r.get("name")) for r in (tool.get("returns") or [])}
+    names |= {str(p.get("name")) for p in (tool.get("parameters") or [])}
+    for p in tool.get("parameters") or []:
+        names |= {str(o) for o in (p.get("enum") or [])}
+    msgs = row["da"]["conversations"]
+    # The two speakers are two people. One row had the assistant answer with
+    # the user's own opening sentence, word for word.
+    said = {}
+    for i, m in enumerate(msgs):
+        t = " ".join(strip_catalogue(str(m.get("content") or "")).lower().split())
+        if len(t) < 12:
+            continue
+        if t in said and said[t] != m["role"]:
+            return "turn-repeated-by-other-speaker"
+        said[t] = m["role"]
+    # A clarifying question is answered with the value, not with another
+    # question: "Hvilken ovn drejer det sig om?" -> "Hvad er måltemperaturen
+    # for ovn OVN-A123?" leaves the missing value supplied by nobody.
+    for i, m in enumerate(msgs):
+        if m["role"] != "user" or not i:
+            continue
+        prev = msgs[i - 1]
+        if prev["role"] != "assistant" or prev.get("tool_calls"):
+            continue
+        if not str(prev.get("content") or "").rstrip().endswith("?"):
+            continue
+        if strip_catalogue(str(m.get("content") or "")).rstrip().endswith("?"):
+            return "clarify-answered-with-question"
+    names = {n.lower() for n in names if "_" in n}
+    if not names:
+        return None
+    for m in msgs:
+        if m["role"] not in ("user", "assistant") or not m.get("content"):
+            continue
+        low = strip_catalogue(str(m["content"])).lower()
+        for n in names:
+            if re.search(r"(?<![a-z0-9_])" + re.escape(n) + r"(?![a-z0-9_])",
+                         low):
+                return f"schema-token-in-prose:{n}"
+    return None
+
+
+def gate_call(row, tool):
+    """The call, against the conversation that is supposed to motivate it."""
+    msgs = row["da"]["conversations"]
+    said = ""
+    for i, m in enumerate(msgs):
+        if m["role"] != "user":
+            continue
+        said += " " + strip_catalogue(m.get("content") or "")
+        # A number in the user's mouth that reaches no call is a value the
+        # model is being taught to drop: "for plante ID 123" against a call
+        # with no arguments at all.
+        nxt = next((x for x in msgs[i + 1:] if x.get("tool_calls")), None)
+        if nxt is None:
+            continue
+        pool = _spoken_pool(msgs, i,
+                            [(c.get("function") or {}).get("arguments") or {}
+                             for c in nxt["tool_calls"]])
+        scan = LIST_ENUM.sub(lambda x: " " * len(x.group()),
+                             strip_catalogue(m.get("content") or ""))
+        scan = DATEISH.sub(lambda x: " " * len(x.group()), scan)
+        # A digit glued to letters is a unit or a label, not a value the user
+        # is quoting: "trævolumen i m3" is not the number 3.
+        scan = re.sub(r"(?<=[a-zæøåA-ZÆØÅ])\d+",
+                      lambda x: " " * len(x.group()), scan)
+        for t in NUM.finditer(scan):
+            if not _traces_to(t.group(), pool):
+                return f"user-states-unused-value:{t.group()}"
+        for c in nxt["tool_calls"]:
+            a = (c.get("function") or {}).get("arguments") or {}
+            bounds = [k for k in a if BOUND_LO.search(k) or BOUND_HI.search(k)]
+            if len(bounds) != 1:
+                continue
+            k = bounds[0]
+            lo = bool(BOUND_LO.search(k))
+            if lo and LOWER_PHRASE.search(said) \
+                    and not UPPER_PHRASE.search(said):
+                return f"user-inverts-bound:{k}"
+            if not lo and UPPER_PHRASE.search(said) \
+                    and not LOWER_PHRASE.search(said):
+                return f"user-inverts-bound:{k}"
+    for k, req in unspoken_arguments(row, tool):
+        return f"call-invents-argument:{k}"
+    return None
+
+
+ANSWER_HINTS = {
+    "clarify-answered-with-question":
+        "Brugeren SVARER på assistentens spørgsmål med værdien -- kort, og "
+        "aldrig som et nyt spørgsmål.",
+    "turn-repeated-by-other-speaker":
+        "To replikker må ikke være ens. Assistenten gentager ikke brugerens "
+        "sætning.",
+    "schema-token-in-prose":
+        "Skriv aldrig felt-, parameter- eller valgnavne i replikkerne -- "
+        "sig på almindeligt dansk, hvad de betyder.",
+    "question-leaks-answer":
+        "Brugeren må ikke citere svaret i sit spørgsmål. Spørg efter "
+        "oplysningen, gengiv den ikke.",
+    "call-invents-argument":
+        "Brugeren SKAL selv nævne hver værdi, kaldet sender -- id'er, navne, "
+        "datoer og tal. Skriv dem ind i brugerens replik.",
+    "user-states-unused-value":
+        "Brugeren må kun nævne værdier, der står i argumenterne. Opfind "
+        "ikke id'er eller tal, kaldet ikke bruger.",
+    "user-inverts-bound":
+        "Parameteren er en NEDRE grænse, hvis navnet siger min, og en ØVRE, "
+        "hvis det siger max. Brugerens ord skal vende samme vej.",
+    "answer-cites-unasked-field":
+        "Svar KUN på det, brugeren spurgte om. Nævn intet andet felt.",
+    "answer-writes-english-decimal":
+        "Decimaltal skrives med komma på dansk: 3,43 -- aldrig 3.43.",
+}
+
+
 def dress_prompt(tool, beats, idx):
     """What the model is asked to write -- and only that.
 
@@ -385,6 +1262,9 @@ def dress_prompt(tool, beats, idx):
             it["bruger_beder_om"] = beat["bruger_beder_om"]
             if beat.get("args"):
                 it["argumenter"] = beat["args"]
+        elif beat.get("bruger_oplyser"):
+            it["bruger_oplyser"] = beat["bruger_oplyser"]
+            it["argumenter"] = beat.get("args") or {}
         elif beat.get("assistent_spoerger_om"):
             it["assistent_spoerger_om"] = beat["assistent_spoerger_om"]
         elif beat.get("assistent_afslaar"):
@@ -398,8 +1278,15 @@ def dress_prompt(tool, beats, idx):
             # then forbidden to answer. The competitor stays in the emitted
             # payload, where the TRAINEE must learn to pass it over; only the
             # generator is blind to it.
-            comp = tool["competitor_field"]
-            red = [{k: v for k, v in p.items() if k != comp}
+            #
+            # Widened from the competitor to EVERY field but the answer. 17 of
+            # 176 read rows volunteered a third field the user never asked for
+            # -- "Huslejen er 8602 kr. og derudover et forbrugstillæg på 1665
+            # kr." -- which the competitor-only redaction cannot reach and an
+            # instruction not to do it did not stop. Status fields survive:
+            # the failed-call gate needs the answer to say a call failed.
+            red = [{k: v for k, v in p.items()
+                    if k in _visible(p, tool["answer_field"])}
                    for p in beat["_pays"]]
             it["resultat"] = red[0] if len(red) == 1 else red
             it["argumenter"] = beat["_args"][0] if len(beat["_args"]) == 1 \
@@ -417,6 +1304,12 @@ def dress_prompt(tool, beats, idx):
 def assemble(idx, tool, beats, texts, catalogue, mapping):
     """Beats + written text -> the pipeline's conversation shape."""
     by_beat = {bi: texts.get(nr) for nr, bi in mapping.items()}
+    # Every decimal this row can legitimately quote, so prose can be rewritten
+    # to Danish without touching dates, ids, urls or thousands separators.
+    reprs = set()
+    for b in beats:
+        _floats_in(b.get("_pays") or [], reprs)
+        _floats_in(b.get("_args") or b.get("kald") or [], reprs)
     msgs = []
     for bi, beat in enumerate(beats):
         if beat.get("kald"):
@@ -432,7 +1325,8 @@ def assemble(idx, tool, beats, texts, catalogue, mapping):
         if not t:
             return None
         msgs.append({"role": beat["rolle"].replace("bruger", "user")
-                     .replace("assistent", "assistant"), "content": t})
+                     .replace("assistent", "assistant"),
+                     "content": da_decimals(t, reprs)})
     return {"idx": idx, "da": {"tools": catalogue, "conversations": msgs}}
 
 
@@ -603,6 +1497,30 @@ async def main_async(args):
                 if len(conf) < 2:
                     conf = [t["answer_field"], t["competitor_field"]]
                 t["_confusable"] = conf
+                # A DECLARED mapping, validated against the schema. The
+                # heuristic it replaces matched option strings to field names
+                # by prefix, which fails whenever the options are Danish and
+                # the fields English -- 64 of 90 selector-shaped parameters,
+                # so `emergency_plan_versions` was asked for with
+                # `data_category: "valgmateriale-log"`.
+                pnames = {x["name"]: x for x in t.get("parameters") or []}
+                sel = {}
+                for d in t.get("selectors") or []:
+                    par, opt, fld = (d.get("parameter"), d.get("option"),
+                                     d.get("selects_field"))
+                    if par not in pnames or fld not in by:
+                        continue
+                    opts = {str(o) for o in
+                            (pnames[par].get("enum") or [])} | \
+                           {_unquote(e) for e in
+                            (pnames[par].get("examples") or [])}
+                    if str(opt) not in opts:
+                        continue
+                    sel[(par, fld)] = opt
+                t["_selectors"] = {f"{k[0]}\u0000{k[1]}": v
+                                   for k, v in sel.items()}
+                if (t.get("selectors") or []) and not sel:
+                    stats["tool:selectors-unusable"] += 1
                 t["_hash"] = template_hash(tpl)
                 t["_scenario"] = sc["id"]
                 stats["tool:ok"] += 1
@@ -617,56 +1535,122 @@ async def main_async(args):
             async with sem:
                 conf = tool.get("_confusable") or [tool["answer_field"],
                                                    tool["competitor_field"]]
+                # Rotate only over fields a call can ASK for. A required
+                # selector with no option for this field makes the row
+                # unbuildable, and picking it anyway costs a whole dialogue.
+                ok = [f for f in conf if answerable(tool, f)]
+                conf = ok if len(ok) >= 2 else conf
                 af = conf[_hash("role", tool["name"], idx) % len(conf)]
                 comp = next(f for f in conf if f != af)
                 tool = {**tool, "answer_field": af, "competitor_field": comp}
                 stats[f"role:{'default' if af == conf[0] else 'rotated'}"] += 1
                 plan = pick_plan(tool, idx, rng)
                 beats = beats_for(plan, tool, idx)
+                if beats is None:
+                    stats["dlg:no-args-for-answer-field"] += 1
+                    return None
                 seen = {}
+                row_args = [a for b in beats for a in (b.get("kald") or [])]
                 for b in beats:
                     if not b.get("kald"):
                         continue
                     pays = []
                     for a in b["kald"]:
-                        k = json.dumps(a, sort_keys=True, ensure_ascii=False)
+                        # keyed on WHAT was asked for, not how it was looked up
+                        subj = {kk: vv for kk, vv in a.items()
+                                if not is_lookup_param(kk)}
+                        k = json.dumps(subj, sort_keys=True,
+                                       ensure_ascii=False)
                         if k not in seen:
-                            pay = payload_for(tool, idx, a)
+                            # The RECORD belongs to the entity: two calls
+                            # about one recipe describe one recipe. Only the
+                            # asked-for field is redrawn per query, so a
+                            # filter can move the answer without rewriting
+                            # what the thing is.
+                            pay = dict(payload_for(tool, idx, entity_args(a)))
+                            if subj != entity_args(a):
+                                q = payload_for(tool, idx, subj).get(af)
+                                if q is not None:
+                                    pay[af] = q
                             used = {str(v.get(af)) for v in seen.values()}
                             for bump in range(1, 10):
-                                if str(pay.get(af)) not in used:
+                                sibs = {str(v) for kk, v in pay.items()
+                                        if kk != af}
+                                if str(pay.get(af)) not in used | sibs:
                                     break
-                                pay = payload_for(tool, idx + bump * 7919, a)
-                            seen[k] = pay
+                                alt = payload_for(tool, idx + bump * 7919,
+                                                  subj).get(af)
+                                if alt is None:
+                                    break
+                                pay[af] = alt
+                            # The FULL argument set constrains the result,
+                            # including the lookup parameters `subj` drops.
+                            seen[k] = respect_constraints(tool, pay, a, idx)
                         pays.append(seen[k])
-                    b["_pays"], b["_args"] = pays, b["kald"]
+                    b["_pays"] = key_payloads(tool, pays, b["kald"], idx,
+                                              row_args)
+                    b["_args"] = b["kald"]
+                    # `seen` hands the same object to a repeated subject; the
+                    # re-keyed copies must go back so a later beat answering
+                    # this call reads what was actually emitted.
+                    for a, p in zip(b["kald"], b["_pays"]):
+                        seen[json.dumps({kk: vv for kk, vv in a.items()
+                                         if not is_lookup_param(kk)},
+                                        sort_keys=True, ensure_ascii=False)] = p
                 for i, b in enumerate(beats):
                     if b.get("assistent_svarer"):
                         prev = next(x for x in reversed(beats[:i])
                                     if x.get("kald"))
                         b["_pays"], b["_args"] = prev["_pays"], prev["_args"]
+                varied = varied_params(beats)
                 prompt, mapping = dress_prompt(tool, beats, idx)
-                texts = {}
-                for attempt in range(2):
-                    r, u = await _ask(session, DRESS_SYS, prompt, DRESS_SCHEMA,
-                                      "dress", temp=0.8 if not attempt else 1.0)
+                # A minimal catalogue: the real catalogue is rebuilt once every
+                # tool exists, but the gate needs the called tool present now.
+                cat = [to_spec(tool)]
+                texts, row, why, hint = {}, None, None, None
+                # Three attempts, but only the ANSWER-consistency classes buy a
+                # retry: they are things the dresser can be told to do
+                # differently. A structural rejection is the same on a rerun.
+                for attempt in range(3):
+                    r, u = await _ask(
+                        session,
+                        DRESS_SYS + (f"\n\nEKSTRA KRAV: {hint}" if hint else ""),
+                        prompt, DRESS_SCHEMA, "dress",
+                        temp=0.8 if not attempt else 1.0)
                     tok["in"] += u.get("prompt_tokens", 0)
                     tok["out"] += u.get("completion_tokens", 0)
                     if not r:
                         continue
                     texts = {int(x["nr"]): x.get("tekst")
                              for x in r.get("ture") or []}
-                    if all((texts.get(n) or "").strip() for n in mapping):
+                    row, why = None, None
+                    if not all((texts.get(n) or "").strip() for n in mapping):
+                        continue
+                    row = assemble(idx, tool, beats, texts, cat, mapping)
+                    if row is None:
+                        continue
+                    row, dropped = drop_unspoken_optionals(row, tool, varied)
+                    for d in dropped:
+                        stats[f"drop:{d}"] += 1
+                    why = (gate_dialogue(row, tool, plan)
+                           or gate_call(row, tool)
+                           or gate_prose(row, tool)
+                           or gate_answers(row, tool))
+                    if not why:
                         if attempt:
                             stats["dlg:ok-on-retry"] += 1
                         break
+                    hint = ANSWER_HINTS.get(why.split(":")[0])
+                    row = None
+                    if not hint:
+                        break
+                    stats[f"redress:{why.split(':')[0]}"] += 1
                 if not texts:
                     stats["dlg:no-output"] += 1
                     return None
-                # A minimal catalogue: the real catalogue is rebuilt once every
-                # tool exists, but the gate needs the called tool present now.
-                cat = [to_spec(tool)]
-                row = assemble(idx, tool, beats, texts, cat, mapping)
+                if why:
+                    stats[f"dlg:{why.split(':')[0]}"] += 1
+                    return None
                 if row is None:
                     stats["dlg:missing-text"] += 1
                     missing.append({"plan": plan, "tool": tool["name"],
@@ -680,10 +1664,6 @@ async def main_async(args):
                 row["_key"] = key
                 row["_answer_field"] = af
                 row["_competitor_field"] = comp
-                why = gate_dialogue(row, tool, plan)
-                if why:
-                    stats[f"dlg:{why.split(':')[0]}"] += 1
-                    return None
                 stats["dlg:ok"] += 1
                 stats[f"plan:{plan}"] += 1
                 _emit(row, af, comp)
@@ -777,6 +1757,30 @@ async def main_async(args):
                                     (it, d.get("problem", "")))
                     print(f"  judged {min((s0+args.concurrency)*B, len(flat))}"
                           f"/{len(flat)} turns", flush=True)
+                # CONFIRM BEFORE DISCARDING. Judging 10 turns per request is
+                # cheap but not neutral: re-judging the same 40 items at
+                # batch 1, 5 and 10 flipped 8% of verdicts, so roughly one
+                # rejection in twelve is an artefact of what shared its
+                # request. Screening stays batched; every DISCARD gets a
+                # second look on its own.
+                solo = [(r, it, why) for r in rows
+                        for it, why in verdict.get(id(r), [])]
+                if solo:
+                    async def _confirm(r, it, why):
+                        async with sem:
+                            v, u6 = await judge(sess, [it])
+                            tok2["in"] += u6.get("prompt_tokens", 0)
+                            tok2["out"] += u6.get("completion_tokens", 0)
+                            if v and v[0].get("ok"):
+                                verdict[id(r)] = [x for x in verdict.get(id(r), [])
+                                                  if x[0] is not it]
+                                stats["judge:unconfirmed"] += 1
+                    for s2 in range(0, len(solo), args.concurrency):
+                        await asyncio.gather(*[_confirm(*x)
+                                               for x in solo[s2:s2 + args.concurrency]])
+                    print(f"  {stats['judge:unconfirmed']} of {len(solo)} "
+                          f"rejections not confirmed alone", flush=True)
+
                 # REPAIR: a verdict is an instruction. Rewrite the offending
                 # answer against its own payload plus the complaint, then
                 # re-gate and re-judge that one turn.
@@ -793,8 +1797,14 @@ async def main_async(args):
                             pays = it["resultat"] if isinstance(
                                 it["resultat"], list) else [it["resultat"]]
                             comp = r.get("_competitor_field")
-                            red = [{k: v for k, v in p.items() if k != comp}
-                                   for p in pays]
+                            # The SAME redaction as the first pass. Hiding
+                            # only the competitor here let a repaired turn
+                            # cite a field the dressing model was never shown
+                            # -- "der er 71 dage til næste service" under a
+                            # question about coolant level.
+                            af_r = r.get("_answer_field")
+                            red = [{k: v for k, v in p.items()
+                                    if k in _visible(p, af_r)} for p in pays]
                             a, u4 = await _ask(
                                 sess, DRESS_SYS, json.dumps({
                                     "beats": [{"nr": 1, "rolle": "assistent",
@@ -823,8 +1833,10 @@ async def main_async(args):
                             tok2["out"] += u5.get("completion_tokens", 0)
                             tlr = {**tl, "answer_field": r.get("_answer_field"),
                                    "competitor_field": comp}
-                            if tv and tv[0].get("ok") and \
-                                    gate_dialogue(r, tlr, r.get("_plan")) is None:
+                            if tv and tv[0].get("ok") \
+                                    and gate_dialogue(r, tlr, r.get("_plan")) is None \
+                                    and gate_prose(r, tlr) is None \
+                                    and gate_answers(r, tlr) is None:
                                 verdict[id(r)] = [x for x in verdict.get(id(r), [])
                                                   if x[0] is not it]
                                 stats["judge:repaired"] += 1
@@ -886,7 +1898,15 @@ def main():
                          "missing")
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--judge-batch", type=int, default=10)
-    asyncio.run(main_async(ap.parse_args()))
+    a = ap.parse_args()
+    try:
+        asyncio.run(main_async(a))
+    except FatalAPIError as e:
+        print(f"\nABORTED: {e}\n"
+              f"Nothing further was attempted. Whatever completed is in "
+              f"{a.out} -- rerun the same command with --resume once the "
+              f"account can make calls again.", flush=True)
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
