@@ -4,10 +4,22 @@
 #   scripts/build_proc_corpus.sh 2000        # first or next stage
 #   scripts/build_proc_corpus.sh 35892       # the whole catalogue
 #
-# --n is a count of DIALOGUES PLANNED, not rows kept: ~76% survive the gates
-# and the judge, so 35,892 planned is ~27,300 rows. It is also the total, not
-# an increment -- every run after the first resumes into the same directory
-# and generates only the difference.
+# --n counts DISTINCT (scenario, idx) KEYS, not rows and not dialogues. Two
+# things follow, both of which have caught me out:
+#
+#   A FAMILY SHARES ITS KEYS. `_key` is "<scenario>#<idx>", and a family with
+#   several members produces the same key from each, so rows outnumber keys.
+#   tools_v7 averages 1.80 members per family and the corpus runs ~1.56 rows
+#   per key.
+#
+#   THERE IS A CEILING, and --n above it is silently unreachable:
+#       families x dialogues-per-tool = 4,984 x 4 = 19,936 keys ~= 31,000 rows
+#   Asking for 35,892 does not fail, it just stops when the catalogue is
+#   exhausted. Raising the ceiling needs more FAMILIES or a higher --dpt, not
+#   a bigger --n.
+#
+# It is also a total rather than an increment -- every run after the first
+# resumes into the same directory and generates only the difference.
 #
 # STAGING IS NOT FREE AT THE SAME --n. The cap tops up toward --n against the
 # rows that survived, so re-running an already-satisfied --n still generates
