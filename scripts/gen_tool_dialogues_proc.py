@@ -3836,6 +3836,11 @@ async def main_async(args):
         # each tool owns its scenario, so every lookup goes through that.
         fam = family_index(tools)
         tools_by_name = {t["name"]: t for t in tools}   # fallback only
+        # Built ONCE. The specs are read and serialised, never mutated, so
+        # rows sharing a spec object is safe and saves the copies too.
+        _spec_pool = [(sc, to_spec(x)) for sc, ms in fam.items()
+                      for x in ms if not is_heldout_tool(x["name"])]
+        print(f"  [phase] distractor pool {len(_spec_pool):,} specs", flush=True)
 
         def own_scenario(r):
             return str(r.get("_key") or "").split("#")[0].split("/")[0]
@@ -3887,14 +3892,19 @@ async def main_async(args):
                 if sib is not None:
                     taken.add(n)
                     extra_called.append(to_spec(sib))
-            others = [to_spec(x) for sc, ms in fam.items() if sc != mine_fam
-                      for x in ms if not is_heldout_tool(x["name"])]
-            rng.shuffle(others)
             cat, n_extra = [mine] + extra_called, rng.randint(1, 5)
-            for x in others:
+            # DRAW, DO NOT REBUILD. This used to convert every non-held-out
+            # tool in the catalogue to a spec and shuffle the lot, per row, to
+            # keep at most five: 135 ms x 29,234 rows = 66 minutes of pure CPU
+            # on the full build, invisible because the phase prints nothing
+            # until it ends. At 416 tools it cost 7 ms and nobody noticed.
+            # `_spec_pool` is built once; a row draws indices and skips its own
+            # family and anything already taken.
+            for _ in range(400):
                 if len(cat) > n_extra:
                     break
-                if x["function"]["name"] in taken:
+                sc, x = _spec_pool[rng.randrange(len(_spec_pool))]
+                if sc == mine_fam or x["function"]["name"] in taken:
                     continue
                 taken.add(x["function"]["name"])
                 cat.append(x)
