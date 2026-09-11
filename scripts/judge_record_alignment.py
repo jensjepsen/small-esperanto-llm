@@ -275,7 +275,7 @@ def main():
     ap.add_argument("--tools", type=Path, required=True)
     ap.add_argument("--n", type=int, default=40)
     ap.add_argument("--controls", type=int, default=3, help="of EACH kind")
-    ap.add_argument("--concurrency", type=int, default=8)
+    ap.add_argument("--concurrency", type=int, default=64)
     ap.add_argument("--out", type=Path,
                     default=Path("scratch/record_alignment.json"))
     a = ap.parse_args()

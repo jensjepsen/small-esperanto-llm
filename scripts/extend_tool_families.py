@@ -219,7 +219,7 @@ def main():
     ap.add_argument("--tools", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--n", type=int, default=15, help="0 = every candidate")
-    ap.add_argument("--concurrency", type=int, default=8)
+    ap.add_argument("--concurrency", type=int, default=64)
     ap.add_argument("--min-handles", type=int, default=1,
                     help="only anchors requiring at least this many handles. "
                          "2 targets the fan-in case.")

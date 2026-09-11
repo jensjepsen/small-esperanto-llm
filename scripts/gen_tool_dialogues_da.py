@@ -2031,7 +2031,7 @@ def main():
                     default=Path("data/tool_calls/scenarios_expanded.jsonl"))
     ap.add_argument("--n", type=int, default=200)
     ap.add_argument("--dialogues-per-tool", type=int, default=4)
-    ap.add_argument("--concurrency", type=int, default=12)
+    ap.add_argument("--concurrency", type=int, default=64)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--controls-only", action="store_true")
     ap.add_argument("--no-judge", action="store_true",
