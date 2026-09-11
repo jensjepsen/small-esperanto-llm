@@ -1768,6 +1768,34 @@ def gate_error_answers(row, tool):
         got = set(_answer_nums(DATEISH.sub(" ", text)))
         if got - pool:
             return "error-answer-invents-a-number"
+    # AND the row's FINAL answer must not credit the result to the handle that
+    # failed. "Strålingsniveauet for detector 3213 er 171" where 3213 is the id
+    # the tool rejected and 233 is the one that worked teaches exactly the
+    # wrong lesson: ask for X, X fails, look up Y, report the answer as X's.
+    # Mentioning the failed value is fine when the corrected one is there too
+    # ("3213 findes ikke; Gamma-7 har id 233 og ..."), so the test is whether
+    # the correction is present, not whether the failure is.
+    bad, good = None, set()
+    for m in msgs:
+        for c in (m.get("tool_calls") or []):
+            a = (c.get("function") or {}).get("arguments") or {}
+            for k, v in a.items():
+                if bad is not None and k == bad[0] and str(v) != str(bad[1]):
+                    good.add(str(v))
+        if m["role"] == "tool" and ERROR_KEY in str(m.get("content") or ""):
+            prev = next((x for x in reversed(msgs[:msgs.index(m)])
+                         if x.get("tool_calls")), None)
+            for c in (prev or {}).get("tool_calls") or []:
+                for k, v in ((c.get("function") or {}).get("arguments")
+                             or {}).items():
+                    if str(v) in str(m.get("content") or ""):
+                        bad = (k, v)
+    if bad is not None and good:
+        last = next((str(m.get("content") or "") for m in reversed(msgs)
+                     if m["role"] == "assistant" and not m.get("tool_calls")
+                     and str(m.get("content") or "").strip()), "")
+        if str(bad[1]) in last and not any(g in last for g in good):
+            return "error-answer-credits-the-failed-handle"
     return None
 
 
@@ -1938,7 +1966,7 @@ UPPER_PHRASE = re.compile(r"(eller h(ø|oe)jere|mindst|minimum|mere end|over|"
                           r"fra og med)", re.I)
 
 
-def unspoken_arguments(row, tool):
+def unspoken_arguments(row, tool, family=None):
     """Arguments the conversation never supplies.
 
     `customer_id: "cust_67890"` under "hvad er mit receptnummer?" is the
@@ -1955,6 +1983,13 @@ def unspoken_arguments(row, tool):
     be, not that the user supplied one.
     """
     msgs = row["da"]["conversations"]
+    # PER CALL, not per row. A chain or recover row calls several tools, and
+    # resolving every argument against the anchor's parameter list made a
+    # producer's own argument look like an undeclared optional:
+    # `drop_unspoken_optionals` then deleted it, leaving
+    # `find_detector_calibration {}` -- a lookup asked to look up nothing.
+    by_name = {t.get("name"): t for t in (family or []) if t.get("name")}
+    by_name.setdefault(tool.get("name"), tool)
     params = {p["name"]: p for p in (tool.get("parameters") or [])}
     said, out = "", []
     for m in msgs:
@@ -1972,9 +2007,12 @@ def unspoken_arguments(row, tool):
             said += " " + strip_catalogue(m.get("content") or "")
             continue
         for c in (m.get("tool_calls") or []):
+            ct = by_name.get((c.get("function") or {}).get("name"))
+            cp = ({x["name"]: x for x in (ct.get("parameters") or [])}
+                  if ct else params)
             for k, v in (((c.get("function") or {}).get("arguments")) or {}
                          ).items():
-                p = params.get(k) or {}
+                p = cp.get(k) or {}
                 # A boolean stays exempt: "Det haster" and `is_urgent: true`
                 # share no token, so there is no sound way to tell a spoken
                 # one from an invented one without reading the sentence.
@@ -1988,7 +2026,7 @@ def unspoken_arguments(row, tool):
     return out
 
 
-def drop_unspoken_optionals(row, tool, keep=()):
+def drop_unspoken_optionals(row, tool, keep=(), family=None):
     """Remove optional arguments nobody asked for, rather than rerolling.
 
     These are filters CODE chose to include -- a `record_limit: 21` or a
@@ -2002,7 +2040,7 @@ def drop_unspoken_optionals(row, tool, keep=()):
     falls through to the gate, which asks the dresser to say the value
     instead.
     """
-    drop = {k for k, req in unspoken_arguments(row, tool)
+    drop = {k for k, req in unspoken_arguments(row, tool, family)
             if not req and k not in set(keep)}
     if not drop:
         return row, drop
@@ -2172,7 +2210,7 @@ def _carries_time(args):
     return False
 
 
-def gate_call(row, tool):
+def gate_call(row, tool, family=None):
     """The call, against the conversation that is supposed to motivate it."""
     msgs = row["da"]["conversations"]
     said = ""
@@ -2230,7 +2268,7 @@ def gate_call(row, tool):
             if not lo and UPPER_PHRASE.search(said) \
                     and not LOWER_PHRASE.search(said):
                 return f"user-inverts-bound:{k}"
-    for k, req in unspoken_arguments(row, tool):
+    for k, req in unspoken_arguments(row, tool, family):
         return f"call-invents-argument:{k}"
     return None
 
@@ -2240,6 +2278,9 @@ ANSWER_HINTS = {
         "Kaldet MISLYKKEDES. Svaret skal sige, at oplysningen ikke kunne "
         "findes -- ikke opfinde et svar og ikke gengive fejlteksten som om "
         "den var data.",
+    "error-answer-credits-the-failed-handle":
+        "Det FØRSTE kald mislykkedes. Svaret må ikke tilskrive resultatet den "
+        "værdi, der fejlede -- brug den, opslaget fandt, eller nævn begge.",
     "error-answer-invents-a-number":
         "Kaldet MISLYKKEDES, så der er ingen tal at oplyse. Nævn kun tal, "
         "brugeren selv har sagt.",
@@ -3302,11 +3343,12 @@ async def main_async(args):
                     row = assemble(idx, tool, beats, texts, cat, mapping)
                     if row is None:
                         continue
-                    row, dropped = drop_unspoken_optionals(row, tool, varied)
+                    row, dropped = drop_unspoken_optionals(
+                        row, tool, varied, members)
                     for d in dropped:
                         stats[f"drop:{d}"] += 1
                     why = (gate_dialogue(row, tool, plan)
-                           or gate_call(row, tool)
+                           or gate_call(row, tool, members)
                            or gate_prose(row, tool)
                            or gate_kind(row, tool)
                            or gate_answers(row, tool)
