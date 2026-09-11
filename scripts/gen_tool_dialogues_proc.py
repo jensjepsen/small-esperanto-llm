@@ -1176,8 +1176,16 @@ def beats_for(plan, tool, idx, family=None):
             return None
         ca = dict(ca)
         ca[key] = LINK                       # resolved once the payload exists
+        # ANY OTHER required argument must be SPOKEN. 210 consumers require more
+        # than one identifier handle, and the lookup covers exactly one: the
+        # rest were sampled from examples and never said, so `gate_call`
+        # rejected the row for inventing them. They belong in the user's turn --
+        # "for forsøg EXP-2024-07, hvad er strålens energi i Nordhallen?" is a
+        # perfectly ordinary request, and the row then teaches the real lesson:
+        # look up what you were not given, use what you were.
+        spoken = {k: v for k, v in ca.items() if k != key}
         b.append({"rolle": "bruger", "bruger_beder_om": _wants(cons),
-                  "args": pa})
+                  "args": {**pa, **spoken}})
         b.append({"rolle": "assistent", "kald": [pa], "_tool": prod})
         b.append({"rolle": "assistent", "kald": [ca], "_tool": cons,
                   "_link": {"key": key, "from": 1}})
