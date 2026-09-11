@@ -298,6 +298,74 @@ def main():
                     for b in verdicts.get(r["idx"], []))
     print(f"clean {len(clean):,}  rejected {len(rejected):,}", flush=True)
 
+    # A FINAL GATE SWEEP, because "the generator already gated it" stopped
+    # being true. The generator gates before the judge, and the judge REPAIRS
+    # turns afterwards -- so a repaired answer is never re-gated. The full
+    # 27,697-row build shipped one row answering "SK1234 er CPH, og BA567 er
+    # AAR" when the results came back the other way round, which the pairing
+    # gate catches and which had passed at build time. Cheap to re-run here,
+    # and this is the last point before the Hub.
+    #
+    # Roles are per ROW: ~55% rotate the answer/competitor pair, and gating a
+    # rotated row against the tool's default reads its correct answer as
+    # citing the competitor.
+    tp = args.src / "tools.jsonl"
+    if tp.exists():
+        import gen_tool_dialogues_proc as _G
+        _tl = [json.loads(x) for x in tp.open() if x.strip()]
+        by_sn = {(t.get("_scenario"), t["name"]): t for t in _tl}
+        by_n = {t["name"]: t for t in _tl}
+
+        def _row_tool(r):
+            sc = str(r.get("_key") or "").split("#")[0] or None
+            t = by_sn.get((sc, r.get("_tool"))) or by_n.get(r.get("_tool"))
+            if t and r.get("_answer_field"):
+                t = {**t, "answer_field": r["_answer_field"],
+                     "competitor_field": r.get("_competitor_field")
+                     or t.get("competitor_field")}
+            return t
+
+        def _contradicts(r):
+            """A producer and its consumer disagreeing about one field."""
+            ms = r["da"]["conversations"]
+            pairs = []
+            for i, m in enumerate(ms):
+                if m["role"] == "assistant" and m.get("tool_calls"):
+                    cs = [c["function"] for c in m["tool_calls"]]
+                    rs = [json.loads(x["content"])
+                          for x in ms[i + 1:i + 1 + len(cs)] if x["role"] == "tool"]
+                    pairs += list(zip(cs, rs))
+            for a in range(len(pairs) - 1):
+                prod, cons = pairs[a][1], pairs[a + 1][1]
+                if not (isinstance(prod, dict) and isinstance(cons, dict)):
+                    continue
+                h = lambda vs: {str(v).strip() for v in vs
+                                if isinstance(v, str) and len(str(v).strip()) >= 3}
+                if not (h((pairs[a + 1][0].get("arguments") or {}).values())
+                        & h(prod.values())):
+                    continue
+                for k in [k for k in prod if k in cons]:
+                    if str(prod[k]).strip() != str(cons[k]).strip():
+                        return f"chain-contradiction:{k}"
+            return None
+
+        before, why, kept = len(clean), Counter(), []
+        for r in clean:
+            t = _row_tool(r)
+            bad = None
+            if t is not None:
+                bad = (_G.gate_prose(r, t) or _G.gate_kind(r, t)
+                       or _G.gate_answers(r, t) or _G.gate_error_answers(r, t)
+                       or _G.gate_pairing(r, t))
+            bad = bad or _contradicts(r)
+            if bad:
+                why[bad.split(":")[0]] += 1
+            else:
+                kept.append(r)
+        clean = kept
+        print(f"final gate sweep: {len(clean):,} of {before:,} kept"
+              + (f", dropped {dict(why)}" if why else ""), flush=True)
+
     # THIS SCRIPT RE-RENDERS; it does not consume stage 4's output. So the
     # pedagogy filters have to run here too, or the corpus that ships differs
     # from the corpus that was inspected -- the filters would apply to
