@@ -204,12 +204,16 @@ def main():
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
 
+    # Two tools may share a NAME, so one name maps to a LIST. Keying the
+    # last one wins would render a row against the twin's schema, and the
+    # flags -- and whoever is reading them -- would be judging the wrong
+    # returns.
     tools = {}
     if a.tools and a.tools.exists():
         for line in a.tools.open():
             if line.strip():
                 t = json.loads(line)
-                tools[t["name"]] = t
+                tools.setdefault(t["name"], []).append(t)
 
     roles = {}
     if a.roles and a.roles.exists():
@@ -234,8 +238,15 @@ def main():
                         called.add(json.loads(m["content"]).get("name"))
                     except Exception:
                         pass
-            tool = next((tools[c] for c in called if c in tools), None)
             rr = roles.get(_raw.get("idx"))
+            # Disambiguate a shared name by the role: the right tool is the
+            # one that actually returns this row's answer field.
+            cands = [t for c in called for t in tools.get(c, [])]
+            af = (rr or {}).get("answer_field")
+            tool = next((t for t in cands
+                         if af and any(str(r.get("name")) == af
+                                       for r in (t.get("returns") or []))),
+                        cands[0] if cands else None)
             if tool and rr and rr.get("answer_field"):
                 tool = {**tool, "answer_field": rr["answer_field"],
                         "competitor_field": rr["competitor_field"]}

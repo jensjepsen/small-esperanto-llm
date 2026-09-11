@@ -1080,6 +1080,25 @@ def beats_for(plan, tool, idx):
     return b
 
 
+def tool_signature(t):
+    """What makes a tool the same TOOL, rather than the same name.
+
+    Two schemas may share a name -- the naming convention is narrow and a real
+    corpus collides too -- but a tool whose name AND shape are already in the
+    catalogue adds nothing, and its dialogues would be near-duplicates of ones
+    already written. Types and required-ness are part of the shape; order and
+    prose are not.
+    """
+    def side(fs, extra):
+        return tuple(sorted(
+            (str(f.get("name")), str(f.get("type") or "").lower())
+            + tuple(str(f.get(k)) for k in extra)
+            for f in (fs or [])))
+    return (str(t.get("name")),
+            side(t.get("parameters"), ("required",)),
+            side(t.get("returns"), ()))
+
+
 def _called_name_row(row):
     for m in row["da"]["conversations"]:
         for c in (m.get("tool_calls") or []):
@@ -1990,7 +2009,7 @@ async def main_async(args):
             headers={"Authorization": f"Bearer {_key()}"}) as session:
         want = (args.n if getattr(args, "tools_only", False)
                 else max(args.n // args.dialogues_per_tool, 1))
-        tools, seen_names = [], set()
+        tools, seen_names, seen_sigs = [], set(), set()
         rows, missing = list(resumed_rows), []
         specs, tools_by_name = [], {}
 
@@ -2253,8 +2272,20 @@ async def main_async(args):
                 if len(claimed) >= want:
                     return []
                 t = await one_tool(sc)
-                if not t or t["name"] in seen_names or len(claimed) >= want:
+                if not t or len(claimed) >= want:
                     return []
+                if tool_signature(t) in seen_sigs:
+                    stats["tool:duplicate-dropped"] += 1
+                    return []
+                seen_sigs.add(tool_signature(t))
+                # A duplicate NAME is kept -- discarding it threw away 23%
+                # of paid inventions in the 1000->2766 pass, and a real corpus
+                # collides too. A duplicate SHAPE is not: same name, same
+                # parameters, same returns is the same tool, and its dialogues
+                # would repeat ones already written. Nothing resolves a schema
+                # by name; see the catalogue assembly below.
+                if t["name"] in seen_names:
+                    stats["tool:name-collision-kept"] += 1
                 seen_names.add(t["name"])
                 claimed.append(t)
                 tools.append(t)
@@ -2274,8 +2305,14 @@ async def main_async(args):
                 stats["scenario:complete"] += 1
                 return []
             t = await one_tool(sc)
-            if not t or t["name"] in seen_names or len(claimed) >= want:
+            if not t or len(claimed) >= want:
                 return []
+            if tool_signature(t) in seen_sigs:
+                stats["tool:duplicate-dropped"] += 1
+                return []
+            seen_sigs.add(tool_signature(t))
+            if t["name"] in seen_names:
+                stats["tool:name-collision-kept"] += 1
             seen_names.add(t["name"])
             claimed.append(t)
             tools.append(t)
@@ -2297,14 +2334,43 @@ async def main_async(args):
 
         # Catalogues are rebuilt once every tool is known: a dialogue that ran
         # early would otherwise draw its distractors from a half-filled pool.
-        specs = [to_spec(t) for t in tools]
-        tools_by_name = {t["name"]: t for t in tools}
+        #
+        # Two tools MAY share a name -- the naming convention is narrow
+        # (`_data`, `_status`, `_api` end 40% of them) and a real corpus has
+        # collisions too. What must never happen is two DIFFERENT schemas
+        # under one name inside a single prompt, or a lookup resolving a row
+        # to the other tool's schema. Rows carry `_key` = "<scenario>#<k>" and
+        # each tool owns its scenario, so every lookup goes through that.
+        specs = {t["_scenario"]: to_spec(t) for t in tools if t.get("_scenario")}
+        tools_by_scenario = {t["_scenario"]: t for t in tools
+                             if t.get("_scenario")}
+        tools_by_name = {t["name"]: t for t in tools}   # fallback only
+
+        def own_scenario(r):
+            return str(r.get("_key") or "").split("#")[0]
+
         for r in rows:
-            called = _called_name_row(r)
-            others = [x for x in specs if x["function"]["name"] != called]
+            mine = specs.get(own_scenario(r))
+            if mine is None:
+                called = _called_name_row(r)
+                mine = next((to_spec(t) for t in tools if t["name"] == called),
+                            None)
+                if mine is None:
+                    continue
+            # A distractor that shares a name with the called tool -- or with
+            # another distractor -- would put two schemas under one name in
+            # front of the model. Unique names WITHIN the catalogue.
+            taken = {mine["function"]["name"]}
+            others = [x for k, x in specs.items() if k != own_scenario(r)]
             rng.shuffle(others)
-            cat = [x for x in specs if x["function"]["name"] == called] + \
-                others[:rng.randint(1, 5)]
+            cat, n_extra = [mine], rng.randint(1, 5)
+            for x in others:
+                if len(cat) > n_extra:
+                    break
+                if x["function"]["name"] in taken:
+                    continue
+                taken.add(x["function"]["name"])
+                cat.append(x)
             rng.shuffle(cat)
             r["da"]["tools"] = cat
         print(f"  [phase] dialogues done at {_t.monotonic()-_t0:.1f}s", flush=True)
@@ -2373,7 +2439,12 @@ async def main_async(args):
 
                     async def one(r, it, why):
                         async with sem:
-                            tl = tools_by_name.get(_called_name_row(r))
+                            # By scenario, not by name: two tools may share a
+                            # name, and repairing a turn against the other
+                            # one's schema redacts the wrong fields.
+                            tl = tools_by_scenario.get(
+                                str(r.get("_key") or "").split("#")[0]) \
+                                or tools_by_name.get(_called_name_row(r))
                             if not tl:
                                 return
                             pays = it["resultat"] if isinstance(
