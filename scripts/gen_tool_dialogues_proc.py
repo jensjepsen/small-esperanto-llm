@@ -2449,6 +2449,30 @@ async def resolve_selector(session, tool, param, temp=0.3):
                       "selector", temp=temp)
 
 
+# An option set carrying no readable content -- bare integers, single
+# characters -- cannot be mapped by reading, only by pairing positions. 7 of 788
+# declared selectors looked like this and 5 mapped in exact declaration order,
+# including `get_field_data` whose options are 1, 5, 12: not even sequential,
+# yet paired onto the return fields in order. There is no reading that produces
+# that.
+#
+# Neither verdict is safe for these. Trusting the guess ships a call saying
+# `category: "2"` whose answer reports a field that option may not select;
+# marking it not-a-selector leaves the parameter required, so the call still
+# sends "2" and nothing polices the pairing. The SCHEMA is the defect -- an
+# option set of bare integers cannot tell a caller what it selects -- so the
+# tool is dropped, which is what the repair pass does with every other
+# unrepairable fault.
+OPAQUE_OPTION = re.compile(r"^[\d.,\-_/]+$")
+
+
+def opaque_options(param):
+    opts = [str(o).strip() for o in (param.get("enum") or [])] or \
+           [str(_unquote(e)).strip() for e in (param.get("examples") or [])]
+    return bool(opts) and all(OPAQUE_OPTION.match(o) or len(o) <= 2
+                              for o in opts)
+
+
 def apply_selector_verdict(tool, param, verdict):
     """Write the verdict onto a COPY of the tool. Returns (tool, what-changed).
 
@@ -3289,12 +3313,20 @@ async def fix_selectors_run(args):
         fields = [r["name"] for r in (t.get("returns") or [])]
         n0 = sum(1 for f in fields
                  if sample_args({**t, "answer_field": f}, 1, 0) is not None)
+        drop = False
         for prm in prms:
             v = cache.get((t.get("name"), t.get("_scenario"), prm.get("name")))
-            if v is not None:
-                t, what = apply_selector_verdict(t, prm, v)
-                if what:
-                    stats[f"verdict:{what}"] += 1
+            if v is None:
+                continue
+            if v.get("is_field_selector") and opaque_options(prm):
+                stats["dropped:opaque-selector-options"] += 1
+                drop = True
+                break
+            t, what = apply_selector_verdict(t, prm, v)
+            if what:
+                stats[f"verdict:{what}"] += 1
+        if drop:
+            continue
         n1 = sum(1 for f in fields
                  if sample_args({**t, "answer_field": f}, 1, 0) is not None)
         before += n0
