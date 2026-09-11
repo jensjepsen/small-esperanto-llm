@@ -4218,6 +4218,19 @@ def main():
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--judge-batch", type=int, default=10)
     a = ap.parse_args()
+    # A CORPUS BUILD REQUIRES A FROZEN CATALOGUE. Inventing tools per run is
+    # how a catalogue gets MADE (--tools-only) and is a legitimate mode; it is
+    # not a legitimate way to build dialogues, because those tools have had no
+    # audit, no repair pass, no selector resolution and no families -- the
+    # work that turned 4,991 raw inventions into tools_v6. Left optional, the
+    # cheap mistake is omitting the flag and getting a corpus that looks fine
+    # and is built on unrepaired schemas.
+    if not a.tools_only and not a.fix_selectors and not a.tools_from:
+        raise SystemExit(
+            "--tools-from is required for a dialogue build.\n"
+            "  corpus     : --tools-from data/tool_calls/tools_v6.jsonl\n"
+            "  new tools  : --tools-only   (invent a catalogue to audit)\n"
+            "  selectors  : --fix-selectors CATALOGUE.jsonl")
     try:
         if a.fix_selectors:
             asyncio.run(fix_selectors_run(a))
