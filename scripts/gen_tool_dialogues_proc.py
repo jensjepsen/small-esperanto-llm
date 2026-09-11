@@ -1218,6 +1218,54 @@ def is_heldout_tool(name):
         < HELDOUT_PCT
 
 
+# ── families ───────────────────────────────────────────────────────────────
+#
+# A scenario used to hold exactly one tool -- 4,991 of 4,991 in the frozen
+# catalogue -- and that is what makes chaining impossible. A chain needs two
+# tools in ONE domain sharing an id vocabulary, where one's return is the
+# other's required parameter. Across scenarios the key names do match (3,070
+# producer/consumer pairs, 2,388 of them identifier-keyed) but the referents do
+# not: `batch_id` produced by `brewery_data` and required by
+# `slaughterhouse_trace` is a string match, not a chain.
+#
+# So `_scenario` becomes a FAMILY key that may hold several tools, and a row
+# records which member it used. These two helpers are the only places that
+# knowledge lives; everything else goes through them.
+
+
+def family_index(tools):
+    """scenario -> [tools], in catalogue order. One entry per member."""
+    out = {}
+    for t in tools:
+        sc = t.get("_scenario")
+        if sc:
+            out.setdefault(sc, []).append(t)
+    return out
+
+
+def row_tool(row, fam, by_name=None):
+    """The tool a ROW used, resolved without trusting the tool's NAME.
+
+    Names are not unique -- the catalogue keeps collisions on purpose -- so the
+    family key is the identity. `_tool` names the member; rows written before
+    families existed have no `_tool` and their family has one member, which is
+    unambiguous. `by_name` stays as the last resort for a row whose family is
+    missing entirely.
+    """
+    key = str(row.get("_key") or "")
+    members = fam.get(key.split("#")[0].split("/")[0]) or []
+    want = row.get("_tool")
+    if want:
+        for t in members:
+            if t.get("name") == want:
+                return t
+    if len(members) == 1:
+        return members[0]
+    if members:
+        return members[0]
+    return (by_name or {}).get(_called_name_row(row))
+
+
 def tool_signature(t):
     """What makes a tool the same TOOL, rather than the same name.
 
@@ -2212,7 +2260,9 @@ async def main_async(args):
             if line.strip():
                 t = json.loads(line)
                 if t.get("_scenario"):
-                    resumed_tools[t["_scenario"]] = t
+                    # list, not scalar: a family may have several members and
+                    # the last one read must not silently replace the others.
+                    resumed_tools.setdefault(t["_scenario"], []).append(t)
     if args.resume and rfile.exists():
         for line in rfile.open():
             if line.strip():
@@ -2229,8 +2279,9 @@ async def main_async(args):
             if line.strip():
                 resumed_rows.append(json.loads(line))
     if done_keys or resumed_tools:
-        print(f"resume: {len(done_keys)} rows and {len(resumed_tools)} tools "
-              f"already on disk", flush=True)
+        n_t = sum(len(v) for v in resumed_tools.values())
+        print(f"resume: {len(done_keys)} rows and {n_t} tools in "
+              f"{len(resumed_tools)} families already on disk", flush=True)
     args.out.mkdir(parents=True, exist_ok=True)
     mode = "a" if args.resume else "w"
     fh_t = tfile.open(mode)
@@ -2255,7 +2306,7 @@ async def main_async(args):
                 else max(args.n // args.dialogues_per_tool, 1))
         tools, seen_names, seen_sigs = [], set(), set()
         rows, missing = list(resumed_rows), []
-        specs, tools_by_name = [], {}
+        tools_by_name = {}
 
         async def one_tool(sc):
             # A frozen catalogue: audited and repaired once, then reused. The
@@ -2264,9 +2315,12 @@ async def main_async(args):
             if sc.get("_tool") is not None:
                 stats["tool:frozen"] += 1
                 return sc["_tool"]
-            if sc["id"] in resumed_tools:
+            if resumed_tools.get(sc["id"]):
                 stats["tool:resumed"] += 1
-                return resumed_tools[sc["id"]]
+                # The ANCHOR, i.e. the member written first. Dialogue
+                # generation still builds one row per tool; which member a row
+                # uses is recorded on the row, not decided here.
+                return resumed_tools[sc["id"]][0]
             async with sem:
                 tpl = sample_template(rng)
                 hint, why, t = None, None, None
@@ -2499,6 +2553,12 @@ async def main_async(args):
                     return None
                 row["_plan"] = plan
                 row["_key"] = key
+                # WHICH member of the family this row used. A scenario may hold
+                # several tools now, and `_key` names only the family. Rows
+                # written before families existed carry no `_tool`; `row_tool`
+                # falls back to the single member, which is unambiguous for
+                # every catalogue built so far.
+                row["_tool"] = tool.get("name")
                 row["_answer_field"] = af
                 row["_competitor_field"] = comp
                 stats["dlg:ok"] += 1
@@ -2543,8 +2603,8 @@ async def main_async(args):
             # that file reorders everything and a plain `scenarios[:n]` would
             # silently drop thousands of already-paid tools. Everything
             # already built is claimed first; new work fills the rest.
-            have = [s for s in scenarios if s["id"] in resumed_tools]
-            rest = [s for s in scenarios if s["id"] not in resumed_tools]
+            have = [s for s in scenarios if resumed_tools.get(s["id"])]
+            rest = [s for s in scenarios if not resumed_tools.get(s["id"])]
             need = max(0, want - len(have))
             pool = have + rest[:int(need * 1.15) + 4]
         elif getattr(args, "tools_only", False):
@@ -2635,22 +2695,20 @@ async def main_async(args):
         # under one name inside a single prompt, or a lookup resolving a row
         # to the other tool's schema. Rows carry `_key` = "<scenario>#<k>" and
         # each tool owns its scenario, so every lookup goes through that.
-        specs = {t["_scenario"]: to_spec(t) for t in tools if t.get("_scenario")}
-        tools_by_scenario = {t["_scenario"]: t for t in tools
-                             if t.get("_scenario")}
+        fam = family_index(tools)
         tools_by_name = {t["name"]: t for t in tools}   # fallback only
 
         def own_scenario(r):
-            return str(r.get("_key") or "").split("#")[0]
+            return str(r.get("_key") or "").split("#")[0].split("/")[0]
 
         for r in rows:
-            mine = specs.get(own_scenario(r))
-            if mine is None:
-                called = _called_name_row(r)
-                mine = next((to_spec(t) for t in tools if t["name"] == called),
-                            None)
-                if mine is None:
-                    continue
+            # The row's OWN member, then its spec. Resolving by name would pick
+            # the wrong schema whenever two tools share a name, which the
+            # catalogue permits on purpose.
+            mine_t = row_tool(r, fam, tools_by_name)
+            if mine_t is None:
+                continue
+            mine = to_spec(mine_t)
             # A distractor that shares a name with the called tool -- or with
             # another distractor -- would put two schemas under one name in
             # front of the model. Unique names WITHIN the catalogue.
@@ -2662,9 +2720,14 @@ async def main_async(args):
             # whole catalogue cost 2,103 of 14,333 rows (14.7%) in the last
             # build -- thrown away at push time, after they were paid for.
             taken = {mine["function"]["name"]}
-            others = [x for k, x in specs.items()
-                      if k != own_scenario(r)
-                      and not is_heldout_tool(x["function"]["name"])]
+            # The row's whole FAMILY is excluded, not just the member it calls.
+            # A sibling in the catalogue is a legitimate alternative rather than
+            # a distractor, and once families chain it is the NEXT call -- so
+            # counting it as a distractor would make `right-tool` score a
+            # choice the row never asked the model to make.
+            mine_fam = own_scenario(r)
+            others = [to_spec(x) for sc, ms in fam.items() if sc != mine_fam
+                      for x in ms if not is_heldout_tool(x["name"])]
             rng.shuffle(others)
             cat, n_extra = [mine], rng.randint(1, 5)
             for x in others:
@@ -2745,9 +2808,7 @@ async def main_async(args):
                             # By scenario, not by name: two tools may share a
                             # name, and repairing a turn against the other
                             # one's schema redacts the wrong fields.
-                            tl = tools_by_scenario.get(
-                                str(r.get("_key") or "").split("#")[0]) \
-                                or tools_by_name.get(_called_name_row(r))
+                            tl = row_tool(r, fam, tools_by_name)
                             if not tl:
                                 return
                             pays = it["resultat"] if isinstance(
