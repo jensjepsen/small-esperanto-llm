@@ -1114,6 +1114,12 @@ def answerable(tool, field):
 # they do not. At 0.68 about a third of those rows stay direct.
 CHAIN_P = 0.68
 
+# Share of rows whose first call FAILS. Small on purpose: the lesson is that an
+# error means the call did not do what was asked, and a corpus where calls
+# routinely fail teaches a model to expect failure. Calibrated by probe like
+# CHAIN_P, and against the training mix rather than this corpus alone.
+ERROR_P = 0.07
+
 
 def pick_plan(tool, idx, rng, family=None):
     """Only plans the TOOL can actually realise.
@@ -1123,6 +1129,14 @@ def pick_plan(tool, idx, rng, family=None):
     kept the label -- the distribution said 5 parallel rows and none of them
     had two calls.
     """
+    # ERRORS FIRST, and rare. `tool_result` carries no loss, so the error text
+    # is free input and only the assistant's RESPONSE to it is trained -- but a
+    # corpus where calls often fail teaches pessimism, so this is a small
+    # slice. Recover when a lookup exists to recover WITH, report otherwise.
+    if _hash("err", tool.get("name"), idx) % 1000 < ERROR_P * 1000:
+        if family and len(family) > 1 and find_link(tool, family):
+            return "error_recover"
+        return "error_report"
     if family and len(family) > 1 and find_link(tool, family) \
             and _hash("chain", tool.get("name"), idx) % 100 < CHAIN_P * 100:
         return "chain"
@@ -1177,6 +1191,54 @@ def beats_for(plan, tool, idx, family=None):
     plan calls one tool and ignores it.
     """
     b = []
+    if plan in ("error_report", "error_recover"):
+        # THE USER SUPPLIES A HANDLE THAT DOES NOT RESOLVE. Blameless on both
+        # sides: a stale id, a typo, an order that was already cancelled. The
+        # assistant has made no mistake, so the row teaches reading an error
+        # rather than teaching the wrong call that produced it.
+        need = [x for x in (tool.get("parameters") or [])
+                if x.get("required") and IDENTIFYING.search(x.get("name") or "")]
+        if not need:
+            return None
+        # WHICH handle fails. For a recover row it must be the one the lookup
+        # can supply -- picking at random and then demanding it match the link
+        # dropped every recover row whose consumer needs two handles, because
+        # the two agreed only half the time.
+        link = find_link(tool, family or []) if plan == "error_recover" else None
+        if plan == "error_recover" and link is None:
+            return None
+        miss = link[1] if link else need[_hash("errkey", idx) % len(need)]["name"]
+        a1 = sample_args(tool, idx, 0)
+        if a1 is None or miss not in a1:
+            return None
+        bad = f"{a1[miss]}-{_hash('bad', idx) % 900 + 100}"
+        if plan == "error_report":
+            b.append({"rolle": "bruger", "bruger_beder_om": _wants(tool),
+                      "args": {**a1, miss: bad}})
+            b.append({"rolle": "assistent", "kald": [{**a1, miss: bad}],
+                      "_fails": {"key": miss, "value": bad}})
+            b.append({"rolle": "assistent", "assistent_svarer": True})
+            return b
+        # RECOVER: the lookup exists, so the right move is to find the handle
+        # and try again rather than give up. This is the loop tau-bench
+        # measures and the one both trained models failed -- they narrated the
+        # error as if it were data.
+        prod, key = link
+        pa = sample_args(prod, idx, 0, answer_field=None)
+        if pa is None:
+            return None
+        ca = dict(a1)
+        ca[key] = LINK
+        b.append({"rolle": "bruger", "bruger_beder_om": _wants(tool),
+                  "args": {**{k: v for k, v in a1.items() if k != miss},
+                           miss: bad, **pa}})
+        b.append({"rolle": "assistent", "kald": [{**a1, miss: bad}],
+                  "_fails": {"key": miss, "value": bad}})
+        b.append({"rolle": "assistent", "kald": [pa], "_tool": prod})
+        b.append({"rolle": "assistent", "kald": [ca], "_tool": tool,
+                  "_links": [{"key": key, "from": 2}]})
+        b.append({"rolle": "assistent", "assistent_svarer": True})
+        return b
     if plan == "chain":
         # `tool` IS the consumer: it carries this row's answer field, and the
         # answer comes from the second call.
@@ -1465,6 +1527,25 @@ def _called_name_row(row):
 
 # ── answer consistency ─────────────────────────────────────────────────────
 
+# The key a failed call returns. One name, because a tool's error surface is
+# part of its contract: a model cannot learn that `error` means failure if the
+# corpus spells it five ways.
+ERROR_KEY = "error"
+
+# Fixed strings, deliberately. Everywhere else in this file a vocabulary is a
+# smell, because meaning was being inferred FROM words. Here the words ARE the
+# contract -- these are what the tool says when it refuses -- and the point is
+# that they are consistent enough to be recognised.
+ERROR_UNKNOWN = "ukendt {key}: {value}"
+ERROR_NOT_FOUND = "{key} {value} findes ikke i systemet"
+
+
+def error_payload(key, value, idx):
+    """What a tool returns when the handle it was given does not resolve."""
+    tpl = (ERROR_UNKNOWN, ERROR_NOT_FOUND)[_hash("errtxt", key, idx) % 2]
+    return {ERROR_KEY: tpl.format(key=key, value=value)}
+
+
 def _visible(payload, answer_field):
     """The fields the dressing model is allowed to see for this answer.
 
@@ -1478,6 +1559,12 @@ def _visible(payload, answer_field):
     sikkerhedsventilen er lukket". A failure in the ANSWER field is still
     visible, and is still the answer.
     """
+    # AN ERROR IS VISIBLE. A failed call carries no answer field at all, so the
+    # rule above would show the dresser an empty object and it would write an
+    # answer out of nothing. The error message is the only thing there is to
+    # report, and reporting it is the behaviour being taught.
+    if ERROR_KEY in payload:
+        return {ERROR_KEY}
     return {k for k in payload if k == answer_field}
 
 
@@ -1564,6 +1651,12 @@ def gate_answers(row, tool):
     msgs = row["da"]["conversations"]
     af = tool["answer_field"]
     for i, pays, calls, said in _answer_blocks(msgs):
+        # A block whose payloads ALL failed is governed by gate_error_answers.
+        # This gate requires the answer to give the answer field's value, and
+        # a failed call has none -- so every error row would be rejected here
+        # for doing exactly what it is supposed to do.
+        if pays and all(ERROR_KEY in p for p in pays):
+            continue
         text = str(msgs[i]["content"])
         scan = DATEISH.sub(lambda m: " " * len(m.group()), text)
         mine = {str(p.get(af)) for p in pays}
@@ -1621,6 +1714,43 @@ try:
     LANGDETECT = True
 except ImportError:                                       # pragma: no cover
     LANGDETECT = False
+
+# What an answer to a FAILED call must do. A vocabulary again, and again
+# because the words are the behaviour rather than a route to meaning: the row
+# exists to teach that the assistant SAYS SO when a call does not succeed.
+SIGNALS_FAILURE = re.compile(
+    r"(findes ikke|ikke fundet|kunne ikke|kan ikke finde|ingen "
+    r"(match|resultat|oplysning)|ukendt|fejl|eksisterer ikke|"
+    r"ikke registreret|ikke i systemet)", re.I)
+
+
+def gate_error_answers(row, tool):
+    """The answer to a failed call must report the failure and invent nothing.
+
+    Both trained models did the opposite -- given
+    {"error": "ukendt order_id kaffemaskine; slå ordren op først"} one replied
+    "Din ordre er nu annulleret med ID ukendt og ordrenummer slået op først",
+    parsing the error STRING into fields and announcing success. That is the
+    behaviour this gate exists to keep out of the corpus.
+    """
+    msgs = row["da"]["conversations"]
+    for i, pays, calls, said in _answer_blocks(msgs):
+        if not pays or not all(ERROR_KEY in p for p in pays):
+            continue
+        text = str(msgs[i]["content"])
+        if not SIGNALS_FAILURE.search(text):
+            return "error-answer-does-not-say-it-failed"
+        # Numbers it could not have: everything the user said and everything
+        # the call carried is fair game; anything else was invented, and an
+        # answer to a failed call has no payload to draw on.
+        pool = set(_answer_nums(strip_catalogue(said)))
+        for c in calls:
+            pool |= set(_answer_nums(json.dumps(c, ensure_ascii=False)))
+        got = set(_answer_nums(DATEISH.sub(" ", text)))
+        if got - pool:
+            return "error-answer-invents-a-number"
+    return None
+
 
 EN_PROB = 0.6
 
@@ -2034,12 +2164,20 @@ def gate_call(row, tool):
         # A number in the user's mouth that reaches no call is a value the
         # model is being taught to drop: "for plante ID 123" against a call
         # with no arguments at all.
-        nxt = next((x for x in msgs[i + 1:] if x.get("tool_calls")), None)
-        if nxt is None:
+        # EVERY call this user turn opens, not just the first. A chain or a
+        # recover row has the user supply values consumed by the second and
+        # third calls -- the handle the lookup needs, the one that failed, the
+        # other required argument -- and pooling only the next call marked all
+        # of them unused. It rejected every error_recover row built.
+        later = []
+        for x in msgs[i + 1:]:
+            if x["role"] == "user":
+                break
+            later += [(c.get("function") or {}).get("arguments") or {}
+                      for c in (x.get("tool_calls") or [])]
+        if not later:
             continue
-        pool = _spoken_pool(msgs, i,
-                            [(c.get("function") or {}).get("arguments") or {}
-                             for c in nxt["tool_calls"]])
+        pool = _spoken_pool(msgs, i, later)
         scan = LIST_ENUM.sub(lambda x: " " * len(x.group()),
                              strip_catalogue(m.get("content") or ""))
         scan = DATEISH.sub(lambda x: " " * len(x.group()), scan)
@@ -2059,12 +2197,9 @@ def gate_call(row, tool):
         # send ANY time at all? If not, the constraint reached nothing.
         said_now = strip_catalogue(m.get("content") or "")
         if (DATEISH.search(said_now) or MONTH_YEAR.search(said_now)) \
-                and not any(_carries_time((c.get("function") or {})
-                                          .get("arguments") or {})
-                            for c in nxt["tool_calls"]):
+                and not any(_carries_time(a) for a in later):
             return "user-states-unused-time"
-        for c in nxt["tool_calls"]:
-            a = (c.get("function") or {}).get("arguments") or {}
+        for a in later:
             bounds = [k for k in a if BOUND_LO.search(k) or BOUND_HI.search(k)]
             if len(bounds) != 1:
                 continue
@@ -2082,6 +2217,13 @@ def gate_call(row, tool):
 
 
 ANSWER_HINTS = {
+    "error-answer-does-not-say-it-failed":
+        "Kaldet MISLYKKEDES. Svaret skal sige, at oplysningen ikke kunne "
+        "findes -- ikke opfinde et svar og ikke gengive fejlteksten som om "
+        "den var data.",
+    "error-answer-invents-a-number":
+        "Kaldet MISLYKKEDES, så der er ingen tal at oplyse. Nævn kun tal, "
+        "brugeren selv har sagt.",
     "turn-in-english":
         "Alle replikker skal være på DANSK. Kun værktøjs-, parameter- og "
         "feltnavne er engelske.",
@@ -2211,7 +2353,13 @@ def dress_prompt(tool, beats, idx):
             args = spoken_args(tool, beat["_args"]) \
                 or [{} for _ in beat["_args"]]
             it["argumenter"] = args[0] if len(args) == 1 else args
-            it["svar_felt"] = tool["answer_field"]
+            # No `svar_felt` when the call FAILED: the prompt tells the dresser
+            # to answer from that field, and naming a field the result does not
+            # contain is an invitation to invent one.
+            if not all(ERROR_KEY in p for p in (beat["_pays"] or [{}])):
+                it["svar_felt"] = tool["answer_field"]
+            else:
+                it["kaldet_fejlede"] = True
         items.append(it)
     return json.dumps({
         "vaerktoej": {"navn": tool["name"], "beskrivelse": tool["description"],
@@ -3020,6 +3168,16 @@ async def main_async(args):
                                            else vv)
                                       for kk, vv in a0.items()}
                                      for a0 in b["kald"]]
+                    # A FAILING CALL RETURNS AN ERROR, not a payload. Emitted
+                    # here rather than by the dresser so the string is the
+                    # tool's, consistent across the corpus, and derived from
+                    # the argument that did not resolve.
+                    if b.get("_fails"):
+                        fk = b["_fails"]
+                        b["_pays"] = [error_payload(fk["key"], fk["value"], idx)
+                                      for _ in b["kald"]]
+                        b["_args"] = b["kald"]
+                        continue
                     pays = []
                     for ci, a in enumerate(b["kald"]):
                         btool = (btools[ci] if btools and ci < len(btools)
@@ -3132,7 +3290,8 @@ async def main_async(args):
                            or gate_call(row, tool)
                            or gate_prose(row, tool)
                            or gate_kind(row, tool)
-                           or gate_answers(row, tool))
+                           or gate_answers(row, tool)
+                           or gate_error_answers(row, tool))
                     if not why:
                         if attempt:
                             stats["dlg:ok-on-retry"] += 1
@@ -3487,7 +3646,8 @@ async def main_async(args):
                             if tv and tv[0].get("ok") \
                                     and gate_dialogue(r, tlr, r.get("_plan")) is None \
                                     and gate_prose(r, tlr) is None \
-                                    and gate_answers(r, tlr) is None:
+                                    and gate_answers(r, tlr) is None \
+                                    and gate_error_answers(r, tlr) is None:
                                 verdict[id(r)] = [x for x in verdict.get(id(r), [])
                                                   if x[0] is not it]
                                 stats["judge:repaired"] += 1
