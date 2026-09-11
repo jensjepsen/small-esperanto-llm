@@ -1422,8 +1422,20 @@ def beats_for(plan, tool, idx, family=None):
     if a1 is None:
         return None
     if plan == "refuse":
-        b.append({"rolle": "bruger", "bruger_beder_om": "noget værktøjet "
-                                                        "IKKE kan",
+        # PHRASED AS THE USER'S ACTION, not as the tool's limitation. "noget
+        # værktøjet IKKE kan" describes a property of the tool, and the
+        # dresser rendered that description as the user's own line -- "Jeg kan
+        # desværre kun finde fiskeauktionsdata" spoken BY the user, with the
+        # assistant left to answer "Okay, det forstår jeg." The roles come
+        # apart because the beat told the model about the limit instead of
+        # telling it what the user wants. Same failure as `_wants`: hand over
+        # the thing to ask for, never the documentation about it.
+        b.append({"rolle": "bruger",
+                  "bruger_beder_om": "noget andet end det, værktøjet kan -- "
+                                     "brugeren beder om det helt almindeligt "
+                                     "og ved ikke selv, at værktøjet ikke kan "
+                                     "det. Brugeren undskylder ikke og "
+                                     "forklarer ikke, hvad værktøjet kan",
                   "args": None})
         b.append({"rolle": "assistent", "assistent_afslaar": True})
         return b
@@ -2206,6 +2218,10 @@ def gate_kind(row, tool):
 PLACEHOLDER = re.compile(r"\[[^\]\n]{2,40}\]")
 
 
+def _prose_words(s):
+    return {w for w in re.split(r"[^0-9a-zæøå']+", str(s).lower()) if len(w) >= 3}
+
+
 def gate_pairing(row, tool):
     """In a two-call turn, each value must be credited to its OWN call.
 
@@ -2306,6 +2322,29 @@ def gate_prose(row, tool):
         for ru, tu in ua:
             if ru == "user" and ta in tu:
                 return "assistant-turn-spoken-by-the-user"
+    # A PARAPHRASE IS NOT A COPY. The same swap came back worded differently:
+    # "Jeg kan desværre ikke finde det, du leder efter" in the user's slot,
+    # answered by the assistant saying the same thing in other words. Only for
+    # a row with NO call -- elsewhere the answer legitimately reuses the
+    # question's words, and the payload value is what makes it an answer.
+    # Two shapes, measured over 30 refuse rows in four builds: the assistant
+    # repeating the user (overlap .38-.64 on the five bad rows, <=.29 on every
+    # good one), and the assistant reduced to an acknowledgement while the
+    # user does the refusing (length ratio .21 against >=.83).
+    #
+    # .35 sits in a narrow gap, and it is the right side to err on: a gate
+    # failure costs a retry with a hint, not a row, while a miss ships a
+    # dialogue whose two speakers have swapped jobs.
+    if not any(m.get("tool_calls") for m in msgs):
+        us = [t for r, t in ua if r == "user" and t]
+        as_ = [t for r, t in ua if r == "assistant" and t]
+        if us and as_:
+            uw, aw = _prose_words(us[0]), _prose_words(as_[-1])
+            if uw and aw:
+                if len(uw & aw) / len(uw | aw) >= 0.35:
+                    return "refusal-echoed-between-both-speakers"
+                if len(as_[-1]) <= 0.5 * len(us[0]):
+                    return "assistant-only-acknowledges-a-user-refusal"
     # The clarify plan holds one value back so the assistant has something to
     # ask for. If the opening turn says it anyway, the assistant is asking
     # for what it just heard.
@@ -2461,6 +2500,13 @@ ANSWER_HINTS = {
         "Hvert resultat hører til SIT eget kald, i samme rækkefølge. Det "
         "første resultat er svaret for den ting, der blev slået op først -- "
         "gæt aldrig ud fra, hvilken værdi der ligner hvilken ting.",
+    "refusal-echoed-between-both-speakers":
+        "Kun ASSISTENTEN afviser. Brugeren beder ganske almindeligt om noget "
+        "og aner ikke, hvad værktøjet kan -- skriv ikke afvisningen to gange.",
+    "assistant-only-acknowledges-a-user-refusal":
+        "Assistenten skal selv forklare, hvad den ikke kan. Brugerens replik "
+        "er en anmodning, ikke en undskyldning, og assistenten svarer ikke "
+        "bare 'okay'.",
     "assistant-turn-spoken-by-the-user":
         "Brugeren og assistenten er to personer. Brugeren beder om noget; "
         "det er assistenten, der afviser eller forklarer, hvad den kan.",
