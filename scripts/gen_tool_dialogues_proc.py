@@ -1880,6 +1880,72 @@ def gate_tool_examples(t):
     return None
 
 
+def catalogue_faults(t):
+    """Schema defects that every dialogue built on this tool would inherit.
+
+    The single definition of a FAIL: `audit_tool_catalogue.py` reports these,
+    `repair_tool_catalogue.py` fixes them, and `--tools-from` refuses a
+    catalogue that still carries them. Written twice, they would drift, and a
+    catalogue could pass the audit while the generator still choked on it.
+
+    Returns [(check, field), ...] -- empty for a clean tool.
+    """
+    rets, params = t.get("returns") or [], t.get("parameters") or []
+    out = []
+
+    def all_numeric(ex):
+        return bool(ex) and all(example_number(e) is not None for e in ex)
+
+    numeric = {str(r.get("name")) for r in rets
+               if str(r.get("type") or "").lower() in NUMERIC_TYPE
+               or all_numeric(r.get("examples"))}
+    w = token_weights([str(r.get("name")) for r in rets]
+                      + [str(p.get("name")) for p in params])
+    declared = t.get("_bounds") or {}
+    for r in rets:
+        n = str(r.get("name") or "")
+        if COLLECTION_NAME.search(n) and n in numeric:
+            out.append(("collection-field-holds-a-number", n))
+        if example_envelope(r) is not None and n not in declared:
+            out.append(("numeric-return-without-its-envelope", n))
+    subject = [p for p in params
+               if IDENTIFYING.search(str(p.get("name") or ""))]
+    if subject and not any(p.get("required") for p in params):
+        out.append(("subject-param-but-nothing-required",
+                    str(subject[0].get("name"))))
+    for p in params:
+        n, d = str(p.get("name") or ""), str(p.get("description") or "")
+        is_num = str(p.get("type") or "").lower() in NUMERIC_TYPE \
+            or all_numeric(p.get("examples"))
+        if str(p.get("type") or "").lower() == "boolean" and any(
+                _same_subject(n, str(r.get("name") or ""), w) for r in rets):
+            out.append(("boolean-param-restates-a-return", n))
+        if BOUND_ANY.search(n) and is_num \
+                and not (BOUND_LO.search(n) or BOUND_HI.search(n)) \
+                and bool(UPPER_PHRASE.search(d)) == bool(LOWER_PHRASE.search(d)):
+            out.append(("threshold-without-direction", n))
+        if p.get("required") and not IDENTIFYING.search(n) \
+                and not is_lookup_param(n) and not is_filter_param(n) \
+                and not governs_field(p, t) \
+                and str(p.get("type") or "").lower() != "boolean":
+            out.append(("required-param-is-neither-id-nor-selector", n))
+    dec = t.get("_selectors") or {}
+    for pname in {k.split(chr(0))[0] for k in dec}:
+        p = next((x for x in params if x.get("name") == pname), None)
+        if not p:
+            continue
+        pairs = [(k.split(chr(0))[1], v) for k, v in dec.items()
+                 if k.split(chr(0))[0] == pname]
+        vals = {str(v).lower() for _f, v in pairs}
+        if str(p.get("type") or "").lower() == "boolean" \
+                or vals <= {"true", "false", "ja", "nej"}:
+            out.append(("boolean-declared-as-a-selector", pname))
+        elif not any(set(_subject_tokens(str(v))) & set(_subject_tokens(f))
+                     for f, v in pairs):
+            out.append(("selector-values-name-content", pname))
+    return out
+
+
 TOOL_HINTS = {
     "example-is-a-type-name":
         "Eksempelværdier skal være RIGTIGE værdier -- aldrig typenavne som "
@@ -2247,6 +2313,24 @@ async def main_async(args):
         if getattr(args, "tools_from", None):
             frozen = [json.loads(x) for x in args.tools_from.open()
                       if x.strip()]
+            # The repaired catalogue and the raw one differ by a filename
+            # suffix. Pointed at the raw one this ran happily and rebuilt
+            # every defect the repair exists to remove -- no error, just
+            # worse dialogues. Refuse, rather than repair silently: a repair
+            # deletes parameters and selector claims, and doing that behind
+            # the caller's back hides what changed.
+            faults = Counter(why for t in frozen
+                             for why, _f in catalogue_faults(t))
+            if faults:
+                bad = len({t["name"] for t in frozen if catalogue_faults(t)})
+                raise SystemExit(
+                    f"\n{args.tools_from} is not repaired: {bad} of "
+                    f"{len(frozen)} tools carry schema defects that every "
+                    f"dialogue built on them would inherit.\n"
+                    + "\n".join(f"  {w:42s} {n}"
+                                for w, n in faults.most_common())
+                    + f"\n\nRun:  python scripts/repair_tool_catalogue.py "
+                      f"{args.tools_from} REPAIRED.jsonl\n")
             rng.shuffle(frozen)
             # No 1.8x oversampling: a frozen tool needs no gate and cannot be
             # rejected, so one scenario slot is one tool.
