@@ -32,16 +32,23 @@ from gen_tool_dialogues_proc import (  # noqa: E402
 )
 
 
-def candidates(tools):
-    """Anchors that require a handle they do not themselves produce."""
+def candidates(tools, min_handles=1):
+    """(anchor, [keys]) -- EVERY handle it requires and cannot produce.
+
+    All of them, not the first: a consumer needing `detector_id` AND
+    `experiment_id` wants two lookups, and two lookups are what make the row
+    fan-in -- two independent calls in one turn, either order correct. One
+    sibling would leave the second handle to be spoken by the user, which is a
+    valid row but the weaker one.
+    """
     out = []
     for t in tools:
         rets = {r["name"] for r in (t.get("returns") or [])}
-        for p in (t.get("parameters") or []):
-            n = p.get("name") or ""
-            if p.get("required") and IDENTIFYING.search(n) and n not in rets:
-                out.append((t, n))
-                break
+        keys = [p.get("name") for p in (t.get("parameters") or [])
+                if p.get("required") and IDENTIFYING.search(p.get("name") or "")
+                and p.get("name") not in rets]
+        if len(keys) >= min_handles:
+            out.append((t, keys))
     return out
 
 
@@ -50,10 +57,12 @@ async def run(args):
     tools = [json.loads(l) for l in args.tools.open() if l.strip()]
     fam = family_index(tools)
     have = {sc for sc, ms in fam.items() if len(ms) > 1}
-    cands = [(t, k) for t, k in candidates(tools)
+    cands = [(t, ks) for t, ks in candidates(tools, args.min_handles)
              if t.get("_scenario") not in have]
     print(f"{len(tools):,} tools   {len(fam):,} families   "
-          f"{len(cands):,} anchors that could take a sibling", flush=True)
+          f"{len(cands):,} anchors needing >={args.min_handles} handle(s)   "
+          f"{sum(len(k) for k in (c[1] for c in cands)):,} handles total",
+          flush=True)
     cands = cands[:args.n] if args.n else cands
     print(f"inventing {len(cands):,} siblings", flush=True)
 
@@ -63,23 +72,23 @@ async def run(args):
 
     async with aiohttp.ClientSession(
             headers={"Authorization": f"Bearer {_key()}"}) as session:
-        async def one(anchor, key):
-            async with sem:
-                for attempt in range(2):
-                    # The model describes only the human-sayable input; the
-                    # link half is copied from the consumer by build_producer,
-                    # so format mismatch and circularity cannot arise.
-                    spec, u = await invent_lookup(
-                        session, anchor, key, 0.9 if not attempt else 0.6)
-                    sib = build_producer(anchor, key, spec)
-                    if sib is None:
-                        stats["reject:unusable-spec"] += 1
-                        continue
-                    why = (gate_sibling(sib, anchor, key)
-                           or gate_tool(sib) or gate_tool_examples(sib))
-                    if why:
-                        stats[f"reject:{why.split(':')[0]}"] += 1
-                        continue
+        async def one_key(anchor, key):
+            """One producer for one handle. Returns the sibling or None."""
+            for attempt in range(2):
+                # The model describes only the human-sayable input; the link
+                # half is copied from the consumer by build_producer, so format
+                # mismatch and circularity cannot arise.
+                spec, u = await invent_lookup(
+                    session, anchor, key, 0.9 if not attempt else 0.6)
+                sib = build_producer(anchor, key, spec)
+                if sib is None:
+                    stats["reject:unusable-spec"] += 1
+                    continue
+                why = (gate_sibling(sib, anchor, key)
+                       or gate_tool(sib) or gate_tool_examples(sib))
+                if why:
+                    stats[f"reject:{why.split(':')[0]}"] += 1
+                    continue
                     # Catalogue faults are NOT a rejection here. The frozen
                     # catalogue was built the same way -- invent, then repair
                     # offline -- and that pass added 12,947 envelopes alone. A
@@ -87,23 +96,35 @@ async def run(args):
                     # would be thrown away for the same reason most of the
                     # original 4,991 would have been. Repair runs after the
                     # gather, in one batch, and the fault check happens then.
-                    sib["_scenario"] = anchor.get("_scenario")
-                    sib["_sibling_of"] = anchor.get("name")
-                    sib["_link_key"] = key
-                    if tool_signature(sib) in sigs:
-                        stats["reject:duplicate-signature"] += 1
-                        return
-                    sigs.add(tool_signature(sib))
-                    # The real test: does the pair actually chain?
-                    if not find_link(anchor, [sib, anchor]):
-                        stats["reject:no-link-after-all"] += 1
-                        return
-                    stats["invented"] += 1
-                    made.append(sib)
-                    return
-                stats["reject:gave-up"] += 1
+                sib["_scenario"] = anchor.get("_scenario")
+                sib["_sibling_of"] = anchor.get("name")
+                sib["_link_key"] = key
+                if tool_signature(sib) in sigs:
+                    stats["reject:duplicate-signature"] += 1
+                    return None
+                sigs.add(tool_signature(sib))
+                if not find_link(anchor, [sib, anchor]):
+                    stats["reject:no-link-after-all"] += 1
+                    return None
+                stats["invented"] += 1
+                return sib
+            stats["reject:gave-up"] += 1
+            return None
 
-        await asyncio.gather(*[one(t, k) for t, k in cands])
+        async def one(anchor, keys):
+            async with sem:
+                got = []
+                for k in keys[:args.max_siblings]:
+                    sib = await one_key(anchor, k)
+                    if sib is not None:
+                        got.append(sib)
+                if len(got) > 1:
+                    stats["family:fan-in"] += 1
+                elif got:
+                    stats["family:single-link"] += 1
+                made.extend(got)
+
+        await asyncio.gather(*[one(t, ks) for t, ks in cands])
 
     # ── repair, then judge ────────────────────────────────────────────────
     # Shelled out rather than imported: repair_tool_catalogue.py is the script
@@ -187,6 +208,11 @@ def main():
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--n", type=int, default=15, help="0 = every candidate")
     ap.add_argument("--concurrency", type=int, default=8)
+    ap.add_argument("--min-handles", type=int, default=1,
+                    help="only anchors requiring at least this many handles. "
+                         "2 targets the fan-in case.")
+    ap.add_argument("--max-siblings", type=int, default=2,
+                    help="most producers to invent per anchor")
     ap.add_argument("--show", type=int, default=4)
     args = ap.parse_args()
     try:

@@ -1174,12 +1174,15 @@ def beats_for(plan, tool, idx, family=None):
         # is that either works. Hashed on the row so it is stable per idx.
         if len(links) > 1 and _hash("fanin", cons.get("name"), idx) % 2:
             links = list(reversed(links))
-        pargs = []
+        pargs, prods = [], []
         for prod, _k in links:
+            if prod is None:                  # covered by an earlier call
+                continue
             a = sample_args(prod, idx + len(pargs), 0, answer_field=None)
             if a is None:
                 return None
             pargs.append(a)
+            prods.append(prod)
         ca = sample_args(cons, idx, 1)
         if ca is None:
             return None
@@ -1206,7 +1209,7 @@ def beats_for(plan, tool, idx, family=None):
         # teaches. `parallel` already proves the renderer handles several calls
         # in a turn -- what is new here is that they go to DIFFERENT tools.
         b.append({"rolle": "assistent", "kald": pargs,
-                  "_tools": [p for p, _k in links]})
+                  "_tools": prods})
         b.append({"rolle": "assistent", "kald": [ca], "_tool": cons,
                   "_links": [{"key": k, "from": 1} for _p, k in links]})
         b.append({"rolle": "assistent", "assistent_svarer": True})
@@ -1358,15 +1361,27 @@ def find_links(consumer, members):
     teaches order can be free; `parallel` calls one tool twice and a single-link
     chain forces a sequence.
     """
-    out, seen = [], set()
+    out, seen, used = [], set(), {}
     need = [p.get("name") for p in (consumer.get("parameters") or [])
-            if p.get("required") and IDENTIFYING.search(p.get("name") or "")]
+            # A SELECTOR is not a handle. `security_data_category` is required
+            # and reads as identifier-shaped, but it chooses which field comes
+            # back -- chaining on it would have a lookup "produce" a choice.
+            if p.get("required") and IDENTIFYING.search(p.get("name") or "")
+            and not governs_field(p, consumer)]
     for k in need:
         for a in members:
             if a.get("name") == consumer.get("name") or k in seen:
                 continue
             if k in {r["name"] for r in (a.get("returns") or [])}:
-                out.append((a, k))
+                # ONE CALL PER PRODUCER. A single lookup often returns several
+                # handles at once, and emitting it twice would put two
+                # identical calls in the turn. The resolver already scans a
+                # beat's payloads per key, so one call covers both.
+                if a.get("name") in used:
+                    out.append((None, k))       # served by an earlier call
+                else:
+                    used[a.get("name")] = True
+                    out.append((a, k))
                 seen.add(k)
                 break
     return out
