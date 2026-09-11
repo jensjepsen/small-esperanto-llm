@@ -1314,7 +1314,16 @@ def beats_for(plan, tool, idx, family=None):
         if plan == "error_recover" and link is None:
             return None
         miss = link[1] if link else need[_hash("errkey", idx) % len(need)]["name"]
-        a1 = sample_args(tool, idx, 0)
+        # NO OPTIONAL EXTRAS IN AN ERROR ROW. A recover row already asks the
+        # opening turn to carry the handle that will fail AND the key the
+        # lookup needs; measured across the catalogue it came to 3.14
+        # arguments against 1.85-2.16 for every other plan. The dresser drops
+        # one of them, `gate_call` then reads the call as inventing a value
+        # nobody said, and the row dies -- 6 of the ~11 recover losses. The
+        # lesson in these rows is the failure and the recovery, so an extra
+        # optional filter buys nothing and costs the turn its clarity. The
+        # selector is unaffected: `_selector_for` runs before the coin flip.
+        a1 = sample_args(tool, idx, 0, optional_p=0.0)
         if a1 is None or miss not in a1:
             return None
         # The bad value respects the DECLARED TYPE. Appending a suffix suits a
@@ -1348,7 +1357,7 @@ def beats_for(plan, tool, idx, family=None):
         # measures and the one both trained models failed -- they narrated the
         # error as if it were data.
         prod, key = link
-        pa = sample_args(prod, idx, 0, answer_field=None)
+        pa = sample_args(prod, idx, 0, optional_p=0.0, answer_field=None)
         if pa is None:
             return None
         ca = dict(a1)
