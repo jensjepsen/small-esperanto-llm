@@ -415,6 +415,20 @@ def pedagogy_reject(rec: dict) -> str | None:
         for m in conv.get("conversations") or []:
             if m.get("tool_calls"):
                 return None
+    # A REFUSAL HAS NO CALL BY DESIGN. This rule was written for ToolMind,
+    # where a missing call means the assistant answered a tool-shaped question
+    # in prose instead of calling -- rows 19258..20016 of the glaive batch.
+    # The procedural generator also emits rows where the user asks for
+    # something the tool genuinely cannot do and the assistant correctly
+    # declines, and structure cannot tell those two apart: both are a user
+    # turn and an assistant turn with no call.
+    #
+    # `_plan` is code's own record of what the row was built to teach, so it
+    # settles the question without guessing. It silently dropped all 1,321
+    # refusals from proc-v2 -- the entire abstention slice, 4.8% of the corpus
+    # -- and ToolMind rows carry no `_plan`, so their behaviour is unchanged.
+    if rec.get("_plan") == "refuse":
+        return None
     return "no-tool-call"
 
 
