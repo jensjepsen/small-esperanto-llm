@@ -151,6 +151,8 @@ class DownstreamEvaluator:
     PER_EVAL_CAP = {"icl": 1000, "extraction": 200,
                     "tool_seen": 250, "tool_unseen": 250,
                     "tool_seen_sym": 250, "tool_unseen_sym": 250,
+                    "tool_seen_b": 250, "tool_unseen_b": 250,
+                    "tool_seen_sym_b": 250, "tool_unseen_sym_b": 250,
                     # PER BUCKET for tool_refusal, not over the pooled list.
                     # absent-field is 128 rows against 545 no-capable-tool and
                     # ~700 answerable, so a pooled cap of 300 left it ~28 items
@@ -356,8 +358,22 @@ class DownstreamEvaluator:
     # without editing source.
     TOOL_REPO = os.environ.get("ESPLLM_TOOL_EVAL_REPO",
                                "jensjepsen/danish-tool-dialogues-v2")
+    # A SECOND tool corpus, scored separately under `*_b` eval names.
+    #
+    # Training on two corpora built by different methods leaves one of them
+    # unmeasured: the repo above is a single string, so the run scores whichever
+    # corpus it names and is silent about the other. Pooling them into one
+    # number would be worse than silent -- a move could come from either half
+    # and there would be no way to tell which. Separate names keep the two
+    # readable against each other.
+    #
+    # Unset (the default) means the `*_b` evals simply return [] and score 0.0,
+    # exactly as a missing split already does, so every existing run is
+    # unaffected.
+    TOOL_REPO_B = os.environ.get("ESPLLM_TOOL_EVAL_REPO_B")
 
-    def _tool_items(self, split: str, step: int = 0, name: str = "tool"):
+    def _tool_items(self, split: str, step: int = 0, name: str = "tool",
+                    repo: str | None = None):
         """Prompt = the dialogue up to the model's turn; gold = the call.
 
         The prompt stops BEFORE the assistant turn that precedes the call, so
@@ -369,7 +385,7 @@ class DownstreamEvaluator:
         from pathlib import Path as _P
         _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
         from train_sft_packed import format_conversation
-        ds = load_dataset(self.TOOL_REPO, "sft", split=split)
+        ds = load_dataset(repo or self.TOOL_REPO, "sft", split=split)
         ds = self._maybe_subsample(ds, step, name)
         items = []
         for r in ds:
@@ -423,7 +439,8 @@ class DownstreamEvaluator:
             print(f"  [downstream] tool_unseen_sym: no split ({e})", flush=True)
             return []
 
-    def _answer_items(self, split: str, step: int = 0, name: str = "tool_answer"):
+    def _answer_items(self, split: str, step: int = 0,
+                      name: str = "tool_answer", repo: str | None = None):
         """Prompt = dialogue THROUGH the tool result; gold = the reply to it.
 
         tool_seen/tool_unseen stop at the call, so the second half of the loop
@@ -439,7 +456,7 @@ class DownstreamEvaluator:
         from pathlib import Path as _P
         _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
         from train_sft_packed import format_conversation
-        ds = load_dataset(self.TOOL_REPO, "sft", split=split)
+        ds = load_dataset(repo or self.TOOL_REPO, "sft", split=split)
         ds = self._maybe_subsample(ds, step, name)
         items = []
         for r in ds:
@@ -871,7 +888,7 @@ class DownstreamEvaluator:
         letters = sum(ch.isalpha() for ch in a)
         return letters > 0 and punct / max(letters, 1) > 0.25
 
-    def _score_tool_answer(self, model) -> float:
+    def _score_tool_answer(self, model, name: str = "tool_answer") -> float:
         """Does the reply carry the values the tool actually returned?
 
         Graded on GROUNDING, not on overlap with the reference reply. Two
@@ -897,7 +914,7 @@ class DownstreamEvaluator:
         gold -- citing a field gold should have mentioned -- is penalised; at
         this model's level that is not the binding constraint.
         """
-        items = self._get("tool_answer")
+        items = self._get(name)
         if not items:
             return 0.0
         prompts = [f"{q} {ASST}" if q.startswith(USER) else f"{USER}{q}{END}{ASST}"
@@ -1103,6 +1120,57 @@ class DownstreamEvaluator:
 
     def _score_tool_unseen_sym(self, model) -> float:
         return self._tool_score(model, "tool_unseen_sym")
+
+    # ── second tool corpus (ESPLLM_TOOL_EVAL_REPO_B) ──────────────────────
+    # Same five measurements against the other corpus. `tool_refusal` has no
+    # twin here: it needs an `abstention` config, which only the primary repo
+    # carries, and scoring a missing one would report 0.0 as though the model
+    # had failed rather than as though nothing was asked.
+    def _load_tool_seen_b(self, step: int = 0):
+        return self._b_items("eval_seen_tools", step, "tool_seen_b")
+
+    def _load_tool_unseen_b(self, step: int = 0):
+        return self._b_items("eval_unseen_tools", step, "tool_unseen_b")
+
+    def _load_tool_seen_sym_b(self, step: int = 0):
+        return self._b_items("eval_seen_sym", step, "tool_seen_sym_b")
+
+    def _load_tool_unseen_sym_b(self, step: int = 0):
+        return self._b_items("eval_unseen_sym", step, "tool_unseen_sym_b")
+
+    def _load_tool_answer_b(self, step: int = 0):
+        if not self.TOOL_REPO_B:
+            return []
+        try:
+            return self._answer_items("eval_seen_tools", step, "tool_answer_b",
+                                      repo=self.TOOL_REPO_B)
+        except Exception as e:
+            print(f"  [downstream] tool_answer_b: no split ({e})", flush=True)
+            return []
+
+    def _b_items(self, split: str, step: int, name: str):
+        if not self.TOOL_REPO_B:
+            return []
+        try:
+            return self._tool_items(split, step, name, repo=self.TOOL_REPO_B)
+        except Exception as e:
+            print(f"  [downstream] {name}: no split ({e})", flush=True)
+            return []
+
+    def _score_tool_seen_b(self, model) -> float:
+        return self._tool_score(model, "tool_seen_b")
+
+    def _score_tool_unseen_b(self, model) -> float:
+        return self._tool_score(model, "tool_unseen_b")
+
+    def _score_tool_seen_sym_b(self, model) -> float:
+        return self._tool_score(model, "tool_seen_sym_b")
+
+    def _score_tool_unseen_sym_b(self, model) -> float:
+        return self._tool_score(model, "tool_unseen_sym_b")
+
+    def _score_tool_answer_b(self, model) -> float:
+        return self._score_tool_answer(model, name="tool_answer_b")
 
     def _score_extraction(self, model) -> float:
         """Field-level pair-F1 on the parsed answer, per-task parser.

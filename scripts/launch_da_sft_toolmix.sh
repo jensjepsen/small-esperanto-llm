@@ -55,6 +55,10 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 TOOL_DATA=${TOOL_REPO:-jensjepsen/danish-tool-dialogues-v9}
 PROC_DATA=${PROC_REPO:-jensjepsen/danish-tool-dialogues-proc-v1}
 export ESPLLM_TOOL_EVAL_REPO=$TOOL_DATA
+# BOTH corpora are scored, separately. `*_b` reads PROC_DATA. Pooling the two
+# into one number would hide which half moved; v9 keeps the primary names so
+# this run stays comparable with every earlier tool run.
+export ESPLLM_TOOL_EVAL_REPO_B=$PROC_DATA
 
 uv run --no-sync python -u scripts/train_sft_packed.py \
   --checkpoint jensjepsen/danish-lm-400m-base-ropext8048-v1 \
@@ -64,17 +68,19 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
   --attn-impl flash_attention_2 \
   --sft-data "${TOOL_DATA}:sft:train" "${TOOL_DATA}:abstention:train" \
              "${PROC_DATA}:sft:train" \
-  --epochs 8 --batch-size 16 --gradient-accumulation 4 \
+  --epochs 8 --batch-size 8 --gradient-accumulation 8 \
   --optim adamw_bnb_8bit \
   --learning-rate 3e-5 --lr-scheduler constant_with_warmup --warmup-steps 300 \
   --max-length 3584 \
   --flatten-packing \
   --torch-compile \
-  --save-fraction-of-epoch 1.0 --eval-fraction-of-epoch 1.0 \
+  --save-fraction-of-epoch 0.5 --eval-fraction-of-epoch 0.5 \
   --save-total-limit 3 --top-k-downstream 3 \
   --downstream-evals tool_seen tool_unseen tool_seen_sym tool_unseen_sym \
                      tool_answer tool_refusal \
-  --downstream-n 250 --downstream-batch-size 32 \
+                     tool_seen_b tool_unseen_b tool_seen_sym_b \
+                     tool_unseen_sym_b tool_answer_b \
+  --downstream-n 150 --downstream-batch-size 32 \
   --wandb-project danish-lm-sft \
   --wandb-run-name "${RUN_NAME:-da_sft_toolmix_proc1_v9}" \
   --wandb-tags sft da toolonly toolmix procedural adam8bit fa2 torch-compile \
