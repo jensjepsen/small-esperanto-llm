@@ -235,13 +235,22 @@ def _selector_for(param, answer_field, tool=None):
 
 
 def governs_field(param, tool):
-    """Does this parameter CHOOSE which return field the tool reports?"""
+    """Does this parameter CHOOSE which return field the tool reports?
+
+    Three sources, strongest first. An explicit NO (`_not_selectors`) beats the
+    regex, because the regex is the thing that gets it wrong: `election_type`
+    is condemned by its `_type` suffix while its options name elections rather
+    than fields, and every row on that tool then dies as
+    `dlg:no-args-for-answer-field`.
+    """
+    name = param.get("name")
+    if name in (tool.get("_not_selectors") or ()):
+        return False
     declared = {k.split(chr(0))[0] for k in (tool.get("_selectors") or {})}
     if declared:
-        return param.get("name") in declared
+        return name in declared
     opts = (param.get("enum") or []) or (param.get("examples") or [])
-    return bool(SELECTOR_NAME.search(str(param.get("name") or ""))
-                and len(opts) > 1)
+    return bool(SELECTOR_NAME.search(str(name or "")) and len(opts) > 1)
 
 
 def selects_answer(param, value, tool):
@@ -2296,6 +2305,195 @@ async def invent_tool(session, scenario, tpl, hint=None, temp=0.9):
     return await _ask(session, TOOL_SYS, prompt, TOOL_SCHEMA, "tool", temp=temp)
 
 
+# ── sibling invention ──────────────────────────────────────────────────────
+#
+# The anchor tool is given, and the sibling must PRODUCE a handle the anchor
+# REQUIRES. Stated that way round because the anchor is the consumer: the row's
+# question is what the anchor reports, and the sibling exists to hand it an id.
+#
+# The one thing this prompt cannot be trusted to get right is the link itself --
+# a model asked for "a tool that returns X" will happily return something named
+# almost-X -- so `gate_sibling` checks it against the anchor's own schema rather
+# than believing the answer.
+SIBLING_SYS = TOOL_SYS + """
+
+DETTE VÆRKTØJ ER ET OPSLAGSVÆRKTØJ. Du får udleveret et søsterværktøj, som
+kræver et HÅNDTAG (et id, et nummer, en reference). Brugeren kender ikke
+håndtaget. Dit værktøj findes udelukkende for at slå det op.
+
+VIGTIGST -- OVERSTYRER REGLEN OVENFOR OM `required`:
+Dit værktøj SKAL have mindst én parameter med `required: true`, nemlig det,
+brugeren selv kan sige. For et opslagsværktøj ER den menneskelige oplysning
+det, der udpeger HVEM eller HVAD -- den er altså `required`, ikke et filter.
+
+HVAD BRUGEREN SELV KAN SIGE: et personnavn, et firmanavn, en adresse, en
+e-mail, et telefonnummer, en dato, en titel, et registreringsnummer fra et
+brev -- ting et menneske kender uden at spørge systemet.
+
+HVAD BRUGEREN IKKE KAN SIGE: håndtaget selv, eller et andet internt id. Kunne
+brugeren sige håndtaget, var der ingen grund til at slå det op, og så er
+værktøjet meningsløst.
+
+DIT VÆRKTØJ SKAL:
+- høre til SAMME arbejdsområde og bruge SAMME ordforråd om emnet.
+- RETURNERE nøglefeltet med PRÆCIS det navn, du får oplyst.
+- give nøglefeltet 2-3 eksempelværdier i PRÆCIS samme format som
+  søsterværktøjets eksempler for samme felt.
+- have `answer_field`, `competitor_field` og `confusable_fields` blandt sine
+  returfelter, og de to skal have SAMME type -- fx nøglefeltet og to andre
+  referencer af samme form.
+- ALDRIG kræve nøglefeltet som parameter."""
+
+
+async def invent_sibling(session, anchor, key, temp=0.9):
+    """A tool whose return feeds `anchor`'s required `key`."""
+    ex = next((p.get("examples") for p in (anchor.get("parameters") or [])
+               if p.get("name") == key), None) or []
+    prompt = (f"SØSTERVÆRKTØJ (det der skal bruge nøglen):\n"
+              f"  navn: {anchor['name']}\n"
+              f"  beskrivelse: {anchor.get('description', '')}\n"
+              f"  kræver parameteren: {key}\n"
+              f"  eksempler på {key}: {', '.join(map(str, ex[:3]))}\n\n"
+              f"NØGLEFELT DIT VÆRKTØJ SKAL RETURNERE: {key}\n")
+    return await _ask(session, SIBLING_SYS, prompt, TOOL_SCHEMA, "tool",
+                      temp=temp)
+
+
+# ── selector resolution ────────────────────────────────────────────────────
+#
+# `governs_field` trusts `_selectors` when the inventor filled it and falls back
+# to a NAME REGEX when it did not. The fallback is why 431 tools are unusable:
+# `election_type: [Folketingsvalg, Kommunalvalg]` is an ordinary domain
+# parameter condemned by its `_type` suffix, so every one of its return fields
+# reads as unreachable and every row dies as `dlg:no-args-for-answer-field`.
+#
+# The fallback cannot simply be removed. Half the affected tools have a REAL
+# selector whose options are Danish and whose fields are English --
+# `data_type: [stammer, inkubation]` against `strain_name,
+# incubation_temperature_celsius` -- a true 1:1 mapping no token match can see.
+# Switching the regex off would fix the first half and let the second half ask
+# for purity while sending `stammer`.
+#
+# So ask, once, per tool: which option names which field, or none. That turns a
+# guess into a declaration, and `governs_field` already prefers the declaration.
+SELECTOR_SYS = """Du får ét værktøj: en parameter med faste valgmuligheder, og
+værktøjets returfelter.
+
+Spørgsmålet er ÉT: vælger parameteren HVILKET RETURFELT der rapporteres?
+
+JA -- hvis hver valgmulighed peger på et bestemt returfelt. Valgmulighederne er
+på dansk og felterne på engelsk, så sammenhængen kan ikke ses af navnene alene;
+den skal læses af BETYDNINGEN. Fx "stammer" -> `strain_name`, "renhed" ->
+`purity_percentage`.
+
+NEJ -- hvis valgmulighederne er egenskaber ved emnet i stedet for navne på
+oplysninger. Fx `election_type: Folketingsvalg/Kommunalvalg` siger HVILKET VALG
+der spørges om, ikke hvilket tal der returneres. Det samme for materialer,
+racer, modeller, diæter, sorter og lignende.
+
+Er svaret NEJ, så sæt `is_field_selector: false` og lad `mappings` være tom.
+Er svaret JA, så giv én mapping per valgmulighed. Peger en valgmulighed ikke på
+noget returfelt, så sæt `selects_field` til tom streng."""
+
+SELECTOR_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["is_field_selector", "mappings"],
+    "properties": {
+        "is_field_selector": {"type": "boolean"},
+        "mappings": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["option", "selects_field"],
+            "properties": {"option": {"type": "string"},
+                           "selects_field": {"type": "string"}}}}}}
+
+
+def selector_candidates(tools):
+    """(tool, param) pairs whose selector status is currently GUESSED.
+
+    Only where `_selectors` is empty: a declared mapping already wins in
+    `governs_field`, so asking again would pay for an answer that is ignored.
+    """
+    out = []
+    for t in tools:
+        if t.get("_selectors"):
+            continue
+        for p in (t.get("parameters") or []):
+            if governs_field(p, {**t, "answer_field": None}):
+                out.append((t, p))
+                break
+    return out
+
+
+async def resolve_selector(session, tool, param, temp=0.3):
+    """Ask whether `param` picks a return field, and which option picks what."""
+    opts = [str(o) for o in (param.get("enum") or [])] or \
+           [str(_unquote(e)) for e in (param.get("examples") or [])]
+    rets = "\n".join(f"  - {r['name']}: {r.get('description', '')[:90]}"
+                     for r in (tool.get("returns") or []))
+    prompt = (f"VÆRKTØJ: {tool.get('name')} -- {tool.get('description', '')}\n\n"
+              f"PARAMETER: {param.get('name')} -- "
+              f"{param.get('description', '')}\n"
+              f"VALGMULIGHEDER: {', '.join(opts)}\n\n"
+              f"RETURFELTER:\n{rets}\n")
+    # Low temperature: this is a reading task with one right answer, not an
+    # invention. The tool-invention calls run at 0.9 for variety; variety here
+    # would just be inconsistency.
+    return await _ask(session, SELECTOR_SYS, prompt, SELECTOR_SCHEMA,
+                      "selector", temp=temp)
+
+
+def apply_selector_verdict(tool, param, verdict):
+    """Write the verdict onto a COPY of the tool. Returns (tool, what-changed).
+
+    A NO becomes `_not_selectors`, which `governs_field` consults before its
+    regex -- the parameter stays in the schema and keeps being sampled as an
+    ordinary value, it simply stops being read as a choice of field.
+    """
+    name = param.get("name")
+    if not verdict or not verdict.get("is_field_selector"):
+        prev = list(tool.get("_not_selectors") or [])
+        if name in prev:
+            return tool, None
+        return {**tool, "_not_selectors": prev + [name]}, "not-a-selector"
+    fields = {r["name"] for r in (tool.get("returns") or [])}
+    sel = {}
+    for m in (verdict.get("mappings") or []):
+        f = (m.get("selects_field") or "").strip()
+        if f and f in fields and (m.get("option") or "").strip():
+            sel[f"{name}\u0000{f}"] = m["option"]
+    if not sel:
+        # Claimed to be a selector but mapped nothing onto a real field. Trust
+        # the mappings, not the claim: an unmapped "selector" is exactly the
+        # state that kills the tool.
+        prev = list(tool.get("_not_selectors") or [])
+        return ({**tool, "_not_selectors": prev + [name]} if name not in prev
+                else tool), "claimed-but-unmapped"
+    return {**tool, "_selectors": {**(tool.get("_selectors") or {}), **sel}}, \
+        "declared"
+
+
+def gate_sibling(sib, anchor, key):
+    """Why this sibling cannot feed `anchor`, or None to keep it.
+
+    Checked against the anchor's schema, never against what the model claims.
+    """
+    if not sib:
+        return "no-proposal"
+    if sib.get("name") == anchor.get("name"):
+        return "same-name-as-anchor"
+    rets = {r["name"] for r in (sib.get("returns") or [])}
+    if key not in rets:
+        return "does-not-return-the-key"
+    # A sibling that REQUIRES the handle it is supposed to produce is a
+    # circular lookup: there would be nothing to call it with.
+    for p in (sib.get("parameters") or []):
+        if p.get("name") == key and p.get("required"):
+            return "requires-the-key-it-produces"
+    if not [p for p in (sib.get("parameters") or []) if p.get("required")]:
+        return "nothing-required"
+    return None
+
+
 def judge_items(row):
     """(question, arguments, payload, answer) per answer turn.
 
@@ -3024,6 +3222,88 @@ async def main_async(args):
     print(f"-> {out}  ({len(rows)} rows)")
 
 
+async def fix_selectors_run(args):
+    """Resolve every GUESSED selector in a catalogue, then rewrite it.
+
+    CACHED, like the tool invention it sits beside: each verdict is appended to
+    `<out>/selector_verdicts.jsonl` as it lands, and a rerun reads them back and
+    asks only for what is missing. A pass that died at tool 900 of 1,114 used to
+    mean paying for 900 answers twice.
+    """
+    import aiohttp
+    tools = [json.loads(l) for l in args.fix_selectors.open() if l.strip()]
+    cands = selector_candidates(tools)
+    vfile = args.out / "selector_verdicts.jsonl"
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    cache = {}
+    if vfile.exists():
+        for line in vfile.open():
+            if line.strip():
+                v = json.loads(line)
+                cache[(v["tool"], v["scenario"], v["param"])] = v["verdict"]
+    todo = [(t, p) for t, p in cands
+            if (t.get("name"), t.get("_scenario"), p.get("name")) not in cache]
+    print(f"{len(tools):,} tools   {len(cands):,} guessed selectors   "
+          f"{len(cache):,} cached   {len(todo):,} to ask", flush=True)
+
+    stats, tok = Counter(), Counter()
+    sem = asyncio.Semaphore(args.concurrency)
+    fh = vfile.open("a")
+
+    async with aiohttp.ClientSession(
+            headers={"Authorization": f"Bearer {_key()}"}) as session:
+        async def one(t, prm):
+            async with sem:
+                v, u = await resolve_selector(session, t, prm)
+                tok["in"] += u.get("prompt_tokens", 0)
+                tok["out"] += u.get("completion_tokens", 0)
+                if v is None:
+                    stats["no-verdict"] += 1
+                    return
+                key = (t.get("name"), t.get("_scenario"), prm.get("name"))
+                cache[key] = v
+                fh.write(json.dumps({"tool": key[0], "scenario": key[1],
+                                     "param": key[2], "verdict": v},
+                                    ensure_ascii=False) + "\n")
+                fh.flush()
+                stats["asked"] += 1
+                if stats["asked"] % 200 == 0:
+                    print(f"  {stats['asked']}/{len(todo)}", flush=True)
+        await asyncio.gather(*[one(t, prm) for t, prm in todo])
+    fh.close()
+
+    by_param = {(t.get("name"), t.get("_scenario")): prm for t, prm in cands}
+    out, before, after = [], 0, 0
+    for t in tools:
+        prm = by_param.get((t.get("name"), t.get("_scenario")))
+        fields = [r["name"] for r in (t.get("returns") or [])]
+        n0 = sum(1 for f in fields
+                 if sample_args({**t, "answer_field": f}, 1, 0) is not None)
+        if prm is not None:
+            v = cache.get((t.get("name"), t.get("_scenario"), prm.get("name")))
+            if v is not None:
+                t, what = apply_selector_verdict(t, prm, v)
+                if what:
+                    stats[f"verdict:{what}"] += 1
+        n1 = sum(1 for f in fields
+                 if sample_args({**t, "answer_field": f}, 1, 0) is not None)
+        before += n0
+        after += n1
+        out.append(t)
+
+    dest = args.fix_selectors.with_name(args.fix_selectors.stem + "_sel.jsonl")
+    dest.write_text("\n".join(json.dumps(t, ensure_ascii=False)
+                              for t in out) + "\n")
+    for k, v in sorted(stats.items()):
+        print(f"   {v:>6}  {k}")
+    cost = tok["in"] / 1e6 * 0.10 + tok["out"] / 1e6 * 0.40
+    print(f"\nreachable answer-field slots: {before:,} -> {after:,} "
+          f"(+{after - before:,})")
+    print(f"tokens in={tok['in']:,} out={tok['out']:,}  ~${cost:.4f}")
+    print(f"-> {dest}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=Path("scratch/proc"))
@@ -3043,10 +3323,18 @@ def main():
     ap.add_argument("--tools-only", action="store_true",
                     help="invent --n TOOLS and stop: no dialogues, no judge. "
                          "For building a catalogue to audit and freeze.")
+    ap.add_argument("--fix-selectors", type=Path, default=None,
+                    help="resolve every GUESSED selector in this catalogue and "
+                         "write <name>_sel.jsonl. Verdicts are cached in "
+                         "<out>/selector_verdicts.jsonl, so a rerun asks only "
+                         "for what is missing.")
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--judge-batch", type=int, default=10)
     a = ap.parse_args()
     try:
+        if a.fix_selectors:
+            asyncio.run(fix_selectors_run(a))
+            return
         asyncio.run(main_async(a))
     except FatalAPIError as e:
         print(f"\nABORTED: {e}\n"
