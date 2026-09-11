@@ -970,16 +970,41 @@ def echo_identifiers(tool, payload, args, answer_field):
         av = (args or {}).get(p.get("name"))
         if isinstance(av, str) and av.strip():
             subj[p.get("name")] = av
+    rets = {str(r.get("name")): r for r in (tool.get("returns") or [])}
     out = dict(payload)
     for f, v in out.items():
         if f == answer_field or not isinstance(v, str) \
                 or not IDENTIFYING.search(f):
             continue
         for k, av in subj.items():
-            if _same_subject(_subject_key(k), _subject_key(f), w):
+            if _same_subject(_subject_key(k), _subject_key(f), w) \
+                    and _fits_field(av, rets.get(f)):
                 out[f] = av
                 break
     return out
+
+
+def _fits_field(value, ret):
+    """Could this value be a value of that field, per the field's own examples?
+
+    `production_date` and `product_name` agree on a five-character prefix, so
+    the subject test scored them 1.0 and wrote `2023-10-28` into a field whose
+    declared examples are `Pilsner 50cl`, `IPA 33cl`, `Hvedeøl 75cl` -- a beer
+    named after a date, in 3 of 197 rows. Prefix matching cannot tell a
+    PRODUCTION from a PRODUCT and no amount of weighting will teach it to, but
+    the contract already says what the field holds, and that is the cheaper
+    authority. Only the coarse shape is compared -- is it a date, is it a bare
+    number -- because anything finer would start rejecting the legitimate
+    echoes, where a handle and its id genuinely differ in format.
+    """
+    ex = [str(e) for e in ((ret or {}).get("examples") or []) if str(e).strip()]
+    if not ex:
+        return True
+    def shape(s):
+        return (bool(DATEISH.search(str(s))),
+                _num_in(s) is not None and not str(s).strip().isalpha())
+    want = shape(value)
+    return any(shape(e) == want for e in ex)
 
 
 # Access refused, not a domain state. `compressor_status: "fault"` and
