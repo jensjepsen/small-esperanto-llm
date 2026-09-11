@@ -56,12 +56,24 @@ async def run(args):
     import aiohttp
     tools = [json.loads(l) for l in args.tools.open() if l.strip()]
     fam = family_index(tools)
-    have = {sc for sc, ms in fam.items() if len(ms) > 1}
-    cands = [(t, ks) for t, ks in candidates(tools, args.min_handles)
-             if t.get("_scenario") not in have]
+    # RESUMABLE PER HANDLE, not per family. Skipping a whole scenario because
+    # it already has one sibling would strand every partially-extended family:
+    # a consumer needing two handles that got one could never receive the
+    # second, so fan-in would be unreachable for exactly the families a first
+    # pass touched. `_link_key` records what each sibling covers, so a later
+    # run asks only for what is missing -- feed the OUTPUT back as --tools and
+    # the count can be raised any number of times without re-buying anything.
+    covered = {(t.get("_scenario"), t.get("_link_key")) for t in tools
+               if t.get("_link_key")}
+    cands = []
+    for t, ks in candidates(tools, args.min_handles):
+        todo = [k for k in ks if (t.get("_scenario"), k) not in covered]
+        if todo:
+            cands.append((t, todo))
     print(f"{len(tools):,} tools   {len(fam):,} families   "
           f"{len(cands):,} anchors needing >={args.min_handles} handle(s)   "
-          f"{sum(len(k) for k in (c[1] for c in cands)):,} handles total",
+          f"{sum(len(k) for k in (c[1] for c in cands)):,} handles still "
+          f"uncovered ({len(covered):,} already done)",
           flush=True)
     cands = cands[:args.n] if args.n else cands
     print(f"inventing {len(cands):,} siblings", flush=True)
