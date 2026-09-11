@@ -1165,17 +1165,27 @@ def beats_for(plan, tool, idx, family=None):
         link = find_link(tool, family or [])
         if link is None:
             return None
-        prod, key = link
         cons = tool
-        # The user asks for what the CONSUMER reports and supplies only what
-        # the PRODUCER needs. The handle between them is never spoken -- that
-        # is the whole point: it has to come back from the first call.
-        pa = sample_args(prod, idx, 0, answer_field=None)
+        links = find_links(cons, family or [])[:3]
+        if not links:
+            return None
+        # ORDER VARIES PER ROW. The producers are independent -- neither feeds
+        # the other -- so a fixed order would teach a sequence where the truth
+        # is that either works. Hashed on the row so it is stable per idx.
+        if len(links) > 1 and _hash("fanin", cons.get("name"), idx) % 2:
+            links = list(reversed(links))
+        pargs = []
+        for prod, _k in links:
+            a = sample_args(prod, idx + len(pargs), 0, answer_field=None)
+            if a is None:
+                return None
+            pargs.append(a)
         ca = sample_args(cons, idx, 1)
-        if pa is None or ca is None:
+        if ca is None:
             return None
         ca = dict(ca)
-        ca[key] = LINK                       # resolved once the payload exists
+        for _p, k in links:
+            ca[k] = LINK                     # resolved once the payloads exist
         # ANY OTHER required argument must be SPOKEN. 210 consumers require more
         # than one identifier handle, and the lookup covers exactly one: the
         # rest were sampled from examples and never said, so `gate_call`
@@ -1183,12 +1193,22 @@ def beats_for(plan, tool, idx, family=None):
         # "for forsøg EXP-2024-07, hvad er strålens energi i Nordhallen?" is a
         # perfectly ordinary request, and the row then teaches the real lesson:
         # look up what you were not given, use what you were.
-        spoken = {k: v for k, v in ca.items() if k != key}
+        covered = {k for _p, k in links}
+        spoken = {k: v for k, v in ca.items() if k not in covered}
+        user_args = dict(spoken)
+        for a in pargs:
+            user_args.update(a)
         b.append({"rolle": "bruger", "bruger_beder_om": _wants(cons),
-                  "args": {**pa, **spoken}})
-        b.append({"rolle": "assistent", "kald": [pa], "_tool": prod})
+                  "args": user_args})
+        # ONE assistant turn for the lookups when there are several. They are
+        # independent, and a real agent issues independent calls together; two
+        # turns would render the same sequence the single-link chain already
+        # teaches. `parallel` already proves the renderer handles several calls
+        # in a turn -- what is new here is that they go to DIFFERENT tools.
+        b.append({"rolle": "assistent", "kald": pargs,
+                  "_tools": [p for p, _k in links]})
         b.append({"rolle": "assistent", "kald": [ca], "_tool": cons,
-                  "_link": {"key": key, "from": 1}})
+                  "_links": [{"key": k, "from": 1} for _p, k in links]})
         b.append({"rolle": "assistent", "assistent_svarer": True})
         return b
     a1 = sample_args(tool, idx, 0)
@@ -1327,6 +1347,29 @@ def row_tool(row, fam, by_name=None):
 # plausible-looking placeholder, so a row that somehow escapes resolution fails
 # loudly in a gate instead of shipping a made-up id.
 LINK = "\u0000link\u0000"
+
+
+def find_links(consumer, members):
+    """EVERY (producer, key) a sibling can supply for this consumer.
+
+    Fan-in: a consumer needing `detector_id` AND `experiment_id` can be served
+    by two lookups, and -- unlike a data dependency -- they are INDEPENDENT, so
+    either order is correct. That is the only shape in this generator that
+    teaches order can be free; `parallel` calls one tool twice and a single-link
+    chain forces a sequence.
+    """
+    out, seen = [], set()
+    need = [p.get("name") for p in (consumer.get("parameters") or [])
+            if p.get("required") and IDENTIFYING.search(p.get("name") or "")]
+    for k in need:
+        for a in members:
+            if a.get("name") == consumer.get("name") or k in seen:
+                continue
+            if k in {r["name"] for r in (a.get("returns") or [])}:
+                out.append((a, k))
+                seen.add(k)
+                break
+    return out
 
 
 def find_link(consumer, members):
@@ -2159,10 +2202,14 @@ def assemble(idx, tool, beats, texts, catalogue, mapping):
         if beat.get("kald"):
             # The BEAT's tool when it has one: a chain calls two different
             # tools in one row, and rendering both under the anchor's name
-            # would put a call to a tool that was never made.
-            nm = (beat.get("_tool") or tool)["name"]
-            parsed = [{"function": {"name": nm, "arguments": a}}
-                      for a in beat["kald"]]
+            # would put a call to a tool that was never made. `_tools` is the
+            # fan-in case -- several DIFFERENT tools in ONE turn -- so the name
+            # is per call, not per beat.
+            ts = beat.get("_tools")
+            parsed = [{"function": {
+                "name": ((ts[i] if ts and i < len(ts)
+                          else (beat.get("_tool") or tool))["name"]),
+                "arguments": a}} for i, a in enumerate(beat["kald"])]
             msgs.append({"role": "assistant", "content": "",
                          "tool_calls": parsed})
             for p in beat["_pays"]:
@@ -2908,23 +2955,31 @@ async def main_async(args):
                     # the row's anchor -- otherwise the consumer's result comes
                     # back shaped like the producer.
                     btool = b.get("_tool") or tool
-                    # Resolve the link: the id the producer actually returned.
-                    # Done here because payloads do not exist when beats are
-                    # written. If the producer never emitted the key the row is
-                    # dropped rather than shipped with a sentinel in the call.
-                    lk = b.get("_link")
-                    if lk:
-                        src = beats[lk["from"]].get("_pays") or []
-                        val = next((p0.get(lk["key"]) for p0 in src
-                                    if p0.get(lk["key"]) is not None), None)
-                        if val is None:
-                            stats["dlg:chain-link-missing"] += 1
-                            return None
-                        b["kald"] = [{kk: (val if vv == LINK else vv)
+                    btools = b.get("_tools")
+                    # Resolve the links: the ids the producers actually
+                    # returned. Done here because payloads do not exist when
+                    # beats are written. A key no producer emitted drops the
+                    # row rather than shipping a sentinel in the call.
+                    lks = b.get("_links") or ([b["_link"]] if b.get("_link")
+                                              else [])
+                    if lks:
+                        vals = {}
+                        for lk in lks:
+                            src = beats[lk["from"]].get("_pays") or []
+                            v = next((p0.get(lk["key"]) for p0 in src
+                                      if p0.get(lk["key"]) is not None), None)
+                            if v is None:
+                                stats["dlg:chain-link-missing"] += 1
+                                return None
+                            vals[lk["key"]] = v
+                        b["kald"] = [{kk: (vals.get(kk, vv) if vv == LINK
+                                           else vv)
                                       for kk, vv in a0.items()}
                                      for a0 in b["kald"]]
                     pays = []
-                    for a in b["kald"]:
+                    for ci, a in enumerate(b["kald"]):
+                        btool = (btools[ci] if btools and ci < len(btools)
+                                 else (b.get("_tool") or tool))
                         # keyed on WHAT was asked for, not how it was looked
                         # up -- and not on how it was FORMATTED. A report
                         # format, a verbosity, a correlation id: these change
@@ -2966,7 +3021,12 @@ async def main_async(args):
                             # including the lookup parameters `subj` drops.
                             seen[k] = respect_constraints(btool, pay, a, idx)
                         pays.append(seen[k])
-                    b["_pays"] = key_payloads(btool, pays, b["kald"], idx,
+                    # `btool` above is per CALL and leaks the last one out of
+                    # the loop; key_payloads is a per-BEAT concern (cross-call
+                    # distinctness), so name the beat's tool explicitly.
+                    beat_tool = (btools[0] if btools
+                                 else (b.get("_tool") or tool))
+                    b["_pays"] = key_payloads(beat_tool, pays, b["kald"], idx,
                                               row_args)
                     b["_args"] = b["kald"]
                     # `seen` hands the same object to a repeated subject; the
