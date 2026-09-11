@@ -148,10 +148,23 @@ def answer_prompt(msgs, reasoning, call, result):
 
 def main():
     ckpt = sys.argv[1] if len(sys.argv) > 1 else "/mnt/data2/ckpts/v38_33993"
-    print(f"ckpt: {ckpt}\n", flush=True)
-    tok = AutoTokenizer.from_pretrained(ckpt)
+    # Optional SUBFOLDER, so a checkpoint can be read straight off the Hub
+    # instead of copied down first. The run's watcher already uploads every
+    # best snapshot, so the transfer is paid for either way -- and scp gives
+    # no integrity check, which is how a probe ended up pointed at a 0-byte
+    # tokenizer.json that would have loaded and probed something anyway.
+    #   probe.py jensjepsen/danish-lm-400m-sft-toolmix-mid step-1816-agg-0.806
+    sub = sys.argv[2] if len(sys.argv) > 2 else None
+    kw = {"subfolder": sub} if sub else {}
+    print(f"ckpt: {ckpt}" + (f" [{sub}]" if sub else "") + "\n", flush=True)
+    tok = AutoTokenizer.from_pretrained(ckpt, **kw)
+    # fp32, not fp16. The checkpoint's master weights are fp32 and the probe is
+    # reading behaviour, not measuring throughput: downcasting at load puts a
+    # rounding step between the trained weights and what is probed, so a
+    # surprising output cannot be attributed to the model rather than to the
+    # cast. A 400M model is 1.6GB in fp32 and fits anywhere this runs.
     model = AutoModelForCausalLM.from_pretrained(
-        ckpt, torch_dtype=torch.float16).cuda().eval()
+        ckpt, torch_dtype=torch.float32, **kw).cuda().eval()
     eos = [i for i in (tok.eos_token_id,
                        tok.convert_tokens_to_ids("<|end|>")) if i is not None]
 
