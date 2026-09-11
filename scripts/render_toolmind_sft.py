@@ -478,11 +478,38 @@ def to_messages(row, pool=None, idx=0, target=0, minimum=2,
     return msgs
 
 
+def answer_relevance_from(rec, msgs):
+    """`answer_relevance` for a row whose answer field was CHOSEN, not observed.
+
+    ToolMind has to recover this label: an LLM wrote the answer from the whole
+    payload, so `gen_tool_answer_turns` carries back which fields it used. The
+    procedural generator runs the other way -- it picks the field first and
+    redacts the payload to it before the dressing model sees anything -- so
+    `_answer_field` is a constraint the row was built under rather than an
+    extraction from it, and it is on 100% of rows.
+
+    One field, N positions: every assistant turn that answers off a payload in
+    a multi-turn row cites the same field, because the role is fixed per row.
+    """
+    af = rec.get("_answer_field")
+    if not af:
+        return None
+    return [{"at": i, "fields": [af]} for i, m in enumerate(msgs)
+            if m["role"] == "assistant" and i
+            and msgs[i - 1]["role"] == "tool_result"]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="src", type=Path,
                     default=Path("scratch/toolmind_da_v2"))
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--idx-offset", type=int, default=0,
+                    help="added to every emitted idx. Two corpora rendered "
+                         "separately both start at 0, and push_tool_dialogues_hf "
+                         "joins rendered messages to translated records ON idx "
+                         "-- combined without an offset it splices one corpus's "
+                         "messages onto the other's rows.")
     ap.add_argument("--n", type=int, default=0, help="print N rendered rows")
     ap.add_argument("--catalogue-size", type=int, default=0,
                     help="MAX catalogue size; the actual size is drawn per "
@@ -571,7 +598,14 @@ def main():
         # idx, not the position: it is the row's stable source identity,
         # and it is what lets the PUSH consume this file instead of
         # re-rendering. Everything downstream joins on it.
-        rendered.append({"idx": src_idx[i], "messages": m})
+        row = {"idx": src_idx[i] + args.idx_offset, "messages": m}
+        # Carried through when the source already has it (ToolMind, from the
+        # answer stage), synthesised when the source DECLARED it instead.
+        rel = recs[i].get("answer_relevance") or \
+            answer_relevance_from(recs[i], m)
+        if rel:
+            row["answer_relevance"] = rel
+        rendered.append(row)
         if False:
             ms = to_messages(r, pool, i, args.catalogue_size,
                              args.catalogue_min, rmap, symbolic=True,

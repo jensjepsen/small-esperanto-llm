@@ -115,9 +115,16 @@ def _cfg(cfg, base, splits):
     return "\n".join(lines)
 
 
-def card(counts, n_rejected, tool_stats, fails, splits=SPLITS):
+def card(counts, n_rejected, tool_stats, fails, splits=SPLITS, cfgs=None):
     rows = "\n".join(f"| `{s}` | {counts[s]:,} |" for s in splits)
     fl = "\n".join(f"| `{k}` | {v:,} |" for k, v in fails.most_common())
+    # Only advertise configs that were actually pushed. A card naming
+    # `en`/`rejected` when neither exists makes the dataset fail to load.
+    cfgs = cfgs or ["default", "sft", "en", "rejected"]
+    cfg_block = "\n".join(
+        _cfg(c, {"default": "data"}.get(c, c),
+             ["train"] if c == "rejected" else splits)
+        for c in cfgs)
     return f"""---
 language:
 - da
@@ -130,13 +137,7 @@ tags:
 - tool-use
 - multi-turn
 configs:
-{_cfg("default", "data", splits)}
-{_cfg("sft", "sft", splits)}
-{_cfg("en", "en", splits)}
-- config_name: rejected
-  data_files:
-  - split: train
-    path: rejected/train-*
+{cfg_block}
 ---
 
 # danish-tool-dialogues-v1
@@ -260,6 +261,11 @@ def main():
     ap.add_argument("--keep-defective", action="store_true",
                     help="skip the pedagogy filters; reproduces v6 and "
                          "earlier, which shipped without them.")
+    ap.add_argument("--private", action="store_true",
+                    help="create the repo private. Set it at CREATE "
+                         "time: flipping an existing public repo to "
+                         "private later does not un-publish what has "
+                         "already been fetched or cached.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -271,12 +277,23 @@ def main():
 
     recs = [json.loads(l) for l in (args.src / "translated.jsonl").open()
             if l.strip()]
-    verdicts = {}
-    for line in (args.src / "gate_verdicts.jsonl").open():
-        v = json.loads(line)
-        verdicts[v["idx"]] = v["bad"]
-    clean = [r for r in recs if not verdicts.get(r.get("idx"), ["unknown"])]
-    rejected = [r for r in recs if verdicts.get(r.get("idx"), ["unknown"])]
+    # gate_verdicts.jsonl is the TRANSLATION pipeline's record of which rows
+    # its gate failed, and it keeps the failures in translated.jsonl so they
+    # can be inspected. The procedural generator gates and judges inline and
+    # rewrites translated.jsonl with only the survivors, so there is no
+    # verdict file and nothing rejected to carry -- every row on disk is
+    # already clean. Absent file therefore means "all clean", not "unknown".
+    verdicts, gp = {}, args.src / "gate_verdicts.jsonl"
+    if gp.exists():
+        for line in gp.open():
+            v = json.loads(line)
+            verdicts[v["idx"]] = v["bad"]
+        clean = [r for r in recs if not verdicts.get(r.get("idx"), ["unknown"])]
+        rejected = [r for r in recs if verdicts.get(r.get("idx"), ["unknown"])]
+    else:
+        print(f"no gate_verdicts.jsonl in {args.src}: treating all "
+              f"{len(recs):,} rows as gate-clean (procedural build)", flush=True)
+        clean, rejected = list(recs), []
     fails = Counter(b.split("(")[0] for r in rejected
                     for b in verdicts.get(r["idx"], []))
     print(f"clean {len(clean):,}  rejected {len(rejected):,}", flush=True)
@@ -320,7 +337,14 @@ def main():
     if args.catalogue_size:
         print(f"distractor pool: {len(pool):,} non-held-out tools; catalogues "
               f"shuffled and padded to {args.catalogue_size}", flush=True)
-    pre, twins = {}, {}
+    # `pre_rel` exists because the RENDERER is now a second source of this
+    # label. ToolMind recovers it in the answer stage and it rides the
+    # translated record; the procedural generator DECLARES it as
+    # `_answer_field` and the renderer turns that into the same {at, fields}
+    # shape. Keeping only `messages` here dropped the second kind on the
+    # floor -- the field was written into sft.jsonl and never reached the
+    # dataset, so `tool_answer` would have scored those rows against nothing.
+    pre, twins, pre_rel, twin_rel = {}, {}, {}, {}
     if args.rendered:
         for line in args.rendered.open():
             if not line.strip():
@@ -330,8 +354,12 @@ def main():
                 continue
             if rec.get("sym"):
                 twins[rec["idx"]] = rec["messages"]
+                if rec.get("answer_relevance"):
+                    twin_rel[rec["idx"]] = rec["answer_relevance"]
             else:
                 pre[rec["idx"]] = rec["messages"]
+                if rec.get("answer_relevance"):
+                    pre_rel[rec["idx"]] = rec["answer_relevance"]
         print(f"consuming stage 4/5: {len(pre):,} rendered rows"
               + (f" + {len(twins):,} symbolized twins" if twins else "")
               + f" from {args.rendered.name}", flush=True)
@@ -399,20 +427,23 @@ def main():
                 "tools": da.get("tools", []),
                 "conversations": da.get("conversations", []),
                 "messages": tw,
-                "en": r["orig"],
+                "en": r.get("orig"),
                 "meta": {"idx": r["idx"], "n_tools": len(tn),
                          "n_turns": len(da.get("conversations", [])),
                          "tool_names": tn,
                          "tool_signatures": tool_signatures(da),
                          "called_signatures": called_signatures(da),
                          "symbolized": True,
-                         "answer_relevance": []},
+                         # symbolize_twins remaps the field names through the
+                         # twin's return-symbol map, so the twin carries its
+                         # OWN relevance -- it is not the untwinned one.
+                         "answer_relevance": twin_rel.get(r["idx"]) or []},
             })
         data[split].append({
             "tools": da.get("tools", []),
             "conversations": da.get("conversations", []),
             "messages": msgs,
-            "en": r["orig"],
+            "en": r.get("orig"),
             "meta": {"idx": r["idx"], "n_tools": len(tn),
                      "n_turns": len(da.get("conversations", [])),
                      "tool_names": tn,
@@ -420,8 +451,11 @@ def main():
                      "called_signatures": called_signatures(da),
                      # which payload fields each generated answer was written
                      # to cite; the eval scores precision against these rather
-                     # than re-deriving them from the reference text
-                     "answer_relevance": r.get("answer_relevance") or []},
+                     # than re-deriving them from the reference text.
+                     # Rendered first: for a declared label that is the only
+                     # place it exists, and for a recovered one the two agree.
+                     "answer_relevance": (pre_rel.get(r["idx"])
+                                          or r.get("answer_relevance") or [])},
         })
     counts = {s: len(v) for s, v in data.items()}
     print("splits:", counts, f"(dropped {dropped:,} catalogue-only rows)",
@@ -489,7 +523,8 @@ def main():
         return
 
     api = HfApi()
-    api.create_repo(args.repo, repo_type="dataset", exist_ok=True)
+    api.create_repo(args.repo, repo_type="dataset", exist_ok=True,
+                    private=args.private)
     # `tools` and `conversations` ship as JSON STRINGS. Arrow cannot infer one
     # schema across them: `arguments` is a dict in almost every row and a list
     # in two, and parameter objects vary in shape, which fails with "cannot mix
@@ -508,6 +543,15 @@ def main():
         "en": lambda R: [{"en": J(x["en"]), "idx": x["meta"]["idx"]}
                          for x in R],
     }
+    # A Danish-NATIVE corpus has no English source, so the `en` config would be
+    # a column of nulls advertised in the card as provenance. Drop it rather
+    # than ship it empty; same for `rejected`, which a pipeline that discards
+    # its failures never populates.
+    has_en = any(x.get("en") is not None for sp in all_splits for x in data[sp])
+    if not has_en:
+        views.pop("en")
+        print("no English source on any row: skipping the `en` config",
+              flush=True)
     live = [sp for sp in all_splits if data[sp]]
     for cfg, fn in views.items():
         for sp in live:
@@ -515,17 +559,19 @@ def main():
                 args.repo, config_name=cfg, split=sp,
                 commit_message=f"{cfg}/{sp} ({counts[sp]} rows)")
             print(f"  pushed {cfg}/{sp} ({counts[sp]})", flush=True)
-    Dataset.from_list([{"en": J(r["orig"]), "da": J(r["da"]),
-                        "verdict": verdicts.get(r["idx"], []),
-                        "idx": r["idx"]} for r in rejected]).push_to_hub(
-        args.repo, config_name="rejected", split="train",
-        commit_message=f"rejected ({len(rejected)} rows)")
-    print(f"  pushed rejected ({len(rejected)})", flush=True)
+    if rejected:
+        Dataset.from_list([{"en": J(r.get("orig")), "da": J(r["da"]),
+                            "verdict": verdicts.get(r["idx"], []),
+                            "idx": r["idx"]} for r in rejected]).push_to_hub(
+            args.repo, config_name="rejected", split="train",
+            commit_message=f"rejected ({len(rejected)} rows)")
+        print(f"  pushed rejected ({len(rejected)})", flush=True)
 
     stats = {"n_tools": len(names), "n_heldout": len(heldout)}
     api.upload_file(
         path_or_fileobj=card(counts, len(rejected), stats, fails,
-                             live).encode(),
+                             live, cfgs=list(views) + (["rejected"] if rejected
+                                                       else [])).encode(),
         path_in_repo="README.md", repo_id=args.repo, repo_type="dataset",
         commit_message="dataset card")
     if args.abstention:

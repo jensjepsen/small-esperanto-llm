@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import random
 import re
@@ -580,7 +581,42 @@ def _as_number(v):
     return v
 
 
-NUMERIC_LITERAL = re.compile(r"^-?\d+(?:\.\d+)?$")
+def _num_in(v):
+    """The number a payload value holds, even when it is carried in a string.
+
+    `_as_number` is the strict form and stays strict -- most callers compare
+    two fields and must not start matching `"Rute C"` against a number. This
+    one exists for the BOUNDS clamp, which was silently skipping every field
+    whose value arrived as `"78 %"`: the envelope said 0-100 and the clamp
+    never ran, so `"111 %"` shipped.
+    """
+    n = _as_number(v)
+    if n is not None:
+        return n
+    if isinstance(v, str):
+        m = NUMERIC_LITERAL.match(v)
+        if m:
+            return float(m.group(1))
+    return None
+
+
+def _with_num(v, n):
+    """`n`, wearing whatever shape `v` had -- `"78 %"` stays `"95 %"`."""
+    if not isinstance(v, str):
+        return n
+    m = NUMERIC_LITERAL.match(v)
+    if not m:
+        return n
+    body = ("%g" % n) if float(n) != int(n) else str(int(n))
+    return v[:m.start(1)] + body + v[m.end(1):]
+
+
+# A number, then anything with NO further digit in it. The trailing `\D*` is
+# what makes this safe without a unit vocabulary: `"111 %"` and `"25 DKK"`
+# parse, `"2023-10-27"` does not, because its tail still carries digits. A
+# decimal comma is deliberately NOT accepted -- `"1,500"` is 1.5 in one
+# convention and 1500 in the other, and the schema examples are ASCII.
+NUMERIC_LITERAL = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*(\D*)$")
 
 
 def example_number(e):
@@ -590,9 +626,14 @@ def example_number(e):
     every one of them. Two audit rules were written on top of that and did
     nothing at all, while a third read `all([])` as True and counted a return
     with no examples as numeric.
+
+    A unit carried INSIDE the example is still a number. `current_battery_level`
+    declares `"78 %"`, so the strict form found no numbers, derived no
+    envelope, and the repair never bounded it -- which is how a battery came
+    back at `"111 %"`. Three such values shipped in the last build.
     """
-    s = str(_unquote(e)).strip()
-    return float(s) if NUMERIC_LITERAL.match(s) else None
+    m = NUMERIC_LITERAL.match(str(_unquote(e)))
+    return float(m.group(1)) if m else None
 
 
 def example_envelope(field):
@@ -655,6 +696,19 @@ def _bound_target(param, payload, answer_field, weights=None):
     something, and that theory produced `max_results: 86` capping rush-hour
     traffic at 83 beside an average of 862, and `max_depth: 11` capping the
     scraped records at 10. A page size is not a bound on the data.
+
+    TRIED AND REJECTED: falling back when another argument's VALUE names the
+    reported field, so that "report brood_count, minimum 1101" would stop
+    answering 1013. Replayed over the 15,281-row corpus it moves 86 fields,
+    and reading them, ~20 are the intended repair and ~65 are new
+    contradictions: `max_results: 91` capping `fault_current_amps` at 91,
+    `max_items: 62` capping `material_required_kg`. Magnitude does not split
+    the two populations either -- `max_results` is wrong when it misses by
+    1.13x and when it misses by 25x, while `max_records: 207` beside
+    `freight_manifest_count: 212` is right at 1.02x. What separates them is
+    whether the parameter counts RETURNED RECORDS or measures the subject,
+    and nothing in the schema says which. It needs a vocabulary; a vocabulary
+    is what this file is trying not to have.
     """
     cand = [f for f, v in payload.items()
             if _as_number(v) is not None and _same_subject(param, f)]
@@ -721,18 +775,18 @@ def respect_constraints(tool, payload, args, idx):
     # cannot exceed the silo it sits in. Declared per tool rather than guessed
     # per payload, so the relation is visible in the schema being trained on.
     for f, b in (tool.get("_bounds") or {}).items():
-        cur = _as_number(out.get(f))
+        cur = _num_in(out.get(f))
         if cur is None:
             continue
         others = [x for g, x in out.items() if g != f]
         lo, hi = b.get("min"), b.get("max")
         if b.get("max_field"):
-            hi = min([x for x in (hi, _as_number(out.get(b["max_field"])))
+            hi = min([x for x in (hi, _num_in(out.get(b["max_field"])))
                       if x is not None] or [None])
         if hi is not None and cur > hi:
-            out[f] = _nudge(out[f], hi, False, f, idx, others)
+            out[f] = _with_num(out[f], _nudge(cur, hi, False, f, idx, others))
         elif lo is not None and cur < lo:
-            out[f] = _nudge(out[f], lo, True, f, idx, others)
+            out[f] = _with_num(out[f], _nudge(cur, lo, True, f, idx, others))
     # A part cannot exceed its whole: `total_members: 27` beside
     # `active_members: 51`. The total already carries any bound, so it is the
     # parts that move.
@@ -967,6 +1021,25 @@ def key_payloads(tool, pays, arglist, idx, all_args=None):
         q = echo_identifiers(tool, q, a, tool.get("answer_field"))
         q = clear_denials(tool, q, tool.get("answer_field"))
         out.append(respect_constraints(tool, q, a, idx))
+    # Two different subjects must not come back with the same ANSWER. The
+    # distinctness loop above guards identifiers, and the synthesis step
+    # guards the answer at draw time -- but this runs LAST, after
+    # `respect_constraints` has clamped, and a clamp can walk two payloads
+    # onto one number. It did: tower 170 and tower 145 both reported a signal
+    # strength of -64.3, and two bike shops both reported 59 spare parts. 85
+    # rows shipped that way, all of them teaching that the id does not matter.
+    af = tool.get("answer_field")
+    if af:
+        for i, (q, a) in enumerate(zip(out, arglist)):
+            cur = _num_in(q.get(af))
+            if cur is None:
+                continue
+            if not any(arglist[j] != a and str(p.get(af)) == str(q[af])
+                       for j, p in enumerate(out[:i])):
+                continue
+            taken = {str(p.get(af)) for p in out[:i]} | \
+                    {str(v) for kk, v in q.items() if kk != af}
+            q[af] = _with_num(q[af], _nudge(cur, cur, True, af, idx + i, taken))
     return out
 
 
@@ -1117,6 +1190,18 @@ def beats_for(plan, tool, idx):
         b.append({"rolle": "assistent", "kald": [a2]})
         b.append({"rolle": "assistent", "assistent_svarer": True})
     return b
+
+
+# The held-out split rule, duplicated from render_toolmind_sft.is_heldout_tool
+# rather than imported: that module pulls in train_sft_packed and transformers,
+# and this generator runs on boxes that have neither. If the percentage ever
+# moves, it moves in both places -- push_tool_dialogues_hf takes it as a flag.
+HELDOUT_PCT = 6
+
+
+def is_heldout_tool(name):
+    return int(hashlib.md5((name or "").encode()).hexdigest(), 16) % 100 \
+        < HELDOUT_PCT
 
 
 def tool_signature(t):
@@ -2252,8 +2337,21 @@ async def main_async(args):
                 # selector with no option for this field makes the row
                 # unbuildable, and picking it anyway costs a whole dialogue.
                 ok = [f for f in conf if answerable(tool, f)]
-                conf = ok if len(ok) >= 2 else conf
-                af = conf[_hash("role", tool["name"], idx) % len(conf)]
+                # With exactly one askable field there is still a row here.
+                # The COMPETITOR is never asked for -- it is the sibling in
+                # the payload that the answer has to not drift onto -- so it
+                # does not need to be selectable. Falling back to the
+                # unfiltered list instead, which is what this did, put an
+                # unaskable field in the answer slot and threw the dialogue
+                # away: `dlg:no-args-for-answer-field` was 2,116 of 19,976
+                # attempts, half of all yield loss, and 255 tools lose rows
+                # this way while still having something to ask about.
+                if len(ok) >= 2:
+                    conf = ok
+                elif len(ok) == 1:
+                    conf = ok + [f for f in conf if f != ok[0]]
+                af = conf[_hash("role", tool["name"], idx) % len(conf)] \
+                    if len(ok) != 1 else conf[0]
                 comp = next(f for f in conf if f != af)
                 tool = {**tool, "answer_field": af, "competitor_field": comp}
                 stats[f"role:{'default' if af == conf[0] else 'rotated'}"] += 1
@@ -2269,9 +2367,16 @@ async def main_async(args):
                         continue
                     pays = []
                     for a in b["kald"]:
-                        # keyed on WHAT was asked for, not how it was looked up
+                        # keyed on WHAT was asked for, not how it was looked
+                        # up -- and not on how it was FORMATTED. A report
+                        # format, a verbosity, a correlation id: these change
+                        # the presentation, never the thing. In the key they
+                        # redrew the payload, so one player in one match came
+                        # back weighing 79 kg for `feedback_type: physical`
+                        # and 86 kg for `technical`.
                         subj = {kk: vv for kk, vv in a.items()
-                                if not is_lookup_param(kk)}
+                                if not is_lookup_param(kk)
+                                and not is_meta_param(kk)}
                         k = json.dumps(subj, sort_keys=True,
                                        ensure_ascii=False)
                         if k not in seen:
@@ -2311,7 +2416,8 @@ async def main_async(args):
                     # this call reads what was actually emitted.
                     for a, p in zip(b["kald"], b["_pays"]):
                         seen[json.dumps({kk: vv for kk, vv in a.items()
-                                         if not is_lookup_param(kk)},
+                                         if not is_lookup_param(kk)
+                                         and not is_meta_param(kk)},
                                         sort_keys=True, ensure_ascii=False)] = p
                 for i, b in enumerate(beats):
                     if b.get("assistent_svarer"):
@@ -2534,8 +2640,17 @@ async def main_async(args):
             # A distractor that shares a name with the called tool -- or with
             # another distractor -- would put two schemas under one name in
             # front of the model. Unique names WITHIN the catalogue.
+            #
+            # And never a HELD-OUT name. `push_tool_dialogues_hf` drops any row
+            # carrying one it does not call, because the model would read that
+            # tool's name and description in a training prompt and
+            # `eval_unseen_tools` would stop meaning unseen. Drawing from the
+            # whole catalogue cost 2,103 of 14,333 rows (14.7%) in the last
+            # build -- thrown away at push time, after they were paid for.
             taken = {mine["function"]["name"]}
-            others = [x for k, x in specs.items() if k != own_scenario(r)]
+            others = [x for k, x in specs.items()
+                      if k != own_scenario(r)
+                      and not is_heldout_tool(x["function"]["name"])]
             rng.shuffle(others)
             cat, n_extra = [mine], rng.randint(1, 5)
             for x in others:
