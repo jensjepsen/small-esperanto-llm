@@ -314,6 +314,32 @@ def is_lookup_param(name):
     return bool(LOOKUP_PARAM.search(str(name or "")))
 
 
+# HOW a request is delivered or authorised, never WHAT it asks about. A
+# closed technical set, like TYPE_WORDS -- not a domain vocabulary the next
+# catalogue will word differently.
+CORRELATION_PARAM = re.compile(
+    r"^(request|correlation|trace|session|idempotency)_(id|key|token)$", re.I)
+META_PARAM = re.compile(
+    r"(^|_)format(_|$)"
+    r"|(^|_)(api_?key|access_key|secret|token|auth|credential|password)(_|$)"
+    r"|(^|_)(locale|encoding)(_|$)", re.I)
+
+
+def is_meta_param(name):
+    """A parameter that must not change the answer.
+
+    Asking for the same data as PDF instead of JSON returned a different
+    growth report; csv instead of html turned 1 power outage into 0, and 4
+    signal failures into 10; two API keys gave two colony strengths. A format
+    is not a second subject, and neither is a request id or a credential.
+    """
+    n = str(name or "")
+    if CORRELATION_PARAM.search(n):
+        return True
+    # `format_check_id` NAMES a subject; `report_format` names a rendering.
+    return bool(META_PARAM.search(n)) and not IDENTIFYING.search(n)
+
+
 def is_filter_param(name):
     """A bound or a window: it narrows the query, it is not the subject."""
     n = str(name or "")
@@ -374,7 +400,7 @@ def field_key(field, args):
                if IDENTIFYING.search(k) and _aggregates_over(field, k)}
     rel = {k: v for k, v in args.items()
            if _same_subject(k, field) and not is_filter_param(k)
-           and k not in members}
+           and not is_meta_param(k) and k not in members}
     return rel or {k: v for k, v in entity_args(args).items()
                    if k not in members}
 
@@ -389,7 +415,8 @@ def entity_args(args):
     answer field is redrawn per query.
     """
     return {k: v for k, v in (args or {}).items()
-            if not is_lookup_param(k) and not is_filter_param(k)}
+            if not is_lookup_param(k) and not is_filter_param(k)
+            and not is_meta_param(k)}
 
 
 def vary_one(tool, args, idx, salt, numeric_ok=True):
@@ -421,6 +448,9 @@ def vary_one(tool, args, idx, salt, numeric_ok=True):
              # teaching that a page size changes the data. Same for
              # `max_depth: 2` vs `11` and `limit: 86` vs `3`.
              and not is_filter_param(p["name"])
+             # A format, a credential, a request id: varying one of these
+             # asks the SAME question twice and must give the same answer.
+             and not is_meta_param(p["name"])
              and p["name"] not in declared_sel
              and not (not declared_sel and SELECTOR_NAME.search(p["name"]))
              and _selector_for(p, af, tool) is None
@@ -582,8 +612,17 @@ def example_envelope(field):
     spread = hi - lo
     if not spread:
         return None
-    return {"min": max(0.0, lo - spread) if lo >= 0 else lo - spread,
-            "max": hi + spread}
+    out = {"min": max(0.0, lo - spread) if lo >= 0 else lo - spread,
+           "max": hi + spread}
+    # Widening by the spread is too generous for a ratio: examples of 0.17,
+    # 0.5 and 0.99 bought a ceiling of 1.81, and a `fingerprint_match_score`
+    # came back as 1.18. A field whose every example sits in [0,1] is a
+    # proportion, and 1 is its bound -- read off the values, not off the name,
+    # which is why `_rate` and `score` and `andel` all get it for free. 180 of
+    # 315 such fields could exceed 1 before this.
+    if all(0.0 <= v <= 1.0 for v in vals):
+        out["min"], out["max"] = max(0.0, out["min"]), 1.0
+    return out
 
 
 def _nudge(v, target, up, field, idx, taken=()):
@@ -1463,7 +1502,7 @@ def unspoken_arguments(row, tool):
                 # share no token, so there is no sound way to tell a spoken
                 # one from an invented one without reading the sentence.
                 if isinstance(v, bool) or is_lookup_param(k) \
-                        or selects_answer(p, v, tool):
+                        or is_meta_param(k) or selects_answer(p, v, tool):
                     continue
                 ep = _epoch_said(v, said)
                 ok = ep if ep is not None else _said_value(v, said)
@@ -1632,6 +1671,30 @@ def gate_prose(row, tool):
     return None
 
 
+# A SPECIFIC time the user pins down: a date, a clock time, a month with a
+# year, a bare year. Not "i dag" or "lige nu" -- those are answered perfectly
+# well by a field called `access_attempts_today`, and rejecting them would
+# cost good rows. This is a Danish time lexicon, like UPPER_PHRASE; it is the
+# language the constraint is written in, not a domain vocabulary.
+MONTH_YEAR = re.compile(r"(" + MONTHS + r")\s+(19|20)\d{2}", re.I)
+
+
+def _carries_time(args):
+    """Does this call send anything that could represent a time at all?"""
+    for k, v in (args or {}).items():
+        if TIME_FIELD.search(str(k)):
+            return True
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, int) and (1_000_000_000 <= v <= 2_000_000_000
+                                   or 1900 <= v <= 2100):
+            return True
+        s = str(v)
+        if DATEISH.search(s) or MONTH_YEAR.search(s):
+            return True
+    return False
+
+
 def gate_call(row, tool):
     """The call, against the conversation that is supposed to motivate it."""
     msgs = row["da"]["conversations"]
@@ -1659,6 +1722,19 @@ def gate_call(row, tool):
         for t in NUM.finditer(scan):
             if not _traces_to(t.group(), pool):
                 return f"user-states-unused-value:{t.group()}"
+        # A window the call cannot express. The dresser invents one freely --
+        # dates and clock times are masked from the scan above, so they cost
+        # nothing -- and then the ANSWER restates it: "mellem 26. oktober kl.
+        # 00:00 og 25. oktober kl. 16:30" against a call carrying only a
+        # server id, and a backwards window at that. Rather than match the
+        # user's phrasing to a value, ask the weaker question: does the call
+        # send ANY time at all? If not, the constraint reached nothing.
+        said_now = strip_catalogue(m.get("content") or "")
+        if (DATEISH.search(said_now) or MONTH_YEAR.search(said_now)) \
+                and not any(_carries_time((c.get("function") or {})
+                                          .get("arguments") or {})
+                            for c in nxt["tool_calls"]):
+            return "user-states-unused-time"
         for c in nxt["tool_calls"]:
             a = (c.get("function") or {}).get("arguments") or {}
             bounds = [k for k in a if BOUND_LO.search(k) or BOUND_HI.search(k)]
@@ -1711,6 +1787,9 @@ ANSWER_HINTS = {
     "call-invents-argument":
         "Brugeren SKAL selv nævne hver værdi, kaldet sender -- id'er, navne, "
         "datoer og tal. Skriv dem ind i brugerens replik.",
+    "user-states-unused-time":
+        "Nævn kun et tidsrum, hvis kaldet faktisk sender det. Har værktøjet "
+        "ingen dato- eller tidsparameter, så spørg uden tidsangivelse.",
     "user-states-unused-value":
         "Brugeren må kun nævne værdier, der står i argumenterne. Opfind "
         "ikke id'er eller tal, kaldet ikke bruger.",
@@ -1737,7 +1816,7 @@ def spoken_args(tool, args):
     def keep(a):
         return {k: v for k, v in (a or {}).items()
                 if not (params.get(k, {}).get("enum")
-                        or is_lookup_param(k)
+                        or is_lookup_param(k) or is_meta_param(k)
                         or governs_field(params.get(k, {}), tool))}
     if isinstance(args, list):
         out = [keep(a) for a in args]
