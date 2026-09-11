@@ -510,11 +510,12 @@ def vary_one(tool, args, idx, salt, numeric_ok=True):
         if v is not None and str(v) != str(args.get(pick["name"])):
             out[pick["name"]] = v
             return order_ranges(drop_stale(out, pick["name"],
-                                           args.get(pick["name"]), v)), pick
+                                           args.get(pick["name"]), v,
+                                           tool)), pick
     return None, None
 
 
-def drop_stale(args, varied, old, new):
+def drop_stale(args, varied, old, new, tool=None):
     """Arguments that still describe the subject we just moved away from.
 
     Varying `dive_id` from DIVE-2023-10-26-005 to DIVE-2023-10-27-001 left
@@ -527,8 +528,16 @@ def drop_stale(args, varied, old, new):
             {new[i:i + 6] for i in range(len(new) - 5)}
     if not marks:
         return args
+    # THE SELECTOR IS NEVER STALE. It names which FIELD is being asked for,
+    # not which subject, so it survives a change of subject by definition --
+    # but its value is a word, and words collide: varying `device_name` from
+    # `router-core-02` to `switch-access-15` marks "router" as belonging to
+    # the old subject and took `device_type: "router"` out with it. The second
+    # turn then asked for `allocated_ip_count` with nothing selecting it.
+    params = {p.get("name"): p for p in ((tool or {}).get("parameters") or [])}
     return {k: v for k, v in args.items()
             if k == varied or not isinstance(v, str)
+            or (k in params and selects_answer(params[k], v, tool))
             or not any(m in v for m in marks)}
 
 
