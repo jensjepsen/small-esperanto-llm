@@ -2410,6 +2410,14 @@ SELECTOR_SCHEMA = {
 def selector_candidates(tools):
     """(tool, param) pairs whose selector status is currently GUESSED.
 
+    EVERY guessed parameter, not the first. Stopping at the first one left 18
+    tools dead after a full pass: `SELECTOR_NAME` matches the substring
+    `report`, so `report_date_after` claimed the tool's only slot and
+    `report_type` -- the parameter actually blocking every answer field -- was
+    never asked about. Same shape for `crop_type` ahead of
+    `soil_analysis_report_id`, and `plant_category` ahead of
+    `information_type`.
+
     Only where `_selectors` is empty: a declared mapping already wins in
     `governs_field`, so asking again would pay for an answer that is ignored.
     """
@@ -2420,7 +2428,6 @@ def selector_candidates(tools):
         for p in (t.get("parameters") or []):
             if governs_field(p, {**t, "answer_field": None}):
                 out.append((t, p))
-                break
     return out
 
 
@@ -3273,14 +3280,16 @@ async def fix_selectors_run(args):
         await asyncio.gather(*[one(t, prm) for t, prm in todo])
     fh.close()
 
-    by_param = {(t.get("name"), t.get("_scenario")): prm for t, prm in cands}
+    by_param = {}
+    for t, prm in cands:
+        by_param.setdefault((t.get("name"), t.get("_scenario")), []).append(prm)
     out, before, after = [], 0, 0
     for t in tools:
-        prm = by_param.get((t.get("name"), t.get("_scenario")))
+        prms = by_param.get((t.get("name"), t.get("_scenario"))) or []
         fields = [r["name"] for r in (t.get("returns") or [])]
         n0 = sum(1 for f in fields
                  if sample_args({**t, "answer_field": f}, 1, 0) is not None)
-        if prm is not None:
+        for prm in prms:
             v = cache.get((t.get("name"), t.get("_scenario"), prm.get("name")))
             if v is not None:
                 t, what = apply_selector_verdict(t, prm, v)
