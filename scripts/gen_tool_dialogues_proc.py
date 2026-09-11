@@ -2537,6 +2537,25 @@ def gate_sibling(sib, anchor, key):
         pex = {str(_unquote(e)).strip() for e in (p.get("examples") or [])}
         if rex & pex:
             return "input-examples-are-the-output"
+    # THE TWO ENDS MUST SPEAK THE SAME FORMAT. The link matches by NAME, but a
+    # producer returning `item_id` PDS-2023-001 into a consumer whose `item_id`
+    # is SK12345 hands a tool a value its own contract calls malformed --
+    # `payload_for` builds the producer's payload from the producer's examples,
+    # so that is what the chain actually passes. Seen in 3 of 10 siblings
+    # despite the prompt asking for the same format in words.
+    #
+    # SHAPE, not values -- the opposite of the circularity test above, and for
+    # the opposite reason: there we needed the two to DIFFER and only equal
+    # values proved a problem; here we need them to AGREE and equal values are
+    # unnecessary, since two ends of one namespace share a form without sharing
+    # instances.
+    cons_p = next((p for p in (anchor.get("parameters") or [])
+                   if p.get("name") == key), None)
+    cex = {str(_unquote(e)).strip() for e in ((cons_p or {}).get("examples") or [])}
+    if rex and cex:
+        shape = lambda v: re.sub(r"\d+", "#", re.sub(r"[^\W\d_]+", "A", v))
+        if not ({shape(x) for x in rex} & {shape(x) for x in cex}):
+            return "link-format-differs-from-consumer"
     if not [p for p in (sib.get("parameters") or []) if p.get("required")]:
         return "nothing-required"
     return None
