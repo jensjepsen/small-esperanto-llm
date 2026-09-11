@@ -101,6 +101,16 @@ for t in tools:
     fixed = []
     for p in params:
         n = str(p.get("name") or "")
+        # `_keep_required` is set by build_producer on a LOOKUP tool's single
+        # input. Demoting it is precisely backwards: accepting the thing a
+        # person can say -- a name, an address -- is the whole job of a lookup,
+        # and the rule below reads exactly that as "unaskable". It demoted the
+        # discriminating parameter on two of ten smoked producers, leaving
+        # `floor_number` alone to identify a room and `country_code` alone to
+        # identify a customs code.
+        if p.get("required") and n in (t.get("_keep_required") or ()):
+            fixed.append(p)
+            continue
         if p.get("required") and not IDENTIFYING.search(n) \
                 and not is_lookup_param(n) and not is_filter_param(n) \
                 and not governs_field(p, t) \

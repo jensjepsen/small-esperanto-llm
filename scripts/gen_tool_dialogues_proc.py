@@ -2254,7 +2254,14 @@ def catalogue_faults(t):
         if p.get("required") and not IDENTIFYING.search(n) \
                 and not is_lookup_param(n) and not is_filter_param(n) \
                 and not governs_field(p, t) \
+                and n not in (t.get("_keep_required") or ()) \
                 and str(p.get("type") or "").lower() != "boolean":
+            # `_keep_required` marks a LOOKUP tool's input. This rule says a
+            # required parameter must be an id or a selector, which is right for
+            # an ordinary tool and exactly inverted for a lookup: its whole job
+            # is to accept the human-readable thing -- a name, an address --
+            # and return the id. Without the exemption the assembler's output
+            # is condemned by the fault check it was built to satisfy.
             out.append(("required-param-is-neither-id-nor-selector", n))
     dec = t.get("_selectors") or {}
     for pname in {k.split(chr(0))[0] for k in dec}:
@@ -2315,48 +2322,140 @@ async def invent_tool(session, scenario, tpl, hint=None, temp=0.9):
 # a model asked for "a tool that returns X" will happily return something named
 # almost-X -- so `gate_sibling` checks it against the anchor's own schema rather
 # than believing the answer.
-SIBLING_SYS = TOOL_SYS + """
+# The producer is ASSEMBLED, not invented. Code already knows everything about
+# the link -- the consumer's required parameter IS the contract -- so the return
+# field is COPIED from it rather than described to a model and then policed.
+# Two whole defect classes stop existing rather than being gated:
+#
+#   format mismatch  impossible: one spec, used at both ends
+#   circularity      impossible: code refuses an input drawn from the same values
+#
+# What is left is the only part that needs language and world knowledge: what a
+# PERSON would know about this domain -- a name, an address, a product
+# description -- and the prose around it. That is the split the rest of this
+# generator uses, and siblings were the one place it had been abandoned.
+LOOKUP_SYS = """Du opfinder ET OPSLAGSVÆRKTØJ til et dansk arbejdsområde.
 
-DETTE VÆRKTØJ ER ET OPSLAGSVÆRKTØJ. Du får udleveret et søsterværktøj, som
-kræver et HÅNDTAG (et id, et nummer, en reference). Brugeren kender ikke
-håndtaget. Dit værktøj findes udelukkende for at slå det op.
+Du får et værktøj, der kræver et HÅNDTAG (et id, et nummer, en reference).
+Brugeren kender IKKE håndtaget. Dit opslagsværktøj findes for at finde det.
 
-VIGTIGST -- OVERSTYRER REGLEN OVENFOR OM `required`:
-Dit værktøj SKAL have mindst én parameter med `required: true`, nemlig det,
-brugeren selv kan sige. For et opslagsværktøj ER den menneskelige oplysning
-det, der udpeger HVEM eller HVAD -- den er altså `required`, ikke et filter.
+DU SKAL KUN BESKRIVE ÉN TING: hvad brugeren selv kan sige, som entydigt udpeger
+den ting, håndtaget hører til.
 
-HVAD BRUGEREN SELV KAN SIGE: et personnavn, et firmanavn, en adresse, en
-e-mail, et telefonnummer, en dato, en titel, et registreringsnummer fra et
-brev -- ting et menneske kender uden at spørge systemet.
+DET SKAL VÆRE NOGET ET MENNESKE VED UDEN AT SPØRGE SYSTEMET: et personnavn, et
+firmanavn, en adresse, en e-mail, et telefonnummer, en titel, en varebeskrivelse,
+et registreringsnummer fra et brev.
 
-HVAD BRUGEREN IKKE KAN SIGE: håndtaget selv, eller et andet internt id. Kunne
-brugeren sige håndtaget, var der ingen grund til at slå det op, og så er
-værktøjet meningsløst.
+DET SKAL UDPEGE ÉN TING. `floor_number: 1/2/3` er ikke nok til at finde ét rum --
+en etage har mange rum. `country_code: DK/DE` er ikke nok til at finde én
+varekode. Vælg det, der gør opslaget entydigt, og sig i beskrivelsen hvordan man
+kender det.
 
-DIT VÆRKTØJ SKAL:
-- høre til SAMME arbejdsområde og bruge SAMME ordforråd om emnet.
-- RETURNERE nøglefeltet med PRÆCIS det navn, du får oplyst.
-- give nøglefeltet 2-3 eksempelværdier i PRÆCIS samme format som
-  søsterværktøjets eksempler for samme felt.
-- have `answer_field`, `competitor_field` og `confusable_fields` blandt sine
-  returfelter, og de to skal have SAMME type -- fx nøglefeltet og to andre
-  referencer af samme form.
-- ALDRIG kræve nøglefeltet som parameter."""
+DET MÅ ALDRIG VÆRE HÅNDTAGET SELV eller et andet internt id. Kunne brugeren sige
+håndtaget, var opslaget overflødigt.
+
+NAVNE PÅ ENGELSK i snake_case, BESKRIVELSER PÅ DANSK. Giv 3 realistiske og
+FORSKELLIGE eksempelværdier.
+
+Giv også en dansk beskrivelse af opslaget og et værktøjsnavn, der er FORSKELLIGT
+fra det værktøj, du får udleveret -- fx `lookup_`/`find_` foran det, der slås op.
+
+Og to ekstra returfelter af SAMME FORM som håndtaget -- andre referencer i samme
+system, som er lette at forveksle med det."""
+
+LOOKUP_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["name", "description", "input", "extra_returns"],
+    "properties": {
+        "name": {"type": "string"},
+        "description": {"type": "string"},
+        "input": {
+            "type": "object", "additionalProperties": False,
+            "required": ["name", "type", "description", "examples"],
+            "properties": {
+                "name": {"type": "string"}, "type": {"type": "string"},
+                "description": {"type": "string"},
+                "examples": {"type": "array", "items": {"type": "string"}}}},
+        "extra_returns": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["name", "description", "examples"],
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "examples": {"type": "array", "items": {"type": "string"}}}}}}}
 
 
-async def invent_sibling(session, anchor, key, temp=0.9):
-    """A tool whose return feeds `anchor`'s required `key`."""
-    ex = next((p.get("examples") for p in (anchor.get("parameters") or [])
-               if p.get("name") == key), None) or []
-    prompt = (f"SØSTERVÆRKTØJ (det der skal bruge nøglen):\n"
+async def invent_lookup(session, anchor, key, temp=0.9):
+    """The human-sayable half of a producer. Code supplies the rest."""
+    kp = next((p for p in (anchor.get("parameters") or [])
+               if p.get("name") == key), None) or {}
+    ex = [str(_unquote(e)) for e in (kp.get("examples") or [])][:3]
+    prompt = (f"VÆRKTØJET DER MANGLER HÅNDTAGET:\n"
               f"  navn: {anchor['name']}\n"
-              f"  beskrivelse: {anchor.get('description', '')}\n"
-              f"  kræver parameteren: {key}\n"
-              f"  eksempler på {key}: {', '.join(map(str, ex[:3]))}\n\n"
-              f"NØGLEFELT DIT VÆRKTØJ SKAL RETURNERE: {key}\n")
-    return await _ask(session, SIBLING_SYS, prompt, TOOL_SCHEMA, "tool",
+              f"  beskrivelse: {anchor.get('description', '')}\n\n"
+              f"HÅNDTAGET: {key} -- {kp.get('description', '')}\n"
+              f"  eksempler: {', '.join(ex)}\n")
+    return await _ask(session, LOOKUP_SYS, prompt, LOOKUP_SCHEMA, "lookup",
                       temp=temp)
+
+
+def build_producer(anchor, key, spec):
+    """Assemble the producer. The link half is COPIED from the consumer."""
+    kp = next((p for p in (anchor.get("parameters") or [])
+               if p.get("name") == key), None)
+    if not kp or not spec:
+        return None
+    inp = spec.get("input") or {}
+    if not inp.get("name") or not (inp.get("examples") or []):
+        return None
+    # Enforced here rather than gated afterwards: the prompt asks for an input
+    # that is not the handle, and the model supplies the handle anyway -- by
+    # name in 5 of 15 and by example values in 3 more. Returning None costs a
+    # retry instead of a discarded tool.
+    kex = {str(_unquote(e)).strip() for e in (kp.get("examples") or [])}
+    iex = {str(x).strip() for x in (inp.get("examples") or [])}
+    if inp["name"] == key or (kex and iex & kex):
+        return None
+    # The link return field IS the consumer's parameter spec. Same name, same
+    # type, same examples -- so the value the chain carries is by construction
+    # one the consumer declares.
+    link_ret = {"name": key, "type": kp.get("type") or "string",
+                "description": kp.get("description") or "",
+                "examples": [str(_unquote(e)) for e in (kp.get("examples") or [])]}
+    rets = [link_ret]
+    for r in (spec.get("extra_returns") or [])[:2]:
+        if r.get("name") and r["name"] != key and (r.get("examples") or []):
+            rets.append({"name": r["name"], "type": link_ret["type"],
+                         "description": r.get("description") or "",
+                         "examples": [str(x) for x in r["examples"]][:3]})
+    if len(rets) < 2:
+        return None
+    # The NAME is code's too. Asked for "a short name for a tool that looks up
+    # X", the model returns X's own name -- 29 of 30 attempts in the first
+    # smoke of this design. A lookup's name is mechanical anyway, and deriving
+    # it guarantees it differs from the anchor.
+    nm = (spec.get("name") or "").strip()
+    if not nm or nm == anchor.get("name"):
+        nm = f"lookup_{key}" if not key.startswith("lookup") else f"find_{key}"
+    return {
+        "name": nm,
+        "description": spec.get("description") or "",
+        "parameters": [{"name": inp["name"],
+                        "type": inp.get("type") or "string",
+                        "description": inp.get("description") or "",
+                        "required": True,
+                        "examples": [str(x) for x in inp["examples"]][:3]}],
+        "returns": rets,
+        "answer_field": key,
+        "competitor_field": rets[1]["name"],
+        "confusable_fields": [r["name"] for r in rets],
+        "selectors": [],
+        "user_goal": spec.get("description") or "",
+        # The repair demotes a required parameter it judges unaskable, and for a
+        # LOOKUP tool that is precisely backwards: accepting the thing a person
+        # can say is the entire job. Pinned so the repair leaves it alone.
+        "_keep_required": [inp["name"]],
+    }
 
 
 # ── selector resolution ────────────────────────────────────────────────────

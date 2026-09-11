@@ -27,8 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gen_tool_dialogues_proc import (  # noqa: E402
     IDENTIFYING, FatalAPIError, _key, catalogue_faults, family_index,
-    find_link, gate_sibling, gate_tool, gate_tool_examples, invent_sibling,
-    tool_signature,
+    build_producer, find_link, gate_sibling, gate_tool, gate_tool_examples,
+    invent_lookup, tool_signature,
 )
 
 
@@ -66,8 +66,15 @@ async def run(args):
         async def one(anchor, key):
             async with sem:
                 for attempt in range(2):
-                    sib, u = await invent_sibling(
+                    # The model describes only the human-sayable input; the
+                    # link half is copied from the consumer by build_producer,
+                    # so format mismatch and circularity cannot arise.
+                    spec, u = await invent_lookup(
                         session, anchor, key, 0.9 if not attempt else 0.6)
+                    sib = build_producer(anchor, key, spec)
+                    if sib is None:
+                        stats["reject:unusable-spec"] += 1
+                        continue
                     why = (gate_sibling(sib, anchor, key)
                            or gate_tool(sib) or gate_tool_examples(sib))
                     if why:
@@ -121,13 +128,19 @@ async def run(args):
         for line in r.stdout.strip().splitlines():
             if line.strip():
                 print(f"   {line.strip()}")
-        keep, by_name = [], {t["name"]: t for t in tools}
+        # Keyed on (name, scenario), NOT name. 888 tools share 370 names -- the
+        # catalogue keeps collisions on purpose -- so a name-only lookup
+        # re-gates a sibling against a DIFFERENT tool that happens to share its
+        # anchor's name, and then rejects it for a format mismatch against
+        # examples its real anchor never had. The family key is the identity.
+        keep = []
+        by_key = {(t["name"], t.get("_scenario")): t for t in tools}
         for sib in repaired:
             faults = catalogue_faults(sib)
             if faults:
                 stats[f"reject:after-repair:{faults[0][0]}"] += 1
                 continue
-            anchor = by_name.get(sib.get("_sibling_of"))
+            anchor = by_key.get((sib.get("_sibling_of"), sib.get("_scenario")))
             # RE-GATE. The repair demotes required parameters it judges
             # unaskable, and it stripped the last one from a lookup tool in the
             # first smoke -- `lookup_hs_code` came out with `required: []`, a
