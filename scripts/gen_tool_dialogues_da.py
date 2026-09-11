@@ -422,8 +422,17 @@ CONTENTLESS = re.compile(
 
 WORD = re.compile(r"[a-zA-ZæøåÆØÅ0-9]{4,}")
 JSONISH = re.compile(r'^\s*[{}\[\]]|"\s*:\s*|[}\]]\s*$')
+# The assistant's own question, wherever it lands. Two shapes: asking the
+# user to supply something ("kan du oplyse"), and asking what the user WANTS
+# -- which is the one that slipped, as an opening turn reading "Er det
+# økologisk podning, du søger information om?". In a real user turn `du` is
+# the one asked to act; here it is the one doing the wanting.
 ASK_LIKE = re.compile(r"(vil du gerne|kan du oplyse|hvilken .* vil du|"
-                      r"hvad vil du|kunne du oplyse|angiv venligst)", re.I)
+                      r"hvad vil du|kunne du oplyse|angiv venligst|"
+                      r"\bdu (søger|ønsker|vil vide|tænker på|leder efter|"
+                      r"mener|har brug for|er interesseret)|"
+                      r"\b(ønsker|søger|leder) du\b|"
+                      r"er du interesseret|har du brug for)", re.I)
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 # Scaffolding, not content. A fabricated week menu still echoes the weekday
 # names of the real one -- "Mandag: Pasta bolognese" against "Mandag:
