@@ -2520,6 +2520,23 @@ def gate_sibling(sib, anchor, key):
     for p in (sib.get("parameters") or []):
         if p.get("name") == key and p.get("required"):
             return "requires-the-key-it-produces"
+    # The same circularity under a DIFFERENT NAME, which the test above cannot
+    # see. `biogas_motor_lookup` required `motor_identifier` with examples
+    # BM-2023-001, BM-2024-042 and returned `motor_id` with exactly those
+    # values -- the caller must already hold the handle to obtain the handle,
+    # so the chain teaches nothing. Caught on VALUES, not on shape: a producer
+    # taking `zip_code` 2100/8000 and returning `polling_station_id` 101/205
+    # matches on shape (all digits) and is perfectly sound, because a postcode
+    # is something a person knows and a station id is not.
+    ret = next((r for r in (sib.get("returns") or [])
+                if r.get("name") == key), None)
+    rex = {str(_unquote(e)).strip() for e in ((ret or {}).get("examples") or [])}
+    for p in (sib.get("parameters") or []):
+        if not p.get("required") or not rex:
+            continue
+        pex = {str(_unquote(e)).strip() for e in (p.get("examples") or [])}
+        if rex & pex:
+            return "input-examples-are-the-output"
     if not [p for p in (sib.get("parameters") or []) if p.get("required")]:
         return "nothing-required"
     return None
