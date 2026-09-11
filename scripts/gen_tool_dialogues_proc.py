@@ -3046,7 +3046,19 @@ async def main_async(args):
                 prompt, mapping = dress_prompt(tool, beats, idx)
                 # A minimal catalogue: the real catalogue is rebuilt once every
                 # tool exists, but the gate needs the called tool present now.
+                # EVERY tool this row's beats call, not just the anchor -- a
+                # chain calls a sibling, and with only the anchor here every
+                # chain row died as `dlg:call-not-in-catalogue` before the real
+                # catalogue was ever built. The beat sheet was right and this
+                # list was short.
                 cat = [to_spec(tool)]
+                for bb in beats:
+                    for bt in (bb.get("_tools") or
+                               ([bb["_tool"]] if bb.get("_tool") else [])):
+                        if bt.get("name") != tool.get("name") and \
+                                bt.get("name") not in {c["function"]["name"]
+                                                       for c in cat}:
+                            cat.append(to_spec(bt))
                 texts, row, why, hint = {}, None, None, None
                 # Three attempts, but only the ANSWER-consistency classes buy a
                 # retry: they are things the dresser can be told to do
@@ -3276,16 +3288,38 @@ async def main_async(args):
             # whole catalogue cost 2,103 of 14,333 rows (14.7%) in the last
             # build -- thrown away at push time, after they were paid for.
             taken = {mine["function"]["name"]}
+            extra_called = []
             # The row's whole FAMILY is excluded, not just the member it calls.
             # A sibling in the catalogue is a legitimate alternative rather than
             # a distractor, and once families chain it is the NEXT call -- so
             # counting it as a distractor would make `right-tool` score a
             # choice the row never asked the model to make.
             mine_fam = own_scenario(r)
+            # EVERY tool the row actually calls goes in the catalogue. A chain
+            # calls a sibling, and siblings are excluded from the distractor
+            # pool -- correctly, since a sibling is the next call rather than a
+            # wrong option -- so without this the producer appears in no
+            # catalogue and the row dies as `dlg:call-not-in-catalogue`. That
+            # killed every chain row in the first real run: the beat sheet was
+            # right, the catalogue was short.
+            called = []
+            for m in (r["da"].get("conversations") or []):
+                for c in (m.get("tool_calls") or []):
+                    n = (c.get("function") or {}).get("name")
+                    if n and n not in called:
+                        called.append(n)
+            for n in called:
+                if n == mine["function"]["name"] or n in taken:
+                    continue
+                sib = next((x for x in (fam.get(mine_fam) or [])
+                            if x.get("name") == n), None)
+                if sib is not None:
+                    taken.add(n)
+                    extra_called.append(to_spec(sib))
             others = [to_spec(x) for sc, ms in fam.items() if sc != mine_fam
                       for x in ms if not is_heldout_tool(x["name"])]
             rng.shuffle(others)
-            cat, n_extra = [mine], rng.randint(1, 5)
+            cat, n_extra = [mine] + extra_called, rng.randint(1, 5)
             for x in others:
                 if len(cat) > n_extra:
                     break
