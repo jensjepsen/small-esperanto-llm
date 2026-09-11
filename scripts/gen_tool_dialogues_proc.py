@@ -2234,6 +2234,12 @@ async def main_async(args):
             pool = [{"id": t.get("_scenario") or t["name"],
                      "beskrivelse": t.get("description") or "",
                      "_tool": t} for t in frozen[:want]]
+        elif getattr(args, "tools_only", False):
+            # 1.8x oversampling exists because a scenario can fail to yield a
+            # DIALOGUE. Inventing tools alone fails ~5% of the time, and every
+            # tool past `want` is paid for and thrown away -- half the cost of
+            # the first 1000-tool build.
+            pool = scenarios[:int(want * 1.15) + 4]
         else:
             pool = scenarios[:int(want * 1.8) + 4]
         claimed = []
