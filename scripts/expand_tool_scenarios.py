@@ -68,6 +68,9 @@ Et scenario er én linje: en unik kort ID (snake_case) + en 1-linjes beskrivelse
 STIL-EKSEMPLER (fra vores eksisterende bank — brug dem KUN som stil-reference, KOPIÉR IKKE):
 {anchors}
 
+DISSE ID'ER FINDES ALLEREDE — foreslå ingen af dem og heller ikke nære varianter:
+{taken}
+
 REGLER:
 - Alt på DANSK.
 - Undgå de mest oplagte kategorier (kalender, vejr, email, taxi, restaurant, søgning) — vi har for mange af dem.
@@ -135,7 +138,13 @@ async def worker(rng: random.Random, seeds: list[dict],
     anchor_pool = seeds + rng.sample(pool, min(len(pool), 30))
     anchors = rng.sample(anchor_pool, min(len(anchor_pool), 15))
     anchor_str = "\n".join(f'  - {a["id"]}: {a["beskrivelse"]}' for a in anchors)
-    prompt = EXPAND_PROMPT.format(anchors=anchor_str)
+    # The model was never shown what exists, so at a few thousand scenarios
+    # most of every batch came back as something we already had and was paid
+    # for twice -- once to generate, once to throw away. IDs only: they are
+    # short, and 120 of them cost less than 15 descriptions.
+    taken = rng.sample(list(seen_ids), min(len(seen_ids), 120))
+    prompt = EXPAND_PROMPT.format(anchors=anchor_str,
+                                  taken=", ".join(sorted(taken)))
 
     resp = await call_gemini(prompt)
     if not resp:
@@ -210,12 +219,21 @@ async def run(args: argparse.Namespace) -> None:
         remaining = args.target - written
         # Scale calls per round to remaining budget.
         n_calls = min(round_size, max(20, remaining // 10 + 20))
+        before = written
         tasks = [asyncio.create_task(one_call()) for _ in range(n_calls)]
         await asyncio.gather(*tasks)
-        print(f"  round done: written={written}/{args.target}  pool={len(pool)}",
-              flush=True)
-        # Fail-safe: if a round adds <10, we're saturating the space.
-        if not tasks or written >= args.target:
+        gained = written - before
+        print(f"  round done: written={written}/{args.target}  "
+              f"pool={len(pool)}  (+{gained} from {n_calls} calls)", flush=True)
+        # The saturation fail-safe this comment has always promised. Without
+        # it the loop only ever exits by reaching the target, so a space that
+        # has run dry spins forever paying for duplicates -- the model is
+        # never shown the existing pool, so it keeps proposing what we have.
+        if gained < max(10, n_calls // 20):
+            print(f"  saturated: {gained} new from {n_calls} calls, stopping",
+                  flush=True)
+            break
+        if written >= args.target:
             break
 
     out_fh.close()

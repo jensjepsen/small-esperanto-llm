@@ -2253,6 +2253,17 @@ async def main_async(args):
             pool = [{"id": t.get("_scenario") or t["name"],
                      "beskrivelse": t.get("description") or "",
                      "_tool": t} for t in frozen[:want]]
+        elif getattr(args, "tools_only", False) and resumed_tools:
+            # tools.jsonl is REWRITTEN from what this run claimed, so a tool
+            # whose scenario falls outside the pool is deleted from the
+            # catalogue. The shuffle is over the scenario FILE, so growing
+            # that file reorders everything and a plain `scenarios[:n]` would
+            # silently drop thousands of already-paid tools. Everything
+            # already built is claimed first; new work fills the rest.
+            have = [s for s in scenarios if s["id"] in resumed_tools]
+            rest = [s for s in scenarios if s["id"] not in resumed_tools]
+            need = max(0, want - len(have))
+            pool = have + rest[:int(need * 1.15) + 4]
         elif getattr(args, "tools_only", False):
             # 1.8x oversampling exists because a scenario can fail to yield a
             # DIALOGUE. Inventing tools alone fails ~5% of the time, and every
