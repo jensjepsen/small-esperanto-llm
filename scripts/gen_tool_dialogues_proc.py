@@ -1388,8 +1388,20 @@ def beats_for(plan, tool, idx, family=None):
         # in a turn -- what is new here is that they go to DIFFERENT tools.
         b.append({"rolle": "assistent", "kald": pargs,
                   "_tools": prods})
+        # `at` NAMES WHICH PRODUCER, not just which beat. Every fan-in link
+        # pointed at beat 1, and beat 1 holds several calls, so resolution
+        # scanned their payloads in order and took the first that happened to
+        # carry the key. A producer linked for `room_id` that ALSO returns
+        # `object_id` therefore won the object_id link: the consumer got
+        # `LIB5678-C` from `find_library_object_by_name` when the link had
+        # correctly been formed against `find_library_object_reference`, whose
+        # object_id is the numeric 4901 the parameter declares. `prods` and
+        # `pargs` are appended together, so the producer's index in the beat
+        # is its index in `prods`.
         b.append({"rolle": "assistent", "kald": [ca], "_tool": cons,
-                  "_links": [{"key": k, "from": 1} for _p, k in links]})
+                  "_links": [{"key": k, "from": 1,
+                              "at": prods.index(p) if p in prods else None}
+                             for p, k in links]})
         b.append({"rolle": "assistent", "assistent_svarer": True})
         return b
     a1 = sample_args(tool, idx, 0)
@@ -3469,8 +3481,18 @@ async def main_async(args):
                         vals = {}
                         for lk in lks:
                             src = beats[lk["from"]].get("_pays") or []
-                            v = next((p0.get(lk["key"]) for p0 in src
-                                      if p0.get(lk["key"]) is not None), None)
+                            # `at` pins the producer within a multi-call beat;
+                            # without it the scan below takes whichever payload
+                            # happens to carry the key first, which is not
+                            # necessarily the one the link was formed against.
+                            at = lk.get("at")
+                            if at is not None and at < len(src) \
+                                    and isinstance(src[at], dict) \
+                                    and src[at].get(lk["key"]) is not None:
+                                v = src[at][lk["key"]]
+                            else:
+                                v = next((p0.get(lk["key"]) for p0 in src
+                                          if p0.get(lk["key"]) is not None), None)
                             if v is None:
                                 stats["dlg:chain-link-missing"] += 1
                                 return None
