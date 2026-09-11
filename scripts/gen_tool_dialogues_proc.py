@@ -271,10 +271,24 @@ def sample_args(tool, idx, salt=0, optional_p=0.5, answer_field=None):
     out = {}
     af = answer_field or tool.get("answer_field")
     for p in tool.get("parameters") or []:
-        if not p.get("required") and _hash("opt", p.get("name"), idx, salt) % 100 \
+        # `sel` FIRST, because a selector whose value names the reported field
+        # is not an optional extra -- it is the call's record of which field
+        # was asked for, and the only place in a row where the choice of field
+        # is written down rather than enforced by redaction.
+        sel = _selector_for(p, af, tool) if af else None
+        # THE COIN FLIP MUST NOT REACH IT. This test used to run first, so an
+        # optional selector naming the answer field was dropped half the time.
+        # Measured on the v2 build: of 6,363 rows whose tool has such a
+        # selector, 997 calls omitted it -- and because `synth_payload` emits
+        # every declared return field regardless of what was selected, the
+        # answer field was present anyway in 100% of them. The corpus shipped
+        # 997 worked examples of "skip the selector, answer correctly", and the
+        # model learned it: 13.6% of unseen calls omit a selector gold sends,
+        # 7.1% add one gold omits -- a marginal rate rather than a rule.
+        if sel is None and not p.get("required") \
+                and _hash("opt", p.get("name"), idx, salt) % 100 \
                 >= optional_p * 100:
             continue
-        sel = _selector_for(p, af, tool) if af else None
         # A parameter that PICKS the reported field, none of whose options
         # picks ours, cannot be filled by sampling: `health_metric:
         # "population_size"` was sent for a question about `honey_yield_kg`,
