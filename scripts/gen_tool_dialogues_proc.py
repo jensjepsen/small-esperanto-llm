@@ -27,6 +27,7 @@ import asyncio
 import hashlib
 import json
 import random
+import os
 import re
 import sys
 from collections import Counter
@@ -931,89 +932,10 @@ def rekey_examples(tool, payload, args):
     return out
 
 
-def _subject_key(name):
-    """The name with the part that makes it an IDENTIFIER taken off.
-
-    `event_name` and `organizer_name` share `name` and nothing else -- they
-    agree on the KIND of value, not on whose it is, and echoing across them
-    produced an event organiser called "Skovens Dag Løb". `casting_reference`
-    and `casting_id` share `casting`, which is the subject itself. Reuses
-    IDENTIFYING rather than a fresh stop-list: that pattern is already the
-    schema-derived statement of which part of a name denotes an identifier.
-    """
-    # Substituted with the SEPARATOR, not a space: `_subject_tokens` splits on
-    # underscores only, so a space leaves `weld ` and `welder ` as two tokens
-    # that share nothing, and the weighting it exists to apply never happens.
-    return IDENTIFYING.sub("_", str(name))
 
 
-def echo_identifiers(tool, payload, args, answer_field):
-    """A returned identifier for the thing that was asked about IS that thing.
-
-    `plot_identifier: "A-123"` came back with `plot_number: "A-050"` -- the
-    tool answering about a different grave than the one requested. Never the
-    answer field: an answer that merely repeats an argument is copyable.
-
-    TWO THINGS THIS GOT WRONG, both found by reading 173 rows.
-
-    It required the ARGUMENT to be identifier-shaped, which switched the pass
-    off for every lookup -- a lookup takes a human description by construction
-    (`solar_panel_description`, `setup_description`, `meat_description`), so
-    the one tool shape whose whole job is to name a record was the one shape
-    whose record was never kept. The subject is instead the required parameter
-    that picks a record: not a selector, which picks an aspect.
-
-    And it matched subjects UNWEIGHTED, so the generic tail token carried the
-    match on its own: `animal_species_name` "agreed" with
-    `responsible_keeper_name` and the zookeeper was named Giraf. The weights
-    are the tool's own, so a token shared by three of its fields cannot say
-    which field is meant.
-    """
-    names = [p.get("name") for p in (tool.get("parameters") or [])] \
-        + [r.get("name") for r in (tool.get("returns") or [])]
-    w = token_weights([_subject_key(n) for n in names if n])
-    subj = {}
-    for p in (tool.get("parameters") or []):
-        if not p.get("required") or governs_field(p, tool):
-            continue
-        av = (args or {}).get(p.get("name"))
-        if isinstance(av, str) and av.strip():
-            subj[p.get("name")] = av
-    rets = {str(r.get("name")): r for r in (tool.get("returns") or [])}
-    out = dict(payload)
-    for f, v in out.items():
-        if f == answer_field or not isinstance(v, str) \
-                or not IDENTIFYING.search(f):
-            continue
-        for k, av in subj.items():
-            if _same_subject(_subject_key(k), _subject_key(f), w) \
-                    and _fits_field(av, rets.get(f)):
-                out[f] = av
-                break
-    return out
 
 
-def _fits_field(value, ret):
-    """Could this value be a value of that field, per the field's own examples?
-
-    `production_date` and `product_name` agree on a five-character prefix, so
-    the subject test scored them 1.0 and wrote `2023-10-28` into a field whose
-    declared examples are `Pilsner 50cl`, `IPA 33cl`, `Hvedeøl 75cl` -- a beer
-    named after a date, in 3 of 197 rows. Prefix matching cannot tell a
-    PRODUCTION from a PRODUCT and no amount of weighting will teach it to, but
-    the contract already says what the field holds, and that is the cheaper
-    authority. Only the coarse shape is compared -- is it a date, is it a bare
-    number -- because anything finer would start rejecting the legitimate
-    echoes, where a handle and its id genuinely differ in format.
-    """
-    ex = [str(e) for e in ((ret or {}).get("examples") or []) if str(e).strip()]
-    if not ex:
-        return True
-    def shape(s):
-        return (bool(DATEISH.search(str(s))),
-                _num_in(s) is not None and not str(s).strip().isalpha())
-    want = shape(value)
-    return any(shape(e) == want for e in ex)
 
 
 # Access refused, not a domain state. `compressor_status: "fault"` and
@@ -1158,7 +1080,16 @@ def key_payloads(tool, pays, arglist, idx, all_args=None):
         # Re-keying draws replacement values from other rows, which know
         # nothing about this call's filters.
         q = rekey_examples(tool, q, a)
-        q = echo_identifiers(tool, q, a, tool.get("answer_field"))
+        # THERE IS NO ECHO PASS, deliberately -- do not add one back. It wrote
+        # the call's argument into any return field that scored as the same
+        # subject, and `subject_index`/`_content_pick` now do that job properly
+        # by SELECTING the declared example the subject names instead of
+        # OVERWRITING the field with a value from outside its declared space.
+        # Measured before removal: 80 of 80 echoes across four builds were
+        # wrong (a station name into `site_id: CS-2023-001`, a book title into
+        # `object_id: LIB7890-A`, a horse's name into `owner_id: owner_1001`),
+        # and over 3,000 tools it proposed 22 rewrites of which none survived
+        # inspection.
         q = clear_denials(tool, q, tool.get("answer_field"))
         out.append(respect_constraints(tool, q, a, idx))
     # Two different subjects must not come back with the same ANSWER. The

@@ -21,12 +21,14 @@
 set -euo pipefail
 
 N="${1:?usage: build_proc_corpus.sh <total dialogues planned>}"
-TOOLS="${TOOLS:-data/tool_calls/tools_v6.jsonl}"
+TOOLS="${TOOLS:-data/tool_calls/tools_v7.jsonl}"
 OUT="${OUT:-data/tool_calls/proc_v2}"
 SEED="${SEED:-0}"
 DPT="${DPT:-4}"
 
-# tools_v6 = tools_v2_selr (audited, repaired, selectors resolved; all 4,984
+# tools_v7 = tools_v6 with declared types repaired to match their examples
+# (repair_tool_types.py, deterministic). tools_v6 = tools_v2_selr (audited,
+# selectors resolved; all 4,984
 # byte-identical) + 3,989 invented siblings that make families chainable.
 # Pointing this at a raw catalogue rebuilds every defect the repair removes,
 # silently -- the generator refuses to run without --tools-from for that
