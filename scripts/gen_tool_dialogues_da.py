@@ -754,7 +754,47 @@ def payload_for(tool, idx, args):
     approximation that collided past k and had to be gated.
     """
     salt = _hash(json.dumps(args or {}, sort_keys=True, ensure_ascii=False))
-    return synth_payload(tool, idx ^ (salt & 0xFFFFFF))
+    return synth_payload(tool, idx ^ (salt & 0xFFFFFF),
+                         subject=subject_index(tool, args))
+
+
+def subject_index(tool, args):
+    """WHICH RECORD the call names, as an index into the contract's examples.
+
+    A tool's examples are written as parallel columns. `pizza_type_and_date`
+    example 2 is `Pepperoni 2023-10-26` and `production_batch_id` example 2 is
+    `PROD-PEP-2023-10-26-098`; `Vegetar 27-10-2023` sits beside
+    `PROD-VEG-2023-10-27-105`. The author wrote one coherent record per row of
+    the example table, and drawing each field independently answers a question
+    about the Pepperoni batch with the Vegetar one -- well-formed, gate-clean,
+    and a lie about the single thing a lookup exists to do. It is invisible for
+    a measurement tool (a pressure is a pressure) and glaring for a lookup,
+    which is where chains start.
+
+    The subject is the required parameter that picks a RECORD, as opposed to a
+    selector, which picks an ASPECT of it and must not key the record: asking
+    for the pressure and asking for the temperature of one pipe has to return
+    one pipe.
+    """
+    sel = {s.get("parameter") for s in (tool.get("selectors") or [])
+           if isinstance(s, dict)}
+    for p in (tool.get("parameters") or []):
+        if not p.get("required") or p.get("enum") or p.get("name") in sel:
+            continue
+        ex = [_unquote(e) for e in (p.get("examples") or []) if str(e).strip()]
+        if len(ex) < 2:
+            continue
+        v = (args or {}).get(p.get("name"))
+        if not isinstance(v, str) or not v.strip():
+            continue
+        for i, e in enumerate(ex):
+            if str(e).strip().casefold() == v.strip().casefold():
+                return i, v
+        # The value the user gave need not be one of the declared examples --
+        # the sampler composes some of them -- but it still names the record,
+        # and `_from_examples` can match on it directly.
+        return None, v
+    return None
 
 
 PAYLOAD_SALT = 104729
@@ -776,7 +816,7 @@ def synth_payloads(tool, idx, k=5):
     return [synth_payload(tool, idx + i * PAYLOAD_SALT) for i in range(k)]
 
 
-def synth_payload(tool, idx):
+def synth_payload(tool, idx, subject=None):
     """Values per row, derived from the contract.
 
     Deterministic in `idx` so a rerun reproduces the corpus, and varied across
@@ -791,12 +831,34 @@ def synth_payload(tool, idx):
     for r in tool["returns"]:
         ex = [_unquote(e) for e in (r.get("examples") or []) if str(e).strip()]
         kind = classify(ex)
-        v = _value(r["name"], ex, idx, kind)
+        v = _value(r["name"], ex, idx, kind, subject=subject)
         for bump in range(1, 12):
             if str(v) not in {str(x) for x in out.values()}:
                 break
+            # Resampling DROPS the alignment: the subject's own column is
+            # taken, and a second field insisting on it would only restate a
+            # value already in the payload. Distinctness wins the tie because
+            # a duplicate is visible in every row, while the misalignment it
+            # reintroduces is confined to fields the subject does not name.
             v = _value(r["name"], ex, idx + bump * 7919, kind)
         out[r["name"]] = v
+    # THE ANSWER MUST NOT BE THE QUESTION. Aligning on the subject can land
+    # the answer field on the subject's own value -- the berth at location
+    # B12 comes back as berth B12 -- and the answer then restates the
+    # argument, which is copyable without reading the payload at all. Every
+    # other field keeps its alignment; only this one gives it up.
+    af = (tool or {}).get("answer_field")
+    if subject is not None and af in out and out[af] is not None \
+            and str(out[af]).strip().casefold() == str(subject[1]).strip().casefold():
+        r = next((x for x in tool["returns"] if x["name"] == af), None)
+        ex = [_unquote(e) for e in ((r or {}).get("examples") or [])
+              if str(e).strip()]
+        if ex:
+            for bump in range(0, 12):
+                v = _value(af, ex, idx + bump * 7919, classify(ex))
+                if str(v).strip().casefold() != str(subject[1]).strip().casefold():
+                    out[af] = v
+                    break
     return out
 
 
@@ -853,8 +915,13 @@ def _numeric_span(examples, field=None):
     return lo_out, hi_out, is_int
 
 
-def _value(field, examples, idx, kind):
+def _value(field, examples, idx, kind, subject=None):
     """A per-row value for one return field.
+
+    `subject` is the index of the record the call named (see `subject_index`).
+    It only steers fields whose value is CHOSEN from the examples -- a number
+    is drawn from the band the examples imply, and there is no column to
+    align it to.
 
     FREE and NUMUNIT go through the EXAMPLES, not toolmind_distractor_values:
     that module resolves FREE against the LLM-sampled banks, which this
@@ -871,6 +938,16 @@ def _value(field, examples, idx, kind):
     """
     if not examples:
         return None
+    # BEFORE the kind dispatch. `customer_email` and `park_website` are
+    # routed to a typed generator that never looks at the subject, so
+    # "Peter Hansen" was answered with kontakt@mobelfabrikken.dk -- the same
+    # wrong-record defect, in the fields where it is most visible because the
+    # value spells the record's name out. When the subject decisively names
+    # one example, no generator can improve on it.
+    if subject is not None:
+        hit = _content_pick(examples, subject[1])
+        if hit is not None:
+            return hit
     span = _numeric_span(examples, field)
     # A value that merely STARTS with a number is not a number+unit: dates,
     # log lines, ids and COORDINATE PAIRS all do. Rebuilding them as "<new
@@ -878,7 +955,7 @@ def _value(field, examples, idx, kind):
     # treating "56.1250,10.1250" as numeric collapsed a lat/long pair to the
     # single float 57.63 -- half a position.
     if any(re.match(r"^\s*-?\d+[.,]?\d*\s*[-/:,;]", str(e)) for e in examples):
-        return examples[_hash(field, idx) % len(examples)]
+        return _from_examples(field, examples, idx, subject)
     if span and kind in ("int", "float", "numunit"):
         lo, hi, is_int = span
         frac = (_hash(field, idx) % 10_000) / 10_000
@@ -890,8 +967,71 @@ def _value(field, examples, idx, kind):
         suffix = re.sub(r"^\s*-?[\d.,]+\s*", "", str(examples[0])).strip()
         return f"{v} {suffix}".strip() if suffix else v
     if kind in ("free", "numunit") or not kind:
-        return examples[_hash(field, idx) % len(examples)]
+        return _from_examples(field, examples, idx, subject)
     return gen_value(field, examples, idx, kind)
+
+
+_FOLD = str.maketrans({"æ": "ae", "ø": "o", "å": "aa", "é": "e", "ü": "u"})
+
+
+def _ex_tokens(s):
+    """Words of the value, folded to ASCII.
+
+    An id or an address writes the record's name without its Danish letters --
+    `Møbelfabrikken A/S` is `kontakt@mobelfabrikken.dk` -- so comparing them
+    unfolded says the two are about different companies.
+    """
+    s = str(s).casefold().translate(_FOLD)
+    return {t for t in re.split(r"[^0-9a-z]+", s) if len(t) >= 3}
+
+
+def _content_pick(examples, val):
+    """The one example the subject names, or None if it does not decide.
+
+    A token in EVERY example cannot say which one is meant. All three pizza
+    batches carry 2023/10/27, so raw overlap tied `PROD-MARG` with `PROD-VEG`
+    and the first one won -- the original defect wearing a new hat. Weight by
+    how many examples carry the token, and require a STRICT winner: a tie
+    means the content did not decide, and the caller still has the column
+    order to fall back on.
+    """
+    want = _ex_tokens(val)
+    if not want or len(examples) < 2:
+        return None
+    df = Counter(t for e in examples for t in _ex_tokens(e))
+    scored = sorted(((sum(1.0 / df[t] for t in want & _ex_tokens(e)), i)
+                     for i, e in enumerate(examples)), reverse=True)
+    if scored[0][0] > 0 and scored[0][0] > scored[1][0]:
+        return examples[scored[0][1]]
+    return None
+
+
+def _from_examples(field, examples, idx, subject=None):
+    """The example that belongs to the record the call named.
+
+    CONTENT FIRST, POSITION SECOND. Position assumes the author wrote the
+    example lists as parallel columns, and often they did -- but
+    `location_description` starts with the Vestergade junction while
+    `junction_name` starts with Nørreport, so the index alone answered about
+    the wrong crossing. The lists are the same three records in two orders,
+    and the records say so themselves: "Lysregulering ved hjørnet af
+    Vestergade og Østergade" and "Vestergade/Østergade" share two words that
+    no other pair shares.
+
+    Falls back to the index, then to the hash. A field with no overlap and
+    fewer examples than the index has nothing to align to -- the author wrote
+    two models for three panels -- and wrapping would assert another record's
+    value with an air of alignment.
+    """
+    if subject is None:
+        return examples[_hash(field, idx) % len(examples)]
+    pos, val = subject
+    hit = _content_pick(examples, val)
+    if hit is not None:
+        return hit
+    if pos is not None and pos < len(examples):
+        return examples[pos]
+    return examples[_hash(field, idx) % len(examples)]
 
 
 def to_spec(tool):

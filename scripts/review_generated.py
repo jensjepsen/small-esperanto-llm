@@ -103,7 +103,14 @@ def flags_for(msgs, tool):
         if m["role"] == "tool_result":
             nxt = next((x for x in msgs[i + 1:]
                         if x["role"] != "tool_result"), None)
-            if nxt is None or nxt["role"] != "assistant":
+            # A CHAIN's first result is consumed by the NEXT CALL, not by an
+            # answer -- that is the whole point of a chain. Requiring an answer
+            # after every result flagged all 37 chain rows in a 173-row read and
+            # none of the other 136, i.e. it was reporting the plan rather than
+            # a defect.
+            if nxt is not None and nxt["role"] == "tool_call":
+                pass
+            elif nxt is None or nxt["role"] != "assistant":
                 out.append((i, "result-never-answered", ""))
             try:
                 p = json.loads(c)

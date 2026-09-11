@@ -922,26 +922,61 @@ def rekey_examples(tool, payload, args):
     return out
 
 
+def _subject_key(name):
+    """The name with the part that makes it an IDENTIFIER taken off.
+
+    `event_name` and `organizer_name` share `name` and nothing else -- they
+    agree on the KIND of value, not on whose it is, and echoing across them
+    produced an event organiser called "Skovens Dag Løb". `casting_reference`
+    and `casting_id` share `casting`, which is the subject itself. Reuses
+    IDENTIFYING rather than a fresh stop-list: that pattern is already the
+    schema-derived statement of which part of a name denotes an identifier.
+    """
+    # Substituted with the SEPARATOR, not a space: `_subject_tokens` splits on
+    # underscores only, so a space leaves `weld ` and `welder ` as two tokens
+    # that share nothing, and the weighting it exists to apply never happens.
+    return IDENTIFYING.sub("_", str(name))
+
+
 def echo_identifiers(tool, payload, args, answer_field):
     """A returned identifier for the thing that was asked about IS that thing.
 
     `plot_identifier: "A-123"` came back with `plot_number: "A-050"` -- the
     tool answering about a different grave than the one requested. Never the
-    answer field: an answer that merely repeats an argument is copyable, and
-    only between two IDENTIFIERS -- `document_version: "2023-Q4"` was written
-    into `historical_documentation_ref`, replacing a document reference with
-    a quarter.
+    answer field: an answer that merely repeats an argument is copyable.
+
+    TWO THINGS THIS GOT WRONG, both found by reading 173 rows.
+
+    It required the ARGUMENT to be identifier-shaped, which switched the pass
+    off for every lookup -- a lookup takes a human description by construction
+    (`solar_panel_description`, `setup_description`, `meat_description`), so
+    the one tool shape whose whole job is to name a record was the one shape
+    whose record was never kept. The subject is instead the required parameter
+    that picks a record: not a selector, which picks an aspect.
+
+    And it matched subjects UNWEIGHTED, so the generic tail token carried the
+    match on its own: `animal_species_name` "agreed" with
+    `responsible_keeper_name` and the zookeeper was named Giraf. The weights
+    are the tool's own, so a token shared by three of its fields cannot say
+    which field is meant.
     """
+    names = [p.get("name") for p in (tool.get("parameters") or [])] \
+        + [r.get("name") for r in (tool.get("returns") or [])]
+    w = token_weights([_subject_key(n) for n in names if n])
+    subj = {}
+    for p in (tool.get("parameters") or []):
+        if not p.get("required") or governs_field(p, tool):
+            continue
+        av = (args or {}).get(p.get("name"))
+        if isinstance(av, str) and av.strip():
+            subj[p.get("name")] = av
     out = dict(payload)
     for f, v in out.items():
         if f == answer_field or not isinstance(v, str) \
                 or not IDENTIFYING.search(f):
             continue
-        for k, av in (args or {}).items():
-            if not isinstance(av, str) or not av.strip() \
-                    or not IDENTIFYING.search(k):
-                continue
-            if _same_subject(k, f):
+        for k, av in subj.items():
+            if _same_subject(_subject_key(k), _subject_key(f), w):
                 out[f] = av
                 break
     return out
@@ -1001,6 +1036,54 @@ def order_ranges(args):
             if va > vb:
                 out[a], out[b] = out[b], out[a]
     return out
+
+
+def strip_preanswers(beats):
+    """A producer must not already answer what the consumer is called for.
+
+    `find_casting_process` returned `mold_id: MOLD-9876`, the row then looked
+    the casting up and `lookup_casting_data` returned `mold_id: MOLD-2023-055`,
+    and the answer cited the second. Both calls were right, both payloads were
+    in range, and the row still says one mould has two ids -- while making the
+    second call redundant, since the first had already answered the question.
+    The overlap is what a shared vocabulary across a family costs; the LINK is
+    the one field that is supposed to appear on both sides, so it stays.
+
+    Only fields the consumer ALSO returns are dropped, and only from the
+    producer, so nothing the row goes on to cite can disappear.
+    """
+    for b in beats:
+        for ln in (b.get("_links") or ([b["_link"]] if b.get("_link") else [])):
+            src = ln.get("from")
+            if src is None or not (0 <= src < len(beats)):
+                continue
+            prod, cons = beats[src], b
+            if not prod.get("_pays") or not cons.get("_pays"):
+                continue
+            over = {k for p in cons["_pays"] if isinstance(p, dict) for k in p}
+            over.discard(ln.get("key"))
+            out = []
+            for p in prod["_pays"]:
+                if not isinstance(p, dict):
+                    out.append(p)
+                    continue
+                kept = {k: v for k, v in p.items() if k not in over}
+                # ONE field is a complete lookup result -- returning just the
+                # handle is what a lookup is for. Only an EMPTY payload has to
+                # be refused, and requiring two put the contradiction straight
+                # back into every two-field producer.
+                out.append(kept if kept else p)
+            prod["_pays"] = out
+            # The link means both calls are about ONE record, so what the user
+            # told us about it still holds downstream. Looking a vessel up by
+            # `call_sign: OZ-42` and having the second call report `call_sign:
+            # DBAY` contradicts the user's own words, in the row that exists
+            # to teach carrying a value from one call to the next.
+            said = {k: v for a in (prod.get("kald") or []) for k, v in a.items()
+                    if isinstance(v, (str, int, float))}
+            cons["_pays"] = [
+                {**p, **{k: said[k] for k in p if k in said}}
+                if isinstance(p, dict) else p for p in cons["_pays"]]
 
 
 def key_payloads(tool, pays, arglist, idx, all_args=None):
@@ -1206,6 +1289,21 @@ def beats_for(plan, tool, idx, family=None):
                     if m.get("_link_key")}
         need = [x for x in (tool.get("parameters") or [])
                 if x.get("required") and x.get("name") in declared]
+        # WITHOUT A DECLARED HANDLE, THE SUBJECT FAILS INSTEAD. Requiring one
+        # here made `error_report` unreachable: `pick_plan` routes to it
+        # exactly when the family has no link, and a family with no link
+        # declares no `_link_key`, so the two conditions were complements and
+        # 13 of 13 planned reports returned None. Nothing was wrong with the
+        # plan -- the failure just does not have to be a stale handle. A
+        # lookup that cannot find the thing the user described is the more
+        # common failure and the more useful one to be able to read: it needs
+        # no producer, so it reaches every tool with a subject to miss.
+        if not need:
+            if plan == "error_recover":
+                return None
+            need = [x for x in (tool.get("parameters") or [])
+                    if x.get("required") and not governs_field(x, tool)
+                    and str(x.get("type") or "string").lower() not in NUMERIC_TYPE]
         if not need:
             return None
         # WHICH handle fails. For a recover row it must be the one the lookup
@@ -1229,8 +1327,15 @@ def beats_for(plan, tool, idx, family=None):
             seen_ex = [example_number(e) for e in (mp.get("examples") or [])]
             top = max([v for v in seen_ex if v is not None] or [100])
             bad = int(top * 10 + _hash("bad", idx) % 90 + 7)
-        else:
+        elif IDENTIFYING.search(miss):
             bad = f"{a1[miss]}-{_hash('bad', idx) % 900 + 100}"
+        else:
+            # A DESCRIPTION IS NOT MISTYPED, IT IS UNMATCHED. Suffixing one
+            # writes "Stemningslys til spøgelses-scene-473", which no user
+            # says and which makes the failure look like the assistant
+            # corrupted the input. What the user described simply is not in
+            # the system, so the value they gave goes in unaltered.
+            bad = a1[miss]
         if plan == "error_report":
             b.append({"rolle": "bruger", "bruger_beder_om": _wants(tool),
                       "args": {**a1, miss: bad}})
@@ -2098,6 +2203,62 @@ def gate_kind(row, tool):
     return None
 
 
+PLACEHOLDER = re.compile(r"\[[^\]\n]{2,40}\]")
+
+
+def gate_pairing(row, tool):
+    """In a two-call turn, each value must be credited to its OWN call.
+
+    "Lokationskoden for Hovedlaboratoriet er HQ-LAB-01, og for Kølerum 3B er
+    det BF-A1-R2-S3" -- the results came back the other way round. The dresser
+    paired them by plausibility, because HQ-LAB reads like hovedlaboratorium,
+    which is exactly the shortcut the competitor field exists to close. A row
+    like this teaches that a result may be matched to a call by how it looks.
+
+    ORDER, not adjacency. The prose puts the value after its subject ("for X
+    er det V") or before it ("Der er V i X") and both are fine; what cannot
+    vary is that the k-th subject mentioned takes the k-th result. Comparing
+    positions directly called every value-first row mispaired.
+    """
+    af = str(tool.get("answer_field") or "")
+    msgs = row["da"]["conversations"]
+    i = next((j for j, m in enumerate(msgs)
+              if m["role"] == "assistant" and len(m.get("tool_calls") or []) > 1),
+             None)
+    if i is None or not af:
+        return None
+    calls = [c.get("function", c) for c in msgs[i]["tool_calls"]]
+    res = []
+    for m in msgs[i + 1:i + 1 + len(calls)]:
+        if m["role"] != "tool":
+            break
+        try:
+            res.append(json.loads(m["content"]))
+        except Exception:
+            return None
+    if len(res) != len(calls):
+        return None
+    ans = strip_catalogue(str((msgs[-1].get("content") or "")))
+    subj, vals = [], []
+    for c, p in zip(calls, res):
+        a = [str(v) for v in (c.get("arguments") or {}).values()
+             if isinstance(v, str) and len(str(v)) >= 3]
+        if not a or not isinstance(p, dict) or af not in p:
+            return None
+        subj.append(a[0])
+        vals.append(str(p[af]))
+    if len(set(subj)) != len(subj) or len(set(vals)) != len(vals):
+        return None
+    ps = [ans.find(s) for s in subj]
+    pv = [ans.find(v) for v in vals]
+    if any(x < 0 for x in ps + pv):
+        return None
+    if [k for _, k in sorted(zip(ps, range(len(ps))))] != \
+            [k for _, k in sorted(zip(pv, range(len(pv))))]:
+        return "answer-credits-result-to-the-wrong-call"
+    return None
+
+
 def gate_prose(row, tool):
     """Schema identifiers in the conversation.
 
@@ -2123,6 +2284,28 @@ def gate_prose(row, tool):
         if t in said and said[t] != m["role"]:
             return "turn-repeated-by-other-speaker"
         said[t] = m["role"]
+        # A template placeholder that never got filled in: "Hvor mange enheder
+        # af [f.eks. reagensglas] har vi tilbage". The brackets are the
+        # dresser quoting its own instructions.
+        if PLACEHOLDER.search(t):
+            return "placeholder-left-in-prose"
+    # CONTAINMENT, not equality. One refuse row opened with the assistant's
+    # own refusal in the USER's slot -- "Jeg kan desværre kun hjælpe med
+    # fiskeauktionsdata. Jeg har ingen information om ture." -- and the
+    # assistant then said the first sentence of it back. Byte-equality missed
+    # it because the user's copy had a sentence more. A whole assistant turn
+    # sitting inside a user turn is the dresser writing both sides, and the
+    # row teaches the user to do the assistant's job.
+    ua = [(m["role"], " ".join(strip_catalogue(str(m.get("content") or ""))
+                               .lower().split()))
+          for m in msgs
+          if m["role"] in ("user", "assistant") and not m.get("tool_calls")]
+    for ra, ta in ua:
+        if ra != "assistant" or len(ta) < 25:
+            continue
+        for ru, tu in ua:
+            if ru == "user" and ta in tu:
+                return "assistant-turn-spoken-by-the-user"
     # The clarify plan holds one value back so the assistant has something to
     # ask for. If the opening turn says it anyway, the assistant is asking
     # for what it just heard.
@@ -2274,6 +2457,16 @@ def gate_call(row, tool, family=None):
 
 
 ANSWER_HINTS = {
+    "answer-credits-result-to-the-wrong-call":
+        "Hvert resultat hører til SIT eget kald, i samme rækkefølge. Det "
+        "første resultat er svaret for den ting, der blev slået op først -- "
+        "gæt aldrig ud fra, hvilken værdi der ligner hvilken ting.",
+    "assistant-turn-spoken-by-the-user":
+        "Brugeren og assistenten er to personer. Brugeren beder om noget; "
+        "det er assistenten, der afviser eller forklarer, hvad den kan.",
+    "placeholder-left-in-prose":
+        "Skriv den færdige replik. Ingen pladsholdere i kantede parenteser "
+        "som [f.eks. ...] -- indsæt en konkret ting i stedet.",
     "error-answer-does-not-say-it-failed":
         "Kaldet MISLYKKEDES. Svaret skal sige, at oplysningen ikke kunne "
         "findes -- ikke opfinde et svar og ikke gengive fejlteksten som om "
@@ -3299,6 +3492,7 @@ async def main_async(args):
                                          if not is_lookup_param(kk)
                                          and not is_meta_param(kk)},
                                         sort_keys=True, ensure_ascii=False)] = p
+                strip_preanswers(beats)
                 for i, b in enumerate(beats):
                     if b.get("assistent_svarer"):
                         prev = next(x for x in reversed(beats[:i])
@@ -3352,7 +3546,8 @@ async def main_async(args):
                            or gate_prose(row, tool)
                            or gate_kind(row, tool)
                            or gate_answers(row, tool)
-                           or gate_error_answers(row, tool))
+                           or gate_error_answers(row, tool)
+                           or gate_pairing(row, tool))
                     if not why:
                         if attempt:
                             stats["dlg:ok-on-retry"] += 1
@@ -3367,6 +3562,12 @@ async def main_async(args):
                     return None
                 if why:
                     stats[f"dlg:{why.split(':')[0]}"] += 1
+                    # Attributed by plan for the rare shapes. `error_recover`
+                    # planned 11 rows in a 173-row smoke and landed none, and
+                    # an unattributed drop table cannot say whether they were
+                    # gated, judged, or never built.
+                    if plan.startswith("error"):
+                        stats[f"{plan}:died:{why.split(':')[0]}"] += 1
                     return None
                 if row is None:
                     stats["dlg:missing-text"] += 1
@@ -3751,7 +3952,13 @@ async def main_async(args):
     print(f"\ngeneration: in={tok['in']:,} out={tok['out']:,}  ~${cost:.4f}")
     print(f"judge     : in={tok['jin']:,} out={tok['jout']:,}  ~${jcost:.4f}")
     print(f"  per accepted row: ${(cost + jcost) / max(len(rows), 1):.6f}")
-    print(f"template shapes: {len({t['_hash'] for t in tools})} over {len(tools)} tools")
+    # `.get`: a FROZEN catalogue carries no `_hash` -- it was stamped by the
+    # invention pass these tools predate. The run had already written every
+    # row when this raised, so a summary line was taking the build down with
+    # it.
+    shapes = {t.get("_hash") for t in tools if t.get("_hash")}
+    print(f"template shapes: {len(shapes) or 'n/a (frozen catalogue)'} "
+          f"over {len(tools)} tools")
     print(f"-> {out}  ({len(rows)} rows)")
 
 
