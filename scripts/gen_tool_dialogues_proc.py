@@ -925,6 +925,16 @@ def rekey_examples(tool, payload, args):
         if not isinstance(v, str):
             continue
         for pat, mine in subs:
+            # ALREADY ABOUT THE RIGHT SUBJECT. This pass replaces another
+            # subject's identifier; a value that already names THIS call's
+            # subject is not another subject's. `location_name` declares
+            # `Vestergade 12` and `8000 Aarhus C`, and the address
+            # `Vestergade 12, 8000 Aarhus C` contains both -- so asked about
+            # Vestergade 12 the second half read as a rival and was rewritten
+            # to `Vestergade 12, Vestergade 12`. A component of the right
+            # record is not a leak from the wrong one.
+            if mine.casefold() in v.casefold():
+                continue
             if pat.search(v) and not pat.fullmatch(v.strip()):
                 # lambda, so a backslash or a `\1` inside an id is a literal
                 v = pat.sub(lambda _m: mine, v)
