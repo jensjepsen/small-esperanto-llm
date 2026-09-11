@@ -1092,9 +1092,27 @@ def answerable(tool, field):
 
 # Chain is NOT in PLAN_WEIGHTS. Most families have one member and cannot chain
 # at all, so a global weight would spend most of its draws on `return None`.
-# It is offered only to rows whose family actually links, and at a rate high
-# enough to matter given how few families qualify.
-CHAIN_P = 0.5
+# It is offered only to rows whose family actually links.
+#
+# 0.68 is CALIBRATED, not modelled, and calibrated against the TRAINING MIX
+# rather than this corpus alone. Two attempts to predict density from
+# rows-per-tool and chains-per-family were wrong in both directions -- 11.9%
+# predicted against 7.3% measured, then 10% predicted against 23.2% measured --
+# because the share of sampled tools that are chainable consumers moves with
+# every extension and swamps the arithmetic. So: probe, measure, scale.
+#
+#   2,963 chainable families of 4,984, p=0.68 -> 189 chains / 813 rows = 23.2%
+#
+# 23.2% here is ~8.5% of what the model actually trains on, because the mix is
+# this corpus plus danish-tool-dialogues-v9 -- 34,168 rows, two thirds of the
+# total, and not one of them chains. Tuning to 10% WITHIN this corpus would
+# have delivered 3.7% in the mix, which is the number that matters.
+#
+# The ceiling is not far above: at p=1.0 every chainable consumer's rows become
+# chains and the contrast that teaches WHEN to chain disappears -- the same
+# consumer called directly when the user states the handle, via a lookup when
+# they do not. At 0.68 about a third of those rows stay direct.
+CHAIN_P = 0.68
 
 
 def pick_plan(tool, idx, rng, family=None):
@@ -2344,6 +2362,8 @@ def catalogue_faults(t):
         if str(p.get("type") or "").lower() == "boolean" \
                 or vals <= {"true", "false", "ja", "nej"}:
             out.append(("boolean-declared-as-a-selector", pname))
+        elif pname in (t.get("_selectors_resolved") or ()):
+            pass          # read from the schema, not claimed by the inventor
         elif not any(set(_subject_tokens(str(v))) & set(_subject_tokens(f))
                      for f, v in pairs):
             out.append(("selector-values-name-content", pname))
@@ -2668,7 +2688,16 @@ def apply_selector_verdict(tool, param, verdict):
         prev = list(tool.get("_not_selectors") or [])
         return ({**tool, "_not_selectors": prev + [name]} if name not in prev
                 else tool), "claimed-but-unmapped"
-    return {**tool, "_selectors": {**(tool.get("_selectors") or {}), **sel}}, \
+    # Marked as RESOLVED, i.e. read rather than claimed. `catalogue_faults`
+    # rejects a declared selector whose options share no tokens with the fields
+    # they select -- a sound check on an INVENTOR's claim, and exactly backwards
+    # here: `liftstatus -> lifts_open_count` shares no tokens by construction,
+    # because the options are Danish and the fields English. That disjointness
+    # is the reason this pass exists.
+    return {**tool,
+            "_selectors": {**(tool.get("_selectors") or {}), **sel},
+            "_selectors_resolved": sorted(
+                set(tool.get("_selectors_resolved") or []) | {name})}, \
         "declared"
 
 

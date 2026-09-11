@@ -84,10 +84,20 @@ for t in tools:
         pairs = [(k.split(chr(0))[1], v) for k, v in dec.items()
                  if k.split(chr(0))[0] == pname]
         vals = {str(v).lower() for _f, v in pairs}
+        # A RESOLVED selector is exempt from the lexical test. That test is a
+        # sound check on an INVENTOR's claim -- if the options do not resemble
+        # the fields, the claim was probably invented -- and exactly backwards
+        # for a mapping that was READ: `liftstatus -> lifts_open_count` shares
+        # no tokens because the options are Danish and the fields English, and
+        # that disjointness is the whole reason the resolution pass exists.
+        # Without this the repair drops all 668 resolved selectors and 235
+        # tools go dead again, undoing the pass it runs after.
+        resolved = pname in (t.get("_selectors_resolved") or ())
         bad = p is None or str(p.get("type") or "").lower() == "boolean" \
             or vals <= {"true", "false", "ja", "nej"} \
-            or not any(set(_subject_tokens(str(v))) & set(_subject_tokens(f))
-                       for f, v in pairs)
+            or (not resolved
+                and not any(set(_subject_tokens(str(v)))
+                            & set(_subject_tokens(f)) for f, v in pairs))
         if bad:
             for k in [k for k in dec if k.split(chr(0))[0] == pname]:
                 dec.pop(k)
