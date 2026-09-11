@@ -985,6 +985,30 @@ def _ex_tokens(s):
     return {t for t in re.split(r"[^0-9a-z]+", s) if len(t) >= 3}
 
 
+def _as_declared(v, examples):
+    """An example-derived value keeps the field's own numeric shape.
+
+    `_value`'s numeric branch builds a number; the example branches hand back
+    the declared example verbatim, and a declared example is JSON text. So
+    subject alignment -- which picks an example rather than generating --
+    started returning `"1001"` where the field holds 1001, and a chain then
+    copied that string into a consumer parameter declaring `integer`. Only
+    when EVERY example is a bare literal: a field whose examples are `A12`
+    and `B05` holds text, whatever its type says.
+    """
+    if not isinstance(v, str) or not examples:
+        return v
+    if not all(_LITERAL.match(str(e).strip()) for e in examples):
+        return v
+    t = str(v).strip()
+    if not _LITERAL.match(t):
+        return v
+    return int(t) if re.match(r"^-?\d+$", t) else float(t.replace(",", "."))
+
+
+_LITERAL = re.compile(r"^\s*-?\d+(?:[.,]\d+)?\s*$")
+
+
 def _content_pick(examples, val):
     """The one example the subject names, or None if it does not decide.
 
@@ -1002,7 +1026,7 @@ def _content_pick(examples, val):
     scored = sorted(((sum(1.0 / df[t] for t in want & _ex_tokens(e)), i)
                      for i, e in enumerate(examples)), reverse=True)
     if scored[0][0] > 0 and scored[0][0] > scored[1][0]:
-        return examples[scored[0][1]]
+        return _as_declared(examples[scored[0][1]], examples)
     return None
 
 
@@ -1024,14 +1048,14 @@ def _from_examples(field, examples, idx, subject=None):
     value with an air of alignment.
     """
     if subject is None:
-        return examples[_hash(field, idx) % len(examples)]
+        return _as_declared(examples[_hash(field, idx) % len(examples)], examples)
     pos, val = subject
     hit = _content_pick(examples, val)
     if hit is not None:
         return hit
     if pos is not None and pos < len(examples):
-        return examples[pos]
-    return examples[_hash(field, idx) % len(examples)]
+        return _as_declared(examples[pos], examples)
+    return _as_declared(examples[_hash(field, idx) % len(examples)], examples)
 
 
 def to_spec(tool):

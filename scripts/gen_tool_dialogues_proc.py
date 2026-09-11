@@ -1611,6 +1611,32 @@ def row_tool(row, fam, by_name=None):
 LINK = "\u0000link\u0000"
 
 
+NUMERIC_TYPES = {"integer", "number", "int", "float"}
+_NUM_LITERAL = re.compile(r"^\s*-?\d+(?:[.,]\d+)?\s*$")
+
+
+def _value_space(field):
+    """'number' or 'string', believing the EXAMPLES over the declared type.
+
+    A field declaring `integer` whose examples are `F101`/`F105` holds text.
+    repair_tool_types.py fixes that in the catalogue; this stays so the rule
+    holds on any catalogue, repaired or not.
+    """
+    ex = [str(e).strip().strip("\"'") for e in (field or {}).get("examples") or []
+          if str(e).strip()]
+    declared = str((field or {}).get("type") or "string").lower()
+    if declared in NUMERIC_TYPES and ex and not all(_NUM_LITERAL.match(e) for e in ex):
+        return "string"
+    return "number" if declared in NUMERIC_TYPES else "string"
+
+
+def _spaces_meet(ret, param):
+    """Can what the producer returns be a value of the consumer's parameter?"""
+    if param is None:
+        return True
+    return _value_space(ret) == _value_space(param)
+
+
 def find_links(consumer, members):
     """EVERY (producer, key) a sibling can supply for this consumer.
 
@@ -1621,6 +1647,7 @@ def find_links(consumer, members):
     chain forces a sequence.
     """
     out, seen, used = [], set(), {}
+    need_p = {p.get("name"): p for p in (consumer.get("parameters") or [])}
     need = [p.get("name") for p in (consumer.get("parameters") or [])
             # A SELECTOR is not a handle. `security_data_category` is required
             # and reads as identifier-shaped, but it chooses which field comes
@@ -1631,7 +1658,18 @@ def find_links(consumer, members):
         for a in members:
             if a.get("name") == consumer.get("name") or k in seen:
                 continue
-            if k in {r["name"] for r in (a.get("returns") or [])}:
+            ret = next((r for r in (a.get("returns") or [])
+                        if r.get("name") == k), None)
+            # THE VALUE SPACES MUST MEET. The name matching is what forms a
+            # link, and a name is not a type: `find_library_object_by_name`
+            # returns `object_id: "Københavns Atlas fra 1790"` while its
+            # consumer declares `object_id` as an integer over 1001/5502/9876,
+            # so the chain handed a book title to a numeric parameter. Costs
+            # 27 of 3,969 links across the catalogue -- 0.7% -- and the ones
+            # it costs could not have been answered anyway.
+            if ret is not None and not _spaces_meet(ret, need_p.get(k)):
+                continue
+            if ret is not None:
                 # ONE CALL PER PRODUCER. A single lookup often returns several
                 # handles at once, and emitting it twice would put two
                 # identical calls in the turn. The resolver already scans a
