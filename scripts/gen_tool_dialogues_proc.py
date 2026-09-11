@@ -4051,36 +4051,8 @@ async def main_async(args):
         json.dumps(x, ensure_ascii=False) for x in missing) + "\n")
     out = rfile
     if getattr(args, "tools_from", None):
-        # DERIVED, NOT ACCUMULATED. With a frozen catalogue this file is just
-        # the subset of it the rows use, so deriving it from the finished rows
-        # cannot drift; accumulating it can, and did, twice. First a resume
-        # rewrote it from the tools THAT run touched and dropped the earlier
-        # stages' -- 496 of 1,444 rows left naming a tool that was gone. Then
-        # unioning the resumed set back in still missed the frozen tools drawn
-        # by the new run, because a frozen tool is returned from the catalogue
-        # without ever passing through the list this file was written from.
-        # A row that names an unresolvable tool breaks the SFT render, so the
-        # rows are the authority on what belongs here.
-        byk = {}
-        for t in (json.loads(x) for x in args.tools_from.open() if x.strip()):
-            byk[(t.get("_scenario"), t["name"])] = t
-            byk.setdefault((None, t["name"]), t)
-        want, miss = {}, set()
-        for r in rows:
-            sc = str(r.get("_key") or "").split("#")[0] or None
-            names = [r.get("_tool")] + [
-                c["function"].get("name")
-                for m in r["da"]["conversations"]
-                for c in (m.get("tool_calls") or [])]
-            for nm in filter(None, names):
-                t = byk.get((sc, nm)) or byk.get((None, nm))
-                if t is None:
-                    miss.add(nm)
-                else:
-                    want[(t.get("_scenario"), t["name"])] = t
-        (args.out / "tools.jsonl").write_text("\n".join(
-            json.dumps(t, ensure_ascii=False) for t in want.values()) + "\n")
-        print(f"tools.jsonl: {len(want)} tools derived from {len(rows)} rows"
+        n_t, miss = derive_tools_file(args.out, args.tools_from, rows)
+        print(f"tools.jsonl: {n_t} tools derived from {len(rows)} rows"
               + (f"   UNRESOLVED: {sorted(miss)[:5]}" if miss else ""))
     print()
     for k, v in sorted(stats.items()):
@@ -4192,6 +4164,49 @@ async def fix_selectors_run(args):
     print(f"-> {dest}", flush=True)
 
 
+def derive_tools_file(out_dir, tools_from, rows=None):
+    """Write tools.jsonl as the subset of the frozen catalogue the rows use.
+
+    DERIVED, NOT ACCUMULATED. With a frozen catalogue this file is just the
+    subset the rows reference, so deriving it cannot drift; accumulating it
+    can, and did, twice. First the end-of-run write rebuilt it from the tools
+    THAT run touched and a resume dropped the earlier stages' -- 496 of 1,444
+    rows left naming a tool that was gone. Then unioning the resumed set back
+    in still missed frozen tools drawn by the new run, because a frozen tool
+    comes straight from the catalogue and never passes through that list.
+
+    Reads the ROWS FROM DISK when none are passed, so it also works after an
+    abort, where the in-memory list is gone but every accepted row has already
+    been flushed. Returns (n_tools, missing_names).
+    """
+    out_dir, tools_from = Path(out_dir), Path(tools_from)
+    rfile = out_dir / "translated.jsonl"
+    if rows is None:
+        if not rfile.exists():
+            return 0, set()
+        rows = [json.loads(x) for x in rfile.open() if x.strip()]
+    byk = {}
+    for t in (json.loads(x) for x in tools_from.open() if x.strip()):
+        byk[(t.get("_scenario"), t["name"])] = t
+        byk.setdefault((None, t["name"]), t)
+    want, miss = {}, set()
+    for r in rows:
+        sc = str(r.get("_key") or "").split("#")[0] or None
+        names = [r.get("_tool")] + [
+            c["function"].get("name")
+            for m in r["da"]["conversations"]
+            for c in (m.get("tool_calls") or [])]
+        for nm in filter(None, names):
+            t = byk.get((sc, nm)) or byk.get((None, nm))
+            if t is None:
+                miss.add(nm)
+            else:
+                want[(t.get("_scenario"), t["name"])] = t
+    (out_dir / "tools.jsonl").write_text("\n".join(
+        json.dumps(t, ensure_ascii=False) for t in want.values()) + "\n")
+    return len(want), miss
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=Path("scratch/proc"))
@@ -4238,6 +4253,15 @@ def main():
             return
         asyncio.run(main_async(a))
     except FatalAPIError as e:
+        # LEAVE THE DIRECTORY RESUMABLE. Rows are flushed as they are accepted,
+        # but tools.jsonl is only written at the end, so an abort left 299 rows
+        # naming tools that were not in it -- the exact breakage the derive
+        # step exists to prevent, reintroduced by never reaching it. Derived
+        # from the rows on disk, so it does not need the run's memory.
+        if a.tools_from and not a.tools_only:
+            n_t, miss = derive_tools_file(a.out, a.tools_from)
+            print(f"\ntools.jsonl: {n_t} tools derived from the rows on disk"
+                  + (f"   UNRESOLVED: {sorted(miss)[:5]}" if miss else ""))
         print(f"\nABORTED: {e}\n"
               f"Nothing further was attempted. Whatever completed is in "
               f"{a.out} -- rerun the same command with --resume once the "
