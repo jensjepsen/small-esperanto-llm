@@ -43,4 +43,4 @@ uv run --no-project --with aiohttp --with langdetect \
     --n "$N" --dialogues-per-tool "$DPT" --seed "$SEED" $RESUME \
   2>&1 | tee -a "scratch/$(basename "$OUT")_build.log"
 
-python scripts/check_proc_build.py "$OUT"
+python3 scripts/check_proc_build.py "$OUT"

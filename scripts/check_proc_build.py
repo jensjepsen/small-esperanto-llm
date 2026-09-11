@@ -19,13 +19,18 @@ from gen_tool_dialogues_da import _ex_tokens  # noqa: E402
 
 build = Path(sys.argv[1])
 rows = [json.loads(l) for l in (build / "translated.jsonl").open() if l.strip()]
-tools = {json.loads(l)["name"]: json.loads(l)
-         for l in (build / "tools.jsonl").open() if l.strip()}
+_tl = [json.loads(l) for l in (build / "tools.jsonl").open() if l.strip()]
+# BY (SCENARIO, NAME). 888 tools in the catalogue share 370 names on purpose,
+# so a name-keyed index grades a row against a DIFFERENT tool that happens to
+# share its name: `fishing_logistics` in one scenario was checked against the
+# other one's returns, and its answer field read as ungoverned.
+tools = {t["name"]: t for t in _tl}
+tools_sn = {(t.get("_scenario"), t["name"]): t for t in _tl}
 n = len(rows)
 print(f"{build}   {n:,} rows   {len(tools):,} tools\n")
 
 # ── 1. every gate, over what actually shipped ────────────────────────────
-def row_tool(r):
+def row_tool(r, name=None):
     """The tool AS THIS ROW USED IT -- roles are rotated per row.
 
     `gate_answers` reads `tool["answer_field"]`, but ~55% of rows rotate the
@@ -34,7 +39,9 @@ def row_tool(r):
     first stage-1 sweep, all of them false. `review_generated.py` takes
     `--roles` for exactly this reason and I rebuilt the same bug here.
     """
-    t = tools.get(r["_tool"])
+    sc = str(r.get("_key") or "").split("#")[0] or None
+    nm = name or r["_tool"]
+    t = tools_sn.get((sc, nm)) or tools.get(nm)
     if not t:
         return None
     if r.get("_answer_field"):
@@ -110,9 +117,13 @@ for r in rows:
     af, t = r.get("_answer_field"), row_tool(r)
     if not t or not af:
         continue
+    # DECLARED mappings only. `_selector_for` falls back to subject scoring,
+    # which matched `occupied_spaces_total` to the `available_spaces` option
+    # and then demanded a selector the contract never promised for it.
+    decl = t.get("_selectors") or {}
     sel = next((p["name"] for p in (t.get("parameters") or [])
                 if G.governs_field(p, t)
-                and G._selector_for(p, af, t) is not None), None)
+                and f"{p['name']}\x00{af}" in decl), None)
     if not sel:
         continue
     for m in r["da"]["conversations"]:
