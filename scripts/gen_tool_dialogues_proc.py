@@ -3794,6 +3794,22 @@ async def main_async(args):
             rows.extend(batch)
         if not tools:
             raise SystemExit("no tools survived the gate")
+        # THE UNION, NOT THIS RUN'S SET. This is a full rewrite of a file the
+        # rows point into, and `tools` holds only what this run touched, so a
+        # resume deleted every tool the earlier stages had used: after
+        # 763 rows + a resume to 1,444, the file held 310 tools and 496 rows
+        # named one that was no longer there. The `tools_only` branch above
+        # dodges this by claiming already-built scenarios first; the frozen
+        # `--tools-from` branch had no such protection, and the rows are the
+        # thing that must stay resolvable.
+        if resumed_tools:
+            seen = {(t.get("_scenario"), t.get("name")) for t in tools}
+            for members in resumed_tools.values():
+                for t in members:
+                    k = (t.get("_scenario"), t.get("name"))
+                    if k not in seen:
+                        seen.add(k)
+                        tools.append(t)
         (args.out / "tools.jsonl").write_text("\n".join(
             json.dumps(t, ensure_ascii=False) for t in tools) + "\n")
         print(f"  tools {len(claimed)}/{want} from {len(pool)} candidates, "
@@ -4024,6 +4040,38 @@ async def main_async(args):
     (args.out / "missing_text.jsonl").write_text("\n".join(
         json.dumps(x, ensure_ascii=False) for x in missing) + "\n")
     out = rfile
+    if getattr(args, "tools_from", None):
+        # DERIVED, NOT ACCUMULATED. With a frozen catalogue this file is just
+        # the subset of it the rows use, so deriving it from the finished rows
+        # cannot drift; accumulating it can, and did, twice. First a resume
+        # rewrote it from the tools THAT run touched and dropped the earlier
+        # stages' -- 496 of 1,444 rows left naming a tool that was gone. Then
+        # unioning the resumed set back in still missed the frozen tools drawn
+        # by the new run, because a frozen tool is returned from the catalogue
+        # without ever passing through the list this file was written from.
+        # A row that names an unresolvable tool breaks the SFT render, so the
+        # rows are the authority on what belongs here.
+        byk = {}
+        for t in (json.loads(x) for x in args.tools_from.open() if x.strip()):
+            byk[(t.get("_scenario"), t["name"])] = t
+            byk.setdefault((None, t["name"]), t)
+        want, miss = {}, set()
+        for r in rows:
+            sc = str(r.get("_key") or "").split("#")[0] or None
+            names = [r.get("_tool")] + [
+                c["function"].get("name")
+                for m in r["da"]["conversations"]
+                for c in (m.get("tool_calls") or [])]
+            for nm in filter(None, names):
+                t = byk.get((sc, nm)) or byk.get((None, nm))
+                if t is None:
+                    miss.add(nm)
+                else:
+                    want[(t.get("_scenario"), t["name"])] = t
+        (args.out / "tools.jsonl").write_text("\n".join(
+            json.dumps(t, ensure_ascii=False) for t in want.values()) + "\n")
+        print(f"tools.jsonl: {len(want)} tools derived from {len(rows)} rows"
+              + (f"   UNRESOLVED: {sorted(miss)[:5]}" if miss else ""))
     print()
     for k, v in sorted(stats.items()):
         print(f"   {v:>5}  {k}")

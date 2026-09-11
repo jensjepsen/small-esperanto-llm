@@ -83,8 +83,17 @@ for r in rows:
         prod, cons = pairs[a][1], pairs[a + 1][1]
         if not (isinstance(prod, dict) and isinstance(cons, dict)):
             continue
-        sent = {str(v).strip() for v in (pairs[a + 1][0].get("arguments") or {}).values()}
-        if not (sent & {str(v).strip() for v in prod.values()}):
+        # A LINK IS A HANDLE, and handles are not bare small integers. Taking
+        # any shared value as evidence of a chain read a parallel row about
+        # two hospital departments as a producer/consumer pair, because
+        # `time_window_hours: 4` happened to equal `transport_requests_pending:
+        # 4` in the first payload -- and then called their different bed counts
+        # a contradiction, when two departments simply have different beds.
+        def handles(vals):
+            return {str(v).strip() for v in vals
+                    if isinstance(v, str) and len(str(v).strip()) >= 3}
+        sent = handles((pairs[a + 1][0].get("arguments") or {}).values())
+        if not (sent & handles(prod.values())):
             continue
         for k in [k for k in prod if k in cons]:
             if str(prod[k]).strip() != str(cons[k]).strip():
