@@ -1196,8 +1196,16 @@ def beats_for(plan, tool, idx, family=None):
         # sides: a stale id, a typo, an order that was already cancelled. The
         # assistant has made no mistake, so the row teaches reading an error
         # rather than teaching the wrong call that produced it.
+        # WHICH parameters are handles is RECORDED, not re-derived. Every
+        # sibling carries `_link_key`, written by build_producer at invention:
+        # that is the contract's own statement that the key is a value the
+        # system produces rather than one a user can state. Re-testing the name
+        # with IDENTIFYING here would second-guess a fact already stored -- and
+        # would call `accountant_name` a handle, which no tool produces.
+        declared = {m.get("_link_key") for m in (family or [])
+                    if m.get("_link_key")}
         need = [x for x in (tool.get("parameters") or [])
-                if x.get("required") and IDENTIFYING.search(x.get("name") or "")]
+                if x.get("required") and x.get("name") in declared]
         if not need:
             return None
         # WHICH handle fails. For a recover row it must be the one the lookup
@@ -1211,7 +1219,18 @@ def beats_for(plan, tool, idx, family=None):
         a1 = sample_args(tool, idx, 0)
         if a1 is None or miss not in a1:
             return None
-        bad = f"{a1[miss]}-{_hash('bad', idx) % 900 + 100}"
+        # The bad value respects the DECLARED TYPE. Appending a suffix suits a
+        # string id and turns an integer handle into `7-502`, which is not a
+        # value that parameter could ever hold. 1,318 of 6,741 identifier-ish
+        # required parameters are numeric.
+        mp = next((x for x in (tool.get("parameters") or [])
+                   if x.get("name") == miss), {})
+        if str(mp.get("type") or "string").lower() in NUMERIC_TYPE:
+            seen_ex = [example_number(e) for e in (mp.get("examples") or [])]
+            top = max([v for v in seen_ex if v is not None] or [100])
+            bad = int(top * 10 + _hash("bad", idx) % 90 + 7)
+        else:
+            bad = f"{a1[miss]}-{_hash('bad', idx) % 900 + 100}"
         if plan == "error_report":
             b.append({"rolle": "bruger", "bruger_beder_om": _wants(tool),
                       "args": {**a1, miss: bad}})
