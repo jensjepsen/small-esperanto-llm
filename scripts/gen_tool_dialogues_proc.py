@@ -1081,7 +1081,14 @@ def answerable(tool, field):
     return True
 
 
-def pick_plan(tool, idx, rng):
+# Chain is NOT in PLAN_WEIGHTS. Most families have one member and cannot chain
+# at all, so a global weight would spend most of its draws on `return None`.
+# It is offered only to rows whose family actually links, and at a rate high
+# enough to matter given how few families qualify.
+CHAIN_P = 0.5
+
+
+def pick_plan(tool, idx, rng, family=None):
     """Only plans the TOOL can actually realise.
 
     A zero-parameter tool cannot be asked for two different things, so
@@ -1089,6 +1096,9 @@ def pick_plan(tool, idx, rng):
     kept the label -- the distribution said 5 parallel rows and none of them
     had two calls.
     """
+    if family and len(family) > 1 and find_link(tool, family) \
+            and _hash("chain", tool.get("name"), idx) % 100 < CHAIN_P * 100:
+        return "chain"
     plan = _weighted(rng, PLAN_WEIGHTS)
     # "Do it for A and for B" needs a SUBJECT to differ. Moving a number --
     # capacity 297 vs 228 -- is a fine follow-up question but not a natural
@@ -1129,14 +1139,41 @@ def varied_params(beats):
     return out
 
 
-def beats_for(plan, tool, idx):
+def beats_for(plan, tool, idx, family=None):
     """The whole dialogue shape, decided in code.
 
     Every structural defect the gates chase -- opening on the assistant, a
     result nobody answers, a plan that never calls, two answers for one task --
     is a choice made here, correctly, once.
+
+    `family` is the scenario's members. Only the chain plan uses it; every other
+    plan calls one tool and ignores it.
     """
     b = []
+    if plan == "chain":
+        # `tool` IS the consumer: it carries this row's answer field, and the
+        # answer comes from the second call.
+        link = find_link(tool, family or [])
+        if link is None:
+            return None
+        prod, key = link
+        cons = tool
+        # The user asks for what the CONSUMER reports and supplies only what
+        # the PRODUCER needs. The handle between them is never spoken -- that
+        # is the whole point: it has to come back from the first call.
+        pa = sample_args(prod, idx, 0, answer_field=None)
+        ca = sample_args(cons, idx, 1)
+        if pa is None or ca is None:
+            return None
+        ca = dict(ca)
+        ca[key] = LINK                       # resolved once the payload exists
+        b.append({"rolle": "bruger", "bruger_beder_om": _wants(cons),
+                  "args": pa})
+        b.append({"rolle": "assistent", "kald": [pa], "_tool": prod})
+        b.append({"rolle": "assistent", "kald": [ca], "_tool": cons,
+                  "_link": {"key": key, "from": 1}})
+        b.append({"rolle": "assistent", "assistent_svarer": True})
+        return b
     a1 = sample_args(tool, idx, 0)
     if a1 is None:
         return None
@@ -1264,6 +1301,47 @@ def row_tool(row, fam, by_name=None):
     if members:
         return members[0]
     return (by_name or {}).get(_called_name_row(row))
+
+
+# A chain argument is not known when the beats are written: it is whatever the
+# producer's payload turns out to hold, and payloads are synthesised later. The
+# consumer's beat therefore carries a SENTINEL, and the payload loop swaps in
+# the real value once the producer's payload exists. A sentinel rather than a
+# plausible-looking placeholder, so a row that somehow escapes resolution fails
+# loudly in a gate instead of shipping a made-up id.
+LINK = "\u0000link\u0000"
+
+
+def find_link(consumer, members):
+    """(producer, key) that feeds THIS consumer, else None.
+
+    Asked consumer-first, not pair-first, because the row's answer field is the
+    consumer's: the question is what the second call reports, and the first call
+    only exists to hand it a handle. Searching pairs instead would find chains
+    whose answer belongs to a tool the row was not built for.
+
+    The key must be a field the producer RETURNS and a parameter the consumer
+    REQUIRES -- not merely declares -- since an optional parameter can be
+    dropped by sampling and the chain would evaporate.
+
+    Identifier-shaped only. `status` produced by one tool and accepted by
+    another is a coincidence of vocabulary; `sample_id` is a handle to a thing.
+    Chaining on a non-identifier would teach the model to pipe any matching
+    name, which is the failure the cross-scenario pairs already illustrate
+    (`batch_id`: brewery -> slaughterhouse, a string match with no referent).
+    """
+    need = [p.get("name") for p in (consumer.get("parameters") or [])
+            if p.get("required") and IDENTIFYING.search(p.get("name") or "")]
+    if not need:
+        return None
+    for a in members:
+        if a.get("name") == consumer.get("name"):
+            continue
+        rets = {r["name"] for r in (a.get("returns") or [])}
+        for k in need:
+            if k in rets:
+                return a, k
+    return None
 
 
 def tool_signature(t):
@@ -1639,6 +1717,16 @@ def unspoken_arguments(row, tool):
     said, out = "", []
     for m in msgs:
         if m["role"] == "user":
+            said += " " + strip_catalogue(m.get("content") or "")
+            continue
+        # A TOOL RESULT supplies values too. This walk is in turn order and
+        # `said` only ever grows, so a call can cite a result that came BEFORE
+        # it and not one that comes after -- which is exactly the chain rule.
+        # Without this an id read out of a previous payload reads as invented
+        # and gate_call kills the row, so no chain could survive the gate.
+        # `_spoken_pool` already counted tool turns for NUMBERS; this is the
+        # same rule for the string identifiers a chain actually passes.
+        if m["role"] == "tool":
             said += " " + strip_catalogue(m.get("content") or "")
             continue
         for c in (m.get("tool_calls") or []):
@@ -2052,7 +2140,11 @@ def assemble(idx, tool, beats, texts, catalogue, mapping):
     msgs = []
     for bi, beat in enumerate(beats):
         if beat.get("kald"):
-            parsed = [{"function": {"name": tool["name"], "arguments": a}}
+            # The BEAT's tool when it has one: a chain calls two different
+            # tools in one row, and rendering both under the anchor's name
+            # would put a call to a tool that was never made.
+            nm = (beat.get("_tool") or tool)["name"]
+            parsed = [{"function": {"name": nm, "arguments": a}}
                       for a in beat["kald"]]
             msgs.append({"role": "assistant", "content": "",
                          "tool_calls": parsed})
@@ -2305,6 +2397,11 @@ async def main_async(args):
         want = (args.n if getattr(args, "tools_only", False)
                 else max(args.n // args.dialogues_per_tool, 1))
         tools, seen_names, seen_sigs = [], set(), set()
+        # Families known BEFORE dialogue generation, so a row can see its
+        # siblings. Filled from the frozen catalogue below (and from anything
+        # resumed), because `tools` is still being appended to while dialogues
+        # run and a row built early would otherwise see a half-filled family.
+        fam_all = {sc: list(ms) for sc, ms in resumed_tools.items()}
         rows, missing = list(resumed_rows), []
         tools_by_name = {}
 
@@ -2423,16 +2520,37 @@ async def main_async(args):
                 comp = next(f for f in conf if f != af)
                 tool = {**tool, "answer_field": af, "competitor_field": comp}
                 stats[f"role:{'default' if af == conf[0] else 'rotated'}"] += 1
-                plan = pick_plan(tool, idx, rng)
-                beats = beats_for(plan, tool, idx)
+                members = fam_all.get(tool.get("_scenario")) or [tool]
+                plan = pick_plan(tool, idx, rng, members)
+                beats = beats_for(plan, tool, idx, members)
                 if beats is None:
                     stats["dlg:no-args-for-answer-field"] += 1
                     return None
                 seen = {}
                 row_args = [a for b in beats for a in (b.get("kald") or [])]
-                for b in beats:
+                for bi, b in enumerate(beats):
                     if not b.get("kald"):
                         continue
+                    # A chain calls a DIFFERENT tool per beat, so the payload
+                    # must be synthesised from that beat's contract rather than
+                    # the row's anchor -- otherwise the consumer's result comes
+                    # back shaped like the producer.
+                    btool = b.get("_tool") or tool
+                    # Resolve the link: the id the producer actually returned.
+                    # Done here because payloads do not exist when beats are
+                    # written. If the producer never emitted the key the row is
+                    # dropped rather than shipped with a sentinel in the call.
+                    lk = b.get("_link")
+                    if lk:
+                        src = beats[lk["from"]].get("_pays") or []
+                        val = next((p0.get(lk["key"]) for p0 in src
+                                    if p0.get(lk["key"]) is not None), None)
+                        if val is None:
+                            stats["dlg:chain-link-missing"] += 1
+                            return None
+                        b["kald"] = [{kk: (val if vv == LINK else vv)
+                                      for kk, vv in a0.items()}
+                                     for a0 in b["kald"]]
                     pays = []
                     for a in b["kald"]:
                         # keyed on WHAT was asked for, not how it was looked
@@ -2453,12 +2571,12 @@ async def main_async(args):
                             # asked-for field is redrawn per query, so a
                             # filter can move the answer without rewriting
                             # what the thing is.
-                            pay = dict(payload_for(tool, idx, subj))
+                            pay = dict(payload_for(btool, idx, subj))
                             for f in list(pay):
                                 fk = field_key(f, subj)
                                 if fk == subj:
                                     continue
-                                v = payload_for(tool, idx, fk).get(f)
+                                v = payload_for(btool, idx, fk).get(f)
                                 if v is not None:
                                     pay[f] = v
                             used = {str(v.get(af)) for v in seen.values()}
@@ -2467,16 +2585,16 @@ async def main_async(args):
                                         if kk != af}
                                 if str(pay.get(af)) not in used | sibs:
                                     break
-                                alt = payload_for(tool, idx + bump * 7919,
+                                alt = payload_for(btool, idx + bump * 7919,
                                                   subj).get(af)
                                 if alt is None:
                                     break
                                 pay[af] = alt
                             # The FULL argument set constrains the result,
                             # including the lookup parameters `subj` drops.
-                            seen[k] = respect_constraints(tool, pay, a, idx)
+                            seen[k] = respect_constraints(btool, pay, a, idx)
                         pays.append(seen[k])
-                    b["_pays"] = key_payloads(tool, pays, b["kald"], idx,
+                    b["_pays"] = key_payloads(btool, pays, b["kald"], idx,
                                               row_args)
                     b["_args"] = b["kald"]
                     # `seen` hands the same object to a repeated subject; the
@@ -2596,6 +2714,12 @@ async def main_async(args):
             pool = [{"id": t.get("_scenario") or t["name"],
                      "beskrivelse": t.get("description") or "",
                      "_tool": t} for t in frozen[:want]]
+            # The WHOLE frozen file, not the sampled pool: a scenario's
+            # siblings must be visible even when only one member was drawn.
+            for t in frozen:
+                sc = t.get("_scenario")
+                if sc and t not in fam_all.get(sc, []):
+                    fam_all.setdefault(sc, []).append(t)
         elif getattr(args, "tools_only", False) and resumed_tools:
             # tools.jsonl is REWRITTEN from what this run claimed, so a tool
             # whose scenario falls outside the pool is deleted from the
