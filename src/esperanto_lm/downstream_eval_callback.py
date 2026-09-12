@@ -474,6 +474,58 @@ class DownstreamEvaluator:
                           (msgs[res_at]["content"], gold_text)))
         return items
 
+    def _second_call_items(self, split: str, step: int = 0,
+                           name: str = "tool_second", repo: str | None = None):
+        """Prompt = dialogue THROUGH the first result; gold = the NEXT call.
+
+        The turn where a handle obtained from a result actually gets used was
+        scored nowhere. `_tool_items` stops at the first call and
+        `_answer_items` SKIPS these rows on purpose ("another call follows,
+        not an answer"), so a chain could be perfect or nonsense without
+        moving a number.
+
+        Measured on step-3135 of da_sft_toolmix_proc2_v9_bs32 over the whole
+        1,820-row eval_unseen_tools split, by hand:
+
+            stage       right-tool   argF1
+            1st call       88.5%     69.9%
+            2nd call       96.7%     81.0%
+
+        -- so the unmeasured stage was the STRONGER one, and 206 rows (21% of
+        chain rows) answered in prose where gold calls again, also unseen.
+
+        Items are (prompt, gold_call), the shape `_tool_score` already takes.
+        """
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
+        from train_sft_packed import format_conversation
+        ds = load_dataset(repo or self.TOOL_REPO, "sft", split=split)
+        ds = self._maybe_subsample(ds, step, name)
+        items = []
+        for r in ds:
+            msgs = r["messages"]
+            res_at = next((i for i, m in enumerate(msgs)
+                           if m["role"] == "tool_result"), None)
+            if res_at is None:
+                continue
+            j = res_at + 1
+            # The corpus writes `<|assistant|>` with empty content before a
+            # call, so the next call is two turns on, not one.
+            if j < len(msgs) and msgs[j]["role"] == "assistant" \
+                    and not (msgs[j].get("content") or "").strip():
+                j += 1
+            if j >= len(msgs) or msgs[j]["role"] != "tool_call":
+                continue
+            try:
+                gold = json.loads(msgs[j]["content"])
+            except Exception:
+                continue
+            if not isinstance(gold, dict) or not gold.get("name"):
+                continue
+            items.append((format_conversation(msgs[:res_at + 1]), gold))
+        return items
+
     def _load_tool_answer(self, step: int = 0):
         # seen-tools only: eval_unseen_tools has a follow-up answer on just 13%
         # of its rows (98 of 768), which is too thin to read.
@@ -1108,6 +1160,25 @@ class DownstreamEvaluator:
                 noact / ng_n if ng_n else 0.0,
         })
         return bal
+
+    def _load_tool_second(self, step: int = 0):
+        return self._second_call_items("eval_unseen_tools", step, "tool_second")
+
+    def _load_tool_second_b(self, step: int = 0):
+        if not self.TOOL_REPO_B:
+            return []
+        try:
+            return self._second_call_items("eval_unseen_tools", step,
+                                           "tool_second_b", self.TOOL_REPO_B)
+        except Exception as e:
+            print(f"  [downstream] tool_second_b: unavailable ({e})", flush=True)
+            return []
+
+    def _score_tool_second(self, model) -> float:
+        return self._tool_score(model, "tool_second")
+
+    def _score_tool_second_b(self, model) -> float:
+        return self._tool_score(model, "tool_second_b")
 
     def _score_tool_seen(self, model) -> float:
         return self._tool_score(model, "tool_seen")
