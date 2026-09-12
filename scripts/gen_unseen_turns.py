@@ -40,6 +40,18 @@ from train_sft_packed import format_conversation  # noqa: E402
 CALL = re.compile(r"<\|tool_call\|>(.*?)(?:<\|/tool_call\|>|$)", re.S)
 
 
+def parse_call(raw):
+    """The call in a generation, or None. Same rule the scoring loop uses:
+    raw_decode because the fallback capture runs to the end of the text."""
+    m = CALL.search(str(raw))
+    body = (m.group(1) if m else str(raw)).strip()
+    try:
+        got, _ = json.JSONDecoder().raw_decode(body)
+        return got if isinstance(got, dict) else None
+    except Exception:
+        return None
+
+
 def argf1(pred, gold):
     """Pair-F1 over (key, value), the same shape the eval scores."""
     def pairs(d):
@@ -57,8 +69,15 @@ def argf1(pred, gold):
     return 2 * pr * rc / (pr + rc)
 
 
-def build(model, tok, prompts, max_new, bs, eos, label):
-    """Batched greedy generation. Left padding, restored afterwards."""
+def build(model, tok, prompts, max_new, bs, eos, label, k=1, temp=0.8):
+    """Batched generation. Left padding, restored afterwards.
+
+    k>1 SAMPLES k times per prompt and returns k outputs per prompt, flat, in
+    prompt-major order. pass@k then asks whether the right answer is in the
+    distribution at all -- which is a different question from whether greedy
+    finds it, and the recorded note that "sampling is worse than greedy"
+    (0.522 vs 0.600 at t=0.7) is about the SINGLE-sample comparison, not this.
+    """
     prev_side, prev_pad = tok.padding_side, tok.pad_token
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
@@ -74,7 +93,11 @@ def build(model, tok, prompts, max_new, bs, eos, label):
                 gen = model.generate(
                     input_ids=enc["input_ids"],
                     attention_mask=enc["attention_mask"],
-                    max_new_tokens=max_new, do_sample=False, num_beams=1,
+                    max_new_tokens=max_new,
+                    do_sample=(k > 1), num_beams=1,
+                    temperature=(temp if k > 1 else None),
+                    top_p=(0.95 if k > 1 else None),
+                    num_return_sequences=k,
                     eos_token_id=eos,
                     pad_token_id=tok.pad_token_id or eos[0],
                     repetition_penalty=1.1)
@@ -97,6 +120,9 @@ def main():
     ap.add_argument("--config", default="sft")
     ap.add_argument("--n", type=int, default=0, help="0 = the whole split")
     ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--samples", type=int, default=1,
+                    help="k>1 = sample k per prompt and report pass@k")
+    ap.add_argument("--temperature", type=float, default=0.8)
     ap.add_argument("--max-new-call", type=int, default=320)
     ap.add_argument("--max-new-answer", type=int, default=160)
     ap.add_argument("--out", type=Path, required=True,
@@ -136,10 +162,32 @@ def main():
     print(f"{len(rows):,} rows from {args.repo}:{args.config}:{args.split}",
           flush=True)
 
-    gens = build(model, tok,
-                 [format_conversation(r["msgs"][:r["start"]]) + " <|assistant|>"
-                  for r in rows],
-                 args.max_new_call, args.batch_size, eos, "call")
+    call_prompts = [format_conversation(r["msgs"][:r["start"]]) + " <|assistant|>"
+                    for r in rows]
+    k = max(1, args.samples)
+    flat = build(model, tok, call_prompts, args.max_new_call,
+                 max(1, args.batch_size // k), eos, "call", k, args.temperature)
+    if k > 1:
+        # PASS@K: keep every sample, score the BEST per row. This asks whether
+        # the right call is in the distribution, not whether greedy lands on
+        # it -- the two differ, and only the second is what the eval reports.
+        groups = [flat[i * k:(i + 1) * k] for i in range(len(rows))]
+        best, tool_any, f1s = [], 0, []
+        for r, g in zip(rows, groups):
+            cand = [parse_call(x) for x in g]
+            sc = [(argf1((c or {}).get("arguments"), r["gold"].get("arguments"))
+                   if c and c.get("name") == r["gold"].get("name") else 0.0)
+                  for c in cand]
+            b = max(range(k), key=lambda i: sc[i])
+            best.append(g[b]); f1s.append(sc[b])
+            tool_any += any(c and c.get("name") == r["gold"].get("name")
+                            for c in cand)
+        print(f"\nPASS@{k} (t={args.temperature})  "
+              f"right-tool-any {100*tool_any/len(rows):.1f}%  "
+              f"best-of-{k} argF1 {100*sum(f1s)/len(f1s):.1f}%", flush=True)
+        gens = best
+    else:
+        gens = flat
 
     # Answers are generated for every row that HAS a result, using the gold
     # call rather than the generated one: the point is to score the answer
