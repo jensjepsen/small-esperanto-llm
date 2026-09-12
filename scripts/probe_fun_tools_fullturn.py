@@ -151,7 +151,16 @@ QUESTIONS = [
     "Er der kaffe tilbage på 4. etage?",
     "Min hund er 4 menneskeår gammel. Hvor gammel er den i hundeår?",
     "Vi er 8 personer og skal mødes kl. 14. Kan du finde et lokale?",
-    # CHAINED: the id is not in the question, so this needs two calls.
+]
+
+# SEPARATE LIST, and it must stay separate. probe_fun_abstention imports
+# QUESTIONS as its CONTROL set -- "an ordinary answerable question, must NOT
+# be refused" -- and its loop calls once and answers. Appending the chained
+# question to QUESTIONS silently made a two-call item a single-call control
+# in a probe that cannot complete it. The import exists so the two probes
+# cannot drift; that cuts both ways.
+CHAIN_QUESTIONS = [
+    # The id is not in the question, so this needs the lookup first.
     "Hvornår blev Mette Nielsens cykel sidst serviceret?",
 ]
 
@@ -230,7 +239,7 @@ def main():
         return tok.decode(o[0][e["input_ids"].shape[1]:],
                           skip_special_tokens=False).strip()
 
-    for q in QUESTIONS:
+    for q in QUESTIONS + CHAIN_QUESTIONS:
         msgs = [user_msg(q)]
         print("=" * 78)
         print(f"USER: {q}")
