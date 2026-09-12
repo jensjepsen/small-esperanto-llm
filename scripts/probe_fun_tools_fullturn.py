@@ -52,7 +52,37 @@ def find_meeting_room(people, time):
             "capacity": 10 if big else 6, "time": time, "floor": 3}
 
 
+# A CHAIN. `bike_service_status` needs an id the user never says, so the only
+# route is the lookup first. It refuses IN-BAND when handed something that is
+# not an id, because a skipped chain must be visible: the failure this probe
+# is looking for is a confident answer built from the owner's name.
+BIKES = {"mette nielsen": "BIKE-4471", "jonas berg": "BIKE-1180"}
+SERVICE = {
+    "BIKE-4471": {"bike_id": "BIKE-4471", "last_service_date": "2026-03-02",
+                  "brake_wear_pct": 41, "chain_wear_pct": 17},
+    "BIKE-1180": {"bike_id": "BIKE-1180", "last_service_date": "2025-11-19",
+                  "brake_wear_pct": 68, "chain_wear_pct": 55},
+}
+
+
+def find_bike_by_owner(owner_name):
+    bid = BIKES.get(str(owner_name).strip().lower())
+    if not bid:
+        return {"error": f"ingen cykel registreret på {owner_name}"}
+    return {"bike_id": bid, "owner_name": owner_name, "frame_size_cm": 54}
+
+
+def bike_service_status(bike_id):
+    s = SERVICE.get(str(bike_id).strip())
+    if not s:
+        return {"error": f"ukendt bike_id {bike_id}; slå cyklen op "
+                         f"på ejerens navn først"}
+    return dict(s)
+
+
 IMPL = {"roll_dice": roll_dice,
+        "find_bike_by_owner": find_bike_by_owner,
+        "bike_service_status": bike_service_status,
         "coffee_machine_status": coffee_machine_status,
         "dog_years": dog_years,
         "find_meeting_room": find_meeting_room}
@@ -87,6 +117,23 @@ CATALOG = [
          "required": ["human_years"]},
      "returns": {"type": "object", "properties": {
          "dog_years": {"description": "Alderen omregnet til hundeår"}}}},
+    {"name": "find_bike_by_owner",
+     "description": "Slå en cykel op ud fra ejerens navn",
+     "parameters": {"type": "object", "properties": {
+         "owner_name": {"type": "string", "description": "Ejerens fulde navn"}},
+         "required": ["owner_name"]},
+     "returns": {"type": "object", "properties": {
+         "bike_id": {"description": "Cyklens unikke id"},
+         "frame_size_cm": {"description": "Stelstørrelse i cm"}}}},
+    {"name": "bike_service_status",
+     "description": "Hent servicestatus for en cykel ud fra dens id",
+     "parameters": {"type": "object", "properties": {
+         "bike_id": {"type": "string", "description": "Cyklens unikke id"}},
+         "required": ["bike_id"]},
+     "returns": {"type": "object", "properties": {
+         "last_service_date": {"description": "Dato for sidste service"},
+         "brake_wear_pct": {"description": "Bremseslid i procent"},
+         "chain_wear_pct": {"description": "Kædeslid i procent"}}}},
     {"name": "find_meeting_room",
      "description": "Find et ledigt mødelokale",
      "parameters": {"type": "object", "properties": {
@@ -104,6 +151,8 @@ QUESTIONS = [
     "Er der kaffe tilbage på 4. etage?",
     "Min hund er 4 menneskeår gammel. Hvor gammel er den i hundeår?",
     "Vi er 8 personer og skal mødes kl. 14. Kan du finde et lokale?",
+    # CHAINED: the id is not in the question, so this needs two calls.
+    "Hvornår blev Mette Nielsens cykel sidst serviceret?",
 ]
 
 
@@ -116,6 +165,8 @@ QUESTIONS = [
 # format_conversation and appends " <|assistant|>"; anything else measures
 # the probe rather than the model.
 SENTINEL = "\x00"
+# Enough for lookup -> consumer -> answer, with one spare.
+MAX_STEPS = 4
 
 
 def user_msg(q):
@@ -187,47 +238,60 @@ def main():
                 ("free  ", free_prompt(msgs), False),
                 ("forced", forced_prompt(msgs), True)):
             print("-" * 78)
-            out = gen(prompt)
-            text = ("<|tool_call|>" + out) if prefixed else out
-            if not prefixed:
-                think = text.split("<|tool_call|>")[0].strip()
-                print(f"[{label}] reasoning ({len(think.split())} words): "
-                      f"{think if think else '(none)'}")
-            m = CALL.search(text)
-            if not m:
-                print(f"[{label}] NO CALL -> {out[:300]}")
-                continue
-            try:
-                call, _ = json.JSONDecoder().raw_decode(m.group(1).strip())
-            except Exception:
-                print(f"[{label}] UNPARSEABLE -> {m.group(1)[:200]}")
-                continue
-            print(f"[{label}] CALL: {json.dumps(call, ensure_ascii=False)}")
-            name = call.get("name") or ""
-            fn = IMPL.get(name)
-            if not fn:
-                # Case-insensitive retry: the model emits `Beregn_hundeår` for
-                # `beregn_hundeår`. Resolving it anyway lets the rest of the
-                # turn run, so a casing slip does not hide the answer step.
-                fn = next((f for k, f in IMPL.items()
-                           if k.lower() == name.lower()), None)
-                if fn:
-                    print(f"[{label}]   (casing slip: '{name}' -> resolved)")
-            if not fn:
-                print(f"[{label}]   !! tool '{name}' does not exist")
-                continue
-            try:
-                result = fn(**(call.get("arguments") or {}))
-            except Exception as ex:
-                print(f"[{label}]   !! bad args: {ex}")
-                continue
-            res = json.dumps(result, ensure_ascii=False)
-            print(f"[{label}] TOOL: {res}")
-            # feed the real result back; the model must answer from it
-            reasoning = "" if prefixed else text.split("<|tool_call|>")[0].strip()
-            p2 = answer_prompt(msgs, reasoning,
-                               json.dumps(call, ensure_ascii=False), res)
-            print(f"[{label}] ANSWER: {gen(p2, 200)}")
+            # MULTI-STEP. This used to call once and answer, which cannot
+            # complete a chain: `bike_service_status` needs an id that only
+            # the lookup produces, so a single-call loop would show the first
+            # call and stop, and the interesting turn -- what the model does
+            # with a handle it just received -- never happened.
+            hist, answered = list(msgs), False
+            for step in range(1, MAX_STEPS + 1):
+                out = gen(prompt)
+                text = ("<|tool_call|>" + out) if (prefixed and step == 1) else out
+                if not prefixed or step > 1:
+                    think = text.split("<|tool_call|>")[0].strip()
+                    if step == 1:
+                        print(f"[{label}] reasoning ({len(think.split())} words): "
+                              f"{think if think else '(none)'}")
+                m = CALL.search(text)
+                if not m:
+                    print(f"[{label}] ANSWER: {text.strip()[:300]}")
+                    answered = True
+                    break
+                try:
+                    call, _ = json.JSONDecoder().raw_decode(m.group(1).strip())
+                except Exception:
+                    print(f"[{label}] UNPARSEABLE -> {m.group(1)[:200]}")
+                    break
+                print(f"[{label}] CALL {step}: {json.dumps(call, ensure_ascii=False)}")
+                name = call.get("name") or ""
+                fn = IMPL.get(name)
+                if not fn:
+                    # Case-insensitive retry: the model emits `Beregn_hundeår`
+                    # for `beregn_hundeår`. Resolving it anyway lets the rest
+                    # of the turn run, so a casing slip does not hide the
+                    # answer step.
+                    fn = next((f for k, f in IMPL.items()
+                               if k.lower() == name.lower()), None)
+                    if fn:
+                        print(f"[{label}]   (casing slip: '{name}' -> resolved)")
+                if not fn:
+                    print(f"[{label}]   !! tool '{name}' does not exist")
+                    break
+                try:
+                    result = fn(**(call.get("arguments") or {}))
+                except Exception as ex:
+                    print(f"[{label}]   !! bad args: {ex}")
+                    break
+                res = json.dumps(result, ensure_ascii=False)
+                print(f"[{label}] TOOL {step}: {res}")
+                reasoning = text.split("<|tool_call|>")[0].strip()
+                hist = hist + [{"role": "assistant", "content": reasoning},
+                               {"role": "tool_call",
+                                "content": json.dumps(call, ensure_ascii=False)},
+                               {"role": "tool_result", "content": res}]
+                prompt = free_prompt(hist)
+            if not answered:
+                print(f"[{label}]   (no answer within {MAX_STEPS} steps)")
         print()
 
 
