@@ -52,6 +52,11 @@ export ESPLLM_NUM_PROC=8
 export ESPLLM_LIGER=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# BS x GA is the EFFECTIVE batch and must stay 64 across boxes, or the run
+# stops being comparable to da_sft_toolmix_proc1_v9_bs8. Only the split
+# changes with the card: that run peaked at 22.3 GiB on a 5090 (wandb
+# system.gpu.0.memoryAllocatedBytes), of which ~15 GiB is activations and
+# scales with BS, so a 96 GiB Blackwell takes BS=32 GA=2 with room to spare.
 TOOL_DATA=${TOOL_REPO:-jensjepsen/danish-tool-dialogues-v9}
 PROC_DATA=${PROC_REPO:-jensjepsen/danish-tool-dialogues-proc-v1}
 export ESPLLM_TOOL_EVAL_REPO=$TOOL_DATA
@@ -68,7 +73,7 @@ uv run --no-sync python -u scripts/train_sft_packed.py \
   --attn-impl flash_attention_2 \
   --sft-data "${TOOL_DATA}:sft:train" "${TOOL_DATA}:abstention:train" \
              "${PROC_DATA}:sft:train" \
-  --epochs 8 --batch-size 8 --gradient-accumulation 8 \
+  --epochs ${EPOCHS:-8} --batch-size ${BS:-8} --gradient-accumulation ${GA:-8} \
   --optim adamw_bnb_8bit \
   --learning-rate 3e-5 --lr-scheduler constant_with_warmup --warmup-steps 300 \
   --max-length 3584 \
