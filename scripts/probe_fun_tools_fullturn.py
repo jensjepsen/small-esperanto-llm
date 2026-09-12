@@ -28,7 +28,11 @@ CALL = re.compile(r"<\|tool_call\|>(.*?)(?:<\|/tool_call\|>|$)", re.S)
 
 
 # English identifiers, Danish descriptions -- the shape the corpus actually
-# trains. The first cut of this probe used Danish tool and parameter names
+# trains. RETURN FIELDS CARRY A `type`, because the corpus's do: a real
+# catalogue entry reads `{"type": "number", "description": "Unikt ID ..."}`
+# and these used to omit it, which is a schema shape the model never saw in
+# training. It predates the chained item, so every earlier run of this probe
+# carries the same deviation. The first cut of this probe used Danish tool and parameter names
 # (`beregn_hundeår`, `menneskeår`) and the model answered with a tool name
 # that did not exist; nothing in training looks like that, so the failure said
 # more about the probe than the model.
@@ -97,8 +101,8 @@ CATALOG = [
          "required": ["count", "sides"]},
      "returns": {"type": "object", "properties": {
          "rolls": {"type": "array",
-                   "items": {"description": "Et enkelt kast"}},
-         "total": {"description": "Summen af alle kast"}}}},
+                   "items": {"type": "integer", "description": "Et enkelt kast"}},
+         "total": {"type": "integer", "description": "Summen af alle kast"}}}},
     {"name": "coffee_machine_status",
      "description": "Hent status for kaffemaskinen på en etage",
      "parameters": {"type": "object", "properties": {
@@ -106,9 +110,9 @@ CATALOG = [
                    "description": "Etagen kaffemaskinen står på"}},
          "required": ["floor"]},
      "returns": {"type": "object", "properties": {
-         "cups_left": {"description": "Antal kopper kaffe tilbage"},
-         "working": {"description": "Om maskinen virker"},
-         "last_service": {"description": "Dato for sidste service"}}}},
+         "cups_left": {"type": "integer", "description": "Antal kopper kaffe tilbage"},
+         "working": {"type": "boolean", "description": "Om maskinen virker"},
+         "last_service": {"type": "string", "description": "Dato for sidste service"}}}},
     {"name": "dog_years",
      "description": "Omregn menneskeår til hundeår",
      "parameters": {"type": "object", "properties": {
@@ -116,24 +120,24 @@ CATALOG = [
                          "description": "Alder i menneskeår"}},
          "required": ["human_years"]},
      "returns": {"type": "object", "properties": {
-         "dog_years": {"description": "Alderen omregnet til hundeår"}}}},
+         "dog_years": {"type": "integer", "description": "Alderen omregnet til hundeår"}}}},
     {"name": "find_bike_by_owner",
      "description": "Slå en cykel op ud fra ejerens navn",
      "parameters": {"type": "object", "properties": {
          "owner_name": {"type": "string", "description": "Ejerens fulde navn"}},
          "required": ["owner_name"]},
      "returns": {"type": "object", "properties": {
-         "bike_id": {"description": "Cyklens unikke id"},
-         "frame_size_cm": {"description": "Stelstørrelse i cm"}}}},
+         "bike_id": {"type": "string", "description": "Cyklens unikke id"},
+         "frame_size_cm": {"type": "integer", "description": "Stelstørrelse i cm"}}}},
     {"name": "bike_service_status",
      "description": "Hent servicestatus for en cykel ud fra dens id",
      "parameters": {"type": "object", "properties": {
          "bike_id": {"type": "string", "description": "Cyklens unikke id"}},
          "required": ["bike_id"]},
      "returns": {"type": "object", "properties": {
-         "last_service_date": {"description": "Dato for sidste service"},
-         "brake_wear_pct": {"description": "Bremseslid i procent"},
-         "chain_wear_pct": {"description": "Kædeslid i procent"}}}},
+         "last_service_date": {"type": "string", "description": "Dato for sidste service"},
+         "brake_wear_pct": {"type": "integer", "description": "Bremseslid i procent"},
+         "chain_wear_pct": {"type": "integer", "description": "Kædeslid i procent"}}}},
     {"name": "find_meeting_room",
      "description": "Find et ledigt mødelokale",
      "parameters": {"type": "object", "properties": {
@@ -141,9 +145,9 @@ CATALOG = [
          "time": {"type": "string", "description": "Ønsket tidspunkt"}},
          "required": ["people", "time"]},
      "returns": {"type": "object", "properties": {
-         "room": {"description": "Navnet på lokalet"},
-         "capacity": {"description": "Hvor mange lokalet kan rumme"},
-         "floor": {"description": "Etagen lokalet ligger på"}}}},
+         "room": {"type": "string", "description": "Navnet på lokalet"},
+         "capacity": {"type": "integer", "description": "Hvor mange lokalet kan rumme"},
+         "floor": {"type": "integer", "description": "Etagen lokalet ligger på"}}}},
 ]
 
 QUESTIONS = [
